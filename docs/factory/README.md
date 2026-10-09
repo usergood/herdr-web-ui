@@ -1,6 +1,6 @@
-# Personal software factory planning
+# Saurons eye factory planning
 
-Extend the `usergood/herdr-web-ui` fork into the owner's specification-driven factory while preserving the existing Herdr installation. This pass prepares planning and specifications only, as the owner confirmed on 9 October 2026. Implementation, skill activation, tracker publication, production service changes, deployment and merges have not been authorized by this pass.
+**Saurons eye** (`saurons-eye`) is the owner's specification-driven factory plugin, built on the `usergood/herdr-web-ui` fork while preserving the existing Herdr installation. The owner chose this display name and slug. This pass prepares planning and specifications only, as the owner confirmed on 9 October 2026. Implementation, skill activation, tracker publication, production service changes, deployment and merges have not been authorized by this pass.
 
 ## Read in this order
 
@@ -16,6 +16,8 @@ Extend the `usergood/herdr-web-ui` fork into the owner's specification-driven fa
 
 | Item | Status |
 | --- | --- |
+| Plugin display name | **Saurons eye** — owner-confirmed |
+| Plugin slug | `saurons-eye` — owner-confirmed |
 | Fork | `https://github.com/usergood/herdr-web-ui` |
 | Checkout baseline | `b87d9d50019cdb87422415f7650ad29285a832cc`, package `0.4.3` |
 | Planning branch | `docs/factory-planning` |

@@ -1,4 +1,4 @@
-# Draft personal software factory specification
+# Draft Saurons eye specification
 
 Status: local draft for owner review. This covers the complete requested product. It does not authorize implementation or certify Matt's specification, testing-seam or ticket-publication gates. Product defaults below remain proposals until confirmed.
 
@@ -8,7 +8,7 @@ The owner already uses Herdr and Codex with a working Herdr Web UI deployment. I
 
 ## Solution
 
-Extend the existing fork with an Inbox, Projects, Implementations and a manual specification-to-delivery workflow. Use the pinned Matt Pocock skills for engineering work, Herdr for process ownership and SSH transport, and application-owned records for durable coordination and evidence. Codex is primary; capability-tested Claude Code and OpenCode adapters remain required delivery scope.
+Build **Saurons eye** (`saurons-eye`) on the existing fork with an Inbox, Projects, Implementations and a manual specification-to-delivery workflow. The owner has confirmed the display name and slug. Use the pinned Matt Pocock skills for engineering work, Herdr for process ownership and SSH transport, and application-owned records for durable coordination and evidence. Codex is primary; capability-tested Claude Code and OpenCode adapters remain required delivery scope.
 
 ## User stories
 

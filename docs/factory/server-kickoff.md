@@ -4,6 +4,7 @@ The first bounded slice reconciles the actual installed deployment and produces 
 
 ## Settled for this planning pass
 
+- The plugin display name is **Saurons eye** and its slug is `saurons-eye`, as chosen by the owner.
 - The fork is `usergood/herdr-web-ui`, checked out under `/home/kurri/Personal/herdr-web-ui`.
 - The local source baseline is `b87d9d50019cdb87422415f7650ad29285a832cc`, package `0.4.3`; it is not asserted to be the installed server version.
 - Codex is primary; Claude Code, OpenCode and extensible provider adapters remain requested scope.
