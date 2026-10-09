@@ -1,7 +1,7 @@
 /** End-to-end update QA: private Git remote/install + owned herdr pane, never the live app. */
 import "./test-herdr.ts"; // a herdr session of its own: nothing shows in the user's
 import assert from "node:assert/strict";
-import { copyFileSync, mkdirSync, mkdtempSync, openSync, closeSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, closeSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { chromium } from "playwright-core";
@@ -48,12 +48,17 @@ try {
   supervisor = Bun.spawn([process.execPath, "server/managed.ts"], {
     cwd: install, stdout: log, stderr: log,
     env: { ...process.env, HOST: "127.0.0.1", PORT: String(port), HERDR_WEB_TOKEN: "",
-      HERDR_WEB_AUTO_UPDATE: "0", HERDR_WEB_TELEMETRY: "0", HERDR_WEB_STATE_DIR: join(temp, "state") },
+      HERDR_WEB_AUTO_UPDATE: "0", HERDR_WEB_STATE_DIR: join(temp, "state") },
   });
   const status = async (): Promise<UpdateStatus | null> => {
     try { return await (await fetch(`${origin}/api/updates`)).json() as UpdateStatus; } catch { return null; }
   };
   await until(async () => (await status())?.managed === true, "Managed server never became ready");
+  assert.equal(existsSync(join(temp, "state", "telemetry.json")), false, "Starting the real app must not create an install tracking identity");
+  for (const method of ["GET", "POST"]) {
+    const response = await fetch(`${origin}/api/telemetry`, { method, ...(method === "POST" ? { headers: { "x-herdr-update": "1", "content-type": "application/json" }, body: JSON.stringify({ enabled: true, notice_seen: true }) } : {}) });
+    assert.equal(response.status, 404, "Install/update reporting cannot be re-enabled through the old endpoint");
+  }
   const workspace = await workspaceCreate({ cwd: temp, label: "herdr-web-ui-test-update-browser" });
   workspaceId = workspace.workspace.workspace_id;
   const paneId = workspace.root_pane.pane_id;

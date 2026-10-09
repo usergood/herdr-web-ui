@@ -41,8 +41,8 @@ import { windowsArgv, windowsProcessTable } from "../server/windows-processes.ts
  */
 const ENV_FILES = ["env", ".env"];
 const ROOT = resolve(process.env["HERDR_PLUGIN_ROOT"] ?? join(import.meta.dir, ".."));
-const STATE_DIR = process.env["HERDR_PLUGIN_STATE_DIR"] ?? join(homedir(), ".local", "state", "herdr-web-ui");
-const CONFIG_DIR = process.env["HERDR_PLUGIN_CONFIG_DIR"] ?? herdrConfigDir() ?? join(homedir(), ".config", "herdr-web-ui");
+const STATE_DIR = process.env["HERDR_PLUGIN_STATE_DIR"] ?? join(homedir(), ".local", "state", "saurons-eye");
+const CONFIG_DIR = process.env["HERDR_PLUGIN_CONFIG_DIR"] ?? herdrConfigDir() ?? join(homedir(), ".config", "saurons-eye");
 const PID_FILE = join(STATE_DIR, "server.pid");
 const LOG_FILE = join(STATE_DIR, "server.log");
 /** the server needs a moment to bind and open its first herdr connection */
@@ -55,8 +55,8 @@ const KILL_WAIT_MS = 3_000;
 const SERVE_TIMEOUT_MS = 180_000;
 /** how to come back to `phone` once Tailscale is set up: an action's output goes to herdr's log, not a terminal */
 const PHONE_AGAIN = platform() === "win32"
-  ? "irm https://herdrweb.dev/install.ps1 | iex"
-  : "curl -fsSL https://herdrweb.dev/install.sh | sh";
+  ? "herdr plugin pane open --plugin usergood.saurons-eye --entrypoint phone-windows --placement zoomed --focus"
+  : "herdr plugin pane open --plugin usergood.saurons-eye --entrypoint phone --placement zoomed --focus";
 
 /**
  * Run by hand (`pair` on a headless PC), herdr's env is not there to name the config dir:
@@ -66,7 +66,7 @@ function herdrConfigDir(): string | null {
   const herdr = Bun.which("herdr");
   if (herdr === null) return null;
   try {
-    const result = Bun.spawnSync([herdr, "plugin", "config-dir", "devswha.herdr-web-ui"], { windowsHide: true, stdout: "pipe", stderr: "ignore", timeout: 3000 });
+    const result = Bun.spawnSync([herdr, "plugin", "config-dir", "usergood.saurons-eye"], { windowsHide: true, stdout: "pipe", stderr: "ignore", timeout: 3000 });
     const dir = result.exitCode === 0 ? result.stdout.toString().trim() : "";
     return dir !== "" && ENV_FILES.some((name) => existsSync(join(dir, name))) ? dir : null;
   } catch {

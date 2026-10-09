@@ -19,7 +19,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $origin = 'http://127.0.0.1:7317'
-$pluginId = 'devswha.herdr-web-ui'
+$pluginId = 'usergood.saurons-eye'
 # where the official installers put both tools; a terminal opened before them has neither on PATH
 $env:PATH = "$env:USERPROFILE\.bun\bin;$env:LOCALAPPDATA\Programs\Herdr\bin;$env:PATH"
 
@@ -41,7 +41,7 @@ function Find-Plugin {
     (herdr plugin list --json | ConvertFrom-Json).result.plugins | Where-Object { $_.plugin_id -eq $pluginId } | Select-Object -First 1
 }
 function Get-ReleaseTags {
-    $tags = @(git ls-remote --tags --refs 'https://github.com/devswha/herdr-web-ui.git' 'v*' |
+    $tags = @(git ls-remote --tags --refs 'https://github.com/usergood/herdr-web-ui.git' 'v*' |
         ForEach-Object { if ($_ -match 'refs/tags/(v\d+\.\d+\.\d+)$') { $Matches[1] } } |
         Sort-Object { [version]$_.Substring(1) })
     Assert ($tags.Count -ge 2) 'Could not read the release tags from GitHub'

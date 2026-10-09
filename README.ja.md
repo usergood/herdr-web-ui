@@ -9,20 +9,13 @@
 </p>
 
 <p align="center">
-  <a href="https://herdrweb.dev/">公式サイト</a> ·
   <a href="#install">インストール</a> ·
-  <a href="https://herdrweb.dev/demo/">デモを試す</a> ·
   <a href="docs/guide.md#quick-start">クイックスタート</a> ·
   <a href="#faq">よくある質問</a> ·
   <a href="#docs">ドキュメント</a>
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-666666?labelColor=333333" alt="MIT ライセンス"></a>
-  <a href="https://github.com/devswha/herdr-web-ui/stargazers"><img src="https://img.shields.io/github/stars/devswha/herdr-web-ui?labelColor=333333&color=666666&logo=github" alt="GitHub スター数"></a>
-  <a href="https://github.com/devswha/herdr-web-ui/releases/latest"><img src="https://img.shields.io/github/v/release/devswha/herdr-web-ui?label=release&labelColor=333333&color=666666" alt="最新リリース"></a>
-  <a href="https://github.com/herdrdev/herdr"><img src="https://img.shields.io/badge/herdr-0.9.0%2B-666666?labelColor=333333" alt="herdr 0.9.0+"></a>
-  <a href="docs/guide.md#on-your-phone"><img src="https://img.shields.io/badge/PWA-installable-666666?labelColor=333333" alt="インストール可能な PWA"></a>
 </p>
 
 ---
@@ -90,7 +83,7 @@ https://github.com/user-attachments/assets/d854dbb6-64bd-4eba-81c7-fbd3f525726b
 ## インストール
 
 ```bash
-curl -fsSL https://herdrweb.dev/install.sh | sh
+HERDR_WEB_UI_REF=<reviewed-ref> sh ./install.sh
 ```
 
 Linux（x64、arm64）または macOS に対応しています。必要な herdr 0.9.0+、Bun 1.4+、Node 18+ がなければ現在のユーザー向けにインストールし、その後アプリを herdr プラグインとしてインストールします。既存の herdr が 0.9.0 より古い場合は、自分で herdr を更新・再起動してからインストーラーを再実行してください。デフォルトの待ち受けアドレスを使用し、Tailscale が起動している場合、HTTPS の設定に成功すると tailnet 内のアクセス用アドレスと QR コードが表示されます。自分のデバイスはもともとコードなしで入れます。`tailscale serve` がログイン名を伝えるためです。それでも自分のスマートフォンがペアリングを求められるときは、`HERDR_WEB_TAILSCALE_SERVE_ONLY=1` を設定すると、ログインが1つだけの tailnet ならコードなしで入れるようになります。ただし、公開プロキシやトンネルなど別の経路でこのポートに届く場合は設定しないでください（[アクセスと安全性](docs/guide.md#access-and-safety)）。
@@ -99,7 +92,7 @@ Linux（x64、arm64）または macOS に対応しています。必要な herdr
 Windows x64 では PowerShell で:
 
 ```powershell
-irm https://herdrweb.dev/install.ps1 | iex
+./install.ps1 -Ref <reviewed-ref>
 ```
 
 [Git for Windows](https://git-scm.com/download/win) が必要です。足りない herdr と Bun を現在のユーザー向けにインストールし、同じプラグインをインストールします。Node や WSL は不要です。スマートフォンから使うには herdr で **Phone setup** を開いてください。herdr が Windows でターミナルのアタッチに対応するまで、Windows のターミナルは入力でき、グリッドが固定された[画面ミラー](docs/remote-pcs.md#windows-pcs)になります。
@@ -111,7 +104,7 @@ irm https://herdrweb.dev/install.ps1 | iex
 必要なソフトウェアがすでにそろっている場合は、プラグインだけをインストールできます。
 
 ```bash
-herdr plugin install devswha/herdr-web-ui
+herdr plugin install usergood/herdr-web-ui --ref <reviewed-ref>
 ```
 
 herdr が起動した状態で **[localhost:7317](http://localhost:7317)** を開きます。ペインを選ぶか、**New workspace（新規ワークスペース）** からエージェントを起動してください。スマートフォンで使う場合は、インストーラーの QR コードを読み取り、アプリをホーム画面に追加します。[クイックスタート →](docs/guide.md#quick-start)
@@ -140,7 +133,7 @@ Claude Code、Codex、omp、omo、gjc、pi は、それぞれのセッション�
 
 **コードや会話が自分のマシンの外に出ることはありますか？**
 
-セッションファイルは各エージェントを実行している PC に残り、その内容は接続したブラウザへ送られます。このアプリ独自のクラウド中継やアカウントサービスはありません。任意の音声入力は録音を、文章の整形も使う場合はテキストも、設定したプロバイダーへ送ります。使用量表示を有効にするとプロバイダーの API に接続します。更新、リモート PC の設定、プッシュ通知でも外部サービスに接続することがあります。アプリはインストール時とアップデートのたびに匿名のカウントを送ります（バージョン、OS、インストール方法、ランダムな ID で、IP アドレスは保存されません）。**Settings → About → Anonymous usage counts** で送信内容を確認し、オフにできます。エージェント自身のモデルへの接続は、そのエージェントの設定によります。[データの送信とアクセス →](docs/guide.md#faq)
+セッションファイルは各エージェントを実行している PC に残り、その内容は接続したブラウザへ送られます。このアプリ独自のクラウド中継やアカウントサービスはありません。任意の音声入力は録音を、文章の整形も使う場合はテキストも、設定したプロバイダーへ送ります。使用量表示を有効にするとプロバイダーの API に接続します。更新、リモート PC の設定、プッシュ通知でも外部サービスに接続することがあります。Saurons eye はインストールや更新のテレメトリーを送信しません。外部サービスには所有者の有効化または設定が必要です。エージェント自身のモデルへの接続は、そのエージェントの設定によります。[データの送信とアクセス →](docs/guide.md#faq)
 
 **Windows でも動きますか？**
 
@@ -181,7 +174,7 @@ Claude Code、Codex、omp、omo、gjc、pi は、それぞれのセッション�
 ## 開発
 
 ```bash
-git clone https://github.com/devswha/herdr-web-ui.git
+git clone https://github.com/usergood/herdr-web-ui.git
 cd herdr-web-ui
 bun install
 

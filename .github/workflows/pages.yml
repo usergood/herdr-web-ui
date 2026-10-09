@@ -1,11 +1,9 @@
 name: Website
-# Builds site/ into the GitHub Pages site (https://herdrweb.dev/) on every push to
-# main: the page, and the browser demo, which is the app itself, so any client change is a site
+# Builds site/ into the owner's GitHub Pages site only on explicit dispatch:
+# the page and browser demo use the app itself, so any client change is a site
 # change. README.md is a source too: the page's top video and feature clips are the README's
 # (docs/development.md, "README media").
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read

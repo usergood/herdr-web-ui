@@ -5,7 +5,7 @@
  * - The built site is served under /herdr-web-ui/ by a small Bun.serve, like GitHub Pages does.
  * - The app page itself is recorded (demo/app/), not the framed demo/index.html: no demo banner.
  * - Chrome gets the brand fonts (Pretendard Variable, JetBrains Mono) as local fonts through its own
- *   fontconfig, downloaded once to _film/fonts: the app names them first but ships no webfont, and a
+ *   fontconfig, supplied locally in _film/fonts: the app names them first but ships no webfont, and a
  *   local font is there before xterm measures its cells.
  * - Recordings use hand.ts (CDP screencast frames with paint times, cue log of the hand; the README's
  *   scripts/readme-media/record.ts with a device scale, a clock-driven glide, place and press). Each one is kept raw (JPEG frames, frames.json, cues.json, marks) and turned into a
@@ -83,18 +83,11 @@ const server = Bun.serve({
 });
 const APP = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/`;
 
-const FONT_FILES: Record<string, string> = {
-  "PretendardVariable.ttf": "https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/public/variable/PretendardVariable.ttf",
-  "JetBrainsMono-Regular.ttf": "https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@v2.304/fonts/ttf/JetBrainsMono-Regular.ttf",
-  "JetBrainsMono-Medium.ttf": "https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@v2.304/fonts/ttf/JetBrainsMono-Medium.ttf",
-  "JetBrainsMono-Bold.ttf": "https://cdn.jsdelivr.net/gh/JetBrains/JetBrainsMono@v2.304/fonts/ttf/JetBrainsMono-Bold.ttf",
-};
+// Media generation uses fonts the owner supplies locally; it never downloads a CDN fallback.
+const FONT_FILES = ["PretendardVariable.ttf", "JetBrainsMono-Regular.ttf", "JetBrainsMono-Medium.ttf", "JetBrainsMono-Bold.ttf"];
 mkdirSync(FONTS, { recursive: true });
-for (const [name, url] of Object.entries(FONT_FILES)) {
-  if (existsSync(join(FONTS, name))) continue;
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`font ${name}: ${response.status}`);
-  await Bun.write(join(FONTS, name), response);
+for (const name of FONT_FILES) {
+  if (!existsSync(join(FONTS, name))) throw new Error(`Provide ${name} in ${FONTS} before recording.`);
 }
 const fontconfig = join(FONTS, "fonts.conf");
 writeFileSync(fontconfig, `<?xml version="1.0"?>

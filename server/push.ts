@@ -44,7 +44,7 @@ import { isLoopbackHost } from "./access.ts";
 /** A blocked agent is still blocked when the phone gets signal back; a newer push for the pane replaces it anyway. */
 const PUSH_TTL_SECONDS = 12 * 60 * 60;
 const PUSH_TIMEOUT_MS = 10_000;
-const DEFAULT_SUBJECT = "https://github.com/devswha/herdr-web-ui";
+const DEFAULT_SUBJECT = "https://github.com/usergood/herdr-web-ui";
 
 /** How long an alert waits for the pane to change first, and the turn a finish is worth telling. */
 export interface AlertTiming {

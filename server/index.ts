@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, isAbsolute } from "node:path";
 import type { ServerWebSocket } from "bun";
@@ -72,7 +72,6 @@ import { OutputWindow, OUTPUT_HIGH_BYTES, OUTPUT_HARD_BYTES, OUTPUT_STALL_MS, Re
 import { OUTPUT_STALLED_CLOSE_CODE } from "../shared/terminal-flow.ts";
 import { connectUpdater, handleUpdateRequest, type UpdateService } from "./update-api.ts";
 import { handleHerdrUpdateRequest, HerdrUpdater } from "./herdr-update.ts";
-import { handleTelemetryRequest, Telemetry } from "./telemetry.ts";
 import { handleUsageRequest, UsageService } from "./usage.ts";
 import { handleVoiceRequest, VoiceService } from "./voice.ts";
 
@@ -349,8 +348,6 @@ export function createServer(
     updates?: UpdateService;
     /** updates herdr itself (server/herdr-update.ts); unset, the app offers no herdr update. Tests pass one that runs a stand-in herdr. */
     herdrUpdate?: HerdrUpdater;
-    /** anonymous install and update counts (server/telemetry.ts); unset, the server sends none and answers 404. Only the real entrypoint passes one. */
-    telemetry?: Telemetry;
     /** plan limits of the AI subscriptions signed in here; tests pass one without real sign-ins */
     usage?: UsageService;
     /** voice input's key, provider and models; tests pass one with their own env and fetch */
@@ -1480,7 +1477,6 @@ export function createServer(
         return handleUpdateRequest(request, pathname, options.updates);
       }
       if (pathname === "/api/herdr/update") return handleHerdrUpdateRequest(request, options.herdrUpdate);
-      if (pathname === "/api/telemetry") return handleTelemetryRequest(request, options.telemetry);
 
       if (pathname === "/api/usage") return handleUsageRequest(request, url, usage);
       // a long clip can keep the provider silent past Bun's 10 s idle limit before the first line
@@ -2607,15 +2603,11 @@ export function createServer(
 
 if (import.meta.main) {
   const updates = connectUpdater();
-  const version = (JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")) as { version: string }).version;
-  const telemetry = new Telemetry({ stateDir: defaultStateDir(), version, env: process.env, fetch, previousVersion: () => updates.installed().previous_version });
-  const instance = createServer({ updates, herdrUpdate: new HerdrUpdater(), telemetry, registerBridge: true });
-  telemetry.start();
+  const instance = createServer({ updates, herdrUpdate: new HerdrUpdater(), registerBridge: true });
   let stopping = false;
   const shutdown = () => {
     if (stopping) return;
     stopping = true;
-    telemetry.stop();
     instance.stop();
     // Attach sidecars need ~1.2s to release herdr's exclusive client slot.
     setTimeout(() => process.exit(0), 2000);

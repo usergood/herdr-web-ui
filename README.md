@@ -9,20 +9,13 @@
 </p>
 
 <p align="center">
-  <a href="https://herdrweb.dev/">website</a> ·
   <a href="#install">install</a> ·
-  <a href="https://herdrweb.dev/demo/">try the demo</a> ·
   <a href="docs/guide.md#quick-start">quick start</a> ·
   <a href="#faq">faq</a> ·
   <a href="#docs">docs</a>
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-666666?labelColor=333333" alt="MIT license"></a>
-  <a href="https://github.com/devswha/herdr-web-ui/stargazers"><img src="https://img.shields.io/github/stars/devswha/herdr-web-ui?labelColor=333333&color=666666&logo=github" alt="GitHub stars"></a>
-  <a href="https://github.com/devswha/herdr-web-ui/releases/latest"><img src="https://img.shields.io/github/v/release/devswha/herdr-web-ui?label=release&labelColor=333333&color=666666" alt="Latest release"></a>
-  <a href="https://github.com/herdrdev/herdr"><img src="https://img.shields.io/badge/herdr-0.9.0%2B-666666?labelColor=333333" alt="herdr 0.9.0+"></a>
-  <a href="docs/guide.md#on-your-phone"><img src="https://img.shields.io/badge/PWA-installable-666666?labelColor=333333" alt="Installable PWA"></a>
 </p>
 
 ---
@@ -88,7 +81,7 @@ A browser and phone client for [herdr](https://github.com/herdrdev/herdr). Read 
 ## install
 
 ```bash
-curl -fsSL https://herdrweb.dev/install.sh | sh
+HERDR_WEB_UI_REF=<reviewed-ref> sh ./install.sh
 ```
 
 Linux (x64, arm64) or macOS. Installs missing herdr 0.9.0+, Bun 1.4+ and Node 18+ prerequisites for your user, then installs the app as a herdr plugin. If an existing herdr installation is older than 0.9.0, update and restart herdr yourself before rerunning the installer. With the default listen address and Tailscale running, successful HTTPS setup provides a tailnet address and QR code. Your own devices get in without a code as it is: `tailscale serve` states your login. If your own phone is asked to pair anyway, `HERDR_WEB_TAILSCALE_SERVE_ONLY=1` lets it in without a code on a tailnet one login owns, but only when nothing else, such as a public proxy or tunnel, reaches this port ([Access and safety](docs/guide.md#access-and-safety)).
@@ -96,7 +89,7 @@ Linux (x64, arm64) or macOS. Installs missing herdr 0.9.0+, Bun 1.4+ and Node 18
 Windows x64, in PowerShell:
 
 ```powershell
-irm https://herdrweb.dev/install.ps1 | iex
+./install.ps1 -Ref <reviewed-ref>
 ```
 
 Requires [Git for Windows](https://git-scm.com/download/win). Installs missing herdr and Bun for your user, then installs the same plugin. No Node or WSL is needed. Open **Phone setup** in herdr for phone access. Windows terminals use the [screen mirror](docs/remote-pcs.md#windows-pcs), with typing and a fixed grid, until herdr supports terminal attach there.
@@ -108,7 +101,7 @@ Requires [Git for Windows](https://git-scm.com/download/win). Installs missing h
 Already have the prerequisites? Install just the plugin:
 
 ```bash
-herdr plugin install devswha/herdr-web-ui
+herdr plugin install usergood/herdr-web-ui --ref <reviewed-ref>
 ```
 
 With herdr running, open **[localhost:7317](http://localhost:7317)**. Pick a pane or start an agent with **New workspace**. To use your phone, scan the installer's QR code and add the app to your home screen. [Quick start →](docs/guide.md#quick-start)
@@ -135,7 +128,7 @@ No. Tailscale, an SSH tunnel, a VPN or your own HTTPS proxy can provide a route 
 
 **Does my code or conversation leave my machine?**
 
-Session files stay on the PC running each agent, and their contents are served to browsers you connect. The app has no hosted relay or account service of its own. Optional voice input sends audio (and text when polishing) to the configured provider; enabled usage meters contact provider APIs. Updates, remote-PC setup and push alerts can also use external services. The app sends an anonymous count when it is installed and each time it is updated (the version, the OS, how it was installed and a random ID; no IP address is stored), and **Settings → About → Anonymous usage counts** shows what is sent and turns it off. The agents’ own model connections depend on their configuration. [Data flow and access →](docs/guide.md#faq)
+Session files stay on the PC running each agent, and their contents are served to browsers you connect. The app has no hosted relay or account service of its own. Optional voice input sends audio (and text when polishing) to the configured provider; enabled usage meters contact provider APIs. Updates, remote-PC setup and push alerts can also use external services. Saurons eye has no install/update telemetry. External services require owner enablement or configuration. The agents’ own model connections depend on their configuration. [Data flow and access →](docs/guide.md#faq)
 
 **Does it work on Windows?**
 
@@ -168,7 +161,7 @@ Helping someone install the app? Follow [INSTALL.md](INSTALL.md). For repository
 ## development
 
 ```bash
-git clone https://github.com/devswha/herdr-web-ui.git
+git clone https://github.com/usergood/herdr-web-ui.git
 cd herdr-web-ui
 bun install
 

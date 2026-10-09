@@ -7,7 +7,7 @@ import { join, resolve } from "node:path";
 export function defaultStateDir(): string {
   const override = process.env["HERDR_WEB_STATE_DIR"];
   if (override) return override;
-  return join(process.env["XDG_CONFIG_HOME"] || join(homedir(), ".config"), "herdr-web-ui");
+  return join(process.env["XDG_CONFIG_HOME"] || join(homedir(), ".config"), "saurons-eye");
 }
 
 /** One update state per source checkout and port, so two checkouts or ports never share builds. */

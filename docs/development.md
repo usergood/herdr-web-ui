@@ -135,12 +135,12 @@ bun scripts/film/render.ts check                # acceptance frame grabs, sizes,
 
 ## Website
 
-<https://herdrweb.dev/> is `site/index.html`, a static page with desktop and phone
+The owner-configured website is `site/index.html`, a static page with desktop and phone
 demos, a screenshot gallery, supported agents, phone setup and a comparison table. `site/zh/index.html`
 is the same page in Simplified Chinese at `/zh/`, linked from the header; a change to one page belongs in
 the other. `bun run build:site`
 assembles it into `_site/` with icons, the social preview and scaled screenshots from `docs/screenshots/`.
-The two demo videos come from local `docs/screenshots/*.mp4` when present, otherwise the README's uploads;
+The two demo videos come from local `docs/screenshots/*.mp4` when present, otherwise omitted without an upstream download;
 ffmpeg creates their poster frames. Without ffmpeg, the page omits unavailable posters.
 
 For search engines the build also writes `sitemap.xml` (the page only: the demo is `noindex`) and copies
@@ -150,12 +150,11 @@ the page and the data follows. The SoftwareApplication data is written in the pa
 The build also copies the retained `site/assets/` and `site/media/` files, including the film linked
 from the README and its chat loop. These remain available at their existing URLs even though the
 homepage uses the desktop and phone demos.
-`.github/workflows/pages.yml` installs ffmpeg, runs the same build and deploys it to GitHub Pages on
-every push to `main`.
+`.github/workflows/pages.yml` installs ffmpeg, runs the same build and deploys it to GitHub Pages only on explicit owner dispatch.
 
 ### The browser demo
 
-<https://herdrweb.dev/demo/> is the real client on a fictional session, no server.
+The local `demo/` is the real client on a fictional session, no server.
 `build-site.ts` builds the client a second time with `vite build --base ./` into `_site/demo/app/`,
 bundles `site/demo/transport.ts` in front of it and frames it with `site/demo/index.html`. The
 transport answers the app's `fetch("/api/…")`, the machines event stream and the `/ws` terminal
@@ -237,23 +236,14 @@ to integration; everything else belongs to unit. Name new live-server tests
 `*.contract.test.ts`. Plain `bun test` still runs both suites for local development.
 
 Remote/server/shared/dependency changes also run the existing four-platform bundle and
-SSH workflow on PRs; its publishing job only runs for `remote-v*` tags. Website publishing
-continues after `main` pushes.
+SSH workflow on PRs; its publishing job only runs for `remote-v*` tags. Website publishing requires explicit owner dispatch.
 
 Repository protection should require PRs and both CI checks on `main`, including for
 administrators, with branches up to date before merging. Force pushes and branch deletion
 are disabled. Human approvals are optional for this maintainer-led project; external
-contributions still need maintainer review. CodeRabbit is advisory, not a required check.
+contributions still need maintainer review. Optional external reviews require owner configuration.
 Release tags must not be moved or deleted. These GitHub settings are separate from files
 in the checkout.
-
-The [CodeRabbit configuration](../.coderabbit.yaml) reviews non-draft PRs, reads the committed
-[review guidelines](../.github/REVIEW.md) and the AGENTS.md files,
-and focuses on protocol, permissions and terminal lifecycle regressions. Generated output
-and media are excluded. Enable the [CodeRabbit GitHub App](https://github.com/apps/coderabbitai)
-for this repository to activate it; the YAML alone does not install the app. Reassess
-useful findings versus false positives after two weeks. Keep final merge decisions with
-the maintainer.
 
 See [Terminal input](terminal-input.md) for input readiness, draft ownership and the mobile
 input regression matrix.

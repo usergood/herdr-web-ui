@@ -46,7 +46,7 @@ interface JobState {
   stageStartedAt: number;
   finished: Promise<void>;
 }
-const DEFAULT_SETTINGS: MachineSettings = { auto_update_bridges: true };
+const DEFAULT_SETTINGS: MachineSettings = { auto_update_bridges: false };
 
 /** The step a job shows between an approve/answer and the next stage() the setup reaches. */
 export function actionStep(action: "approve" | "answer"): string {

@@ -45,7 +45,7 @@ git --version
 | **C. One-line installer** | The user agrees to install what is missing (herdr, Bun, Node) and to let Tailscale serve the app | In-app, like A |
 
 Use A unless the user says otherwise. C is A plus the prerequisites and step 5 in one command,
-`curl -fsSL https://herdrweb.dev/install.sh | sh`: it installs herdr, Bun and
+`HERDR_WEB_UI_REF=<reviewed-ref> sh ./install.sh`: it installs herdr, Bun and
 Node 22 for the user only (no sudo) when they are missing, installs the plugin, starts it when herdr
 runs, and, when Tailscale runs on the PC, serves the app to the tailnet (`tailscale serve`) and
 prints the address as a QR code. It changes the user's Tailscale configuration, so it needs the
@@ -54,7 +54,7 @@ for a GitHub star, unless the account gh is signed in to has starred the reposit
 asks whether to give one only at a terminal, and goes on by itself after 20 seconds: do not answer
 the question, and do not star the repository for the user.
 
-On Windows x64, use `irm https://herdrweb.dev/install.ps1 | iex` in PowerShell.
+On Windows x64, use `./install.ps1 -Ref <reviewed-ref>` in PowerShell.
 It requires Git for Windows and installs missing herdr and Bun for the user, without Node or WSL.
 It starts the plugin when herdr runs. Phone access stays optional: use the **Phone setup** action.
 `HERDR_WEB_UI_REF` selects a branch or tag for testing; otherwise it installs the latest release.
@@ -62,30 +62,30 @@ It starts the plugin when herdr runs. Phone access stays optional: use the **Pho
 ## 3A. Install as a herdr plugin
 
 ```bash
-herdr plugin install devswha/herdr-web-ui --yes
+herdr plugin install usergood/herdr-web-ui --ref <reviewed-ref> --yes
 ```
 
 herdr clones the repository, runs `bun install` and `bun run build`, then registers the plugin. This
 takes about a minute.
 
-- Success: the command exits 0 and `herdr plugin list` shows `devswha.herdr-web-ui`.
+- Success: the command exits 0 and `herdr plugin list` shows `usergood.saurons-eye`.
 - The first build step is a check that prints, in one line, what is missing (`bun`, `node`, or a
   version too old) and how to fix it. `bun` or `node` not found means herdr runs build commands
   with **its own** environment: make sure they are on the `PATH` of the shell that started herdr
   (Bun installs to `~/.bun/bin`), ask the user to restart herdr from that shell, then retry.
 - On Windows, the plugin launcher reads the current user PATH and Bun's user-local directory,
   so installing Bun while herdr is running does not require restarting herdr.
-- "installing over a locally linked plugin is refused": run `herdr plugin unlink devswha.herdr-web-ui`
+- "installing over a locally linked plugin is refused": run `herdr plugin unlink usergood.saurons-eye`
   first.
 
 Start it now. Otherwise it starts the next time herdr starts:
 
 ```bash
-herdr plugin action invoke devswha.herdr-web-ui.start
+herdr plugin action invoke usergood.saurons-eye.start
 ```
 
-On Windows, the start and stop action IDs are `devswha.herdr-web-ui.start-windows` and
-`devswha.herdr-web-ui.stop-windows`. The menu titles are the same on every platform.
+On Windows, the start and stop action IDs are `usergood.saurons-eye.start-windows` and
+`usergood.saurons-eye.stop-windows`. The menu titles are the same on every platform.
 
 The command only queues the action and prints herdr's JSON acknowledgement; the action's own output
 (`herdr web ui listening at http://127.0.0.1:7317`, and possibly `no token set: ...`, expected for a
@@ -94,25 +94,25 @@ local-only install) goes to the plugin log (`herdr plugin log list`). Check it w
 Plugin settings do **not** come from the user's shell. They go in an `env` file (no dot):
 
 ```bash
-CONFIG_DIR="$(herdr plugin config-dir devswha.herdr-web-ui)"
+CONFIG_DIR="$(herdr plugin config-dir usergood.saurons-eye)"
 echo "$CONFIG_DIR/env"
 ```
 
 The file holds `KEY=value` lines. A plugin checkout from 0.3.25 on also reads `.env` there (the name
 herdr's plugin docs use), and `.env` wins where both set a key. An older checkout reads only `env`,
 and in-app updates do not replace the checkout: reinstall the plugin (see [Update](#update)) before
-relying on `.env`. `bun "$(ls -d ~/.config/herdr/plugins/github/devswha.herdr-web-ui-* | head -1)/scripts/plugin.ts" status`
+relying on `.env`. `bun "$(ls -d ~/.config/herdr/plugins/github/usergood.saurons-eye-* | head -1)/scripts/plugin.ts" status`
 prints the files it read. After editing, restart the plugin:
 
 ```bash
-herdr plugin action invoke devswha.herdr-web-ui.stop
-herdr plugin action invoke devswha.herdr-web-ui.start
+herdr plugin action invoke usergood.saurons-eye.stop
+herdr plugin action invoke usergood.saurons-eye.start
 ```
 
 ## 3B. Install from source
 
 ```bash
-git clone https://github.com/devswha/herdr-web-ui.git
+git clone https://github.com/usergood/herdr-web-ui.git
 cd herdr-web-ui
 bun install
 bun run start
@@ -162,13 +162,13 @@ code, or the exact command still to run. Who gets in:
   ([Access and safety](docs/guide.md#access-and-safety)).
 - Any other device (someone else's, or a LAN or public address) is paired: **Settings → Phone & devices**
   on the PC shows a six-digit code and a QR code; the device enters it once. On a headless PC with
-  no browser, `bun "$(ls -d ~/.config/herdr/plugins/github/devswha.herdr-web-ui-* | head -1)/scripts/plugin.ts" pair`
+  no browser, `bun "$(ls -d ~/.config/herdr/plugins/github/usergood.saurons-eye-* | head -1)/scripts/plugin.ts" pair`
   prints the code in the terminal. Do this with the user present; never read a code aloud into a log.
 - A token (`HERDR_WEB_TOKEN`) is for scripts and proxies. Only when the user asks for one, create it
   without printing it. For the plugin:
 
    ```bash
-   CONFIG_ENV="$(herdr plugin config-dir devswha.herdr-web-ui)/env"
+   CONFIG_ENV="$(herdr plugin config-dir usergood.saurons-eye)/env"
    touch "$CONFIG_ENV" && chmod 600 "$CONFIG_ENV"
    printf 'HERDR_WEB_TOKEN=%s\n' "$(openssl rand -hex 32)" >> "$CONFIG_ENV"
    ```
@@ -202,7 +202,7 @@ The [user guide](docs/guide.md#configuration) lists the rest.
 - Settings → **About** → **Update and restart** when a new release (`vX.Y.Z`) is out. It works for
   both install methods. The new
   version is built separately and the app restarts only if the build and health check pass.
-- Plugin alternative: `herdr plugin install devswha/herdr-web-ui --yes` again. It replaces the
+- Plugin alternative: `herdr plugin install usergood/herdr-web-ui --ref <reviewed-ref> --yes` again. It replaces the
   checkout; restart the plugin afterwards.
 - Source alternative: `git pull` on `main`, then restart `bun run start`. The in-app updater only
   offers published releases (`vX.Y.Z` tags); `main` can be ahead of the latest release.
@@ -210,8 +210,8 @@ The [user guide](docs/guide.md#configuration) lists the rest.
 ## Uninstall
 
 ```bash
-herdr plugin action invoke devswha.herdr-web-ui.stop
-herdr plugin uninstall devswha.herdr-web-ui
+herdr plugin action invoke usergood.saurons-eye.stop
+herdr plugin uninstall usergood.saurons-eye
 ```
 
 Uninstall removes herdr's managed checkout. It does not touch `~/.config/herdr-web-ui` (push

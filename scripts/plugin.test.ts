@@ -67,7 +67,7 @@ describe("plugin settings files", () => {
 
   it("says where settings go when there are none", async () => {
     const run = await status();
-    expect(run.out).toContain(`config: none (settings go in ${join(scratch, ".config", "herdr-web-ui", "env")})`);
+    expect(run.out).toContain(`config: none (settings go in ${join(scratch, ".config", "saurons-eye", "env")})`);
   });
 });
 
@@ -78,8 +78,8 @@ const APP_HEALTH = { ok: true, herdr: { version: "0.9.3", protocol: 1 }, auth: {
 
 describe("port", () => {
   const keep = (port: number) => {
-    mkdirSync(join(scratch, ".config", "herdr-web-ui"), { recursive: true });
-    writeFileSync(join(scratch, ".config", "herdr-web-ui", "plugin-port"), `${port}\n`);
+    mkdirSync(join(scratch, ".config", "saurons-eye"), { recursive: true });
+    writeFileSync(join(scratch, ".config", "saurons-eye", "plugin-port"), `${port}\n`);
   };
 
   it("reports the port an earlier start fell back to", async () => {
@@ -104,7 +104,7 @@ describe("port", () => {
       expect(started.err).toContain(`Set another PORT in ${join(configDir, ".env")}`);
       expect(readFileSync(join(scratch, "state", "server.log"), "utf8")).toContain(`start: port ${holder.port} on 127.0.0.1 cannot be opened`);
       expect(existsSync(join(scratch, "state", "server.pid"))).toBe(false);
-      expect(existsSync(join(scratch, ".config", "herdr-web-ui", "plugin-port"))).toBe(false);
+      expect(existsSync(join(scratch, ".config", "saurons-eye", "plugin-port"))).toBe(false);
     } finally { await holder.stop(true); }
   });
 
@@ -162,7 +162,7 @@ describe("port", () => {
       expect(started.out).toContain(`already running at http://127.0.0.1:${ours.port}`);
       expect(started.exitCode).toBe(0);
       expect(readFileSync(join(scratch, "state", "server.pid"), "utf8")).toBe(`${process.pid}\n`);
-      expect(readFileSync(join(scratch, ".config", "herdr-web-ui", "plugin-port"), "utf8")).toBe(`${ours.port}\n`);
+      expect(readFileSync(join(scratch, ".config", "saurons-eye", "plugin-port"), "utf8")).toBe(`${ours.port}\n`);
     } finally { await Promise.all([ours.stop(true), stranger.stop(true)]); }
   });
 
@@ -184,7 +184,7 @@ describe("port", () => {
       expect(started.out).not.toContain("instead");
       expect(started.exitCode).toBe(1);
       expect(started.err).toContain(`herdr web ui is running at http://127.0.0.1:${ours.port} (pid ${process.pid}) but cannot reach herdr: herdr socket unreachable`);
-      expect(readFileSync(join(scratch, ".config", "herdr-web-ui", "plugin-port"), "utf8")).toBe(`${ours.port}\n`);
+      expect(readFileSync(join(scratch, ".config", "saurons-eye", "plugin-port"), "utf8")).toBe(`${ours.port}\n`);
       expect(readFileSync(join(scratch, "state", "server.pid"), "utf8")).toBe(`${process.pid}\n`);
     } finally { await ours.stop(true); }
   }, 40_000);

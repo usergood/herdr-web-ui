@@ -4,6 +4,8 @@
 
 ## Read in this order
 
+The owner separately authorized removing upstream tracking and external defaults before other work, retaining owner-enabled services. That prerequisite is documented in [external connections](../privacy.md). Factory implementation remains outside the planning scope.
+
 1. [Owner handoff](handoff.md): the retained requirements and server kickoff instruction.
 2. [Baseline and extension points](baseline.md): facts verified in this checkout and facts still needed from the installed server.
 3. [Proposed glossary](GLOSSARY.md): Implementation, Ticket and Run vocabulary for owner review.
