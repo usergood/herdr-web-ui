@@ -33,9 +33,9 @@ Native CLI agents' model connections, owner-entered commands and third-party Git
 
 ## Validation
 
-Local source checks on Bun 1.4.2 / Node 22.22.1 passed: generated-type freshness, TypeScript, production build, nine installer/runtime tests and five plugin-settings/saved-port tests. Translation coverage and unused-key checks passed within the broader unit run.
+Local merge validation on Bun 1.4.2 / Node 22.22.1 passed: workflow syntax, generated-type freshness, TypeScript, production build and website build. The unit suite passed 2,172 tests with seven platform-specific skips; the integration suite passed all 315 tests across 24 files on isolated Herdr sessions. All 21 browser-lane scripts passed, covering the real client and mobile/demo flows. The push delivery test now expects the fork's VAPID contact URL.
 
-The broader unit run was not green: this sandbox denies socket/listener operations with `EPERM`. It also exposed a saved-port namespace mismatch, which was corrected and checked with the five focused plugin tests. Live API/browser acceptance and native Windows installer checks remain unverified; rerun the required checks in the implementation sandbox before promotion. Local check logs are kept under the ignored `.ci/privacy/` directory.
+Managed-start/update browser QA also passed: the real app creates no telemetry identity, rejects reads and attempts to enable the removed endpoint, preserves drafts and its owned Herdr pane through updates, and restores the previous version after a failed startup. Screenshots are kept under the ignored `evidence/updates/` directory; local check logs are kept under the ignored `.ci/privacy/` directory. Native Windows installer checks remain unverified on this Linux host.
 
 Focused installer and remote-bundle tests cover missing configuration, no account queries, owner ref/identity, retained local runtime selection, checksums and corruption refusal. The server contract retains a negative test for attempts to re-enable the removed telemetry API; real managed-start browser QA checks that no telemetry identity is created.
 
