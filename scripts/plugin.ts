@@ -95,7 +95,7 @@ const shadowed = fileVars.length === 2 ? Object.keys(fileVars[0]!).filter((key) 
 const env = { ...process.env, ...Object.assign({}, ...fileVars) as Record<string, string> };
 const PATH_KEY = platform() === "win32" ? Object.keys(env).sort().find(key => key.toLowerCase() === "path") ?? "PATH" : "PATH";
 /** the app's own state, as the server finds it (server/update-state.ts): the same path with or without herdr's env */
-const APP_STATE_DIR = env["HERDR_WEB_STATE_DIR"] || join(env["XDG_CONFIG_HOME"] || join(homedir(), ".config"), "herdr-web-ui");
+const APP_STATE_DIR = env["HERDR_WEB_STATE_DIR"] || join(env["XDG_CONFIG_HOME"] || join(homedir(), ".config"), "saurons-eye");
 /** the port a start took because the default could not be opened; absent while the default serves */
 const PORT_FILE = join(APP_STATE_DIR, "plugin-port");
 /** a PORT the user set is theirs: it is never swapped for another */
@@ -113,7 +113,7 @@ let origin = originOf(port);
 function toolPath(): string {
   const current = (env[PATH_KEY] ?? "").split(delimiter).filter(Boolean);
   const home = homedir();
-  const extra = [join(home, ".bun", "bin"), join(home, ".local", "bin"), join(home, ".local", "share", "herdr-web-ui", "node", "bin")];
+  const extra = [join(home, ".bun", "bin"), join(home, ".local", "bin"), join(home, ".local", "share", "saurons-eye", "node", "bin")];
   return [...current, ...extra.filter((dir) => existsSync(dir) && !current.includes(dir))].join(delimiter);
 }
 

@@ -33,6 +33,10 @@ Native CLI agents' model connections, owner-entered commands and third-party Git
 
 ## Validation
 
+Local source checks on Bun 1.4.2 / Node 22.22.1 passed: generated-type freshness, TypeScript, production build, nine installer/runtime tests and five plugin-settings/saved-port tests. Translation coverage and unused-key checks passed within the broader unit run.
+
+The broader unit run was not green: this sandbox denies socket/listener operations with `EPERM`. It also exposed a saved-port namespace mismatch, which was corrected and checked with the five focused plugin tests. Live API/browser acceptance and native Windows installer checks remain unverified; rerun the required checks in the implementation sandbox before promotion. Local check logs are kept under the ignored `.ci/privacy/` directory.
+
 Focused installer and remote-bundle tests cover missing configuration, no account queries, owner ref/identity, retained local runtime selection, checksums and corruption refusal. The server contract retains a negative test for attempts to re-enable the removed telemetry API; real managed-start browser QA checks that no telemetry identity is created.
 
 Before promotion, run generated-type freshness, typecheck, build, unit checks, affected API/managed-start and browser acceptance in isolated resources. Check actual browser requests on initial load and the Settings/owner-enabled flows. Static URL auditing supplements those behavior checks; it does not certify configured services or native CLIs as offline.
