@@ -190,7 +190,8 @@ export class Updater {
   }
 
   start() {
-    // One check per supervisor, independent of tabs. No network calls in createServer tests.
+    // Periodic network checks require the owner's automatic-update opt-in. Manual checks remain available.
+    if (!this.options.autoUpdate) return;
     this.initialTimer = setTimeout(() => void this.request("check"), 10_000);
     this.timer = setInterval(() => void this.request("check"), 5 * 60_000);
   }

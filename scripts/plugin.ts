@@ -41,8 +41,8 @@ import { windowsArgv, windowsProcessTable } from "../server/windows-processes.ts
  */
 const ENV_FILES = ["env", ".env"];
 const ROOT = resolve(process.env["HERDR_PLUGIN_ROOT"] ?? join(import.meta.dir, ".."));
-const STATE_DIR = process.env["HERDR_PLUGIN_STATE_DIR"] ?? join(homedir(), ".local", "state", "herdr-web-ui");
-const CONFIG_DIR = process.env["HERDR_PLUGIN_CONFIG_DIR"] ?? herdrConfigDir() ?? join(homedir(), ".config", "herdr-web-ui");
+const STATE_DIR = process.env["HERDR_PLUGIN_STATE_DIR"] ?? join(homedir(), ".local", "state", "saurons-eye");
+const CONFIG_DIR = process.env["HERDR_PLUGIN_CONFIG_DIR"] ?? herdrConfigDir() ?? join(homedir(), ".config", "saurons-eye");
 const PID_FILE = join(STATE_DIR, "server.pid");
 const LOG_FILE = join(STATE_DIR, "server.log");
 /** the server needs a moment to bind and open its first herdr connection */
@@ -55,8 +55,8 @@ const KILL_WAIT_MS = 3_000;
 const SERVE_TIMEOUT_MS = 180_000;
 /** how to come back to `phone` once Tailscale is set up: an action's output goes to herdr's log, not a terminal */
 const PHONE_AGAIN = platform() === "win32"
-  ? "irm https://herdrweb.dev/install.ps1 | iex"
-  : "curl -fsSL https://herdrweb.dev/install.sh | sh";
+  ? "herdr plugin pane open --plugin usergood.saurons-eye --entrypoint phone-windows --placement zoomed --focus"
+  : "herdr plugin pane open --plugin usergood.saurons-eye --entrypoint phone --placement zoomed --focus";
 
 /**
  * Run by hand (`pair` on a headless PC), herdr's env is not there to name the config dir:
@@ -66,7 +66,7 @@ function herdrConfigDir(): string | null {
   const herdr = Bun.which("herdr");
   if (herdr === null) return null;
   try {
-    const result = Bun.spawnSync([herdr, "plugin", "config-dir", "devswha.herdr-web-ui"], { windowsHide: true, stdout: "pipe", stderr: "ignore", timeout: 3000 });
+    const result = Bun.spawnSync([herdr, "plugin", "config-dir", "usergood.saurons-eye"], { windowsHide: true, stdout: "pipe", stderr: "ignore", timeout: 3000 });
     const dir = result.exitCode === 0 ? result.stdout.toString().trim() : "";
     return dir !== "" && ENV_FILES.some((name) => existsSync(join(dir, name))) ? dir : null;
   } catch {
@@ -95,7 +95,7 @@ const shadowed = fileVars.length === 2 ? Object.keys(fileVars[0]!).filter((key) 
 const env = { ...process.env, ...Object.assign({}, ...fileVars) as Record<string, string> };
 const PATH_KEY = platform() === "win32" ? Object.keys(env).sort().find(key => key.toLowerCase() === "path") ?? "PATH" : "PATH";
 /** the app's own state, as the server finds it (server/update-state.ts): the same path with or without herdr's env */
-const APP_STATE_DIR = env["HERDR_WEB_STATE_DIR"] || join(env["XDG_CONFIG_HOME"] || join(homedir(), ".config"), "herdr-web-ui");
+const APP_STATE_DIR = env["HERDR_WEB_STATE_DIR"] || join(env["XDG_CONFIG_HOME"] || join(homedir(), ".config"), "saurons-eye");
 /** the port a start took because the default could not be opened; absent while the default serves */
 const PORT_FILE = join(APP_STATE_DIR, "plugin-port");
 /** a PORT the user set is theirs: it is never swapped for another */
@@ -113,7 +113,7 @@ let origin = originOf(port);
 function toolPath(): string {
   const current = (env[PATH_KEY] ?? "").split(delimiter).filter(Boolean);
   const home = homedir();
-  const extra = [join(home, ".bun", "bin"), join(home, ".local", "bin"), join(home, ".local", "share", "herdr-web-ui", "node", "bin")];
+  const extra = [join(home, ".bun", "bin"), join(home, ".local", "bin"), join(home, ".local", "share", "saurons-eye", "node", "bin")];
   return [...current, ...extra.filter((dir) => existsSync(dir) && !current.includes(dir))].join(delimiter);
 }
 

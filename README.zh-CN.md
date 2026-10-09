@@ -9,20 +9,13 @@
 </p>
 
 <p align="center">
-  <a href="https://herdrweb.dev/">官网</a> ·
   <a href="#install">安装</a> ·
-  <a href="https://herdrweb.dev/demo/">体验演示</a> ·
   <a href="docs/guide.md#quick-start">快速入门</a> ·
   <a href="#faq">常见问题</a> ·
   <a href="#docs">文档</a>
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-666666?labelColor=333333" alt="MIT 许可证"></a>
-  <a href="https://github.com/devswha/herdr-web-ui/stargazers"><img src="https://img.shields.io/github/stars/devswha/herdr-web-ui?labelColor=333333&color=666666&logo=github" alt="GitHub 星标数"></a>
-  <a href="https://github.com/devswha/herdr-web-ui/releases/latest"><img src="https://img.shields.io/github/v/release/devswha/herdr-web-ui?label=release&labelColor=333333&color=666666" alt="最新版本"></a>
-  <a href="https://github.com/herdrdev/herdr"><img src="https://img.shields.io/badge/herdr-0.9.0%2B-666666?labelColor=333333" alt="herdr 0.9.0+"></a>
-  <a href="docs/guide.md#on-your-phone"><img src="https://img.shields.io/badge/PWA-installable-666666?labelColor=333333" alt="可安装的 PWA"></a>
 </p>
 
 ---
@@ -90,7 +83,7 @@ https://github.com/user-attachments/assets/d854dbb6-64bd-4eba-81c7-fbd3f525726b
 ## 安装
 
 ```bash
-curl -fsSL https://herdrweb.dev/install.sh | sh
+HERDR_WEB_UI_REF=<reviewed-ref> sh ./install.sh
 ```
 
 支持 Linux（x64、arm64）或 macOS。安装程序会为当前用户补齐 herdr 0.9.0+、Bun 1.4+ 和 Node 18+ 依赖，然后将应用安装为 herdr 插件。如果已安装的 herdr 低于 0.9.0，请先自行更新并重启 herdr，再重新运行安装程序。使用默认监听地址且 Tailscale 正在运行时，HTTPS 配置成功后会提供 tailnet 内的访问地址和二维码。你自己的设备本来就能免验证码进入：`tailscale serve` 会告知你的登录名。如果你的手机仍被要求配对，设置 `HERDR_WEB_TAILSCALE_SERVE_ONLY=1` 后，在只有一个登录名的 tailnet 上也能免验证码进入；但仅限于没有公共代理或隧道等其他途径能访问此端口的情况（[访问与安全](docs/guide.md#access-and-safety)）。
@@ -99,7 +92,7 @@ curl -fsSL https://herdrweb.dev/install.sh | sh
 Windows x64 请在 PowerShell 中运行：
 
 ```powershell
-irm https://herdrweb.dev/install.ps1 | iex
+./install.ps1 -Ref <reviewed-ref>
 ```
 
 需要 [Git for Windows](https://git-scm.com/download/win)。安装程序会为当前用户补齐 herdr 和 Bun，然后安装同一个插件，无需 Node 或 WSL。要在手机上使用，请在 herdr 中打开 **Phone setup**。在 herdr 支持 Windows 终端附加之前，Windows 上的终端是一个可以输入、网格固定的[屏幕镜像](docs/remote-pcs.md#windows-pcs)。
@@ -111,7 +104,7 @@ irm https://herdrweb.dev/install.ps1 | iex
 已经安装了所需依赖？只需安装插件：
 
 ```bash
-herdr plugin install devswha/herdr-web-ui
+herdr plugin install usergood/herdr-web-ui --ref <reviewed-ref>
 ```
 
 在 herdr 运行时，打开 **[localhost:7317](http://localhost:7317)**。选择一个窗格，或点击 **New workspace（新建工作区）** 启动智能体。要在手机上使用，请扫描安装程序提供的二维码，并将应用添加到主屏幕。[快速入门 →](docs/guide.md#quick-start)
@@ -140,7 +133,7 @@ Claude Code、Codex、omp、omo、gjc 和 pi 直接从各自的会话文件读�
 
 **我的代码或对话会离开我的电脑吗？**
 
-会话文件保留在运行各个智能体的电脑上，内容会发送到你连接的浏览器。本应用没有自有的云端中继或账号服务。可选的语音输入会把录音发送给配置的服务商；启用文字整理时也会发送文本。启用用量显示后，会连接服务商的 API。更新、远程电脑设置和推送提醒也可能连接外部服务。应用在安装时和每次更新时会发送一次匿名计数（版本、操作系统、安装方式和一个随机 ID，不保存 IP 地址），可在 **Settings → About → Anonymous usage counts** 中查看发送内容并关闭。智能体自身如何连接模型，取决于它的配置。[数据传输与访问 →](docs/guide.md#faq)
+会话文件保留在运行各个智能体的电脑上，内容会发送到你连接的浏览器。本应用没有自有的云端中继或账号服务。可选的语音输入会把录音发送给配置的服务商；启用文字整理时也会发送文本。启用用量显示后，会连接服务商的 API。更新、远程电脑设置和推送提醒也可能连接外部服务。Saurons eye 不发送安装或更新遥测。外部服务需要所有者启用或配置。智能体自身如何连接模型，取决于它的配置。[数据传输与访问 →](docs/guide.md#faq)
 
 **支持 Windows 吗？**
 
@@ -175,7 +168,7 @@ Claude Code、Codex、omp、omo、gjc 和 pi 直接从各自的会话文件读�
 ## 开发
 
 ```bash
-git clone https://github.com/devswha/herdr-web-ui.git
+git clone https://github.com/usergood/herdr-web-ui.git
 cd herdr-web-ui
 bun install
 

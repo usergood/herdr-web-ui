@@ -38,9 +38,9 @@ describe("remote bundle sources", () => {
     await expect(bundleFile("darwin-arm64", new AbortController().signal, { directory: local.directory, manifest: join(local.directory, "missing.json") })).rejects.toThrow("ENOENT");
   });
 
-  it("uses the release only when the requested platform has no local manifest", async () => {
+  it("requires owner configuration when the requested platform has no local manifest", async () => {
     const { directory } = fixture("linux-x64");
-    expect(await bundleManifestSource("darwin-arm64", { directory, manifest: "" })).toBe(`https://github.com/devswha/herdr-web-ui/releases/download/remote-v${REMOTE_BUNDLE_VERSION}/manifest.json`);
+    await expect(bundleManifestSource("darwin-arm64", { directory, manifest: "" })).rejects.toThrow("No remote runtime manifest configured");
     await expect(bundleManifestSource("../linux-x64", { directory })).rejects.toThrow("Unsupported bundle platform");
   });
 

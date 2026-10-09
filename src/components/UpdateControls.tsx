@@ -14,7 +14,7 @@ import { useLocale, useT } from "../lib/i18n.ts";
 
 declare const __APP_VERSION__: string;
 
-const CHANGELOG = "https://github.com/devswha/herdr-web-ui/blob/main/CHANGELOG.md";
+const CHANGELOG = "https://github.com/usergood/herdr-web-ui/blob/main/CHANGELOG.md";
 
 /**
  * What an update brings, or brought: each release it installs, newest first. A release is told

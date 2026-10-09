@@ -29,7 +29,7 @@ The app is only a bridge: herdr owns every pty, scrollback and agent state.
 ## Changing a contract
 
 - HTTP and WS shapes live in `shared/protocol.ts`; change both sides through it and add a contract test (`server/api.contract.test.ts` for endpoints).
-- Every push to `main` redeploys the site and the demo. A new endpoint or WS frame needs an answer in `site/demo/transport.ts`, or the demo gets a 404.
+- Website deployment requires explicit owner dispatch. A new endpoint or WS frame still needs an answer in `site/demo/transport.ts`, or the demo gets a 404.
 - The demo is the client itself: `site/demo/transport.ts` also imports `shared/` and `rollupStatus` from `src/lib/status.ts`, so a change there changes the demo.
 - `site/demo/fixtures.ts` is bundled into the browser and reused by `scripts/readme-media/stage.ts`: keep it fictional and free of server imports.
 - Every error body is `{ error: { code, message } }`, built only with the helpers in `server/http.ts`.

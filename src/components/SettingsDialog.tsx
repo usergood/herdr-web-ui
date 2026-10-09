@@ -28,7 +28,6 @@ import { PhonePanel } from "./PhonePanel.tsx";
 import { PushTestControls } from "./PushTestControls.tsx";
 import { previewAlertSound, unlockAlertSound } from "../lib/alertSound.ts";
 import { HerdrUpdateControls, UpdateControls } from "./UpdateControls.tsx";
-import { TelemetryControls } from "./TelemetryControls.tsx";
 
 export interface SettingsDialogProps {
   open: boolean;
@@ -585,14 +584,13 @@ function AboutPage({ updates, herdrVersion, bridgesFollow }: { updates: UpdatesM
     <>
       <UpdateControls updates={updates} bridgesFollow={bridgesFollow} />
       <HerdrUpdateControls enabled herdrVersion={herdrVersion} />
-      <TelemetryControls />
       <SettingsGroup title={t("About")} className="settings-about">
         <div className="settings-row">
           <div className="settings-row-text">
-            <span className="settings-label">herdr web ui</span>
-            <a className="settings-link" href="https://herdrweb.dev/" target="_blank" rel="noreferrer">herdrweb.dev</a>
+            <span className="settings-label">Saurons eye</span>
+            <a className="settings-link" href="https://github.com/usergood/herdr-web-ui" target="_blank" rel="noreferrer">usergood/herdr-web-ui</a>
           </div>
-          <a className="btn" href="https://github.com/devswha/herdr-web-ui" target="_blank" rel="noreferrer"><Star aria-hidden="true" />{t("Star on GitHub")}</a>
+          <a className="btn" href="https://github.com/usergood/herdr-web-ui" target="_blank" rel="noreferrer"><Star aria-hidden="true" />{t("Star on GitHub")}</a>
         </div>
       </SettingsGroup>
     </>

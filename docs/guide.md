@@ -41,14 +41,14 @@ https://github.com/user-attachments/assets/2f030569-1004-425e-835d-9e775ec6e4c8
 
 ## Quick start
 
-> **Want a look first?** [Try it in your browser](https://herdrweb.dev/demo/): the app on a fictional session, nothing to install. Nothing in it is live.
+> Build the local demo with `bun run build:site`; no upstream hosted demo is used.
 
 > **Setting it up with a coding agent?** Point it at [INSTALL.md](../INSTALL.md), a step-by-step guide written for agents.
 
 **1. Install it** with one line, on Linux (x64, arm64) or macOS:
 
 ```bash
-curl -fsSL https://herdrweb.dev/install.sh | sh
+HERDR_WEB_UI_REF=<reviewed-ref> sh ./install.sh
 ```
 
 It does, in order, only what is not done yet:
@@ -74,13 +74,13 @@ On a first install it mentions a GitHub star, once, unless the account the [gh C
 the plugin's **Phone setup** action inside herdr to see the address, QR and a pairing code.
 
 ```bash
-herdr plugin install devswha/herdr-web-ui
+herdr plugin install usergood/herdr-web-ui --ref <reviewed-ref>
 ```
 
 **From a checkout:**
 
 ```bash
-git clone https://github.com/devswha/herdr-web-ui.git
+git clone https://github.com/usergood/herdr-web-ui.git
 cd herdr-web-ui
 bun install
 bun run start
@@ -101,26 +101,26 @@ bun run start
 **A pairing code, on a PC with no browser of its own:**
 
 ```bash
-bun "$(ls -d ~/.config/herdr/plugins/github/devswha.herdr-web-ui-* | head -1)/scripts/plugin.ts" pair   # plugin install
+bun "$(ls -d ~/.config/herdr/plugins/github/usergood.saurons-eye-* | head -1)/scripts/plugin.ts" pair   # plugin install
 bun scripts/plugin.ts pair                                                                             # from a checkout
 ```
 
 `pair` prints the code, the address the phone opens when Tailscale serves one, and that address as a QR code. Neither is a herdr action: herdr keeps an action's output in its log, and a pairing code belongs on the screen. The actions start, stop and report on the server:
 
 ```bash
-herdr plugin action invoke devswha.herdr-web-ui.start    # leaves a running server alone
-herdr plugin action invoke devswha.herdr-web-ui.status
-herdr plugin action invoke devswha.herdr-web-ui.phone    # visible phone setup pane
-herdr plugin action invoke devswha.herdr-web-ui.stop
+herdr plugin action invoke usergood.saurons-eye.start    # leaves a running server alone
+herdr plugin action invoke usergood.saurons-eye.status
+herdr plugin action invoke usergood.saurons-eye.phone    # visible phone setup pane
+herdr plugin action invoke usergood.saurons-eye.stop
 ```
 
-Its PID and log live under `HERDR_PLUGIN_STATE_DIR`. For persistent settings (see [Configuration](#configuration)), add `KEY=value` lines to the `env` file (no dot) in the directory that `herdr plugin config-dir devswha.herdr-web-ui` prints. A plugin checkout from 0.3.25 on also reads `.env` there, which wins where both set a key; an older one needs a plugin reinstall first, since in-app updates do not replace the checkout. The plugin's `status` prints the files it read. Protect that file if it holds a token.
+Its PID and log live under `HERDR_PLUGIN_STATE_DIR`. For persistent settings (see [Configuration](#configuration)), add `KEY=value` lines to the `env` file (no dot) in the directory that `herdr plugin config-dir usergood.saurons-eye` prints. A plugin checkout from 0.3.25 on also reads `.env` there, which wins where both set a key; an older one needs a plugin reinstall first, since in-app updates do not replace the checkout. The plugin's `status` prints the files it read. Protect that file if it holds a token.
 
 ### Uninstall
 
 ```bash
-herdr plugin action invoke devswha.herdr-web-ui.stop
-herdr plugin uninstall devswha.herdr-web-ui
+herdr plugin action invoke usergood.saurons-eye.stop
+herdr plugin uninstall usergood.saurons-eye
 tailscale serve --https=<port> off    # the port the installer printed, if it served the app
 ```
 
@@ -416,13 +416,12 @@ Observe connections cannot take a pane, and a displaced bridge never takes it ba
 | `HERDR_WEB_CSP` | unset (enforced) | `report-only` sends the policy as `Content-Security-Policy-Report-Only`: the browser reports what it would block and the app keeps working. Used to measure the policy after a change |
 | `HERDR_WEB_TAILSCALE_OWNER` | this PC's Tailscale login | The Tailscale login that gets in through `tailscale serve` without pairing. Set it on a PC whose Tailscale node is tagged, which has no login of its own |
 | `HERDR_WEB_TAILSCALE_SERVE_ONLY` | unset (off) | `1` declares `tailscale serve` the only way anything reaches this port. Then the owner's own device gets in through serve without a code, on a tailnet one login owns with no tagged node. Enable it only when no public reverse proxy, tunnel or other forwarding server exposes this port: a visitor through one would otherwise get the owner's access |
-| `HERDR_WEB_STATE_DIR` | `~/.config/herdr-web-ui` | Push keys, device subscriptions, PC registrations and update builds |
+| `HERDR_WEB_STATE_DIR` | `~/.config/saurons-eye` | Push keys, device subscriptions, PC registrations and update builds |
 | `HERDR_WEB_OPENAI_API_KEY` | unset | OpenAI API key for [voice input](#voice-input). Set here, it cannot be changed from the app |
 | `HERDR_WEB_OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible API root for voice input |
-| `HERDR_WEB_AUTO_UPDATE` | `0` | `1` installs new releases without asking |
-| `HERDR_WEB_TELEMETRY` | unset (on) | `0` sends no [anonymous usage counts](#anonymous-usage-counts), whatever the switch in Settings says. `DO_NOT_TRACK=1` does the same |
+| `HERDR_WEB_AUTO_UPDATE` | `0` | `1` enables periodic checks and installs new releases without asking; otherwise check manually |
 | `HERDR_WEB_PUSH_SUBJECT` | this repository's URL | VAPID contact URL or `mailto:` address |
-| `HERDR_WEB_BUNDLE_MANIFEST` | unset | Remote-PC bundle manifest (path or URL) that overrides local and published bundles |
+| `HERDR_WEB_BUNDLE_MANIFEST` | unset | Owner-selected remote-PC manifest (path or HTTPS URL); a local bundle is otherwise required |
 | `HERDR_WEB_HERDR_BIN` | `herdr` | herdr executable used for terminal attach |
 | `HERDR_WEB_APP_NAME` | unset (`herdr`) | The name the installed app has on a phone or computer, for example the PC's name. Each PC installs as an app of its own, and without it they are all called `herdr`. An app already installed takes the new name when the browser next updates it, usually within a day or two, without a reinstall. Keep it short: a home screen cuts a long label |
 | `HERDR_WEB_PASTE_DIR` | `<pane cwd>/.herdr-web-ui` | Where pasted and attached files are saved: an absolute path or `~/…`. Set it to keep them out of your projects; an agent may then ask before reading one. It covers the panes of this server's PC; a remote PC keeps the default |
@@ -446,13 +445,9 @@ herdr itself is updated from **Settings → About → Update herdr**. herdr refu
 
 This is for Linux and macOS. On Windows, and for a remote PC, update herdr on that PC.
 
-## Anonymous usage counts
+## External connections
 
-The app tells its maintainer how many installs there are, which versions they run and which countries they are in, and nothing else. It sends one small message when it is first installed and one each time it runs a new version, never in between. The first time you open the app, a line under the header says so, with **What is sent** and **Turn off**. Nothing is sent before that line has been shown, and the first message waits ten minutes after it, so **Turn off** on that line stops it.
-
-A message holds the event (`install` or `update`), a random ID made on this PC, the app's version and the version an update replaced, the OS and CPU architecture, and how the app was installed (herdr plugin, `bun run start`, or `bun run server`). Nothing about your terminals, agents, files, workspaces or accounts is in it. The receiver ([`telemetry/`](../telemetry/README.md)) keeps those fields, the day and the country the message came from (two letters, such as `KR`, worked out by its host from the connection), and never stores your IP address or anything finer than the country.
-
-**Settings → About → Anonymous usage counts** shows the next message exactly as it would be sent, and its switch turns the counts off for this PC. `HERDR_WEB_TELEMETRY=0` or `DO_NOT_TRACK=1` in the server's environment turns them off whatever the switch says, and they are always off in CI. A remote PC's bridge sends nothing.
+Saurons eye sends no installation or update telemetry and has no analytics opt-out switch. Optional voice, usage, push and configured update/runtime services require owner enablement or an explicit action. See [external connections](privacy.md) for the audited sources and controls.
 
 ## Keyboard shortcuts
 
@@ -557,7 +552,7 @@ The chat needs the agent's own session file. Check that the agent runs in a herd
 <details>
 <summary><b>The colors look too dark, or the light theme looks dark, in Samsung Internet.</b></summary>
 
-Samsung Internet has a forced dark mode that repaints every page, including one that brings its own light and dark themes, as this app does. A light theme comes out dark, and a dark one is darkened a second time: similar shades run together, and the bars of the plan meters can look empty. Turn off **Force dark mode for web content** (**웹 콘텐츠에 어두운 화면 모드 강제 적용**) in Samsung Internet's settings, or open the app in Chrome. Reported on a Galaxy Tab S7+ ([#451](https://github.com/devswha/herdr-web-ui/issues/451)).
+Samsung Internet has a forced dark mode that repaints every page, including one that brings its own light and dark themes, as this app does. A light theme comes out dark, and a dark one is darkened a second time: similar shades run together, and the bars of the plan meters can look empty. Turn off **Force dark mode for web content** (**웹 콘텐츠에 어두운 화면 모드 강제 적용**) in Samsung Internet's settings, or open the app in Chrome. Reported on a Galaxy Tab S7+ ([#451](https://github.com/usergood/herdr-web-ui/issues/451)).
 </details>
 
 <details>

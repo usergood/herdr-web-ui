@@ -37,6 +37,10 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   ([#671](https://github.com/devswha/herdr-web-ui/pull/671) by @aNNdii)
 
 ### Changed
+- Saurons eye removes upstream install/update telemetry, automatic external fonts/media/statistics,
+  and installer account queries. External services require owner enablement/configuration;
+  remote runtimes require an explicit/local manifest and installers require a reviewed ref.
+  ([#1](https://github.com/usergood/herdr-web-ui/pull/1) by @usergood)
 - The chat's `/` command list also matches a word of a command's name, any part of it, its letters
   in order and its description, so a plugin command is found without typing its prefix. Prefix
   matches still come first.

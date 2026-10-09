@@ -177,7 +177,7 @@ describe("push delivery", () => {
     expect(received!.vapidValid).toBe(true);
     expect(received!.vapidKey).toBe(push.publicKey());
     expect(received!.vapidClaims.aud).toBe(new URL(fake.subscription.endpoint).origin);
-    expect(received!.vapidClaims.sub).toBe("https://github.com/devswha/herdr-web-ui");
+    expect(received!.vapidClaims.sub).toBe("https://github.com/usergood/herdr-web-ui");
   });
 
   it("keeps equal pane IDs, titles, status baselines and push links separated by PC", async () => {

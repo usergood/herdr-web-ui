@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping. Bugs and ideas go in an [issue](https://github.com/devswha/herdr-web-ui/issues/new/choose);
+Thanks for helping. Bugs and ideas go in an [issue](https://github.com/usergood/herdr-web-ui/issues/new/choose);
 security problems never do: see [SECURITY.md](SECURITY.md). For a larger change, open an issue first so
 the approach can be agreed before you build it. Small fixes can go straight to a PR.
 
