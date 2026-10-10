@@ -4,6 +4,8 @@ Research date: 2026-10-10. This is a research and design note; it does not descr
 
 The user wants owner-managed documents and pictures available to every native CLI working on a Project, across worktrees and Machines, without committing those inputs to the code repository. The feasible common interface is a readable directory plus a small index explaining when to use each reference. Provider-specific launch context can advertise that directory. Existing sessions need explicit context delivery because availability on disk and inclusion in model context are separate operations.
 
+Related research: [Jev guardrails](jev-guardrails-research.md) evaluates optional semantic screening, native tool-call coverage and token/cost tradeoffs alongside the existing deterministic controls.
+
 ## Research: native CLI capabilities
 
 The table summarizes fetched primary documentation. Installed-version acceptance remains necessary: this host has Codex CLI 0.162.1; `claude` and `opencode` were not found on PATH. No authenticated provider or remote-host test was run for this research.
