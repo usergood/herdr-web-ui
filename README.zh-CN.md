@@ -1,7 +1,7 @@
-# herdr web ui
+# Saurons eye
 
 <p align="center">
-  <img src="public/icons/icon-192.png" alt="herdr web ui" width="100">
+  <img src="public/icons/icon-192.png" alt="Saurons eye" width="100">
 </p>
 
 <p align="center">
@@ -15,8 +15,11 @@
   <a href="#docs">文档</a>
 </p>
 
-<p align="center">
-</p>
+**Saurons eye** 是 [herdr-web-ui](https://github.com/devswha/herdr-web-ui) 的分支，保留其浏览器、手机聊天和实时终端功能，并加入从想法到规格、实现、审查和所有者验收的持久化工作流。此分支已集成上游 v0.4.4 和 v0.4.5；下方录像来自上游项目及其贡献者。
+
+新增功能包括收件箱和项目、版本化规格及 Ticket 依赖图审批、隔离 Git worktree 中的原生智能体执行、带检查证据的差异审查、版本化附件、SSH 执行机器准备、固定版本技能、回顾提案，以及验证备份和禁用执行的副本恢复。运行由所有者手动启动；此分支不收集上游安装或更新遥测。
+
+开发主机上的 Codex 已通过真实原生验证及返工、审查、验收流程。Claude Code 和 OpenCode 的 factory 准入仍须由所选机器上已登录的原生 CLI 完成验证。普通聊天和终端功能独立可用。详见 [factory 运行指南](docs/factory/runtime.md) 和 [英文功能说明](README.md#what-saurons-eye-adds)。
 
 ---
 
@@ -135,13 +138,15 @@ Claude Code、Codex、omp、omo、gjc 和 pi 直接从各自的会话文件读�
 
 会话文件保留在运行各个智能体的电脑上，内容会发送到你连接的浏览器。本应用没有自有的云端中继或账号服务。可选的语音输入会把录音发送给配置的服务商；启用文字整理时也会发送文本。启用用量显示后，会连接服务商的 API。更新、远程电脑设置和推送提醒也可能连接外部服务。Saurons eye 不发送安装或更新遥测。外部服务需要所有者启用或配置。智能体自身如何连接模型，取决于它的配置。[数据传输与访问 →](docs/guide.md#faq)
 
+Factory 附件和保留的原生会话历史会复制到连接服务器的私有应用状态中，该服务器可能与运行智能体的机器不同。这些副本包含在 factory 备份中，原始原生会话文件仍保留在执行电脑上。[Factory 存储和恢复 →](docs/factory/runtime.md#backup-restore-and-rollback)
+
 **支持 Windows 吗？**
 
 支持，在 Windows x64 上无需 WSL。在 herdr 支持 Windows 终端附加之前，终端是一个可以输入、网格固定的[屏幕镜像](docs/remote-pcs.md#windows-pcs)。
 
 **它与 collie、roamgate、herdr-remote 有什么不同？**
 
-这些项目也提供 herdr 的手机或浏览器客户端。本应用直接读取智能体自己的会话记录，所以窗格显示的是按轮次折叠工作过程的聊天，而不是终端输出；其他电脑可以从侧边栏通过 SSH 加入。它不自带隧道，也只支持 herdr：如果你需要 tmux 或 zellij、差异查看、Telegram 或开箱即用的隧道，其他几个更合适。[完整对比 →](docs/guide.md#faq)
+这些项目也提供 herdr 的手机或浏览器客户端。Saurons eye 继承 herdr-web-ui 的原生会话聊天与 SSH 连接，再加入规格、Ticket 工作流、差异审查和保留的交付证据。终端由 herdr 管理，网络访问使用你配置的方式。[上游客户端对比 →](docs/guide.md#faq)
 
 **它与 Happy、Paseo、CloudCLI UI 有什么不同？**
 

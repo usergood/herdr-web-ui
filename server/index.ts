@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, isAbsolute } from "node:path";
 import type { ServerWebSocket } from "bun";
@@ -13,7 +13,7 @@ import { DeviceStore, handleDeviceRequest } from "./devices.ts";
 import { remoteAccess, TailnetIdentitySource } from "./tailscale.ts";
 import { paneCommands } from "./commands.ts";
 import { paneFiles } from "./files.ts";
-import { badRequest, errorResponse, isCount, isJsonObject, jsonResponse } from "./http.ts";
+import { badRequest, errorResponse, httpError, isCount, isJsonObject, jsonResponse } from "./http.ts";
 import { serveStatic } from "./static.ts";
 import { startStatusCollector } from "./collector.ts";
 import { claudePanePid, claudePaneSession, conversationImage, ConversationUnavailable, forgetPaneTranscriptState, HistoryChanged, paneConversation, paneRunsOmo, toolOutput } from "./conversation.ts";
@@ -62,6 +62,7 @@ import { claudeHeldIsGrey, claudeInputDraft, viewportShowsLive, codexQuestionsCo
 import { secretPrompt, validSecret } from "../shared/secret-prompt.ts";
 import { PasteImageError, savePaneImage } from "./paste.ts";
 import { PtySession } from "./pty/session.ts";
+import { PaneWatch } from "./watch.ts";
 import { AttachOutputTail, isTakeoverExit } from "./attach-output.ts";
 import { attachableIdentity, sidecarAvailable } from "./pty/sidecar.ts";
 import { MirrorSession } from "./mirror.ts";
@@ -81,6 +82,9 @@ import { bridgeAgentNews, MachineManager } from "./machines.ts";
 import { handleMachineRequest } from "./machine-api.ts";
 import { MachineRelay } from "./machine-relay.ts";
 import { sameOrigin } from "./machine-security.ts";
+import { FactoryService } from "./factory.ts";
+import type { FactoryNative } from "./factory-native.ts";
+import type { MachineEndpoint } from "./factory-runtime.ts";
 
 const MAX_REPLAY_BYTES = 256 * 1024;
 /**
@@ -158,7 +162,7 @@ const MAX_WAITING_KEYS = 256;
  */
 export const SUBMIT_DEADLINE_MS = 45_000;
 const CLAUDE_INPUT_DRAFT_MESSAGE = "Claude Code's input box is not empty (a draft, bash mode, or a box that could not be read); send or clear it in the terminal, then send this message";
-const SERVER_FEATURES: ServerFeature[] = ["submit", "pending-input", "secret-input", "input-ready", "take-over"];
+const SERVER_FEATURES: ServerFeature[] = ["submit", "pending-input", "secret-input", "input-ready", "take-over", "watch"];
 
 /** Bind addresses only this machine can reach, so an unset token is nobody else's business. */
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "::1"]);
@@ -267,6 +271,7 @@ interface SocketData {
   relay?: MachineRelay;
   /** A fresh claim per attach lifetime; deleting it invalidates queued terminal keys. */
   attached: Map<string, object>;
+  watches: Map<string, PaneWatch>;
   output: Map<string, OutputWindow>;
   closing: boolean;
   /** the connection's authority: observe connections cannot type or resize */
@@ -326,6 +331,14 @@ function send(client: Client, message: ServerMessage): number {
   }
 }
 
+export interface ServerInstance {
+  port: number;
+  hostname: string;
+  statusReady: Promise<void>;
+  alertsSettled: () => Promise<void>;
+  stop: () => void;
+}
+
 export function createServer(
   options: {
     port?: number;
@@ -333,6 +346,8 @@ export function createServer(
     token?: string;
     /** where VAPID keys and push subscriptions persist; tests pass a temp dir */
     stateDir?: string;
+    /** Pinned factory source. Unset, HERDR_FACTORY_SKILLS_PATH selects it; no global installation. */
+    factory?: { skillsPath?: string; native?: Partial<FactoryNative>; machineEndpoint?: MachineEndpoint; publicUrl?: string | null };
     /** the PC's own Tailscale login, for the identity check; tests set it, otherwise `tailscale status` says */
     tailscaleOwner?: string | null;
     /** the operator declares `tailscale serve` as this install's only ingress; HERDR_WEB_TAILSCALE_SERVE_ONLY=1 says the same */
@@ -381,7 +396,7 @@ export function createServer(
     /** whether this runtime can run the PTY sidecar; unset, server/pty/sidecar.ts says. Tests give a runtime without Node or node-pty, while herdr keeps its own answer. */
     sidecar?: boolean;
   } = {},
-): { port: number; hostname: string; statusReady: Promise<void>; alertsSettled: () => Promise<void>; stop: () => void } {
+): ServerInstance {
   const attachments = new Map<string, PaneAttachment>();
   /** whether this bridge can `terminal attach`: herdr is asked once, and the PTY sidecar has to be runnable here (server/pty/sidecar.ts) */
   /** whether the sidecar can run, settled as the server starts so that attach, /api/health and /api/bridge tell one answer; a forced answer (tests) stands in for it */
@@ -424,6 +439,8 @@ export function createServer(
   const token = options.token ?? process.env["HERDR_WEB_TOKEN"] ?? "";
   /** paired devices (server/devices.ts) and the PC's Tailscale login: the two ways in besides the token and this PC itself */
   const devices = new DeviceStore(options.stateDir ?? defaultStateDir());
+  const bundledSkills = join(import.meta.dir, "../vendor/matt-skills");
+  const factory = new FactoryService(options.stateDir ?? defaultStateDir(), options.factory?.skillsPath ?? process.env["HERDR_FACTORY_SKILLS_PATH"] ?? (existsSync(bundledSkills) ? bundledSkills : null), options.factory?.native, options.factory?.machineEndpoint ?? ((id) => machines?.endpoint(id)), options.factory?.publicUrl === undefined ? process.env["HERDR_FACTORY_PUBLIC_URL"] ?? null : options.factory.publicUrl);
   const usage = options.usage ?? new UsageService();
   const voice = options.voice ?? new VoiceService({ stateDir: options.stateDir ?? defaultStateDir(), env: process.env, fetch });
   /** a login named here is taken as it is: a tagged node has none of its own to read (HERDR_WEB_TAILSCALE_OWNER) */
@@ -475,7 +492,7 @@ export function createServer(
     return /(?:^|\s)@\S+$/.test(body) ? `${open}${body} ${close}` : text;
   };
 
-  async function submitText(paneId: string, text: string, payload: string, arrivedAt: number, fromTerminal = false, authorize: () => void = () => {}): Promise<void> {
+  async function submitText(paneId: string, text: string, payload: string, arrivedAt: number, fromTerminal = false, authorize: () => void = () => {}, strictAgent = false): Promise<void> {
     const inTime = (): void => {
       authorize();
       if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) {
@@ -497,11 +514,13 @@ export function createServer(
         if (claudeInputDraft(live, colors)) throw new HerdrError("input_draft", CLAUDE_INPUT_DRAFT_MESSAGE);
       }
       try {
-        await agentPrompt(paneId, closeMention(text));
+        if (strictAgent) await agentPrompt(paneId, closeMention(text), undefined, () => { try { inTime(); return true; } catch { return false; } });
+        else await agentPrompt(paneId, closeMention(text));
         noteSubmitted(paneId, text);
         return;
       } catch (error) {
         if (!(error instanceof HerdrError)) throw error;
+        if (strictAgent) throw error;
         const queuedOnly = error.code === "agent_blocked" && await blockedOnlyByCodexQueue(paneId);
         if (error.code !== "agent_not_found" && error.code !== "agent_not_ready" && !queuedOnly) throw error;
       }
@@ -697,9 +716,15 @@ export function createServer(
     return true;
   }
 
+  function killWatches(client: Client): void {
+    for (const watch of client.data.watches.values()) watch.kill();
+    client.data.watches.clear();
+  }
+
   function stopSlowClient(client: Client): void {
     if (client.data.closing) return;
     client.data.closing = true;
+    killWatches(client);
     pending.close(client);
     clients.delete(client);
     for (const paneId of client.data.attached.keys()) detach(paneId, client);
@@ -775,6 +800,11 @@ export function createServer(
   const claudeAgents = new ClaudeSubagentStatus({
     resolve: claudePaneSession,
     pid: claudePanePid,
+    onReset: (paneId) => {
+      const held = waits.waiting(paneId);
+      waits.reset(paneId);
+      claudeAgentsChanged(paneId, 0, 0, null, held);
+    },
     onChange: (paneId, running, turnRunning, promptAt) => claudeAgentsChanged(paneId, running, turnRunning, promptAt),
   });
   /** herdr's snapshot with OmO's own status in it: what the completion tracker and web push are given */
@@ -1241,8 +1271,8 @@ export function createServer(
    * the alerts took it for working meanwhile, so a wait that ends with no turn after it is that
    * turn's finish, told then.
    */
-  function claudeAgentsChanged(paneId: string, running: number, turnRunning: number, promptAt: number | null): void {
-    const changed = waits.running(paneId, turnRunning, promptAt);
+  function claudeAgentsChanged(paneId: string, running: number, turnRunning: number, promptAt: number | null, resetHold = false): void {
+    const changed = waits.running(paneId, turnRunning, promptAt) || resetHold;
     if (paneId === settling) return;
     const status = completions.current(paneId);
     // a pane never reported here carries its count in the next snapshot
@@ -1264,11 +1294,13 @@ export function createServer(
   // a bridge (no roster of its own) tells its connection server instead (#555)
   const bridgeAgents = machines ? null : bridgeAgentNews(() => broadcastAll({ type: "session-changed" }));
 
+  if (!options.factory?.native?.prompt) factory.bindPrompt((paneId, text, _socket, guard) => serialize(paneId, () => submitText(paneId, text, text, Date.now(), false, () => { if (guard && !guard()) throw new HerdrError("cancelled", "The factory sender no longer owns this input"); }, true)));
   const collector = startStatusCollector({
     onStatus: (paneId, raw, agent, replay) => {
       // read back from a snapshot around a gap between subscriptions. An OmO pane's status there
       // is OmO's own or herdr's by turns (server/omo-status.ts), and a difference is no change
       if (replay && (omo.runs(paneId) || !completions.replayed(paneId, raw, replay))) return;
+      factory.observe(paneId, raw, agent);
       // another agent took an OmO pane: what OmO worked on there is not that agent's to finish
       if (omo.named(paneId, agent)) completions.forget(paneId);
       // the frame below names no agent: one herdr names anew is read into the roster now. An OmO
@@ -1333,6 +1365,7 @@ export function createServer(
       push.resync(panes.map((pane) => ({ ...pane, agent_status: alertStatus(settled(pane), waits.waiting(pane.pane_id)) })), newer);
     },
     onPaneEnded: (paneId) => {
+      factory.observe(paneId, "unknown", null, true);
       holdPendingPane(paneId, { code: "pane_not_found", message: "The pane ended; its pending messages were not sent" });
       pending.forget(paneId);
       waits.forget(paneId);
@@ -1358,8 +1391,9 @@ export function createServer(
     async fetch(request, bunServer) {
       const url = new URL(request.url);
       let { pathname } = url;
+      const scopedAgent = factory.agentAuthenticated(request, url);
       const bridgeAuthorized = isAuthenticated(request, bridgeToken);
-      const bridgePath = pathname === "/api/bridge" || pathname === "/api/session" || pathname === "/api/agents" || pathname.startsWith("/api/pane/") || pathname.startsWith("/api/workspace/") || pathname.startsWith("/api/worktree/") || pathname.startsWith("/api/tab/") || pathname.startsWith("/api/fs/") || pathname === "/ws";
+      const bridgePath = pathname === "/api/bridge" || pathname.startsWith("/api/factory-host/") || pathname === "/api/session" || pathname === "/api/agents" || pathname.startsWith("/api/pane/") || pathname.startsWith("/api/workspace/") || pathname.startsWith("/api/worktree/") || pathname.startsWith("/api/tab/") || pathname.startsWith("/api/fs/") || pathname === "/ws";
       const ip = bunServer.requestIP(request);
       const loopback = ip !== null && isLoopbackAddress(ip.address);
       const forwarded = cameThroughProxy(request.headers);
@@ -1372,7 +1406,7 @@ export function createServer(
       // counted at once, before any await below lets a concurrent guess pass the same check. Every
       // wrong token counts, a paired watch device's too (a right one would upgrade it to drive);
       // the connection server's own bridge token does not
-      if (presented === "wrong" && !bridgeAuthorized) recordPresentedTokenFailure(client);
+      if (presented === "wrong" && !bridgeAuthorized && !scopedAgent) recordPresentedTokenFailure(client);
       const tokenMatched = presented === "match";
       const pairedDevice = devices.match(parseCookies(request.headers.get("cookie")).get(DEVICE_COOKIE));
       const requestShape = { loopback, forwarded, funnel, tailscaleLogin, serveOnly };
@@ -1386,7 +1420,7 @@ export function createServer(
         tokenConfigured: token !== "",
         gated: devices.gated,
       });
-      const authenticated = access.level === "full" || (bridgePath && bridgeAuthorized);
+      const authenticated = access.level === "full" || (bridgePath && bridgeAuthorized) || scopedAgent;
 
       if (requiresAuth(pathname) && !authenticated) {
         // a script's Bearer guess is told to wait; a browser's cookie gets the usual 401 and its sign-in form
@@ -1396,6 +1430,7 @@ export function createServer(
       }
 
       const readOnly = access.level === "full" && access.role === "watch";
+      if (readOnly && (pathname === "/api/factory" || pathname.startsWith("/api/factory/") || pathname.startsWith("/api/factory-host/") || pathname.startsWith("/api/factory-agent/"))) return httpError(403, "read_only", "Factory records and controls require an owner device");
       const mutating = !["GET", "HEAD", "OPTIONS"].includes(request.method);
       if (pathname.startsWith("/api/") && mutating && !sameOrigin(request)) {
         return jsonResponse({ error: { code: "invalid_origin", message: "Use controls from this app" } }, 403);
@@ -1407,7 +1442,7 @@ export function createServer(
       // method: file contents (those files include credentials) and a directory listing
       // (names and sizes are the shape of a repository the terminals never print), plus
       // every mutation except the two below.
-      const fileRead = /^\/api\/(?:machines\/[^/]+\/)?fs\//.test(pathname);
+      const fileRead = /^\/api\/(?:machines\/[^/]+\/)?fs\//.test(pathname) || pathname.startsWith("/api/factory/artifacts/") || pathname.startsWith("/api/factory/backups");
       const directoryListing = /^\/api\/(?:machines\/[^/]+\/)?workspace\/directories$/.test(pathname);
       // Signing a device's own alerts in is a preference of that device, so `watch` keeps
       // it. The endpoint it registers is https-only (server/push.ts), and that is the
@@ -1450,18 +1485,20 @@ export function createServer(
           try {
             relay = new MachineRelay(machines, machineId, readOnly);
             await relay.ready;
-            const upgraded = bunServer.upgrade(request, { data: { attached: new Map<string, object>(), mode: readOnly ? "observe" : "interact", output: new Map(), closing: false, roles: 0, relay, deviceId, readOnly } });
+            const upgraded = bunServer.upgrade(request, { data: { attached: new Map<string, object>(), watches: new Map<string, PaneWatch>(), mode: readOnly ? "observe" : "interact", output: new Map(), closing: false, roles: 0, relay, deviceId, readOnly } });
             if (upgraded) return undefined as unknown as Response;
             relay.close();
           } catch { relay?.close(); return new Response("remote websocket unavailable", { status: 502 }); }
           return new Response("websocket upgrade required", { status: 426 });
         }
-        const upgraded = bunServer.upgrade(request, { data: { attached: new Map<string, object>(), mode: readOnly ? "observe" : "interact", output: new Map(), closing: false, roles: 0, deviceId, readOnly } });
+        const upgraded = bunServer.upgrade(request, { data: { attached: new Map<string, object>(), watches: new Map<string, PaneWatch>(), mode: readOnly ? "observe" : "interact", output: new Map(), closing: false, roles: 0, deviceId, readOnly } });
         if (upgraded) return undefined as unknown as Response;
         return new Response("websocket upgrade required", { status: 426 });
       }
 
       if (pathname === "/api/auth") return handleAuthRequest(request, token, client);
+      if (pathname.startsWith("/api/factory-agent/")) { bunServer.timeout(request, 360); const response = await factory.handleAgent(request, url); response.headers.set("cache-control", "private, no-store"); return response; }
+      if (pathname === "/api/factory" || pathname.startsWith("/api/factory/") || pathname.startsWith("/api/factory-host/")) { bunServer.timeout(request, 360); const response = await factory.handle(request, url); response.headers.set("cache-control", "private, no-store"); return response; }
       if (pathname === "/api/devices" || pathname.startsWith("/api/devices/")) {
         try {
           const response = await handleDeviceRequest(request, pathname, devices, access);
@@ -2072,6 +2109,7 @@ export function createServer(
           client.data.unwatchDevice = devices.onRevoke(client.data.deviceId, () => {
             client.data.revoked = true;
             client.data.closing = true;
+            killWatches(client);
             clients.delete(client);
             for (const paneId of client.data.attached.keys()) detach(paneId, client);
             client.data.attached.clear();
@@ -2103,6 +2141,39 @@ export function createServer(
         }
         try {
           switch (message.type) {
+            case "watch": {
+              const geometry = validGeometry(message.cols, message.rows);
+              if (!geometry) {
+                send(client, { type: "error", code: "invalid_geometry", message: "cols and rows must be integers in 1..1000" });
+                break;
+              }
+              const paneId = message.pane_id;
+              client.data.watches.get(paneId)?.kill();
+              client.data.watches.delete(paneId);
+              try {
+                const watch = new PaneWatch({
+                  paneId,
+                  ...geometry,
+                  socketPath: herdrSocketPath(),
+                  onFrame: (data) => send(client, { type: "watch-data", pane_id: paneId, data }),
+                  onEnd: () => {
+                    if (client.data.watches.get(paneId) !== watch) return;
+                    client.data.watches.delete(paneId);
+                    send(client, { type: "watch-end", pane_id: paneId });
+                  },
+                });
+                client.data.watches.set(paneId, watch);
+              } catch (error) {
+                console.warn(`[watch] ${paneId} could not start: ${error instanceof Error ? error.message : String(error)}`);
+                send(client, { type: "watch-end", pane_id: paneId });
+              }
+              break;
+            }
+            case "unwatch": {
+              client.data.watches.get(message.pane_id)?.kill();
+              client.data.watches.delete(message.pane_id);
+              break;
+            }
             case "attach": {
               if (message.flow_control !== undefined && message.flow_control !== "ack") {
                 send(client, { type: "error", code: "invalid_flow_control", message: "flow_control must be ack" });
@@ -2564,6 +2635,7 @@ export function createServer(
       close(client) {
         client.data.unwatchDevice?.();
         if (client.data.relay) { client.data.relay.close(); return; }
+        killWatches(client);
         pending.close(client);
         clients.delete(client);
         for (const paneId of client.data.attached.keys()) detach(paneId, client);
@@ -2595,8 +2667,10 @@ export function createServer(
       clearInterval(waitTimer);
       machines?.stop();
       registration?.close();
+      for (const client of clients) killWatches(client);
       for (const paneId of [...attachments.keys()]) closeAttachment(paneId);
       server.stop(true);
+      factory.stop();
     },
   };
 }

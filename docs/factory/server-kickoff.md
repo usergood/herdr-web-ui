@@ -1,5 +1,7 @@
 # Server kickoff and unresolved decisions
 
+Current scope: the owner subsequently requested implementation of the full specification and confirmed both testing seams. This document preserves the earlier kickoff proposal. See [runtime.md](runtime.md) and [local-inventory.md](local-inventory.md) for the implementation and observed host state.
+
 The first bounded slice reconciles the actual installed deployment and produces a reviewed setup plan. Production replacement, changes to a running service and merges require their own explicit scope. The current pass remains planning and specifications only.
 
 ## Settled for this planning pass

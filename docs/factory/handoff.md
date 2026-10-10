@@ -1,5 +1,7 @@
 # Owner handoff prepared 9 October 2026
 
+Current scope: the owner subsequently requested the complete implementation and confirmed both testing seams. Planning statements below are historical; [runtime.md](runtime.md) and [specification.md](specification.md) record the current contract. Production promotion remains separate.
+
 Prepared 9 October 2026 for implementation on the owner's server. Extend a fork of **devswha/herdr-web-ui** into a personal software factory. The owner already runs Herdr and Codex on the server and has installed Herdr Web UI successfully. Preserve that working setup while developing the fork.
 
 This is the handoff for a separate repository, not a Conteo feature. It authorizes preparing the implementation plan and specifications; production replacement, changes to the running service, and merges require their own explicit scope. No server access details, fork URL, installed version, or deployment paths were supplied.

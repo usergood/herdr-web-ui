@@ -131,11 +131,7 @@ for (const video of videos) {
 
 // Local release metadata; external popularity counts are not collected.
 const version = (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string }).version;
-// Build without querying repository accounts or the upstream plugin catalog.
-const stars: number | null = null;
-const contributors: number | null = null;
-const repositoryCount: number | null = null;
-const rank: number | null = null;
+// Popularity placeholders stay empty without querying accounts or the upstream plugin catalog.
 
 // the pages' own media: cut a missing poster from its video; a file still missing is unlinked below
 const pageMedia = ["herdr-web-ui-film", "chat-loop"];
@@ -154,10 +150,9 @@ for (const name of pageMedia) {
 for (const name of pages) {
   let page = readFileSync(join(out, name), "utf8");
   page = page.replaceAll("{{version}}", version);
-  page = page.replaceAll("{{stars}}", stars === null ? "—" : stars.toLocaleString("en-US"));
-  page = page.replaceAll("{{contributors}}", contributors === null ? "—" : contributors.toLocaleString("en-US"));
-  page = page.replaceAll("{{plugin_rank}}", rank === null ? "—" : `#${rank}`);
-  page = page.replaceAll("{{plugin_repo_count}}", repositoryCount === null ? "—" : repositoryCount.toLocaleString("en-US"));
+  for (const placeholder of ["{{stars}}", "{{contributors}}", "{{plugin_rank}}", "{{plugin_repo_count}}"]) {
+    page = page.replaceAll(placeholder, "—");
+  }
   for (const { file, attrs } of missingMedia) {
     page = page.replace(new RegExp(` (?:${attrs})="(?:\\.\\./)?media/${file.replace(".", "\\.")}"`, "g"), "");
   }
@@ -165,11 +160,16 @@ for (const name of pages) {
   // the FAQ as structured data, read from the rows the page shows
   // (a row's closing "… →" link is navigation, not part of the answer)
   const text = (html: string) => html.replace(/<a [^>]*>[^<]*→<\/a>/g, "").replace(/<[^>]+>/g, "").replaceAll("&amp;", "&").replace(/\s+/g, " ").trim();
-  const questions = [...page.matchAll(/<div class="qa">\s*<dt>(.*?)<\/dt>\s*<dd>(.*?)<\/dd>\s*<\/div>/gs)].map(([, question, answer]) => ({
-    "@type": "Question",
-    name: text(question),
-    acceptedAnswer: { "@type": "Answer", text: text(answer) },
-  }));
+  const questions = [...page.matchAll(/<div class="qa">\s*<dt>(.*?)<\/dt>\s*<dd>(.*?)<\/dd>\s*<\/div>/gs)].map((match) => {
+    const question = match[1];
+    const answer = match[2];
+    if (question === undefined || answer === undefined) throw new Error(`site/${name} has a FAQ row without a question or answer`);
+    return {
+      "@type": "Question",
+      name: text(question),
+      acceptedAnswer: { "@type": "Answer", text: text(answer) },
+    };
+  });
   const rowCount = [...page.matchAll(/<div class="qa">/g)].length;
   if (questions.length === 0 || questions.length !== rowCount) throw new Error(`site/${name} has missing or unparseable FAQ rows (<div class="qa">)`);
   const faq = JSON.stringify({ "@context": "https://schema.org", "@type": "FAQPage", mainEntity: questions }).replaceAll("<", "\\u003c");

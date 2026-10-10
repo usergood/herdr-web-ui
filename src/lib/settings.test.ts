@@ -6,6 +6,13 @@ import { FONT_FAMILY_MAX_CHARS } from "./fontFamily.ts";
 import { DEFAULT_KEY_BAR_ITEMS, migrateKeyBarItems } from "./keyBar.ts";
 import { alertPrefs, CHAT_FONT_MAX, CHAT_FONT_MIN, CHAT_LANE_MAX_REM, CHAT_LANE_MIN, CHAT_WIDTHS, chatFontSize, chatLaneLength, chatLaneWidth, DEFAULT_SETTINGS, QUICK_REPLIES_MAX, QUICK_REPLY_MAX_CHARS, quickReplyButtons, sanitizeSettings, terminalTheme, forgetPaneViews, DICTATION_LANGUAGES, VOICE_BUTTONS, wantsVoiceInput } from "./settings.ts";
 
+it("keeps a tab's pane while out of use until this device turns the pause on", () => {
+  expect(DEFAULT_SETTINGS.releasePaneAway).toBe(false);
+  expect(sanitizeSettings({}).releasePaneAway).toBe(false);
+  expect(sanitizeSettings({ releasePaneAway: true }).releasePaneAway).toBe(true);
+  expect(sanitizeSettings({ releasePaneAway: "true" }).releasePaneAway).toBe(false);
+});
+
 it("keeps the screen wake lock off until this device explicitly enables it", () => {
   expect(DEFAULT_SETTINGS.keepScreenOn).toBe(false);
   expect(sanitizeSettings({}).keepScreenOn).toBe(false);

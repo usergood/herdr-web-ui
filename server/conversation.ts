@@ -244,7 +244,7 @@ const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp
  * once however many records carry it; `options.subagents` holds what the subagents' own files say
  * of them, by agent id, since the parser reads no files. Other notifications stay hidden.
  */
-export function parseClaudeTranscript(text: string, maxTurns = MAX_TURNS, options: { subagents?: ReadonlyMap<string, SubagentDetail> } = {}): ConversationTurn[] {
+export function parseClaudeTranscript(text: string, maxTurns = MAX_TURNS, options: { subagents?: ReadonlyMap<string, SubagentDetail>; noticed?: Set<string> } = {}): ConversationTurn[] {
   const turns: ConversationTurn[] = [];
   /** tool parts still waiting for their result, by tool_use id */
   const pending = new Map<string, Extract<ConversationPart, { kind: "tool" }>>();
@@ -253,7 +253,7 @@ export function parseClaudeTranscript(text: string, maxTurns = MAX_TURNS, option
   /** where a notice goes: before the turn at work it was written in, else at the end */
   const noticeAt = (): number => atWork && turns.at(-1)?.role === "assistant" ? turns.length - 1 : turns.length;
   /** the notifications already drawn: a completion is recorded in up to three places */
-  const noticed = new Set<string>();
+  const noticed = options.noticed ?? new Set<string>();
   /** True when the block was a notification (shown or not): it is no turn of anyone's typing. */
   const notified = (block: string, ts: string | null): boolean => {
     const notice = taskNotification(block);
@@ -709,6 +709,8 @@ interface SettledTurns {
   tail: string;
   /** what OmO's `task` calls on the page called their tasks: a task can end in a later turn than the one that started it */
   taskTitles: Map<string, string>;
+  /** Claude completion identities in this page's settled prefix only; never inherited from another page. */
+  noticed: Set<string>;
   /** the titles it began with, from the pages before it */
   inherited: Map<string, string>;
   /** End of the live turn the last poll actually read; replay never scans unseen skipped history. */
@@ -798,11 +800,11 @@ function subagentsOnPage(path: string, text: string): ReadonlyMap<string, Subage
   return ids.size === 0 ? undefined : subagentDetails(path, ids);
 }
 
-function parseTurns(source: RecognizedConversation["source"], path: string, text: string, taskTitles?: Map<string, string>): ConversationTurn[] {
+function parseTurns(source: RecognizedConversation["source"], path: string, text: string, taskTitles?: Map<string, string>, noticed?: Set<string>): ConversationTurn[] {
   return source === "codex-transcript" ? parseCodexTranscript(text, Infinity)
     // only pi keeps a tool's images in the entry as base64; omp, omo and gjc are read the same
     // way but would carry image refs nothing can answer, so the option stays with pi alone
-    : source === "claude-transcript" ? parseClaudeTranscript(text, Infinity, { subagents: subagentsOnPage(path, text) })
+    : source === "claude-transcript" ? parseClaudeTranscript(text, Infinity, { subagents: subagentsOnPage(path, text), noticed })
       : parseOmpTranscript(text, Infinity, { toolImages: source === "pi-transcript", taskTitles });
 }
 
@@ -883,11 +885,11 @@ function liveTurns(path: string, stream: TranscriptStream, source: RecognizedCon
       const to = Math.min(start, kept.observedEnd);
       if (to > from) parseTurns(source, path, readStream(stream, from, to).toString("utf8"), inherited);
     }
-    settled = { id: stream.id, start, end: start, turns: [], metadata: parseConversationMetadata(`${head}\n`, source), tail: bytesBefore(stream, start), taskTitles: new Map(inherited), inherited, observedEnd: stream.length };
+    settled = { id: stream.id, start, end: start, turns: [], metadata: parseConversationMetadata(`${head}\n`, source), tail: bytesBefore(stream, start), taskTitles: new Map(inherited), noticed: new Set(), inherited, observedEnd: stream.length };
   }
   if (settled.end < last) {
     const text = readStream(stream, settled.end, last).toString("utf8");
-    settled = { ...settled, end: last, turns: [...settled.turns, ...parseTurns(source, path, text, settled.taskTitles)], metadata: parseConversationMetadata(text, source, settled.metadata), tail: bytesBefore(stream, last) };
+    settled = { ...settled, end: last, turns: [...settled.turns, ...parseTurns(source, path, text, settled.taskTitles, settled.noticed)], metadata: parseConversationMetadata(text, source, settled.metadata), tail: bytesBefore(stream, last) };
   }
   settled.observedEnd = stream.length;
   remember(settledTurns, key, settled, 8);
@@ -896,9 +898,9 @@ function liveTurns(path: string, stream: TranscriptStream, source: RecognizedCon
     return { turns: [...settled.turns, ...live.turns], metadata: live.metadata };
   }
   const text = readStream(stream, last, stream.length).toString("utf8");
-  // the live turn is parsed again on every poll: what it teaches about titles is kept only
+  // the live turn is parsed again on every poll: its titles and completions are kept only
   // once it settles, so a read titles a task exactly as a cold read of the same bytes does
-  return { turns: [...settled.turns, ...parseTurns(source, path, text, new Map(settled.taskTitles))], metadata: parseConversationMetadata(text, source, settled.metadata) };
+  return { turns: [...settled.turns, ...parseTurns(source, path, text, new Map(settled.taskTitles), new Set(settled.noticed))], metadata: parseConversationMetadata(text, source, settled.metadata) };
 }
 
 /** Forget every scan and parse kept between polls (tests compare against a cold read). */

@@ -1,7 +1,7 @@
-# herdr web ui
+# Saurons eye
 
 <p align="center">
-  <img src="public/icons/icon-192.png" alt="herdr web ui" width="100">
+  <img src="public/icons/icon-192.png" alt="Saurons eye" width="100">
 </p>
 
 <p align="center">
@@ -10,13 +10,36 @@
 
 <p align="center">
   <a href="#install">install</a> ·
+  <a href="#what-saurons-eye-adds">factory features</a> ·
   <a href="docs/guide.md#quick-start">quick start</a> ·
   <a href="#faq">faq</a> ·
   <a href="#docs">docs</a>
 </p>
 
-<p align="center">
-</p>
+**Saurons eye** is a fork of [herdr-web-ui](https://github.com/devswha/herdr-web-ui), the browser and phone client for [herdr](https://github.com/herdrdev/herdr). It keeps upstream's native chats and live terminals and adds a durable workflow for taking ideas through specifications, implementation, review and owner acceptance.
+
+This fork includes upstream releases **v0.4.4 and v0.4.5**. The original browser client and its recordings below come from herdr-web-ui and its contributors.
+
+## What Saurons eye adds
+
+```text
+Inbox → Specifying → Ready → Running → Review → Done
+```
+
+- **Durable ideas and Projects.** Capture an Implementation with chats, notes and attachments before choosing a repository. Link it to a Project later while keeping its identity and history.
+- **Specifications and explicit approvals.** Record questions and answers, version specifications, agree testing seams, and approve a dependency graph of Tickets before factory work starts. A new specification requires a new graph approval.
+- **Owned native execution.** Run agents in isolated Git worktrees with frozen context, provider settings and permissions. Manual starts and global limits control workers and builds; Stop retains branches, artifacts and history.
+- **Review with retained evidence.** Compare branches or capture staged, unstaged and untracked changes. Keep anchored findings, send selected feedback for rework, and require current checks plus independent Standards and Spec reviews before owner acceptance.
+- **Versioned artifacts.** Retain files, provenance, hashes and annotations centrally. Preview Markdown and sandboxed HTML, and keep referenced evidence available when an execution Machine is offline.
+- **Prepared execution Machines.** Verify a Project checkout on each local or SSH Machine. An address such as `user@hostname` works without an SSH alias. Each Machine owns its native sessions and worktrees.
+- **Pinned skills and scoped retrospectives.** Prepare project-local skills from the pinned Matt Pocock source. Review selected Project evidence, approve retrospective proposals, and apply them separately in a new worktree.
+- **Verified recovery and configurable services.** Back up application records and retained blobs, then restore a separate copy with execution disabled. The fork removes upstream install/update telemetry; external services require owner configuration or enablement.
+
+Factory admission requires genuine native skill and question/answer verification for the selected provider and Machine. Codex has passed that contract and the full rework/review/acceptance journey on the development host. Claude Code and OpenCode adapters remain gated until their installed, authenticated versions pass native verification. Ordinary chat and terminal support stays available independently.
+
+To get started, open **Inbox**, capture an idea, configure a Project's checkout and checks, and prepare the execution Machine. See the [factory runtime guide](docs/factory/runtime.md) for setup, approvals, execution, review and recovery, or the [full specification](docs/factory/specification.md) for the product contract.
+
+## Browser and phone features
 
 ---
 
@@ -130,13 +153,15 @@ No. Tailscale, an SSH tunnel, a VPN or your own HTTPS proxy can provide a route 
 
 Session files stay on the PC running each agent, and their contents are served to browsers you connect. The app has no hosted relay or account service of its own. Optional voice input sends audio (and text when polishing) to the configured provider; enabled usage meters contact provider APIs. Updates, remote-PC setup and push alerts can also use external services. Saurons eye has no install/update telemetry. External services require owner enablement or configuration. The agents’ own model connections depend on their configuration. [Data flow and access →](docs/guide.md#faq)
 
+Factory attachments and retained native history are copied into private application state on the connection server, which may be a different Machine from the one running the agent. Those copies are included in factory backups; the original native session files remain on the execution PC. [Factory storage and recovery →](docs/factory/runtime.md#backup-restore-and-rollback)
+
 **Does it work on Windows?**
 
 Yes, on Windows x64 without WSL. Until herdr can attach a terminal there, the terminal is a [screen mirror](docs/remote-pcs.md#windows-pcs) with typing and a fixed grid.
 
 **How is it different from collie, roamgate or herdr-remote?**
 
-These are other phone or browser clients for herdr. This one reads the agent's own transcript, so a pane is a chat with the work folded per turn rather than terminal output, and other PCs join over SSH from the sidebar. It brings no tunnel and drives only herdr: if you want tmux or zellij, diffs, Telegram or a tunnel out of the box, one of the others is the better fit. [The full comparison →](docs/guide.md#faq)
+These are other phone or browser clients for herdr. Saurons eye inherits herdr-web-ui's native transcript chat and SSH-connected PCs, then adds specifications, Ticket workflows, diff reviews and retained delivery evidence. It relies on herdr for terminals and on your configured network access. [Upstream client comparison →](docs/guide.md#faq)
 
 **How is it different from Happy, Paseo or CloudCLI UI?**
 
@@ -148,9 +173,11 @@ Start with the [user guide](docs/guide.md): [quick start](docs/guide.md#quick-st
 
 For a closer look: [how it works](docs/guide.md#how-it-works) · [chat transcripts](docs/chat-mode-audit.md) · [terminal flow control](docs/terminal-flow-control.md) · [app updates](docs/app-updates.md) · [changelog](CHANGELOG.md).
 
+For Saurons eye's additions: [factory overview](docs/factory/README.md) · [runtime and setup](docs/factory/runtime.md) · [specification](docs/factory/specification.md) · [domain glossary](docs/factory/GLOSSARY.md).
+
 ## thanks
 
-Built on [herdr](https://github.com/herdrdev/herdr), with inspiration from [chatmux](https://github.com/devswha/chatmux), and powered by [xterm.js](https://xtermjs.org), [React](https://react.dev), [Bun](https://bun.sh) and [Lucide](https://lucide.dev).
+Forked from [herdr-web-ui](https://github.com/devswha/herdr-web-ui) by [devswha](https://github.com/devswha) and its contributors. Built on [herdr](https://github.com/herdrdev/herdr), with inspiration from [chatmux](https://github.com/devswha/chatmux), and powered by [xterm.js](https://xtermjs.org), [React](https://react.dev), [Bun](https://bun.sh) and [Lucide](https://lucide.dev). Factory workflows use the pinned [Matt Pocock skills](https://github.com/mattpocock/skills) source; licenses are retained in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 Thanks to everyone who has contributed, including [@Yoonwoo-Ha](https://github.com/Yoonwoo-Ha).
 

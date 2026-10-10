@@ -502,6 +502,37 @@ describe("parseClaudeTranscript", () => {
       parseClaudeTranscript(entries.map((entry) => JSON.stringify(entry)).join("\n"), MAX_TURNS, subagents);
     const start = { type: "user", timestamp: "2026-10-05T00:00:00.000Z", message: { role: "user", content: "review it" } };
 
+    it("deduplicates across settled/live boundaries without suppressing resumed completions or later pages", () => {
+      const root = mkdtempSync(join(tmpdir(), "herdr-subagent-page-")); roots.push(root);
+      const path = join(root, "s1.jsonl");
+      const write = (...entries: unknown[]) => appendFileSync(path, entries.map((entry) => JSON.stringify(entry) + "\n").join(""));
+      const prompt = (n: number) => ({ ...start, message: { role: "user", content: `prompt ${n}` } });
+      const notices = carriers(block('Agent "Review" finished'), "2026-10-05T00:01:00.000Z");
+      const cards = (answer: ReturnType<typeof transcriptPage>) => answer.turns.flatMap((turn) => turn.parts).filter((part) => part.kind === "task_result");
+      write(prompt(1), notices[0], prompt(2), notices[1]);
+      expect(cards(transcriptPage("claude-transcript", path))).toHaveLength(1);
+      write(notices[2]);
+      expect(cards(transcriptPage("claude-transcript", path))).toHaveLength(1);
+      write(prompt(3));
+      const warm = transcriptPage("claude-transcript", path);
+      forgetTranscriptState();
+      expect(transcriptPage("claude-transcript", path).turns).toEqual(warm.turns);
+      write(...carriers(block('Agent "Review" finished').replace("toolu_1", "toolu_2"), "2026-10-05T00:02:00.000Z"));
+      expect(cards(transcriptPage("claude-transcript", path))).toHaveLength(2);
+      // Reparse the live suffix after another append; its dedup set must not persist across polls.
+      write({ type: "assistant", message: { content: [{ type: "text", text: "answer" }] } });
+      expect(cards(transcriptPage("claude-transcript", path))).toHaveLength(2);
+      // Slide the page start past the first carrier. Deduplication belongs to the requested page.
+      for (let n = 4; n < MAX_TURNS + 4; n++) write(prompt(n));
+      write(notices[1]);
+      const newest = transcriptPage("claude-transcript", path);
+      expect(cards(newest)).toHaveLength(1);
+      const older = transcriptPage("claude-transcript", path, { before: newest.cursor! });
+      forgetTranscriptState();
+      expect(transcriptPage("claude-transcript", path).turns).toEqual(newest.turns);
+      expect(transcriptPage("claude-transcript", path, { before: newest.cursor! }).turns).toEqual(older.turns);
+    });
+
     it("draws a queue-only completion before the active turn, but not its removal", () => {
       const content = block('Agent "Review the parser" finished');
       const turn = { type: "assistant", timestamp: "2026-10-05T00:00:01.000Z", message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id: "toolu_1", name: "Agent", input: {} }] } };

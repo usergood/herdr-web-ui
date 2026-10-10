@@ -238,6 +238,7 @@ async function backgroundTurn(taskId: string) {
   const sessionId = crypto.randomUUID();
   transcript(sessionId);
   const target = await pane(sessionId);
+  statusClock = Date.now();
   server = makeServer();
   await bounded(server.statusReady, "Background status subscription");
   const base = `http://127.0.0.1:${server.port}`;
@@ -256,7 +257,8 @@ async function backgroundTurn(taskId: string) {
     return await frame;
   };
   const write = (...entries: unknown[]) => appendFileSync(join(project, `${sessionId}.jsonl`), "\n" + entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
-  const now = () => new Date().toISOString();
+  // Prompt association compares transcript time with observed rest: both use the injected clock.
+  const now = () => new Date(statusClock).toISOString();
   const close = async () => {
     frames.socket.close();
     const removed = await fetch(`${base}/api/push/subscribe`, { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ endpoint: device.subscription.endpoint }) });

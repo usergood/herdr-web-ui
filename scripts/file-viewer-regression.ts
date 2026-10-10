@@ -15,6 +15,7 @@ const codexHome = join(root, "codex-home");
 const thread = "01a0c7a1-56d9-7e20-9f08-f7a2d973bc11";
 mkdirSync(join(codexHome, "sessions"), { recursive: true });
 const transcript = join(codexHome, "sessions", `rollout-2026-09-28T00-00-00-${thread}.jsonl`);
+const fidelitySources = ["const last = 7;\n\n", "first\n", "first\n\nlast", "\n"];
 writeFileSync(transcript, [
   { type: "session_meta", payload: { id: thread, cwd: root } },
   { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Show me the demo video." }] } },
@@ -23,6 +24,7 @@ writeFileSync(transcript, [
   { type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: `Dashes:\n\n\`\`\`yaml\n${"-".repeat(90_000)}\n\`\`\`` }] } },
   // more lines than are drawn one element each (LINE_ELEMENT_LIMIT): 30 000 elements held the page
   { type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: `Lines:\n\n\`\`\`\n${"x\n".repeat(30_000)}\`\`\`` }] } },
+  ...fidelitySources.map((source, index) => ({ type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: `\`\`\`${index === 0 ? "ts" : "text"}\n${source}\n\`\`\`` }] } })),
 ].map((row) => JSON.stringify(row)).join("\n"));
 const db = new Database(join(codexHome, "state_5.sqlite"));
 db.exec("CREATE TABLE threads (id TEXT, rollout_path TEXT, cwd TEXT, archived INTEGER, agent_role TEXT, created_at INTEGER, updated_at INTEGER, source TEXT, first_user_message TEXT)");
@@ -72,13 +74,41 @@ try {
   await page.locator(".conn-live").waitFor();
   const videoLink = page.getByRole("button", { name: "demo video", exact: true });
   await videoLink.waitFor();
-  await page.locator(".markdown-code .hl-keyword", { hasText: "const" }).waitFor();
+  await page.locator(".markdown-code").first().locator(".hl-keyword", { hasText: "const" }).waitFor();
   await page.locator(".markdown-code .hl-number", { hasText: "42" }).waitFor();
   console.log("PASS Chat fenced code block is syntax highlighted");
   // a blank line must survive in the text a copy picks up
   const codeText = await page.locator(".markdown-code .hl-code").first().innerText();
   if (codeText !== "const answer = 42;\n\nexport { answer };") throw new Error(`Chat code block text lost its blank line: ${JSON.stringify(codeText)}`);
   console.log("PASS Chat code block keeps its blank line in the text");
+  const checkCodeFidelity = async (mode: string) => {
+    for (const [index, source] of fidelitySources.entries()) {
+      const block = page.locator(".markdown-code").nth(3 + index);
+      assert.equal(await block.locator("code").textContent(), source, `${mode}: source whitespace`);
+      const selections = await block.locator("pre").evaluate((pre, source) => {
+        const selection = window.getSelection()!;
+        const select = (node: Node) => {
+          const range = document.createRange(); range.selectNodeContents(node);
+          selection.removeAllRanges(); selection.addRange(range);
+          return selection.toString();
+        };
+        const actual = select(pre);
+        const baseline = document.createElement("pre");
+        const code = document.createElement("code"); code.textContent = source;
+        baseline.append(code); document.body.append(baseline);
+        const expected = select(baseline);
+        baseline.remove(); selection.removeAllRanges();
+        return { actual, expected };
+      }, source);
+      assert.equal(selections.actual, selections.expected, `${mode}: selection matches native pre/code`);
+    }
+    if (process.env.UI_EVIDENCE_DIR) {
+      mkdirSync(process.env.UI_EVIDENCE_DIR, { recursive: true });
+      await page.locator(".markdown-code").nth(3).screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `code-fidelity-${mode}.png`) });
+    }
+    console.log(`PASS ${mode}: trailing and interior blank lines match source and native selection`);
+  };
+  await checkCodeFidelity("highlight-on");
   const composer = page.getByRole("textbox", { name: "Message", exact: true });
   await composer.fill("Keep my mobile draft");
   const chatUrl = page.url();
@@ -337,6 +367,7 @@ try {
   await page.locator(".markdown-code .hl-code").first().waitFor();
   assert.equal(await page.locator(".markdown-code .hl-keyword, .markdown-code .hl-number").count(), 0, "chat code is plain");
   assert.equal(await page.locator(".markdown-code .hl-note").count(), 0, "plain by choice is not too long");
+  await checkCodeFidelity("highlight-off");
   console.log("PASS Settings → Highlight code off shows chat code plain");
   assert.deepEqual(errors, []);
 } finally {

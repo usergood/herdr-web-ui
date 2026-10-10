@@ -607,8 +607,9 @@ export interface PushPayload {
  *  Client -> server frames: attach {pane_id, cols, rows} | detach {pane_id} | input {pane_id, text}
  *    | keys {pane_id, keys} | resize {pane_id, cols, rows} | role {mode}
  *    | pty-ack {pane_id, stream_id, offset} | secret {id, pane_id, prompt, secret}
+ *    | watch {pane_id, cols, rows} | unwatch {pane_id}
  *  Server -> client frames: snapshot | pty-data | pty-exit | pane-geometry | role-ack
- *    | pane-status | pane-exited | session-changed | secret-result | error
+ *    | pane-status | pane-exited | session-changed | secret-result | watch-data | watch-end | error
  *
  *  attach {flow_control:"ack"} opts into per-subscription output credit.
  *  pty-data.flow carries a stream_id and cumulative UTF-8 payload offset;
@@ -622,6 +623,12 @@ export interface PushPayload {
  *  re-sends its role before the attach replay on reconnect.
  *  secret requires the "secret-input" feature, an interact attachment, a matching fresh
  *  prompt and an idle input queue. Its result contains only ok/code, never the value.
+ *  watch requires the "watch" feature: a read-only view of the pane drawn for the client's grid
+ *  (`herdr terminal session observe`), which, unlike an attach, leaves the pane at the size herdr's
+ *  own window gives it. It is not an attach: no input, resize, ACK or input-ready. A tab out of use
+ *  detaches and watches; it attaches again when the user is back. One watch per pane and connection;
+ *  a second watch for the same pane starts it again at the new grid. watch-end: the view ended
+ *  (unwatch does not answer one), and a pane the view could not start for gets one at once.
  */
 
 /** A connection's authority over the shared ptys: `interact` types and resizes, `observe` only watches. */
@@ -663,10 +670,13 @@ export type ClientMessage =
   | { type: "resize"; pane_id: string; cols: number; rows: number }
   /** Cumulative UTF-8 payload bytes processed by xterm, only for this subscription. */
   | { type: "pty-ack"; pane_id: string; stream_id: string; offset: number }
-  | { type: "role"; mode: ClientRole };
+  | { type: "role"; mode: ClientRole }
+  /** a read-only view of the pane at this grid, for a tab out of use (feature "watch"); never resizes the pane */
+  | { type: "watch"; pane_id: string; cols: number; rows: number }
+  | { type: "unwatch"; pane_id: string };
 
 /** What a server supports beyond the base protocol, listed in its first snapshot; older bridges list nothing. */
-export type ServerFeature = "submit" | "pending-input" | "secret-input" | "input-ready" | "take-over";
+export type ServerFeature = "submit" | "pending-input" | "secret-input" | "input-ready" | "take-over" | "watch";
 
 export type ServerMessage =
   | { type: "snapshot"; snapshot: SessionSnapshot; features?: ServerFeature[] }
@@ -692,9 +702,162 @@ export type ServerMessage =
   | { type: "pane-exited"; pane_id: string }
   /** session structure changed (pane created/closed): refetch /api/session */
   | { type: "session-changed" }
+  /** a watched pane's screen as herdr draws it for the watch's grid: whole screens and changes, written as they come; never acknowledged */
+  | { type: "watch-data"; pane_id: string; data: string }
+  /** the watch ended (pane gone, herdr closed it, or this herdr has no read-only view); the client keeps its last screen */
+  | { type: "watch-end"; pane_id: string }
   /** `pane_id` names the pane an error is about, when it is about one (`attach_held`) */
   | { type: "error"; code: string; message: string; pane_id?: string };
 
 /** herdr's default socket, under XDG_CONFIG_HOME when set, as herdr itself resolves it. */
 export const HERDR_SOCKET_PATH = `${process.env["XDG_CONFIG_HOME"] || `${process.env["HOME"] ?? ""}/.config`}/herdr/herdr.sock`;
 export const DEFAULT_PORT = 7317;
+/**
+ * Factory routes use connection-server records. Mutation bodies are FactoryRequests
+ * keys below; all JSON errors are ApiError. Mutations require same-origin and
+ * x-herdr-factory: 1; reads and writes require owner access.
+ * GET /api/factory -> FactoryOverview; GET /api/factory/implementations/:id -> FactoryDetail.
+ * POST /api/factory/implementations (implementation) -> Implementation, 201, initial Chat retained.
+ * POST /api/factory/projects (project) -> FactoryProject, 201, checkout verified on selected Machine.
+ * POST /api/factory/implementations/:id/configure (configure) -> Implementation; future defaults only.
+ * POST .../chats (chat) -> FactoryChat, 201; POST .../messages (message) -> FactoryMessage, 201.
+ * Native messages use source_id/sequence for idempotency; conflicting imports fail 409.
+ * POST .../artifacts (artifact) -> FactoryArtifact, 201; size/hash and ownership checked.
+ * GET /api/factory/artifacts/:id/source|preview|download -> verified blob, no host paths;
+ * HTML uses opaque sandbox/CSP, without scripts, network, forms or top navigation.
+ * POST /api/factory/artifacts/:id/note (artifact_note) -> FactoryArtifact;
+ * POST .../delete (artifact_delete) -> {ok:true}; referenced deleted blobs remain retained.
+ * POST /api/factory/implementations/:id/specifications (specification) -> SpecificationVersion, 201;
+ * POST .../tickets (tickets) -> {hash:string,tickets:FactoryTicket[]}, 201; accepted current revision, acyclic.
+ * POST .../approvals (approval) -> FactoryApproval, 201; stale scope=409.
+ * POST .../questions (question) -> FactoryQuestion, 201; POST .../questions/:question/answer (answer)
+ * -> FactoryQuestion; revision-bound, never invents answers.
+ * POST .../order (order) -> {ok:true}; reordering never dispatches.
+ * POST /api/factory/settings (settings) -> FactorySettings; validated limits and future defaults.
+ * POST /api/factory/projects/:id/configure (project_settings) -> FactoryProject;
+ * POST .../checkouts (checkout) -> ProjectCheckout, 201; repository identity must match.
+ * GET /api/factory/providers?machine_id= -> FactoryCapabilities; unsupported contracts stay disabled.
+ * POST /api/factory/machines/:id/prepare (empty) -> FactoryCapabilities; pinned private source only.
+ * POST /api/factory/implementations/:id/runs (start) -> FactoryRun, 202; scoped idempotent admission.
+ * POST /api/factory/runs/:id/reconcile (empty) -> FactoryRun; observation never redispatches.
+ * POST .../stop (stop) -> FactoryRun; verified ownership released, history/work retained.
+ * POST .../cleanup (empty) -> FactoryCleanup; only stopped clean owned checkouts removed.
+ * POST .../verify-provider (empty) -> FactoryCapabilities; genuine loading/owner-round evidence required.
+ * POST .../import-artifacts (empty) -> FactoryArtifact[], 201; verified outputs retained centrally.
+ * POST .../import-conversation (import_conversation) -> NativeConversationSnapshot; immutable native page.
+ * POST .../send-answers (send_answers) -> FactoryAnswerDelivery; uncertainty never replays.
+ * POST .../workers (worker) -> FactoryWorker; frontier/rework and global reservation checked.
+ * POST .../workers/:worker/refresh|reconcile|integrate (empty) -> FactoryWorker;
+ * POST .../workers/:worker/check (empty) -> FactoryCheck; stop (empty) -> {ok:true};
+ * POST .../workers/:worker/review-evidence (empty) -> FactoryReviewEvidence; independent current-head report.
+ * POST .../checks (empty), POST .../checks/:check/reconcile (empty) -> FactoryCheck; owned build reservation.
+ * POST .../accept (accept) -> FactoryRun; exact head, fresh checks/reviews, resolved findings; no publication.
+ * GET /api/factory/tickets/:id -> FactoryTicket; stable app-native tracker identity.
+ * POST /api/factory/implementations/:id/snapshots (snapshot) -> ReviewSnapshot, 201;
+ * POST .../comments (comment) -> ReviewComment, 201; immutable line/hunk anchor.
+ * POST .../request-changes (request_changes) -> FactoryBatchReceipt; only selected drafts delivered.
+ * POST .../comments/:comment/resolve (resolve) -> ReviewComment; current checks and both axes required.
+ * POST /api/factory/projects/:id/retrospectives (retrospective) -> FactoryRetrospective, 201;
+ * POST /api/factory/retrospectives/:id/approve (approve_retrospective) -> FactoryRetrospective; exact scope.
+ * GET /api/factory/backups -> FactoryBackupManifest[]; POST (empty) -> FactoryBackupManifest, 201.
+ * POST /api/factory/backups/:id/restore (empty) -> FactoryRestore, 201; separate disabled copy only.
+ * Machine bridge routes require bridge authentication; operational leases are not a second tracker.
+ * GET /api/factory-host/capabilities -> FactoryCapabilities;
+ * POST /api/factory-host/prepare (FactoryHostRequests.prepare) -> FactoryCapabilities;
+ * POST .../inspect (inspect) -> Omit<ProjectCheckout, id|created_at|updated_at|project_id|machine_id>;
+ * POST .../review (review) -> {repository:string,head:string,files:ReviewSnapshot.files};
+ * POST .../launch (launch) -> FactoryRun, 202; accepted identity preserved.
+ * POST .../runs/:id/reconcile|stop (empty) -> FactoryRun; verify-provider (empty) -> FactoryCapabilities;
+ * POST .../runs/:id/send (send) -> {ok:true}; GET .../runs/:id/artifacts -> FactoryOutput[];
+ * GET .../runs/:id/artifacts/content?name=&hash= -> {content_base64:string}; owned notes only.
+ * POST .../runs/:id/operations/:action (operation) -> FactoryWorker (worker/refresh/integrate/reconcile-worker),
+ * FactoryCheck (check/check-reconcile), FactoryCleanup (cleanup), {ok:true} (stop-worker),
+ * {head:string,workspace_hash:string} (head), Omit<NativeConversationSnapshot,id|timestamps|sequence|run_id>
+ * (transcript), or {head:string,source_id:string,content:string,outcome:passed|failed} (review-evidence).
+ * Scoped /api/factory-agent/:run requires that Run's capability; no owner approval or other Run control.
+ * GET .../contract -> FactoryAgentContract; GET .../ticket/:id -> FactoryTicket from frozen graph.
+ * POST .../question -> FactoryQuestion, 201; consume -> {receipt:{id:string,run_id:string,
+ * worker_id:string|null,revision:string,created_at:string,updated_at:string},questions:FactoryQuestion[]}.
+ * POST .../worker -> FactoryWorker; checks -> FactoryCheck; artifact -> FactoryArtifact, 201;
+ * specification -> SpecificationVersion, 201; tickets -> {hash:string,tickets:FactoryTicket[]}, 201;
+ * proposal -> FactoryRetrospective, 201. Bodies are FactoryAgentRequests; proposals are action-scoped.
+ * POST .../worker/:id/:action (empty) has the corresponding owner worker response above.
+ */
+export type { FactoryOverview, FactoryDetail, Implementation, FactoryProject, ProjectCheckout, FactoryChat, FactoryMessage, FactoryEvent, SpecificationVersion, FactoryTicket, FactoryApproval, FactoryQuestion, FactoryArtifact, FactoryRun, ReviewSnapshot, ReviewComment, FactorySettings, FactoryProvider, FactoryStage, FactoryAction, RunCondition, FactoryCapabilities, FactoryProviderCapability, FactoryOutput } from "./factory.ts";
+export type { FactoryWorker, FactoryCheck, FactoryReviewEvidence, FactoryRetrospective } from "./factory.ts";
+export type { NativeConversationSnapshot } from "./factory.ts";
+
+/** Factory mutation bodies. Runtime validation still treats incoming JSON as untrusted. */
+export interface FactoryRequests {
+  implementation: { title: string; description: string };
+  configure: { project_id?: string | null; provider?: import("./factory.ts").FactoryProvider | null; machine_id?: string | null };
+  project: { name: string; path: string; machine_id: string; provider: import("./factory.ts").FactoryProvider; tracker: import("./factory.ts").FactoryProject["tracker"]; tracker_reference?: string };
+  project_settings: Partial<Pick<import("./factory.ts").FactoryProject, "checks" | "setup" | "environment" | "permissions" | "shared_paths" | "provider" | "machine_id">>;
+  checkout: { machine_id: string; path: string };
+  settings: Partial<import("./factory.ts").FactorySettings>;
+  chat: { title: string };
+  message: { chat_id: string; role: import("./factory.ts").FactoryMessage["role"]; content: string; source_id?: string | null; sequence?: number | null };
+  artifact: { chat_id: string; name: string; media_type: string; content_base64: string; hash?: string; size?: number; origin?: string; note?: string };
+  artifact_note: { note: string };
+  artifact_delete: { hash: string };
+  specification: { content: string };
+  tickets: { specification_id: string; tickets: { key: string; title: string; acceptance: string; dependencies: string[] }[] };
+  approval: { kind: Exclude<import("./factory.ts").FactoryApproval["kind"], "review">; revision: string; scope: string };
+  question: { question: string; run_id?: string };
+  answer: { revision: string; answer: string };
+  order: { direction: -1 | 1 } | { before_id: string };
+  start: { action: import("./factory.ts").FactoryAction; idempotency_key: string; retrospective_id?: string; expected?: { provider: import("./factory.ts").FactoryProvider; machine_id: string; project_id: string | null; specification_id: string | null; graph_hash: string } };
+  stop: { summary?: string };
+  import_conversation: { before?: string };
+  send_answers: { revision: string; idempotency_key: string };
+  worker: { role: import("./factory.ts").FactoryWorker["role"]; idempotency_key: string; ticket_id?: string; review_batch_id?: string; shared_paths?: string[] };
+  accept: { head: string };
+  snapshot: { mode: "branch" | "workspace"; run_id?: string };
+  comment: { snapshot_id: string; path: string; change?: string; side: "old" | "new"; line_start: number; line_end: number; content: string };
+  request_changes: { run_id: string; snapshot_id: string; comment_ids: string[]; idempotency_key: string };
+  resolve: { head: string; summary: string };
+  retrospective: { evidence_ids: string[]; proposal: string };
+  approve_retrospective: { scope_hash: string };
+  empty: Record<string, never>;
+}
+export type FactoryRequestBody = FactoryRequests[keyof FactoryRequests];
+export interface FactoryBatchReceipt {
+  id: string; created_at: string; updated_at: string; implementation_id: string;
+  run_id: string; snapshot_id: string; key: string; signature: string;
+  status: "sending" | "sent" | "blocked" | "uncertain"; comment_ids: string[];
+}
+export interface FactoryAnswerDelivery {
+  id: string; created_at: string; updated_at: string; run_id: string; revision: string;
+  key: string; condition: "sending" | "sent" | "blocked" | "uncertain";
+}
+export interface FactoryBackupManifest {
+  id: string; created_at: string; format_version: 1; schema_version: 1;
+  database_hash: string; blobs: { hash: string; size: number }[];
+}
+export interface FactoryRestore { id: string; state_dir: string; execution_enabled: false }
+export interface FactoryCleanup { removed: string[]; branches_retained: true; notes_retained: true }
+export interface FactoryAgentContract {
+  tracker_guide: string;
+  run: import("./factory.ts").FactoryRun; workers: import("./factory.ts").FactoryWorker[];
+  checks: import("./factory.ts").FactoryCheck[]; review_batches: FactoryBatchReceipt[];
+  messages: import("./factory.ts").FactoryMessage[]; question_revision: string;
+  questions: import("./factory.ts").FactoryQuestion[]; frontier: import("./factory.ts").FactoryTicket[];
+  artifacts: import("./factory.ts").FactoryArtifact[];
+}
+export interface FactoryAgentRequests {
+  question: FactoryRequests["question"];
+  consume: { revision: string; worker_id?: string };
+  worker: FactoryRequests["worker"];
+  artifact: Omit<FactoryRequests["artifact"], "chat_id">;
+  specification: FactoryRequests["specification"];
+  tickets: FactoryRequests["tickets"];
+  proposal: { proposal: string };
+}
+export interface FactoryHostRequests {
+  prepare: { files: { path: string; content_base64: string }[] };
+  inspect: { path: string };
+  review: { path: string; base: string; mode: "branch" | "workspace" };
+  launch: { run: import("./factory.ts").FactoryRun; access?: { token: string; url: string }; attachments?: (Pick<import("./factory.ts").FactoryArtifact, "id" | "name" | "hash" | "size"> & { content_base64: string })[] };
+  send: { text: string };
+  operation: { worker_id?: string | null; check_id?: string; tip?: string; before?: string; worker?: import("./factory.ts").FactoryWorker; check?: import("./factory.ts").FactoryCheck; context?: unknown };
+}

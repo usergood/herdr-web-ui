@@ -193,6 +193,13 @@ export function PaneTerminal({
   const releasedRef = useRef(false);
   const [released, setReleasedState] = useState(false);
   const setReleased = useCallback((next: boolean) => { releasedRef.current = next; setReleasedState(next); }, []);
+  // released, the tab still shows the pane read-only (the server's "watch", herdr's observer), which
+  // leaves the pane at the size herdr's own window gives it; false on a server without it: paused
+  const watchingRef = useRef(false);
+  const [watching, setWatchingState] = useState(false);
+  const setWatching = useCallback((next: boolean) => { watchingRef.current = next; setWatchingState(next); }, []);
+  // the mount effect's watch, for the pane switch: a released tab moving on to the next pane watches that one
+  const watchRef = useRef<(pane: string) => void>(() => {});
   // the mount effect's release, for the queue below: a tab that kept its pane for a message lets go once it went
   const releaseRef = useRef<() => void>(() => {});
   // the mount effect's leave, for the pane switch: a tab out of use from the start (a reload behind
@@ -231,6 +238,9 @@ export function PaneTerminal({
   /** read by the OSC 52 handler, which is attached once for the terminal's life */
   const osc52AllowedRef = useRef(settings.paneClipboard);
   osc52AllowedRef.current = settings.paneClipboard;
+  // Settings → Use alongside herdr's own window: off (the default), a tab out of use keeps its pane and its size
+  const releaseAwayRef = useRef(settings.releasePaneAway);
+  releaseAwayRef.current = settings.releasePaneAway;
   // Settings → Chat width, Default: the lane follows this pane. One length on the stack, which
   // the transcript, the composer column, the held list and the menus all inherit: a percentage
   // would resolve against each one's own box and leave them a gutter apart. The other steps are
@@ -888,6 +898,13 @@ export function PaneTerminal({
           term.options.disableStdin = observeRef.current || prompt !== null || heldRef.current;
           setSecret((previous) => previous?.pane === owner && previous.prompt === prompt ? previous : prompt ? { pane: owner, prompt } : null);
         });
+      } else if (message.type === "watch-data") {
+        // a read-only view drawn for this grid: written as it comes, never acknowledged
+        if (message.pane_id !== paneRef.current || !releasedRef.current || !watchingRef.current) return;
+        term.write(message.data);
+      } else if (message.type === "watch-end") {
+        // the view ended: the last screen stays, and the banner says the tab is paused
+        if (message.pane_id === paneRef.current) setWatching(false);
       } else if (message.type === "attach-resumed") {
         if (message.pane_id === paneRef.current) {
           setHeld(false);
@@ -1249,7 +1266,7 @@ export function PaneTerminal({
     const release = (): void => {
       cancelLeave();
       const current = paneRef.current;
-      if (!current || releasedRef.current || inUse() || embedded || fixedGridRef.current || endedRef.current) return;
+      if (!current || !releaseAwayRef.current || releasedRef.current || inUse() || embedded || fixedGridRef.current || endedRef.current) return;
       if (queueWaits(current)) {
         queueHeld = true;
         return;
@@ -1257,12 +1274,34 @@ export function PaneTerminal({
       socket.detach(current);
       if (pendingScopeRef.current !== null) pendingMessages.suspend(paneStorageId(machineId, current), pendingScopeRef.current);
       setReleased(true);
+      watch(current);
+    };
+    // the pane's screen starts again from the view, as on a pane switch; the view's first frame is whole
+    const watch = (pane: string): void => {
+      const generation = ++outputGeneration;
+      // Reset in stream order: the attach's queued writes must not draw over the view.
+      term.write("\x1bc", () => {
+        if (disposed || paneRef.current !== pane || generation !== outputGeneration) return;
+        modifyOtherKeysRef.current = 0;
+      });
+      modifyOtherKeysRef.current = 0;
+      setWatching(socket.watch(pane, term.cols, term.rows));
     };
     releaseRef.current = () => { if (queueHeld) release(); };
+    watchRef.current = watch;
+    // a window resized while watched: the view is drawn for a grid, so it starts again at the new one
+    const onWatchedResize = term.onResize(({ cols, rows }) => {
+      const current = paneRef.current;
+      if (current && releasedRef.current && watchingRef.current) socket.watch(current, cols, rows);
+    });
     const resume = (): void => {
       setReleased(false);
       const current = paneRef.current;
       if (!current) return;
+      if (watchingRef.current) {
+        socket.unwatch(current);
+        setWatching(false);
+      }
       // A fresh attach says attach_held again if needed; success does not send attach-resumed.
       setHeld(false);
       // the pane's screen starts again from the new attach, as on a pane switch
@@ -1290,7 +1329,7 @@ export function PaneTerminal({
     const leave = (): void => {
       const current = paneRef.current;
       if (current && !observeRef.current && !fixedGridRef.current) socket.keepSize(current);
-      if (releaseTimer === null && !releasedRef.current) releaseTimer = window.setTimeout(() => {
+      if (releaseAwayRef.current && releaseTimer === null && !releasedRef.current) releaseTimer = window.setTimeout(() => {
         if (paneRef.current === current) release();
       }, RELEASE_AFTER_MS);
     };
@@ -1335,6 +1374,8 @@ export function PaneTerminal({
       releaseRef.current = () => {};
       leaveRef.current = () => {};
       cancelLeaveRef.current = () => {};
+      watchRef.current = () => {};
+      onWatchedResize.dispose();
       window.removeEventListener("focus", back);
       window.removeEventListener("blur", leave);
       window.removeEventListener("pointerdown", onPointer, { capture: true });
@@ -1466,10 +1507,17 @@ export function PaneTerminal({
       cancelLeaveRef.current();
       // a released pane was detached already
       if (!releasedRef.current) socket.detach(paneId);
+      if (watchingRef.current) {
+        socket.unwatch(paneId);
+        setWatching(false);
+      }
       if (pendingScopeRef.current !== null) pendingMessages.suspend(paneStorageId(machineId, paneId), pendingScopeRef.current);
     };
-    // a tab that let go of its pane while out of use attaches the next one when the user is back
-    if (releasedRef.current) return leavePane;
+    // a tab that let go of its pane while out of use watches the next one, and attaches it when the user is back
+    if (releasedRef.current) {
+      watchRef.current(paneId);
+      return leavePane;
+    }
     try {
       fit?.fit();
     } catch {
@@ -1869,7 +1917,7 @@ export function PaneTerminal({
         )}
         {!chatView && inputError && <div className="terminal-banner" role="status">{inputError}<button type="button" className="btn terminal-banner-action" onClick={() => setInputError(null)}>{t("Dismiss")}</button></div>}
         {!chatView && !observing && connected && !inputReady && !held && !ended && !released && <div className="terminal-banner" role="status">{t("Waiting for terminal input…")}</div>}
-        {paneId !== null && !chatView && released && <div className="terminal-banner" role="status">{t("Paused while you use another window")}</div>}
+        {paneId !== null && !chatView && released && <div className="terminal-banner" role="status">{t(watching ? "View only while you use another window · click to type" : "Paused while you use another window")}</div>}
         {/* the chat lens says these itself (ChatView), inline; the pills are the grid's */}
         {paneId !== null && !chatView && ended && !outputError && (
           <div className="terminal-banner" role="status">
