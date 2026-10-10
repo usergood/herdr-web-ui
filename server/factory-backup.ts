@@ -1,12 +1,12 @@
 import { Database } from "bun:sqlite";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { FactoryArtifact } from "../shared/protocol.ts";
+import type { FactoryBackupManifest } from "../shared/protocol.ts";
 import { FactoryArtifacts } from "./factory-artifacts.ts";
 import { FactoryError, hash } from "./factory-host.ts";
 import { FactoryStore } from "./factory-store.ts";
 
-interface BackupManifest { id: string; created_at: string; format_version: 1; schema_version: 1; database_hash: string; blobs: { hash: string; size: number }[] }
+type BackupManifest = FactoryBackupManifest;
 
 /** Immutable blobs and the database are captured under one SQLite write reservation. */
 export class FactoryBackup {
@@ -18,7 +18,7 @@ export class FactoryBackup {
     const manifest = this.store.db.transaction(() => {
       const database = this.store.db.serialize();
       const seen = new Set<string>(); const blobs: BackupManifest["blobs"] = [];
-      const retained = [...this.store.list<FactoryArtifact>("artifacts"), ...this.store.list<FactoryArtifact>("deleted_artifacts").filter((artifact) => existsSync(join(this.store.root, "blobs", artifact.hash)))];
+      const retained = this.artifacts.retained();
       for (const artifact of retained) {
         if (seen.has(artifact.hash)) continue;
         const bytes = this.artifacts.read(artifact);

@@ -88,6 +88,8 @@ export class FactoryReview {
       this.store.put("snapshots", snapshot, id);
       for (const comment of this.store.list<ReviewComment>("comments", id)) {
         const previous = this.store.get<ReviewSnapshot>("snapshots", comment.snapshot_id);
+        const resolution = comment.resolution;
+        if (comment.status === "resolved" && resolution?.head === snapshot.head && (snapshot.mode === "branch" || snapshot.files.length === 0)) continue;
         if (previous?.mode === snapshot.mode && previous.run_id === snapshot.run_id && previous.hash !== snapshot.hash) this.store.put("comments", { ...comment, status: "outdated", updated_at: snapshot.created_at }, id);
       }
       this.store.event(id, "review_captured", { snapshot_id: snapshot.id, mode: snapshot.mode, base, head: snapshot.head, hash: snapshot.hash });

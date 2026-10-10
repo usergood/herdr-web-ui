@@ -6,11 +6,12 @@ import { factoryAgentArguments, type FactoryNative } from "./factory-native.ts";
 import { FactoryError, git, hash, inspectCheckout } from "./factory-host.ts";
 import { provisionFactoryAgent, provisionSkills, verifySkills } from "./factory-skills.ts";
 import { FactoryStore } from "./factory-store.ts";
-import { factoryTrackerClient } from "./factory-tracker-client.ts";
+import { factoryTrackerClient, factoryTrackerGuide } from "./factory-tracker-client.ts";
 import { runFactoryCommand } from "./factory-command.ts";
 import { recordScaffolding } from "./factory-cleanup.ts";
+import { factoryEnvironment } from "./factory-environment.ts";
 
-type Lease = { id: string; signature: string; run: FactoryRun };
+type Lease = { id: string; signature: string; run: FactoryRun; closing?: boolean };
 
 /** The execution Machine owns Git/process operations; the connection server owns the task graph. */
 export class FactoryWorktrees {
@@ -19,7 +20,9 @@ export class FactoryWorktrees {
   constructor(private readonly store: FactoryStore, private readonly native: FactoryNative, private readonly skillsPath: () => string | null) {}
   private run(id: string, factoryRequired = true): FactoryRun {
     if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Worktree control is disabled on a restored copy", 409);
-    const run = this.store.get<Lease>("host_leases", id)?.run;
+    const lease = this.store.get<Lease>("host_leases", id);
+    if (lease?.closing) throw new FactoryError("run_stopping", "This Run is stopping; no new native work or builds may start", 409);
+    const run = lease?.run;
     if (!run?.worktree || !run.branch || !run.checkout || factoryRequired && run.action !== "implement-spec" || !["working", "needs_you", "blocked"].includes(run.condition)) throw new FactoryError("factory_run_required", "Use an observed, admitted repository Run", 409);
     if (realpathSync(run.worktree) !== run.worktree) throw new FactoryError("worktree_changed", "The Run's owned worktree changed", 409);
     return run;
@@ -58,16 +61,23 @@ export class FactoryWorktrees {
     mkdirSync(root, { recursive: true, mode: 0o700 });
     if (existsSync(path)) throw new FactoryError("worktree_owned", "Unexpected worker files exist; preserve them", 409);
     let record = { ...worker, branch: `${run.branch}-${worker.role}-${worker.id}`, worktree: path };
+    let nativeAttempted = false;
     this.store.put("host_workers", record, id); // Save intent before any Git or native allocation.
     try {
       await git(parent, ["worktree", "add", "-b", record.branch, path, tip]);
       provisionSkills(path, run.provider, verifySkills(this.skillsPath()));
       if (access) { writePrivateFile(join(path, ".saurons-eye-access.json"), JSON.stringify(access), { mode: 0o600, flag: "wx" }); writePrivateFile(join(path, ".saurons-eye-tracker.mjs"), factoryTrackerClient, { mode: 0o600, flag: "wx" }); }
-      for (const name of ["notes", "cache", "state", "tmp"]) mkdirSync(join(root, name), { mode: 0o700 });
-      writePrivateFile(join(path, ".saurons-eye-context.json"), JSON.stringify({ run, worker: record, context, environment: { notes: join(root, "notes"), cache: join(root, "cache"), state: join(root, "state"), temporary: join(root, "tmp") }, policy: "Only this worker owns writes here. Use approved testing seams. Consume versioned answers before work. Never create unmanaged children. Keep app scaffolding out of commits. Shared documents may only be written when listed in worker.shared_paths. Merge the integration tip before reporting a result; preserve conflicts for reconciliation." }, null, 2), { flag: "wx", mode: 0o600 });
       const project = (run.manifest as { project: FactoryProject }).project;
-      const workspace = await this.native.createWorkspace({ cwd: path, label: `saurons-eye-worker-${worker.id}`, env: { PORT: "0", ...project.environment, XDG_CACHE_HOME: join(root, "cache"), TMPDIR: join(root, "tmp"), FACTORY_DATABASE: join(root, "state", "tests.sqlite"), FACTORY_STATE_DIR: join(root, "state"), FACTORY_NOTES_DIR: join(root, "notes"), FACTORY_RUN_ID: id, FACTORY_WORKER_ID: worker.id } });
+      const environment = factoryEnvironment(root, id, project.environment, worker.id);
+      writePrivateFile(join(path, ".saurons-eye-context.json"), JSON.stringify({ run, worker: record, context, tracker_guide: factoryTrackerGuide, research_directory: join(dirname(run.worktree!), "notes"), environment: { notes: join(root, "notes"), cache: join(root, "cache"), state: join(root, "state"), temporary: join(root, "tmp") }, policy: "Only this worker owns writes here. Use approved testing seams. Consume versioned answers before work. Never create unmanaged children. Keep app scaffolding out of commits. Shared documents may only be written when listed in worker.shared_paths. Merge the integration tip before reporting a result; preserve conflicts for reconciliation." }, null, 2), { flag: "wx", mode: 0o600 });
+      nativeAttempted = true;
+      const workspace = await this.native.createWorkspace({ cwd: path, label: `saurons-eye-worker-${worker.id}`, env: environment });
       record = { ...record, workspace_id: workspace.workspace.workspace_id, pane_id: workspace.root_pane.pane_id }; this.store.put("host_workers", record, id);
+      const current = this.store.get<Lease>("host_leases", id);
+      if (!current || current.closing || !["working", "needs_you", "blocked"].includes(current.run.condition)) {
+        await this.stop(id, worker.id);
+        return { ...record, condition: "cancelled", waiting_reason: "The owner stopped the parent Run before this native launch" };
+      }
       const selected = worker.role === "implementer" ? "tdd" : "code-review";
       provisionFactoryAgent(path, run.provider, selected, verifySkills(this.skillsPath()), worker.role !== "implementer");
       recordScaffolding(this.store, worker.id, path, run.provider, verifySkills(this.skillsPath()));
@@ -75,7 +85,7 @@ export class FactoryWorktrees {
       const args = factoryAgentArguments(run.provider, path, prompt, worker.role !== "implementer");
       await this.native.startAgent({ kind: run.provider, paneId: record.pane_id!, name: `eye-worker-${worker.id.replaceAll("-", "").slice(0, 21)}`, args, timeoutMs: 60_000 });
       record = { ...record, condition: "working", updated_at: new Date().toISOString() };
-    } catch { record = { ...record, condition: "interrupted", waiting_reason: "Worker dispatch is uncertain; reconcile its owned identity before retrying" }; }
+    } catch { record = this.store.get<FactoryWorker>("host_workers", worker.id)?.condition === "cancelled" ? { ...record, condition: "cancelled", waiting_reason: "The owner stopped this native context" } : { ...record, condition: nativeAttempted ? "interrupted" : "failed", waiting_reason: nativeAttempted ? "Worker dispatch is uncertain; reconcile its owned identity before retrying" : "Worker provisioning failed before native allocation; files are retained for inspection" }; }
     this.store.put("host_workers", record, id); return record;
   }
   private async quiescent(worker: FactoryWorker): Promise<void> {
@@ -87,7 +97,18 @@ export class FactoryWorktrees {
   async reconcile(id: string, workerId: string): Promise<FactoryWorker> {
     const run = this.run(id, false); const worker = this.store.get<FactoryWorker>("host_workers", workerId);
     if (!worker || worker.run_id !== id) throw new FactoryError("not_found", "Worker not found", 404);
-    try { await this.identity(run, worker); await this.quiescent(worker); return { ...worker, condition: "needs_you", waiting_reason: "Worker is ready; explicitly check and integrate its result" }; }
+    try {
+      await this.identity(run, worker);
+      const snapshot = await this.native.snapshot();
+      const pane = snapshot.panes.find((entry) => entry.pane_id === worker.pane_id);
+      const workspace = snapshot.workspaces.find((entry) => entry.workspace_id === worker.workspace_id);
+      if (!pane?.cwd || realpathSync(pane.cwd) !== worker.worktree || workspace?.label !== `saurons-eye-worker-${worker.id}`) throw new FactoryError("native_identity_uncertain", "The worker's native identity changed; preserve ownership", 409);
+      if (pane.agent !== run.provider) return { ...worker, condition: "interrupted", waiting_reason: "Native provider launch is unconfirmed; no retry was sent" };
+      if (pane.agent_status === "blocked") return { ...worker, condition: "needs_you", waiting_reason: "The native worker is waiting for an owner answer" };
+      if (pane.agent_status === "working") return { ...worker, condition: "working", waiting_reason: null };
+      if (!["idle", "done"].includes(pane.agent_status)) throw new FactoryError("native_identity_uncertain", "Native worker status is unknown; preserve ownership", 409);
+      return { ...worker, condition: "needs_you", waiting_reason: "Worker is ready; explicitly check and integrate its result" };
+    }
     catch (error) { return { ...worker, condition: "disconnected", waiting_reason: error instanceof FactoryError ? error.message : "The worker cannot currently be observed" }; }
   }
   async refresh(id: string, workerId: string): Promise<FactoryWorker> {
@@ -119,7 +140,7 @@ export class FactoryWorktrees {
     const head = (await git(path, ["rev-parse", "HEAD"])).trim(); const before = await this.workspaceHash(path);
     const results: FactoryCheck["commands"] = [];
     const root = worker ? dirname(path) : dirname(run.worktree!);
-    const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))), ...project.environment, XDG_CACHE_HOME: join(root, "cache"), TMPDIR: join(root, "tmp"), FACTORY_STATE_DIR: join(root, "state"), FACTORY_RUN_ID: id, FACTORY_DATABASE: join(root, "state", "tests.sqlite") };
+    const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))), ...factoryEnvironment(root, id, project.environment, workerId ?? undefined) };
     const deadline = Date.now() + 300_000;
     for (const args of [...project.setup ?? [], ...project.checks ?? []]) {
       const result = await runFactoryCommand(args, path, env, signal, deadline - Date.now());
@@ -139,6 +160,9 @@ export class FactoryWorktrees {
     await Promise.allSettled(builds.map((build) => build.promise));
   }
   shutdown(): void { for (const build of this.builds.values()) build.controller.abort(); }
+  async stopWorkers(id: string): Promise<void> {
+    for (const worker of this.store.list<FactoryWorker>("host_workers", id)) if (worker.workspace_id && worker.condition !== "cancelled") await this.stop(id, worker.id);
+  }
   async integrate(id: string, workerId: string, expectedTip: string): Promise<FactoryWorker> {
     const run = this.run(id); const worker = this.store.get<FactoryWorker>("host_workers", workerId);
     if (!worker || worker.run_id !== id || worker.role !== "implementer") throw new FactoryError("invalid_worker", "Select an implementer result");

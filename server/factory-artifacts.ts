@@ -9,6 +9,11 @@ const previewPolicy = "sandbox; default-src 'none'; style-src 'unsafe-inline'; i
 
 export class FactoryArtifacts {
   constructor(private readonly store: FactoryStore) {}
+  retained(): FactoryArtifact[] {
+    const evidenceIds = new Set(this.store.list<{ evidence_ids: string[] }>("retrospectives").flatMap((entry) => entry.evidence_ids));
+    const runArtifacts = this.store.list<{ artifacts: FactoryArtifact[] }>("run_artifacts").flatMap((entry) => entry.artifacts);
+    return [...this.store.list<FactoryArtifact>("artifacts"), ...runArtifacts, ...this.store.list<FactoryArtifact>("deleted_artifacts").filter((entry) => evidenceIds.has(entry.id))];
+  }
   create(implementationId: string, body: Record<string, unknown>, settings: FactorySettings): FactoryArtifact {
     const chat = typeof body.chat_id === "string" ? this.store.get<FactoryChat>("chats", body.chat_id) : null;
     if (!chat || chat.implementation_id !== implementationId) throw new FactoryError("invalid_chat", "Select a Chat belonging to this Implementation");
@@ -45,7 +50,7 @@ export class FactoryArtifacts {
     if (body.hash !== record.hash) throw new FactoryError("artifact_changed", "Delete the exact retained attachment version", 409);
     const protectedByRetro = this.store.list<{ evidence_ids: string[] }>("retrospectives").some((entry) => entry.evidence_ids.includes(id)) || this.store.list<{ artifacts: FactoryArtifact[] }>("run_artifacts").some((entry) => entry.artifacts.some((artifact) => artifact.id === id));
     this.store.db.transaction(() => { this.store.remove("artifacts", id); this.store.put("deleted_artifacts", record, record.implementation_id); this.store.event(record.implementation_id, "artifact_deleted", { artifact_id: id, hash: record.hash, retained_for_retrospective: protectedByRetro }); })();
-    if (!protectedByRetro && !this.store.list<FactoryArtifact>("artifacts").some((entry) => entry.hash === record.hash)) {
+    if (!this.retained().some((entry) => entry.hash === record.hash)) {
       const file = join(this.store.root, "blobs", record.hash);
       if (existsSync(file) && !lstatSync(file).isSymbolicLink() && realpathSync(file) === file) unlinkSync(file);
     }

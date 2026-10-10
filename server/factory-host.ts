@@ -34,10 +34,14 @@ export async function inspectCheckout(path: string): Promise<Omit<ProjectCheckou
   const branch = (await git(root, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
   const roots = (await git(root, ["rev-list", "--max-parents=0", "HEAD"])).trim().split("\n").sort();
   const instructions: ProjectCheckout["instructions"] = [];
-  for (const name of ["AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md", "DESIGN.md", ".github/REVIEW.md", "docs/development.md"]) {
+  const names = new Set(["AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md", "DESIGN.md", ".github/REVIEW.md", "docs/development.md"]);
+  for (const name of (await git(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"])).split("\0")) if (/(^|\/)(AGENTS|CLAUDE)\.md$/.test(name)) names.add(name);
+  let instructionBytes = 0;
+  for (const name of [...names].sort()) {
     const file = join(root, name);
     if (!existsSync(file)) continue;
-    if (!withinRoot(root, realpathSync(file)) || statSync(file).size > 256 * 1024) throw new FactoryError("invalid_instructions", "Repository instructions must be bounded files inside this checkout");
+    instructionBytes += statSync(file).size;
+    if (!withinRoot(root, realpathSync(file)) || !statSync(file).isFile() || statSync(file).size > 256 * 1024 || instructionBytes > 4 * 1024 * 1024) throw new FactoryError("invalid_instructions", "Repository instructions must be bounded files inside this checkout");
     const content = readFileSync(file, "utf8");
     instructions.push({ path: name, hash: hash(content), content });
   }

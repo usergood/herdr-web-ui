@@ -13,7 +13,7 @@ import { DeviceStore, handleDeviceRequest } from "./devices.ts";
 import { remoteAccess, TailnetIdentitySource } from "./tailscale.ts";
 import { paneCommands } from "./commands.ts";
 import { paneFiles } from "./files.ts";
-import { badRequest, errorResponse, isCount, isJsonObject, jsonResponse } from "./http.ts";
+import { badRequest, errorResponse, httpError, isCount, isJsonObject, jsonResponse } from "./http.ts";
 import { serveStatic } from "./static.ts";
 import { startStatusCollector } from "./collector.ts";
 import { claudePanePid, claudePaneSession, conversationImage, ConversationUnavailable, forgetPaneTranscriptState, HistoryChanged, paneConversation, paneRunsOmo, toolOutput } from "./conversation.ts";
@@ -337,7 +337,7 @@ export function createServer(
     /** where VAPID keys and push subscriptions persist; tests pass a temp dir */
     stateDir?: string;
     /** Pinned factory source. Unset, HERDR_FACTORY_SKILLS_PATH selects it; no global installation. */
-    factory?: { skillsPath?: string; native?: Partial<FactoryNative>; machineEndpoint?: MachineEndpoint };
+    factory?: { skillsPath?: string; native?: Partial<FactoryNative>; machineEndpoint?: MachineEndpoint; publicUrl?: string | null };
     /** the PC's own Tailscale login, for the identity check; tests set it, otherwise `tailscale status` says */
     tailscaleOwner?: string | null;
     /** the operator declares `tailscale serve` as this install's only ingress; HERDR_WEB_TAILSCALE_SERVE_ONLY=1 says the same */
@@ -430,7 +430,7 @@ export function createServer(
   /** paired devices (server/devices.ts) and the PC's Tailscale login: the two ways in besides the token and this PC itself */
   const devices = new DeviceStore(options.stateDir ?? defaultStateDir());
   const bundledSkills = join(import.meta.dir, "../vendor/matt-skills");
-  const factory = new FactoryService(options.stateDir ?? defaultStateDir(), options.factory?.skillsPath ?? process.env["HERDR_FACTORY_SKILLS_PATH"] ?? (existsSync(bundledSkills) ? bundledSkills : null), options.factory?.native, options.factory?.machineEndpoint ?? ((id) => machines?.endpoint(id)));
+  const factory = new FactoryService(options.stateDir ?? defaultStateDir(), options.factory?.skillsPath ?? process.env["HERDR_FACTORY_SKILLS_PATH"] ?? (existsSync(bundledSkills) ? bundledSkills : null), options.factory?.native, options.factory?.machineEndpoint ?? ((id) => machines?.endpoint(id)), options.factory?.publicUrl === undefined ? process.env["HERDR_FACTORY_PUBLIC_URL"] ?? null : options.factory.publicUrl);
   const usage = options.usage ?? new UsageService();
   const voice = options.voice ?? new VoiceService({ stateDir: options.stateDir ?? defaultStateDir(), env: process.env, fetch });
   /** a login named here is taken as it is: a tagged node has none of its own to read (HERDR_WEB_TAILSCALE_OWNER) */
@@ -504,7 +504,8 @@ export function createServer(
         if (claudeInputDraft(live, colors)) throw new HerdrError("input_draft", CLAUDE_INPUT_DRAFT_MESSAGE);
       }
       try {
-        await agentPrompt(paneId, closeMention(text), undefined, strictAgent ? () => { try { inTime(); return true; } catch { return false; } } : undefined);
+        if (strictAgent) await agentPrompt(paneId, closeMention(text), undefined, () => { try { inTime(); return true; } catch { return false; } });
+        else await agentPrompt(paneId, closeMention(text));
         noteSubmitted(paneId, text);
         return;
       } catch (error) {
@@ -1408,7 +1409,7 @@ export function createServer(
       }
 
       const readOnly = access.level === "full" && access.role === "watch";
-      if (readOnly && (pathname === "/api/factory" || pathname.startsWith("/api/factory/") || pathname.startsWith("/api/factory-host/") || pathname.startsWith("/api/factory-agent/"))) return jsonResponse({ error: { code: "read_only", message: "Factory records and controls require an owner device" } }, 403);
+      if (readOnly && (pathname === "/api/factory" || pathname.startsWith("/api/factory/") || pathname.startsWith("/api/factory-host/") || pathname.startsWith("/api/factory-agent/"))) return httpError(403, "read_only", "Factory records and controls require an owner device");
       const mutating = !["GET", "HEAD", "OPTIONS"].includes(request.method);
       if (pathname.startsWith("/api/") && mutating && !sameOrigin(request)) {
         return jsonResponse({ error: { code: "invalid_origin", message: "Use controls from this app" } }, 403);

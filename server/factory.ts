@@ -15,6 +15,7 @@ import { captureReview, FactoryReview } from "./factory-review.ts";
 import { FactoryPipeline } from "./factory-pipeline.ts";
 import { FactoryRetrospectives } from "./factory-retrospective.ts";
 import { HerdrError } from "./herdr/client.ts";
+import { factoryTrackerGuide } from "./factory-tracker-client.ts";
 
 const providers: FactoryProvider[] = ["codex", "claude", "opencode"];
 const initialSettings: FactorySettings = { provider: "codex", max_implementations: 2, max_agents: 6, max_builds: 2, max_artifact_bytes: 25 * 1024 * 1024, max_storage_bytes: 2 * 1024 * 1024 * 1024, skills_path: null };
@@ -30,10 +31,10 @@ export class FactoryService {
   private readonly pipeline: FactoryPipeline;
   private readonly retrospectives: FactoryRetrospectives;
   private stopped = false;
-  constructor(stateDir: string, private readonly skillsPath: string | null = null, native: Partial<FactoryNative> = {}, endpoint: MachineEndpoint = () => undefined) {
+  constructor(stateDir: string, private readonly skillsPath: string | null = null, native: Partial<FactoryNative> = {}, endpoint: MachineEndpoint = () => undefined, publicUrl: string | null = null) {
     this.store = new FactoryStore(stateDir); this.artifacts = new FactoryArtifacts(this.store); this.workflow = new FactoryWorkflow(this.store); this.backup = new FactoryBackup(this.store, this.artifacts);
     this.executionHost = new FactoryExecutionHost(this.store, () => this.settings().skills_path, native);
-    this.runtime = new FactoryRuntime(this.store, this.workflow, () => this.settings(), this.executionHost, endpoint, (record) => this.artifacts.read(record)); this.review = new FactoryReview(this.store, (machine, path, base, mode) => this.runtime.capture(machine, path, base, mode), (machine, path) => this.runtime.inspect(machine, path));
+    this.runtime = new FactoryRuntime(this.store, this.workflow, () => this.settings(), this.executionHost, endpoint, (record) => this.artifacts.read(record), publicUrl); this.review = new FactoryReview(this.store, (machine, path, base, mode) => this.runtime.capture(machine, path, base, mode), (machine, path) => this.runtime.inspect(machine, path));
     this.pipeline = new FactoryPipeline(this.store, this.runtime, this.workflow, () => this.settings());
     this.retrospectives = new FactoryRetrospectives(this.store);
   }
@@ -72,7 +73,7 @@ export class FactoryService {
       if (!run || ["completed", "cancelled", "failed"].includes(run.condition)) throw new FactoryError("run_closed", "This Run's control scope has ended", 409);
       if (request.headers.has("origin") && request.headers.get("origin") !== url.origin) throw new FactoryError("invalid_origin", "Use the scoped tracker on its authenticated app origin", 403);
       const action = route[2]!;
-      if (action === "contract" && request.method === "GET") return jsonResponse({ run, workers: this.store.list("workers", run.id), checks: this.store.list("checks", run.id), review_batches: this.store.list("review_batches", run.implementation_id), messages: this.store.list<FactoryMessage>("messages", run.implementation_id).filter((message) => (run.manifest as { context_message_ids?: string[] }).context_message_ids?.includes(message.id)), question_revision: this.workflow.questionRevision(run.implementation_id), questions: this.store.list("questions", run.implementation_id), frontier: run.action === "implement-spec" ? this.pipeline.frontier(run) : [], artifacts: this.store.list("artifacts", run.implementation_id) });
+      if (action === "contract" && request.method === "GET") return jsonResponse({ tracker_guide: factoryTrackerGuide, run, workers: this.store.list("workers", run.id), checks: this.store.list("checks", run.id), review_batches: this.store.list("review_batches", run.implementation_id), messages: this.store.list<FactoryMessage>("messages", run.implementation_id).filter((message) => (run.manifest as { context_message_ids?: string[] }).context_message_ids?.includes(message.id)), question_revision: this.workflow.questionRevision(run.implementation_id), questions: this.store.list("questions", run.implementation_id), frontier: run.action === "implement-spec" ? this.pipeline.frontier(run) : [], artifacts: this.store.list("artifacts", run.implementation_id) });
       if (action.startsWith("ticket/") && request.method === "GET") {
         const ticket = (run.manifest as { tickets: import("../shared/protocol.ts").FactoryTicket[] }).tickets.find((ticket) => ticket.id === action.slice(7));
         if (!ticket) throw new FactoryError("not_found", "Ticket is outside this Run's frozen graph", 404);
@@ -131,7 +132,8 @@ export class FactoryService {
       const run = this.store.get<FactoryRun>("runs", worker.run_id);
       if (run?.machine_id !== "local") continue;
       const condition = ended ? "interrupted" : ["blocked", "idle", "done"].includes(status) ? "needs_you" : "working";
-      if (worker.condition !== condition) { this.store.put("workers", { ...worker, condition, waiting_reason: reason, updated_at: new Date().toISOString() }, worker.run_id); this.store.event(run.implementation_id, "worker_condition_changed", { worker_id: worker.id, condition }); }
+      const waiting = !ended && ["idle", "done"].includes(status) ? "Native worker is ready; reconcile its candidate and explicitly refresh, check and integrate it" : reason;
+      if (worker.condition !== condition || worker.waiting_reason !== waiting) { this.store.put("workers", { ...worker, condition, waiting_reason: waiting, updated_at: new Date().toISOString() }, worker.run_id); this.store.event(run.implementation_id, "worker_condition_changed", { worker_id: worker.id, condition }); }
     }
   }
   async handle(request: Request, url: URL): Promise<Response> {

@@ -39,6 +39,42 @@ afterAll(() => {
 const base = () => `http://localhost:${server.port}`;
 
 describe("factory records", () => {
+  it("stops an accepted child that returns from native allocation after its parent Stop", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-eye-stop-child-")); const repo = join(state, "repo");
+    const { mkdirSync } = await import("node:fs"); mkdirSync(repo); writeFileSync(join(repo, "notes.txt"), "base\n");
+    for (const args of [["init", "-b", "main"], ["add", "."], ["-c", "user.name=Factory test", "-c", "user.email=factory@example.invalid", "commit", "-m", "initial"]]) expect(Bun.spawnSync(["git", ...args], { cwd: repo }).exitCode).toBe(0);
+    let release!: () => void; let allocated!: () => void; let starts = 0; const workspaces: string[] = [];
+    const gate = new Promise<void>((resolve) => { release = resolve; }); const allocation = new Promise<void>((resolve) => { allocated = resolve; });
+    const app = createServer({ port: 0, stateDir: state, machines: false, factory: { native: { version: async () => "owned-fixture", createWorkspace: async (options) => { const result = await workspaceCreate(options); workspaces.push(result.workspace.workspace_id); if (options.label?.startsWith("saurons-eye-worker-")) { allocated(); await gate; } return result; }, startAgent: async (options) => { starts++; await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "idle" }); } } } });
+    const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    try {
+      const project = await request("projects", { name: "Owned Stop race", path: repo, machine_id: "local", provider: "codex", tracker: "app" }).then((response) => response.json());
+      const idea = await request("implementations", { title: "Stop accepted child", description: "" }).then((response) => response.json());
+      await request(`implementations/${idea.id}/configure`, { project_id: project.id });
+      const run = await request(`implementations/${idea.id}/runs`, { action: "grill-with-docs", idempotency_key: "parent-stop" }).then((response) => response.json());
+      const child = request(`runs/${run.id}/workers`, { role: "standards", idempotency_key: "accepted-child" });
+      await allocation;
+      expect((await request(`runs/${run.id}/stop`, {})).status).toBe(200);
+      release(); const worker = await child.then((response) => response.json());
+      expect(worker.condition).toBe("cancelled"); expect(starts).toBe(1);
+      expect((await sessionSnapshot()).workspaces.some((workspace) => workspaces.includes(workspace.workspace_id))).toBe(false);
+      expect(existsSync(worker.worktree)).toBe(true);
+    } finally { release(); for (const id of workspaces) await workspaceClose(id).catch(() => {}); app.stop(); rmSync(state, { recursive: true, force: true }); }
+  }, 15_000);
+  it("releases admission when provider revalidation proves native launch never began", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-eye-prelaunch-"));
+    let reads = 0; let launches = 0;
+    const app = createServer({ port: 0, stateDir: state, machines: false, factory: { native: { version: async (provider) => provider === "codex" ? ++reads % 2 ? "before" : "changed" : null, createWorkspace: async () => { launches++; throw new Error("Unexpected native allocation"); } } } });
+    const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    try {
+      const idea = await request("implementations", { title: "Recover provisioning failure", description: "" }).then((response) => response.json());
+      await request(`implementations/${idea.id}/configure`, { machine_id: "local" });
+      const first = await request(`implementations/${idea.id}/runs`, { action: "grill-me", idempotency_key: "failed-before-native" }).then((response) => response.json());
+      expect(first.condition).toBe("failed"); expect(first.workspace_id).toBeNull(); expect(launches).toBe(0);
+      const retry = await request(`implementations/${idea.id}/runs`, { action: "grill-me", idempotency_key: "explicit-retry" });
+      expect(retry.status).toBe(202); expect((await retry.json()).id).not.toBe(first.id); expect(launches).toBe(0);
+    } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
   it("removes only stopped clean checkouts and preserves unexpected work and branches", async () => {
     const state = mkdtempSync(join(tmpdir(), "saurons-eye-cleanup-")); const repo = join(state, "repo");
     const { mkdirSync } = await import("node:fs"); mkdirSync(repo); writeFileSync(join(repo, "notes.txt"), "base\n");
@@ -96,6 +132,12 @@ describe("factory records", () => {
       const worker = await request(`runs/${run.id}/workers`, { role: "standards", idempotency_key: "independent-standards" }).then((response) => response.json());
       expect(worker.error).toBeUndefined();
       expect(worker.condition).toBe("working"); workspaces.push(worker.workspace_id);
+      await herdrRpc("pane.report_agent", { pane_id: worker.pane_id, source: "manual", agent: "codex", state: "blocked" });
+      const waiting = await request(`runs/${run.id}/workers/${worker.id}/reconcile`, {}).then((response) => response.json());
+      expect(waiting.condition).toBe("needs_you"); expect(waiting.waiting_reason).toContain("owner answer");
+      await herdrRpc("pane.report_agent", { pane_id: worker.pane_id, source: "manual", agent: "codex", state: "idle" });
+      const ready = await request(`runs/${run.id}/workers/${worker.id}/reconcile`, {}).then((response) => response.json());
+      expect(ready.condition).toBe("needs_you"); expect(ready.waiting_reason).toContain("ready");
       expect(worker.worktree).not.toBe(run.worktree); expect(worker.base).toBe(run.base);
       expect((await request(`runs/${run.id}/workers`, { role: "spec", idempotency_key: "independent-spec" })).status).toBe(409);
       expect((await request(`runs/${run.id}/workers`, { role: "standards", idempotency_key: "independent-standards" }).then((response) => response.json())).id).toBe(worker.id);
@@ -142,6 +184,7 @@ describe("factory records", () => {
       expect((await scoped("approvals", { kind: "specification" })).status).toBe(404);
       expect((await fetch(`http://localhost:${app.port}/api/factory`, { headers: { authorization: `Bearer ${access.token}` } })).status).toBe(401);
       const contract = await scoped("contract").then((response) => response.json());
+      expect(contract.tracker_guide).toContain("idempotency_key");
       expect(contract.questions[0].answer).toBeNull(); expect(contract.run.manifest.token).toBeUndefined();
       await request(`runs/${run.id}/stop`, {}); workspaceId = null;
       expect((await scoped("question", { question: "Too late" })).status).toBe(409);
@@ -151,7 +194,7 @@ describe("factory records", () => {
     const state = mkdtempSync(join(tmpdir(), "saurons-eye-retention-")); const repo = join(state, "repo");
     const { mkdirSync } = await import("node:fs"); mkdirSync(repo); writeFileSync(join(repo, "notes.txt"), "base\n");
     for (const args of [["init", "-b", "main"], ["add", "."], ["-c", "user.name=Factory test", "-c", "user.email=factory@example.invalid", "commit", "-m", "initial"]]) expect(Bun.spawnSync(["git", ...args], { cwd: repo }).exitCode).toBe(0);
-    const app = createServer({ port: 0, stateDir: state, machines: false });
+    const app = createServer({ port: 0, stateDir: state, machines: false, factory: { native: { version: async () => "scope-fixture", createWorkspace: async () => { throw new Error("No native execution in this scope test"); } } } });
     const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
     try {
       const project = await request("projects", { name: "Scoped retro", path: repo, machine_id: "local", provider: "codex", tracker: "app" }).then((response) => response.json());
@@ -172,6 +215,21 @@ describe("factory records", () => {
       const retained = await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then((response) => response.json());
       expect(retained.events.some((event: { kind: string }) => event.kind === "artifact_deleted")).toBe(true);
       expect(retained.retrospectives[0].proposal).toBe("Add a deterministic environment check");
+      const duplicate = await request(`implementations/${idea.id}/artifacts`, { chat_id: detail.chats[0].id, name: "duplicate.md", media_type: "text/markdown", content_base64: Buffer.from("# Evidence").toString("base64") }).then((response) => response.json());
+      expect((await request(`artifacts/${duplicate.id}/delete`, { hash: duplicate.hash })).status).toBe(200);
+      const backup = await request("backups", {});
+      expect(backup.status).toBe(201);
+      expect((await backup.json()).blobs).toContainEqual({ hash: artifact.hash, size: artifact.size });
+      const other = await request("implementations", { title: "Project retrospective", description: "" }).then((response) => response.json());
+      await request(`implementations/${other.id}/configure`, { project_id: project.id });
+      const start = await request(`implementations/${other.id}/runs`, { action: "retro", retrospective_id: retro.id, idempotency_key: "selected-cross-implementation-evidence" });
+      expect(start.status).toBe(202);
+      const run = await start.json();
+      expect(run.manifest.artifacts.map((entry: { id: string }) => entry.id)).toEqual([artifact.id]);
+      rmSync(join(state, "factory", "blobs", artifact.hash));
+      const corruptBackup = await request("backups", {});
+      expect(corruptBackup.status).toBe(409);
+      expect((await corruptBackup.json()).error.code).toBe("artifact_corrupt");
     } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
   });
   it("never certifies a stand-in native provider from a claimed verification result", async () => {
@@ -194,6 +252,7 @@ describe("factory records", () => {
     const state = mkdtempSync(join(tmpdir(), "saurons-eye-project-config-"));
     const repo = join(state, "repo"); const clone = join(state, "clone");
     const { mkdirSync } = await import("node:fs"); mkdirSync(repo); writeFileSync(join(repo, "notes.txt"), "base\n");
+    mkdirSync(join(repo, "nested")); writeFileSync(join(repo, "nested", "AGENTS.md"), "Only the nested module owns its files.\n");
     for (const args of [["init", "-b", "main"], ["add", "."], ["-c", "user.name=Factory test", "-c", "user.email=factory@example.invalid", "commit", "-m", "initial"]]) expect(Bun.spawnSync(["git", ...args], { cwd: repo }).exitCode).toBe(0);
     expect(Bun.spawnSync(["git", "clone", repo, clone]).exitCode).toBe(0);
     const app = createServer({ port: 0, stateDir: state, machines: false });
@@ -210,6 +269,7 @@ describe("factory records", () => {
       expect((await request(`projects/${project.id}/configure`, { environment: { HOME: "wrong" } })).status).toBe(400);
       const overview = await fetch(`http://localhost:${app.port}/api/factory`).then((response) => response.json());
       expect(overview.checkouts.filter((entry: { project_id: string }) => entry.project_id === project.id)).toHaveLength(1);
+      expect(overview.checkouts[0].instructions).toContainEqual(expect.objectContaining({ path: "nested/AGENTS.md", content: "Only the nested module owns its files.\n" }));
       expect(overview.projects[0].provider).toBe("claude");
     } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
   });
@@ -465,6 +525,12 @@ describe("factory records", () => {
       expect(detail.tickets).toHaveLength(2);
       expect(detail.tickets[1].dependencies).toEqual([detail.tickets[0].id]);
       expect(detail.runs).toEqual([]);
+      expect((await request(`${prefix}/approvals`, { kind: "ticket_graph", revision: detail.graph_hash, scope: "Accept version two Tickets" })).status).toBe(201);
+      const third = await request(`${prefix}/specifications`, { content: "Version three changes acceptance" }).then((response) => response.json());
+      await request(`${prefix}/approvals`, { kind: "specification", revision: third.id, scope: "Accept revised scope" });
+      expect((await request(`${prefix}/approvals`, { kind: "ticket_graph", revision: detail.graph_hash, scope: "Reuse obsolete Tickets" })).status).toBe(409);
+      const revised = await fetch(`http://localhost:${app.port}/api/factory/${prefix}`).then((response) => response.json());
+      expect(revised.tickets).toEqual([]);
     } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
   });
   it("imports native messages once and retains versioned attachments after restart", async () => {

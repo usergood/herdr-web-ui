@@ -1,46 +1,23 @@
-# Saurons eye factory planning
+# Saurons eye
 
-**Saurons eye** (`saurons-eye`) is the owner's specification-driven factory plugin, built on the `usergood/herdr-web-ui` fork while preserving the existing Herdr installation. The owner chose this display name and slug. This pass prepares planning and specifications only, as the owner confirmed on 9 October 2026. Implementation, skill activation, tracker publication, production service changes, deployment and merges have not been authorized by this pass.
+**Saurons eye** (`saurons-eye`) extends the `usergood/herdr-web-ui` fork with durable ideas, Projects, Implementations and a manual specification-to-delivery workflow. The owner requested the complete implementation and confirmed the public HTTP/API and real browser testing seams. The earlier planning-only boundary is historical.
 
-## Read in this order
+Start with [runtime.md](runtime.md) for configuration, execution, review, remote-machine onboarding and recovery. The [specification](specification.md) remains the complete product contract. Production service changes, external publication and deployment retain their separate owner scope.
 
-The owner separately authorized removing upstream tracking and external defaults before other work, retaining owner-enabled services. That prerequisite is documented in [external connections](../privacy.md). Factory implementation remains outside the planning scope.
+## Records and source
 
-1. [Owner handoff](handoff.md): the retained requirements and server kickoff instruction.
-2. [Baseline and extension points](baseline.md): facts verified in this checkout and facts still needed from the installed server.
-3. [Proposed glossary](GLOSSARY.md): Implementation, Ticket and Run vocabulary for owner review.
-4. [Draft specification](specification.md): the complete intended product and proposed testing seams.
-5. [Dependency plan](implementation-plan.md): bounded, observable slices and a draft ticket graph.
-6. [Skills and provider contract](skills-and-providers.md): pinned sources, invocation gates and compatibility evidence.
-7. [Server kickoff](server-kickoff.md): the first bounded slice and unresolved owner decisions.
+The connection server owns the SQLite records, imported artifacts and evidence. Execution Machines own their worktrees and native processes. Repository-writing Runs use owned worktrees; the primary checkout is preserved. Existing ordinary chats and terminals remain available.
 
-## Current status
+The complete Matt Pocock `v1.3.1` source is retained in `vendor/matt-skills`, pinned to `24fe0ef7737efae15c87225755e9f6f5965e4888`. [skills.lock.json](skills.lock.json) records every file and its Git identity. Each Run also freezes the verified SHA-256 manifest, selected scope and effective configuration. Project-local preparation installs no global plugin.
 
-| Item | Status |
-| --- | --- |
-| Plugin display name | **Saurons eye** — owner-confirmed |
-| Plugin slug | `saurons-eye` — owner-confirmed |
-| Fork | `https://github.com/usergood/herdr-web-ui` |
-| Checkout baseline | `b87d9d50019cdb87422415f7650ad29285a832cc`, package `0.4.3` |
-| Planning branch | `docs/factory-planning` |
-| Scope | Planning and specifications only |
-| Specification | Draft; acceptance and testing-seam approval pending |
-| Ticket graph | Draft; granularity/dependency approval and tracker setup pending |
-| Skills source | `mattpocock/skills` `v1.3.1`, resolved commit `24fe0ef7737efae15c87225755e9f6f5965e4888` |
-| Source lock | [skills.lock.json](skills.lock.json); source tree identities recorded, local bundle not materialized or installed |
-| Server deployment | Owner reports a working installation; its version, paths and service configuration remain unverified |
-| Provider/machine verification | No factory capability pass claimed for any installed provider or remote machine |
+## Validation and operation
 
-The source lock records the complete pinned tree so support files and possible transitive dependencies cannot float independently. It does not certify skill installation or provider compatibility. A normal source clone from this agent's sandbox failed with `Could not resolve host: github.com`; further download workarounds were not attempted.
+[Local inventory](local-inventory.md) records the observed tools and service state. No deployment checkout or external SSH address has been selected. An SSH alias is optional: onboarding accepts an address such as `user@hostname`.
 
-## Scope and approvals
+Codex is the installed primary provider. Native readiness requires genuine pinned loading and a recorded owner-question round; a fixture adapter cannot certify it. Claude Code and OpenCode remain disabled for factory admission until their installed versions pass the same native contract on their selected Machine. Focused API, browser and genuine native validation are described in [runtime.md](runtime.md).
 
-Manual starts are fixed first-version scope. Maintain an ordered backlog and support two or three explicitly started independent Implementations, subject to a shared resource cap. There is no application scheduler, dispatch on reconnect, automatic failover or migration. Dependency scheduling within an explicitly invoked `implement-spec` Run remains required.
+Manual starts are the first-version scope. Reordering, reconnecting and changing defaults do not dispatch or migrate work. The app retains uncertain ownership and requires explicit observation/control of accepted identities. Global limits cover root agents, Ticket workers, independent review contexts and builds.
 
-These documents are local review drafts, not published `to-spec` / `to-tickets` outputs or an invocation of `implement-spec`. Each user-invoked skill requires its own clearly scoped owner action. Preserve its internal confirmation gates. [Pinned invocation rules](https://github.com/mattpocock/skills/blob/24fe0ef7737efae15c87225755e9f6f5965e4888/.agents/invocation.md)
+## Planning provenance
 
-Proposed defaults are identified as proposals. The existing repository instructions continue to apply; the planning records do not weaken them or change application behavior. There is no Conteo work in this plan.
-
-## Next bounded action
-
-Slice 0 is read-only deployment inventory, verified skill-bundle materialization and a reviewed project/tracker setup proposal. Its completion evidence is in [server-kickoff.md](server-kickoff.md). Reading these records does not start that slice or the factory.
+The original [handoff](handoff.md), [baseline](baseline.md), [dependency plan](implementation-plan.md), [glossary](GLOSSARY.md), [skills/provider research](skills-and-providers.md) and [server kickoff](server-kickoff.md) preserve the earlier decisions and source investigation. Their historical planning statements do not revoke the later implementation request or confirmed testing seams. There is no Conteo work in this repository.

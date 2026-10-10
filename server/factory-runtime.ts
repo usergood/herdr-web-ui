@@ -15,7 +15,7 @@ const actions: FactoryAction[] = ["setup", "grill-me", "grill-with-docs", "to-sp
 export class FactoryRuntime {
   private readonly dispatches = new Map<string, Promise<FactoryRun>>();
   private stopped = false;
-  constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly host: FactoryExecutionHost, private readonly endpoint: MachineEndpoint, private readonly readArtifact: (record: FactoryArtifact) => Buffer) {}
+  constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly host: FactoryExecutionHost, private readonly endpoint: MachineEndpoint, private readonly readArtifact: (record: FactoryArtifact) => Buffer, private readonly publicUrl: string | null) {}
   private async remote<T>(machineId: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
     const endpoint = this.endpoint(machineId);
     if (!endpoint) throw new FactoryError("machine_offline", "The selected Machine is disconnected; its ownership is retained", 409);
@@ -94,20 +94,21 @@ export class FactoryRuntime {
     if (action === "implement-spec" && project?.tracker !== "app") throw new FactoryError("tracker_setup_required", "Select the app-native Other tracker explicitly; external tracker publication remains a separately configured action", 409);
     const specification = this.workflow.specification(id); const graphHash = this.workflow.graphHash(id);
     const selectedEvidence = new Set(retrospective?.evidence_ids ?? []);
-    const artifacts = [...this.store.list<FactoryArtifact>("artifacts"), ...this.store.list<FactoryArtifact>("deleted_artifacts")].filter((artifact) => artifact.implementation_id === id && this.store.get("artifacts", artifact.id) !== null || selectedEvidence.has(artifact.id));
+    const selectedArtifacts = (): FactoryArtifact[] => [...this.store.list<FactoryArtifact>("artifacts"), ...this.store.list<FactoryArtifact>("deleted_artifacts")].filter((artifact) => artifact.implementation_id === id && this.store.get("artifacts", artifact.id) !== null || selectedEvidence.has(artifact.id));
+    const artifacts = selectedArtifacts();
     if (artifacts.reduce((size, artifact) => size + artifact.size, 0) > 64 * 1024 * 1024) throw new FactoryError("context_too_large", "Retained attachments exceed this Run's 64 MiB materialization budget", 413);
     if (action === "implement-spec") {
       if (!specification || !this.workflow.approved(id, "specification", specification.id) || !this.workflow.approved(id, "testing_seams", specification.id) || !this.workflow.tickets(id).length || !this.workflow.approved(id, "ticket_graph", graphHash)) throw new FactoryError("scope_unaccepted", "Accept the current specification, testing seams and Ticket graph", 409);
       if (!project?.checks?.length || !project.permissions?.trim()) throw new FactoryError("project_setup_required", "Configure known Project checks and execution permissions before factory admission", 409);
     }
-    const api = new URL(process.env["HERDR_FACTORY_PUBLIC_URL"] ?? origin);
+    const api = new URL(this.publicUrl ?? origin);
     if (!["http:", "https:"].includes(api.protocol) || api.username || api.password) throw new FactoryError("invalid_factory_url", "Use an authenticated HTTP(S) app address for the tracker");
     const contractHash = hash(JSON.stringify({ implementation, project, checkout, specification, graphHash, settings: this.settings(), skills: skills.hash, artifacts }));
     const run = this.store.db.transaction(() => {
       const raced = this.store.list<FactoryRun>("runs", id).find((entry) => entry.idempotency_key === body.idempotency_key);
       if (raced) return { run: raced, accepted: false };
       if (this.stopped) throw new FactoryError("stopping", "The bridge is stopping; reconcile before retrying", 409);
-      const currentHash = hash(JSON.stringify({ implementation: this.store.get("implementations", id), project: project ? this.store.get("projects", project.id) : null, checkout, specification: this.workflow.specification(id), graphHash: this.workflow.graphHash(id), settings: this.settings(), skills: skills.hash, artifacts: this.store.list("artifacts", id) }));
+      const currentHash = hash(JSON.stringify({ implementation: this.store.get("implementations", id), project: project ? this.store.get("projects", project.id) : null, checkout, specification: this.workflow.specification(id), graphHash: this.workflow.graphHash(id), settings: this.settings(), skills: skills.hash, artifacts: selectedArtifacts() }));
       if (currentHash !== contractHash) throw new FactoryError("scope_changed", "The selected execution scope changed during admission", 409);
       const active = this.store.list<FactoryRun>("runs").filter((entry) => activeConditions.has(entry.condition));
       if (active.some((entry) => entry.implementation_id === id)) throw new FactoryError("implementation_owned", "An existing or uncertain Run still owns this Implementation", 409);
@@ -128,12 +129,14 @@ export class FactoryRuntime {
   }
   private async dispatch(record: FactoryRun): Promise<FactoryRun> {
     let run = record;
+    let dispatched = false;
     const access = this.store.get<{ token: string; url: string }>("run_access", record.id);
     try {
       const attachments = (this.store.get<{ artifacts: FactoryArtifact[] }>("run_artifacts", record.id)?.artifacts ?? []).map((artifact) => ({ ...artifact, content_base64: this.readArtifact(artifact).toString("base64") }));
+      dispatched = true;
       run = this.observed(record, record.machine_id === "local" ? await this.host.launch(record, access ?? undefined, attachments) : await this.remote<FactoryRun>(record.machine_id, "/launch", { run: record, access, attachments }));
     }
-    catch (error) { run = { ...record, condition: "disconnected", waiting_reason: error instanceof FactoryError ? error.message : "Launch outcome is uncertain; reconcile native identity", updated_at: new Date().toISOString() }; }
+    catch (error) { run = { ...record, condition: dispatched ? "disconnected" : "failed", waiting_reason: error instanceof FactoryError ? error.message : "Launch outcome is uncertain; reconcile native identity", updated_at: new Date().toISOString() }; }
     if (!this.stopped) this.store.db.transaction(() => {
       this.store.put("runs", run, run.implementation_id);
       this.store.event(run.implementation_id, run.condition === "working" ? "native_launch_confirmed" : "dispatch_uncertain", { run_id: run.id, machine_id: run.machine_id, pane_id: run.pane_id, reason: run.waiting_reason });

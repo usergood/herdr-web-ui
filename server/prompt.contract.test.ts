@@ -18,15 +18,16 @@ const workspaces: string[] = [];
 const MENU = `
 const { appendFileSync, writeFileSync } = require("node:fs");
 const [out, spec] = process.argv.slice(2);
-const { head, rows, drift } = JSON.parse(spec);
+const { head, rows, drift, footer } = JSON.parse(spec);
 let cursor = 0;
 const draw = () => process.stdout.write("\\u001b[2J\\u001b[H" + [
-  ...head, "", ...rows.map((row, index) => " " + (index === cursor ? "❯" : " ") + " " + row), "", " Enter to confirm · Esc to cancel",
+  ...head, "", ...rows.map((row, index) => " " + (index === cursor ? "❯" : " ") + " " + row), "", footer || " Enter to confirm · Esc to cancel",
 ].join("\\r\\n"));
 process.stdin.setRawMode(true);
 process.stdin.resume();
 process.stdin.on("data", (chunk) => {
   const data = chunk.toString("utf8");
+  if (footer && /[0-9]/.test(data)) appendFileSync(out, "unexpected digit\\n");
   // drift: a key typed in the pane at the same moment, one more row down
   if (/\\u001b[\\[O]B/.test(data)) cursor = Math.min(rows.length - 1, cursor + 1 + (drift ? 1 : 0));
   if (/\\u001b[\\[O]A/.test(data)) cursor = Math.max(0, cursor - 1);
@@ -69,13 +70,13 @@ let drifting: Menu;
 let ticking: Menu;
 let twin: Menu;
 
-async function menu(label: string, head: string[], rows: string[], drift = false, script = "menu.js"): Promise<Menu> {
+async function menu(label: string, head: string[], rows: string[], drift = false, script = "menu.js", footer?: string): Promise<Menu> {
   const created = await herdrRpc<{ workspace: { workspace_id: string }; root_pane: { pane_id: string } }>(
     "workspace.create", { label: `herdr-web-ui-test-prompt-${label}`, cwd: root, focus: false },
   );
   workspaces.push(created.workspace.workspace_id);
   const log = join(root, `${label}.log`);
-  const spec = JSON.stringify({ head, rows, drift });
+  const spec = JSON.stringify({ head, rows, drift, footer });
   await herdrRpc("pane.send_text", { pane_id: created.root_pane.pane_id, text: `exec '${join(root, "claude")}' '${join(root, script)}' '${log}' '${spec}'\n` });
   for (let i = 0; i < 200 && !existsSync(log); i++) await Bun.sleep(50);
   expect(existsSync(log)).toBe(true);
@@ -130,6 +131,15 @@ afterAll(async () => {
 });
 
 describe("answers to Claude's unnumbered menus", () => {
+  it("answers Codex folder trust with key navigation when its footer says esc quit", async () => {
+    const target = await menu("codex-trust", ["Folder access", root, "Trust this folder? Codex can read, edit, and run files here."], ["1. Trust and continue", "2. Quit"], false, "menu.js", "enter continue · esc quit");
+    await herdrRpc("pane.report_agent", { pane_id: target.pane, source: "manual", agent: "codex", state: "blocked" });
+    const prompt = await card(target);
+    expect(prompt.kind).toBe("approval"); expect(prompt.fallback).toBeUndefined();
+    expect(prompt.body).toContain(root);
+    expect((await answer(target, prompt.id, 0)).status).toBe(200);
+    expect(await confirmed(target)).toEqual(["1. Trust and continue"]);
+  });
   it("moves the cursor to the row answered, then confirms it", async () => {
     const prompt = await card(trust);
     expect(prompt.options.map((option) => option.label)).toEqual(["No, exit", "Yes, I trust this folder"]);

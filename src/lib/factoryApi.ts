@@ -1,8 +1,8 @@
-import type { FactoryDetail, FactoryOverview } from "../../shared/protocol.ts";
+import type { FactoryDetail, FactoryOverview, FactoryRequestBody } from "../../shared/protocol.ts";
 import { ApiError } from "./api.ts";
 
 /** Factory records always live on the connection server. Pane operations keep useMachineApi. */
-export async function factoryRequest<T>(path = "", body?: unknown, method = body === undefined ? "GET" : "POST"): Promise<T> {
+export async function factoryRequest<T>(path = "", body?: FactoryRequestBody, method = body === undefined ? "GET" : "POST"): Promise<T> {
   const url = `/api/factory${path}`;
   const response = await fetch(url, { method, headers: body === undefined ? {} : { "content-type": "application/json", "x-herdr-factory": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const result = await response.json();

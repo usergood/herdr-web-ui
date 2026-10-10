@@ -8,7 +8,8 @@ export class FactoryWorkflow {
   constructor(private readonly store: FactoryStore) {}
   specification(id: string): SpecificationVersion | null { return this.store.list<SpecificationVersion>("specifications", id).at(-1) ?? null; }
   tickets(id: string): FactoryTicket[] {
-    return this.store.get<{ id: string; tickets: FactoryTicket[] }>("graphs", id)?.tickets ?? [];
+    const graph = this.store.get<{ id: string; specification_id: string; tickets: FactoryTicket[] }>("graphs", id);
+    return graph && graph.specification_id === this.specification(id)?.id ? graph.tickets : [];
   }
   graphHash(id: string): string { return this.store.get<{ hash: string }>("graphs", id)?.hash ?? hash("[]"); }
   questionRevision(id: string): string { return hash(JSON.stringify(this.store.list("questions", id))); }

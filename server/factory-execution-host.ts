@@ -12,8 +12,9 @@ import { FactoryStore } from "./factory-store.ts";
 import { paneConversation } from "./conversation.ts";
 import { FactoryWorktrees } from "./factory-worktrees.ts";
 import type { FactoryCheck, FactoryWorker } from "../shared/protocol.ts";
-import { factoryTrackerClient } from "./factory-tracker-client.ts";
+import { factoryTrackerClient, factoryTrackerGuide } from "./factory-tracker-client.ts";
 import { cleanupCheckouts, recordScaffolding } from "./factory-cleanup.ts";
+import { factoryEnvironment } from "./factory-environment.ts";
 
 /** Machine-owned execution leases, not a second writable tracker or conversation history. */
 export class FactoryExecutionHost {
@@ -109,7 +110,8 @@ export class FactoryExecutionHost {
     try { return await launch; } finally { this.launches.delete(record.id); }
   }
   private async dispatch(run: FactoryRun, signature: string, attachments: { id: string; name: string; hash: string; size: number; content_base64: string }[]): Promise<FactoryRun> {
-    const save = (): void => { if (!this.stopped) this.store.put("host_leases", { id: run.id, signature, run }); };
+    let nativeAttempted = false;
+    const save = (): void => { if (!this.stopped) this.store.put("host_leases", { id: run.id, signature, run, native_attempted: nativeAttempted }); };
     try {
       const skills = verifySkills(this.skillPath());
       const expected = run.manifest as { skills?: { hash?: string }; checkout?: { repository?: string }; provider_version?: string };
@@ -126,7 +128,9 @@ export class FactoryExecutionHost {
       const branch = run.checkout ? `saurons-eye/${run.implementation_id}/${run.id}` : null;
       if (run.checkout) await git(run.checkout, ["worktree", "add", "-b", branch!, worktree, run.base!]); else mkdirSync(worktree, { mode: 0o700 });
       if (realpathSync(worktree) !== worktree) throw new FactoryError("wrong_worktree", "The owned working directory changed", 409);
-      for (const directory of ["cache", "state", "notes", "tmp"]) mkdirSync(join(root, directory), { mode: 0o700 });
+      run = { ...run, worktree, branch, updated_at: new Date().toISOString() }; save();
+      const project = (run.manifest as { project?: { environment?: Record<string, string> } }).project;
+      const environment = factoryEnvironment(root, run.id, project?.environment);
       let attachmentBytes = 0;
       const research = [];
       for (const attachment of attachments) {
@@ -142,11 +146,10 @@ export class FactoryExecutionHost {
       provisionSkills(worktree, run.provider, skills);
       const access = this.store.get("host_access", run.id);
       if (access) { writePrivateFile(join(worktree, ".saurons-eye-access.json"), JSON.stringify(access), { mode: 0o600, flag: "wx" }); writePrivateFile(join(worktree, ".saurons-eye-tracker.mjs"), factoryTrackerClient, { mode: 0o600, flag: "wx" }); }
-      run = { ...run, worktree, branch, updated_at: new Date().toISOString() }; save();
-      writePrivateFile(join(worktree, ".saurons-eye-context.json"), JSON.stringify({ run, tracker: { type: "Other: app-native", command: "bun .saurons-eye-tracker.mjs", instructions: "The app owns stable Ticket IDs, dependencies and resolution. Read contract and ticket IDs through this adapter. Question records require actual owner answers; consume records their version. The coordinator uses worker, refresh, check and integrate for the accepted dependency frontier. All native contexts and builds must use this adapter's reservations; never spawn unmanaged children or builds. Each worker writes only its own checkout. Shared progress/glossary/ADRs/migrations/lockfiles require explicit path claims. The backend merger alone writes integration. Do not accept your own work, publish or deploy. If synchronization fails, stop and retain the failure." }, environment: { cache: join(root, "cache"), state: join(root, "state"), notes: join(root, "notes"), temporary: join(root, "tmp") }, workflow: "Load only the explicitly selected pinned action. Preserve its owner question and approval gates. Reuse frozen approvals within their scope. Keep application scaffolding and attachments out of commits. Preserve the primary checkout and retain separate Standards and Spec evidence." }, null, 2), { mode: 0o600, flag: "wx" });
+      writePrivateFile(join(worktree, ".saurons-eye-context.json"), JSON.stringify({ run, tracker: { guide: factoryTrackerGuide, type: "Other: app-native", command: "bun .saurons-eye-tracker.mjs", instructions: "The app owns stable Ticket IDs, dependencies and resolution. Read contract and ticket IDs through this adapter. Question records require actual owner answers; consume records their version. The coordinator uses worker, refresh, check and integrate for the accepted dependency frontier. All native contexts and builds must use this adapter's reservations; never spawn unmanaged children or builds. Each worker writes only its own checkout. Shared progress/glossary/ADRs/migrations/lockfiles require explicit path claims. The backend merger alone writes integration. Do not accept your own work, publish or deploy. If synchronization fails, stop and retain the failure." }, environment: { cache: join(root, "cache"), state: join(root, "state"), notes: join(root, "notes"), temporary: join(root, "tmp") }, workflow: "Load only the explicitly selected pinned action. Preserve its owner question and approval gates. Reuse frozen approvals within their scope. Keep application scaffolding and attachments out of commits. Preserve the primary checkout and retain separate Standards and Spec evidence." }, null, 2), { mode: 0o600, flag: "wx" });
       if (this.stopped) throw new FactoryError("stopping", "The bridge stopped before native launch; reconcile the accepted intent", 409);
-      const project = (run.manifest as { project?: { environment?: Record<string, string> } }).project;
-      const workspace = await this.native.createWorkspace({ cwd: worktree, label: `saurons-eye-run-${run.id}`, env: { PORT: "0", ...project?.environment, XDG_CACHE_HOME: join(root, "cache"), TMPDIR: join(root, "tmp"), FACTORY_DATABASE: join(root, "state", "tests.sqlite"), FACTORY_STATE_DIR: join(root, "state"), FACTORY_NOTES_DIR: join(root, "notes"), FACTORY_RUN_ID: run.id } });
+      nativeAttempted = true; save();
+      const workspace = await this.native.createWorkspace({ cwd: worktree, label: `saurons-eye-run-${run.id}`, env: environment });
       run = { ...run, workspace_id: workspace.workspace.workspace_id, pane_id: workspace.root_pane.pane_id }; save();
       const skill = run.action === "setup" ? "setup-matt-pocock-skills" : run.action === "apply-retro" ? "tdd" : run.action;
       provisionFactoryAgent(worktree, run.provider, skill, skills, run.action === "implement-spec");
@@ -159,7 +162,7 @@ export class FactoryExecutionHost {
       run = { ...run, condition: "working", waiting_reason: null, updated_at: new Date().toISOString() }; save(); return run;
     } catch (error) {
       const reason = error instanceof FactoryError ? error.message : error instanceof HerdrError ? `Native launch failed (${error.code}); reconcile the recorded identity before retrying` : "Launch did not finish; inspect the owned working directory and reconcile native identity";
-      run = { ...run, condition: "interrupted", waiting_reason: reason, updated_at: new Date().toISOString() }; save(); return run;
+      run = { ...run, condition: nativeAttempted ? "interrupted" : "failed", waiting_reason: reason, updated_at: new Date().toISOString() }; save(); return run;
     }
   }
   async verifyProvider(id: string): Promise<FactoryCapabilities> {
@@ -217,16 +220,18 @@ export class FactoryExecutionHost {
     if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Native control is disabled on a restored copy", 409);
     const lease = this.store.get<{ id: string; signature: string; run: FactoryRun }>("host_leases", id);
     if (!lease) throw new FactoryError("native_identity_uncertain", "This host has no owned lease to stop", 409);
-    if (["cancelled", "completed"].includes(lease.run.condition)) return lease.run;
+    if (["cancelled", "completed", "failed"].includes(lease.run.condition)) return lease.run;
     const run = lease.run;
+    this.store.put("host_leases", { ...lease, closing: true });
     const snapshot = await this.native.snapshot();
     const workspace = snapshot.workspaces.find((entry) => entry.workspace_id === run.workspace_id);
     const pane = snapshot.panes.find((entry) => entry.pane_id === run.pane_id);
     if (!workspace || workspace.label !== `saurons-eye-run-${id}` || !pane?.cwd || realpathSync(pane.cwd) !== run.worktree) throw new FactoryError("native_identity_uncertain", "Verify the recorded native identity before stopping it; ownership is retained", 409);
+    await this.worktrees.stopWorkers(id);
     await this.native.closeWorkspace(workspace.workspace_id);
     await this.worktrees.stopChecks(id);
     const stopped: FactoryRun = { ...run, condition: "cancelled", waiting_reason: null, updated_at: new Date().toISOString() };
-    this.store.put("host_leases", { ...lease, run: stopped }); return stopped;
+    this.store.put("host_leases", { ...lease, closing: true, run: stopped }); return stopped;
   }
   async send(id: string, text: string, signal: AbortSignal): Promise<void> {
     if (this.sends.has(id)) throw new FactoryError("delivery_busy", "Another selected batch is being delivered; retain this draft", 409);
@@ -235,8 +240,8 @@ export class FactoryExecutionHost {
   }
   private async sendOwned(id: string, text: string, signal: AbortSignal): Promise<void> {
     if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Native input is disabled on a restored copy", 409);
-    const lease = this.store.get<{ run: FactoryRun }>("host_leases", id);
-    if (!lease || !["working", "needs_you"].includes(lease.run.condition)) throw new FactoryError("run_unavailable", "Reconcile the Run before submitting changes", 409);
+    const lease = this.store.get<{ run: FactoryRun; closing?: boolean }>("host_leases", id);
+    if (!lease || lease.closing || !["working", "needs_you"].includes(lease.run.condition)) throw new FactoryError("run_unavailable", "Reconcile the Run before submitting changes", 409);
     const run = lease.run; const snapshot = await this.native.snapshot();
     const pane = snapshot.panes.find((entry) => entry.pane_id === run.pane_id);
     const workspace = snapshot.workspaces.find((entry) => entry.workspace_id === run.workspace_id);
@@ -251,7 +256,7 @@ export class FactoryExecutionHost {
       if (before !== after || claudeInputDraft(after, viewportShowsLive(scrollBefore, scrollAfter, shown, before, after) ? shown : null)) throw new FactoryError("input_draft", "The native input box contains a draft; retain this batch and send explicitly after it is cleared", 409);
     }
     if (signal.aborted) throw new FactoryError("disconnected", "The submitting connection closed; this input was not sent", 409);
-    await this.native.prompt(run.pane_id!, text, undefined, () => !this.stopped && !signal.aborted && ["working", "needs_you"].includes(this.store.get<{ run: FactoryRun }>("host_leases", id)?.run.condition ?? ""));
+    await this.native.prompt(run.pane_id!, text, undefined, () => { const current = this.store.get<{ run: FactoryRun; closing?: boolean }>("host_leases", id); return !this.stopped && !signal.aborted && !current?.closing && ["working", "needs_you"].includes(current?.run.condition ?? ""); });
     if (!this.promptBound) noteSubmitted(run.pane_id!, text);
   }
   private outputBytes(id: string, name: string): Buffer {

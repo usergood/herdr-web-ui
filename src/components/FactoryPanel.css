@@ -33,8 +33,8 @@
   .factory-panel { padding: var(--space-3); }
   .factory-heading h1 { flex-basis: 100%; }
   .factory-filters label { flex: 1 1 8rem; min-width: 0; }
-  .factory-form .input, .factory-form .select { font-size: var(--fs-input); }
+  .factory-input { font-size: var(--fs-input); }
   .factory-board { grid-template-columns: 1fr; overflow: visible; }
   .factory-lane { min-height: 0; }
-  .factory-actions .btn { min-height: var(--touch-target); }
+  .factory-button { min-height: var(--touch-target); }
 }

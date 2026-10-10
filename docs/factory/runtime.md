@@ -8,6 +8,8 @@ Open Inbox, capture an Implementation, and add chats, notes or attachments. Sele
 
 Configure known check and setup recipes as JSON argument arrays, execution permissions, task environment and shared document paths. Recipes run without shell interpolation. Native contexts and checks get private cache, temporary, database and notes directories; programs should honor the supplied `PORT=0` and `FACTORY_*` environment. Dependencies are installed by the explicitly configured setup recipes. Ignored secrets are not copied from the primary checkout.
 
+For remote execution, the selected Machine must reach the connection server's authenticated app address. `HERDR_FACTORY_PUBLIC_URL` selects that HTTP(S) callback origin; otherwise the request origin is used. `createServer({ factory: { publicUrl } })` provides the same per-instance configuration. Use the deployed HTTPS or reachable private-network address when a browser connects through localhost. SSH onboarding does not require an alias.
+
 Prepare this Machine verifies the complete pinned source under private application state. It installs no global plugin. A Run freezes the source commit and every locked file hash, the effective provider/Machine, verified checkout/base/instructions, specification, graph, approvals, artifact references and permissions.
 
 The connection server owns `stateDir/factory/records.sqlite`, immutable blob files and history. Machines own their operational leases, native sessions and worktrees. SSH never shares a SQLite file. Keep a separate state directory, port and Herdr session for development; use the repository's `check` runner for acceptance.
@@ -22,11 +24,15 @@ Grill me, Grill with docs, Create specification, Plan tickets, Start factory and
 
 Factory admission requires an accepted current specification, testing seams and acyclic graph, the app-native tracker, known Project checks/permissions, matching pinned skills and verified native provider. Unsupported providers keep ordinary chat and show their eligibility reasons. External tracker publication, pushes, default-branch merges and deployment are separate owner scope.
 
+Creating a specification revision invalidates the current Ticket graph for future admission while retaining its immutable graph history and active Run contracts. A failure proven to occur before any native allocation releases admission as Failed and preserves any generated files; ambiguous launches retain ownership.
+
 ## Work, review and history
 
 The integration branch and worktree belong to the Run. Implementers receive separate worktrees at the current integration tip. The scoped tracker exposes stable Ticket IDs, accepted context, questions, versioned answer consumption, worker operations, checks and proposal operations. Its private capability lives in a 0600 file and cannot approve specifications or control another Run.
 
 Only the dependency frontier can start ordinary Ticket work. Shared document claims exclude competing writers. Workers reconcile the current integration tip, run the configured checks and submit a committed candidate. The serialized backend merger rejects stale tips, changed cwd/branch/repository, dirty tracked changes, unclaimed shared documents and committed application scaffolding. It retains the branch and never updates the default branch.
+
+The native adapter includes an exact request guide and `bun .saurons-eye-tracker.mjs help`. A blocked worker remains an owner-answer gate; a ready worker is a candidate awaiting explicit checks/integration. Integrating all accepted Tickets moves the card to Review; acceptance still requires current evidence and does not infer publication.
 
 Build and native reservations cover active and uncertain contexts across Implementations. The initial limits are two Implementations, six native contexts and two builds; the owner can permit a third Implementation. There is no backlog scheduler or cross-machine failover. Reconciliation observes accepted identities; it does not redispatch a launch.
 

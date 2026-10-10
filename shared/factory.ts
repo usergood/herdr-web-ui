@@ -55,6 +55,7 @@ export interface ReviewComment extends FactoryRecord {
   side: "old" | "new"; line_start: number; line_end: number; context: string;
   content: string; status: "draft" | "submitted" | "outdated" | "resolved";
   batch_id: string | null;
+  resolution?: { head: string; check_id: string; summary: string };
 }
 export interface FactorySettings {
   provider: FactoryProvider; max_implementations: number; max_agents: number; max_builds: number;
