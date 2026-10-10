@@ -1,7 +1,7 @@
-# herdr web ui
+# Saurons eye
 
 <p align="center">
-  <img src="public/icons/icon-192.png" alt="herdr web ui" width="100">
+  <img src="public/icons/icon-192.png" alt="Saurons eye" width="100">
 </p>
 
 <p align="center">
@@ -15,8 +15,11 @@
   <a href="#docs">문서</a>
 </p>
 
-<p align="center">
-</p>
+**Saurons eye**는 [herdr-web-ui](https://github.com/devswha/herdr-web-ui)의 포크입니다. 브라우저와 폰의 채팅, 라이브 터미널을 유지하면서 아이디어부터 명세, 구현, 검토, 소유자 승인까지 기록하는 워크플로를 추가합니다. 업스트림 v0.4.4와 v0.4.5를 통합했으며, 아래 녹화는 업스트림 프로젝트와 기여자들의 작업입니다.
+
+추가 기능은 Inbox와 Project, 명세 버전 관리와 Ticket 의존 그래프 승인, 격리된 Git worktree의 네이티브 에이전트 실행, 검사 증거를 보존하는 diff 검토, 산출물 버전 관리, SSH 실행 머신 준비, 고정 버전 스킬, 회고 제안, 검증된 백업과 실행을 비활성화한 복사본 복원입니다. 실행은 소유자가 수동으로 시작하며 업스트림 설치·업데이트 텔레메트리를 수집하지 않습니다.
+
+개발 호스트의 Codex는 실제 네이티브 검증과 재작업·검토·승인 흐름을 통과했습니다. Claude Code와 OpenCode의 factory 사용은 선택한 머신에서 로그인된 네이티브 CLI 검증을 마쳐야 가능합니다. 일반 채팅과 터미널은 별도로 계속 사용할 수 있습니다. [factory 운영 가이드](docs/factory/runtime.md)와 [영문 기능 설명](README.md#what-saurons-eye-adds)을 참고하세요.
 
 ---
 
@@ -141,7 +144,7 @@ Claude Code, Codex, omp, omo, gjc, pi는 각자의 세션 파일에서 읽습니
 
 **collie, roamgate, herdr-remote와 무엇이 다른가요?**
 
-이들도 herdr를 폰이나 브라우저에서 쓰는 클라이언트입니다. 이 앱은 에이전트의 기록을 직접 읽어서, pane이 터미널 출력이 아니라 작업이 턴마다 접힌 채팅으로 보이고, 다른 PC는 사이드바에서 SSH로 붙습니다. 터널은 제공하지 않고 herdr만 다룹니다. tmux나 zellij, diff, Telegram, 바로 쓰는 터널이 필요하면 다른 쪽이 더 맞습니다. [전체 비교 →](docs/guide.md#faq)
+이들도 herdr의 폰·브라우저 클라이언트입니다. Saurons eye는 herdr-web-ui의 네이티브 기록 채팅과 SSH 연결을 유지하고 명세, Ticket 워크플로, diff 검토, 보존되는 작업 증거를 추가합니다. 터미널은 herdr가 관리하고 네트워크 접근은 사용자가 설정한 경로를 이용합니다. [업스트림 클라이언트 비교 →](docs/guide.md#faq)
 
 **Happy, Paseo, CloudCLI UI와 무엇이 다른가요?**
 

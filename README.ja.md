@@ -1,7 +1,7 @@
-# herdr web ui
+# Saurons eye
 
 <p align="center">
-  <img src="public/icons/icon-192.png" alt="herdr web ui" width="100">
+  <img src="public/icons/icon-192.png" alt="Saurons eye" width="100">
 </p>
 
 <p align="center">
@@ -15,8 +15,11 @@
   <a href="#docs">ドキュメント</a>
 </p>
 
-<p align="center">
-</p>
+**Saurons eye** は [herdr-web-ui](https://github.com/devswha/herdr-web-ui) のフォークです。ブラウザとスマートフォンのチャット、ライブターミナルを引き継ぎ、アイデアから仕様、実装、レビュー、所有者による受け入れまでを記録するワークフローを追加しています。上流の v0.4.4 と v0.4.5 を統合済みで、以下の録画は上流プロジェクトとその貢献者によるものです。
+
+追加機能には Inbox と Project、仕様の版管理と Ticket 依存グラフの承認、独立した Git worktree でのネイティブエージェント実行、チェック証拠付きの差分レビュー、成果物の版管理、SSH 実行マシンの準備、固定版のスキル、振り返り提案、検証済みバックアップと実行を無効にしたコピーの復元があります。実行は所有者が手動で開始し、上流のインストール・更新テレメトリーは収集しません。
+
+開発ホストの Codex は実際のネイティブ検証と修正・レビュー・受け入れの一連の手順を通過しています。Claude Code と OpenCode の factory 利用には、選択したマシンで認証済みのネイティブ CLI による検証が必要です。通常のチャットとターミナルは独立して利用できます。[factory 運用ガイド](docs/factory/runtime.md) と [英語の機能説明](README.md#what-saurons-eye-adds)をご覧ください。
 
 ---
 
@@ -141,7 +144,7 @@ Claude Code、Codex、omp、omo、gjc、pi は、それぞれのセッション�
 
 **collie、roamgate、herdr-remote とは何が違いますか？**
 
-これらも herdr をスマートフォンやブラウザから使うためのクライアントです。このアプリはエージェント自身の会話履歴を読むので、ペインはターミナル出力ではなく、作業がターンごとに折りたたまれたチャットになります。ほかの PC はサイドバーから SSH で追加します。トンネルは付属せず、扱うのは herdr だけです。tmux や zellij、差分表示、Telegram、すぐ使えるトンネルが必要なら、ほかのクライアントのほうが向いています。[詳しい比較 →](docs/guide.md#faq)
+これらも herdr のスマートフォン・ブラウザ向けクライアントです。Saurons eye は herdr-web-ui のネイティブ会話チャットと SSH 接続を引き継ぎ、仕様、Ticket ワークフロー、差分レビュー、保持される受け入れ証拠を追加しています。ターミナルは herdr が管理し、ネットワークアクセスには利用者が設定した経路を使います。[上流クライアントの比較 →](docs/guide.md#faq)
 
 **Happy、Paseo、CloudCLI UI とは何が違いますか？**
 

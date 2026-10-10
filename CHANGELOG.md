@@ -11,10 +11,15 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 - Saurons eye adds a durable Inbox, Projects, chats and artifacts, version-scoped specification
   and Ticket approvals, isolated native worktrees, retained checks and review findings,
   authenticated machine preparation, scoped retrospectives and verified backup copies.
+  ([#2](https://github.com/usergood/herdr-web-ui/pull/2) by @usergood)
 
 ### Changed
 - Integrate upstream v0.4.4 and v0.4.5, including read-only pane watching, Claude background-task
   fixes, preserved chat code selections, source-bound verification reports and the dependency fix.
+  ([#2](https://github.com/usergood/herdr-web-ui/pull/2) by @usergood)
+- Name the repository Saurons eye in all four READMEs, credit the herdr-web-ui fork origin and
+  document the added factory features, setup and native-provider requirements.
+  ([#2](https://github.com/usergood/herdr-web-ui/pull/2) by @usergood)
 - Saurons eye removes upstream install/update telemetry, automatic external fonts/media/statistics,
   and installer account queries. External services require owner enablement/configuration;
   remote runtimes require an explicit/local manifest and installers require a reviewed ref.
