@@ -698,3 +698,46 @@ export type ServerMessage =
 /** herdr's default socket, under XDG_CONFIG_HOME when set, as herdr itself resolves it. */
 export const HERDR_SOCKET_PATH = `${process.env["XDG_CONFIG_HOME"] || `${process.env["HOME"] ?? ""}/.config`}/herdr/herdr.sock`;
 export const DEFAULT_PORT = 7317;
+/**
+ * Factory routes (connection-server records, independent of the selected pane Machine):
+ * GET /api/factory — FactoryOverview; GET /api/factory/implementations/:id — FactoryDetail.
+ * POST /api/factory/implementations — creates a durable idea and initial Chat (201).
+ * POST /api/factory/projects — verifies/registers a Project checkout (201).
+ * POST /api/factory/implementations/:id/configure — attaches Project and changes future defaults.
+ * POST /api/factory/implementations/:id/chats|messages|artifacts — retains context (201).
+ * Native Messages require source_id + sequence and import idempotently; conflicting content fails.
+ * GET /api/factory/artifacts/:id/source|preview|download — retained verified blob, no host paths.
+ * HTML previews have an opaque sandbox, no scripts, network, forms or top navigation.
+ * POST /api/factory/implementations/:id/specifications — new immutable revision (201).
+ * POST /api/factory/implementations/:id/tickets — proposed acyclic graph for accepted revision (201).
+ * POST /api/factory/implementations/:id/approvals — explicit revision/scope acceptance (201); stale=409.
+ * POST /api/factory/settings — provider, capacity, attachment budgets and pinned source.
+ * GET /api/factory/providers?machine_id= — FactoryCapabilities; unsupported native contracts stay disabled.
+ * POST /api/factory/machines/:id/prepare — verified project-local source preparation on that Machine.
+ * POST /api/factory/projects/:id/configure|checkouts — future defaults, recipes, permissions or verified checkout.
+ * POST /api/factory/implementations/:id/questions; POST .../questions/:question/answer — revision-bound owner decisions.
+ * POST /api/factory/implementations/:id/order — direction or before_id; never dispatches work.
+ * POST /api/factory/implementations/:id/runs — explicit action/key and displayed expected context (202).
+ * POST /api/factory/runs/:id/reconcile|stop|cleanup — observe, release native ownership or remove only clean checkouts.
+ * POST /api/factory/runs/:id/verify-provider — genuine pinned loading and owner-round evidence, never a client assertion.
+ * POST /api/factory/runs/:id/import-artifacts|import-conversation — verified retained outputs or immutable native pages.
+ * POST /api/factory/runs/:id/send-answers — explicit answered-revision delivery with idempotency_key; uncertainty never replays.
+ * POST /api/factory/runs/:id/workers — accepted frontier or delivered rework batch; global native reservation.
+ * POST /api/factory/runs/:id/workers/:worker/refresh|reconcile|check|integrate|stop|review-evidence — owned worker operations.
+ * POST /api/factory/runs/:id/checks; POST .../checks/:check/reconcile — bounded recipes, build reservations and retained results.
+ * POST /api/factory/runs/:id/accept — exact head with fresh checks, separate reviews and resolved findings; no publication.
+ * GET /api/factory/tickets/:id — stable app-native tracker record.
+ * POST /api/factory/implementations/:id/snapshots|comments|request-changes — immutable diffs, anchored drafts, selected delivery receipts.
+ * POST /api/factory/implementations/:id/comments/:comment/resolve — owner resolution requires current checks and both review axes.
+ * POST /api/factory/artifacts/:id/note|delete — annotation or exact-version deletion; referenced blobs remain retained.
+ * POST /api/factory/projects/:id/retrospectives; POST /api/factory/retrospectives/:id/approve — evidence scope and separate candidate approval.
+ * GET/POST /api/factory/backups; POST /api/factory/backups/:id/restore — coherent copies, never replace or activate live state.
+ * /api/factory-host/capabilities|prepare|inspect|review|launch and /runs/:id/{reconcile,stop,send,artifacts,verify-provider,operations/:action}
+ * are authenticated machine-bridge operations; operational leases do not become a second tracker.
+ * /api/factory-agent/:run/{contract,ticket/:id,question,consume,worker,checks,artifact,specification,tickets,proposal,worker/:id/:action}
+ * requires that Run's private capability. Proposals are action-scoped; no owner approvals, publication or other Run control.
+ * Mutations require same-origin and x-herdr-factory: 1; reads and writes require app access.
+ */
+export type { FactoryOverview, FactoryDetail, Implementation, FactoryProject, ProjectCheckout, FactoryChat, FactoryMessage, FactoryEvent, SpecificationVersion, FactoryTicket, FactoryApproval, FactoryQuestion, FactoryArtifact, FactoryRun, ReviewSnapshot, ReviewComment, FactorySettings, FactoryProvider, FactoryStage, FactoryAction, RunCondition, FactoryCapabilities, FactoryProviderCapability, FactoryOutput } from "./factory.ts";
+export type { FactoryWorker, FactoryCheck, FactoryReviewEvidence, FactoryRetrospective } from "./factory.ts";
+export type { NativeConversationSnapshot } from "./factory.ts";

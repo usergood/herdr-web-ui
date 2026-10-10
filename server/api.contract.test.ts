@@ -38,6 +38,509 @@ afterAll(() => {
 
 const base = () => `http://localhost:${server.port}`;
 
+describe("factory records", () => {
+  it("removes only stopped clean checkouts and preserves unexpected work and branches", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-eye-cleanup-")); const repo = join(state, "repo");
+    const { mkdirSync } = await import("node:fs"); mkdirSync(repo); writeFileSync(join(repo, "notes.txt"), "base\n");
+    for (const args of [["init", "-b", "main"], ["add", "."], ["-c", "user.name=Factory test", "-c", "user.email=factory@example.invalid", "commit", "-m", "initial"]]) expect(Bun.spawnSync(["git", ...args], { cwd: repo }).exitCode).toBe(0);
+    const app = createServer({ port: 0, stateDir: state, machines: false, factory: { native: { version: async () => "contract-fixture", startAgent: async () => {} } } });
+    const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    let workspaceId: string | null = null;
+    try {
+      const project = await request("projects", { name: "Safe cleanup", path: repo, machine_id: "local", provider: "codex", tracker: "app" }).then((response) => response.json());
+      const idea = await request("implementations", { title: "Keep unexpected files", description: "" }).then((response) => response.json());
+      await request(`implementations/${idea.id}/configure`, { project_id: project.id });
+      const run = await request(`implementations/${idea.id}/runs`, { action: "grill-with-docs", idempotency_key: "cleanup-owned-worktree" }).then((response) => response.json()); workspaceId = run.workspace_id;
+      expect((await request(`runs/${run.id}/cleanup`, {})).status).toBe(409);
+      writeFileSync(join(run.worktree, "unfinished.txt"), "Keep this work");
+      await request(`runs/${run.id}/stop`, {}); workspaceId = null;
+      expect((await request(`runs/${run.id}/cleanup`, {})).status).toBe(409);
+      expect(readFileSync(join(run.worktree, "unfinished.txt"), "utf8")).toBe("Keep this work");
+      rmSync(join(run.worktree, "unfinished.txt"));
+      const cleaned = await request(`runs/${run.id}/cleanup`, {}); expect(cleaned.status).toBe(200);
+      expect(existsSync(run.worktree)).toBe(false);
+      expect(Bun.spawnSync(["git", "rev-parse", "--verify", run.branch], { cwd: repo }).exitCode).toBe(0);
+      expect(readFileSync(join(repo, "notes.txt"), "utf8")).toBe("base\n");
+    } finally { if (workspaceId) await workspaceClose(workspaceId); app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+  it("gives successive projectless attempts separate working directories and state", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-eye-attempts-"));
+    const app = createServer({ port: 0, stateDir: state, machines: false, factory: { native: { version: async () => "contract-fixture", startAgent: async () => {} } } });
+    const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    let workspaceId: string | null = null;
+    try {
+      const idea = await request("implementations", { title: "Separate attempts", description: "" }).then((response) => response.json());
+      await request(`implementations/${idea.id}/configure`, { machine_id: "local" });
+      const first = await request(`implementations/${idea.id}/runs`, { action: "grill-me", idempotency_key: "first-attempt" }).then((response) => response.json()); workspaceId = first.workspace_id;
+      await request(`runs/${first.id}/stop`, {}); workspaceId = null;
+      const second = await request(`implementations/${idea.id}/runs`, { action: "grill-me", idempotency_key: "second-attempt" }).then((response) => response.json()); workspaceId = second.workspace_id;
+      expect(second.condition).toBe("working");
+      const firstContext = JSON.parse(readFileSync(join(first.worktree, ".saurons-eye-context.json"), "utf8"));
+      const secondContext = JSON.parse(readFileSync(join(second.worktree, ".saurons-eye-context.json"), "utf8"));
+      expect(first.worktree).not.toBe(second.worktree); expect(firstContext.environment.state).not.toBe(secondContext.environment.state);
+    } finally { if (workspaceId) await workspaceClose(workspaceId); app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+  it("reserves independent review contexts within the global native limit", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-eye-review-context-")); const repo = join(state, "repo");
+    const { mkdirSync } = await import("node:fs"); mkdirSync(repo); writeFileSync(join(repo, "notes.txt"), "base\n");
+    for (const args of [["init", "-b", "main"], ["add", "."], ["-c", "user.name=Factory test", "-c", "user.email=factory@example.invalid", "commit", "-m", "initial"]]) expect(Bun.spawnSync(["git", ...args], { cwd: repo }).exitCode).toBe(0);
+    const app = createServer({ port: 0, stateDir: state, machines: false, factory: { native: { version: async () => "contract-fixture", startAgent: async (options) => { await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "idle" }); } } } });
+    const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    const workspaces: string[] = [];
+    try {
+      await request("settings", { max_agents: 2 });
+      const project = await request("projects", { name: "Independent reviews", path: repo, machine_id: "local", provider: "codex", tracker: "app" }).then((response) => response.json());
+      const idea = await request("implementations", { title: "Review both axes", description: "" }).then((response) => response.json());
+      await request(`implementations/${idea.id}/configure`, { project_id: project.id });
+      const run = await request(`implementations/${idea.id}/runs`, { action: "grill-with-docs", idempotency_key: "review-owned-worktree" }).then((response) => response.json()); workspaces.push(run.workspace_id);
+      const worker = await request(`runs/${run.id}/workers`, { role: "standards", idempotency_key: "independent-standards" }).then((response) => response.json());
+      expect(worker.error).toBeUndefined();
+      expect(worker.condition).toBe("working"); workspaces.push(worker.workspace_id);
+      expect(worker.worktree).not.toBe(run.worktree); expect(worker.base).toBe(run.base);
+      expect((await request(`runs/${run.id}/workers`, { role: "spec", idempotency_key: "independent-spec" })).status).toBe(409);
+      expect((await request(`runs/${run.id}/workers`, { role: "standards", idempotency_key: "independent-standards" }).then((response) => response.json())).id).toBe(worker.id);
+      expect((await request(`runs/${run.id}/workers/${worker.id}/review-evidence`, {})).status).toBe(409);
+      const detail = await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then((response) => response.json()); expect(detail.review_evidence).toEqual([]);
+    } finally { for (const workspace of workspaces) if (workspace) await workspaceClose(workspace); app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+  it("runs configured checks in isolated state and enforces the global build cap", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-eye-checks-")); const repo = join(state, "repo");
+    const { mkdirSync } = await import("node:fs"); mkdirSync(repo); writeFileSync(join(repo, "notes.txt"), "base\n");
+    for (const args of [["init", "-b", "main"], ["add", "."], ["-c", "user.name=Factory test", "-c", "user.email=factory@example.invalid", "commit", "-m", "initial"]]) expect(Bun.spawnSync(["git", ...args], { cwd: repo }).exitCode).toBe(0);
+    const app = createServer({ port: 0, stateDir: state, machines: false, factory: { native: { version: async () => "contract-fixture", startAgent: async (options) => { await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "idle" }); } } } });
+    const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    let workspaceId: string | null = null;
+    try {
+      const project = await request("projects", { name: "Known checks", path: repo, machine_id: "local", provider: "codex", tracker: "app" }).then((response) => response.json());
+      await request(`projects/${project.id}/configure`, { checks: [["bun", "-e", "console.log(process.env.FACTORY_DATABASE)"]], permissions: "Owned test fixture only" });
+      await request("settings", { max_builds: 1 });
+      const idea = await request("implementations", { title: "Retain check evidence", description: "" }).then((response) => response.json());
+      await request(`implementations/${idea.id}/configure`, { project_id: project.id });
+      const run = await request(`implementations/${idea.id}/runs`, { action: "grill-with-docs", idempotency_key: "check-owned-worktree" }).then((response) => response.json()); workspaceId = run.workspace_id;
+      const [first, second] = await Promise.all([request(`runs/${run.id}/checks`, {}), request(`runs/${run.id}/checks`, {})]);
+      expect([first.status, second.status].sort()).toEqual([200, 409]);
+      const result = await (first.status === 200 ? first : second).json();
+      expect(result.condition).toBe("passed");
+      expect(result.commands[0].output.trim()).toBe(join(state, "factory", "worktrees", run.id, "state", "tests.sqlite"));
+      expect(result.head).toBe(run.base);
+      expect((await request(`runs/${run.id}/accept`, { head: result.head })).status).toBe(409);
+      expect(readFileSync(join(repo, "notes.txt"), "utf8")).toBe("base\n");
+    } finally { if (workspaceId) await workspaceClose(workspaceId); app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+  it("grants a native Run only its tracker scope and revokes control when stopped", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-eye-scope-"));
+    const app = createServer({ port: 0, stateDir: state, token: "owner-scope-contract", machines: false, factory: { native: { version: async () => "contract-fixture", startAgent: async () => {} } } });
+    const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { authorization: "Bearer owner-scope-contract", "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    let workspaceId: string | null = null;
+    try {
+      const idea = await request("implementations", { title: "Scoped native question", description: "" }).then((response) => response.json());
+      await request(`implementations/${idea.id}/configure`, { machine_id: "local" });
+      const run = await request(`implementations/${idea.id}/runs`, { action: "grill-me", idempotency_key: "owned-scoped-run" }).then((response) => response.json()); workspaceId = run.workspace_id;
+      const access = JSON.parse(readFileSync(join(run.worktree, ".saurons-eye-access.json"), "utf8"));
+      const scoped = (path: string, body?: unknown) => fetch(`${access.url}/${path}`, { method: body === undefined ? "GET" : "POST", headers: { authorization: `Bearer ${access.token}`, "content-type": "application/json", "x-herdr-factory": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+      const asking = await scoped("question", { question: "Which acceptance matters?" }); expect(asking.status).toBe(201);
+      expect((await scoped("approvals", { kind: "specification" })).status).toBe(404);
+      expect((await fetch(`http://localhost:${app.port}/api/factory`, { headers: { authorization: `Bearer ${access.token}` } })).status).toBe(401);
+      const contract = await scoped("contract").then((response) => response.json());
+      expect(contract.questions[0].answer).toBeNull(); expect(contract.run.manifest.token).toBeUndefined();
+      await request(`runs/${run.id}/stop`, {}); workspaceId = null;
+      expect((await scoped("question", { question: "Too late" })).status).toBe(409);
+    } finally { if (workspaceId) await workspaceClose(workspaceId); app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+  it("retains artifact annotations and scopes retrospective proposals to their Project", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-eye-retention-")); const repo = join(state, "repo");
+    const { mkdirSync } = await import("node:fs"); mkdirSync(repo); writeFileSync(join(repo, "notes.txt"), "base\n");
+    for (const args of [["init", "-b", "main"], ["add", "."], ["-c", "user.name=Factory test", "-c", "user.email=factory@example.invalid", "commit", "-m", "initial"]]) expect(Bun.spawnSync(["git", ...args], { cwd: repo }).exitCode).toBe(0);
+    const app = createServer({ port: 0, stateDir: state, machines: false });
+    const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    try {
+      const project = await request("projects", { name: "Scoped retro", path: repo, machine_id: "local", provider: "codex", tracker: "app" }).then((response) => response.json());
+      const idea = await request("implementations", { title: "Owned evidence", description: "Preserve the decision" }).then((response) => response.json());
+      await request(`implementations/${idea.id}/configure`, { project_id: project.id });
+      const detail = await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then((response) => response.json());
+      const artifact = await request(`implementations/${idea.id}/artifacts`, { chat_id: detail.chats[0].id, name: "decision.md", media_type: "text/markdown", content_base64: Buffer.from("# Evidence").toString("base64") }).then((response) => response.json());
+      expect((await request(`artifacts/${artifact.id}/note`, { note: "Keep through the review" })).status).toBe(200);
+      const proposal = await request(`projects/${project.id}/retrospectives`, { evidence_ids: [artifact.id, detail.messages[0].id], proposal: "Add a deterministic environment check" });
+      expect(proposal.status).toBe(201);
+      const retro = await proposal.json();
+      expect(retro.approved).toBe(false);
+      expect((await request(`retrospectives/${retro.id}/approve`, { scope_hash: "stale" })).status).toBe(409);
+      expect((await request(`retrospectives/${retro.id}/approve`, { scope_hash: retro.scope_hash })).status).toBe(200);
+      expect((await request(`projects/${project.id}/retrospectives`, { evidence_ids: ["unrelated-session"], proposal: "No inferred access" })).status).toBe(400);
+      const deleted = await request(`artifacts/${artifact.id}/delete`, { hash: artifact.hash }); expect(deleted.status).toBe(200);
+      expect((await fetch(`http://localhost:${app.port}/api/factory/artifacts/${artifact.id}/source`)).status).toBe(404);
+      const retained = await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then((response) => response.json());
+      expect(retained.events.some((event: { kind: string }) => event.kind === "artifact_deleted")).toBe(true);
+      expect(retained.retrospectives[0].proposal).toBe("Add a deterministic environment check");
+    } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+  it("never certifies a stand-in native provider from a claimed verification result", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-eye-proof-"));
+    const app = createServer({ port: 0, stateDir: state, machines: false, factory: { native: { version: async () => "stand-in", startAgent: async () => {} } } });
+    const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    let workspaceId: string | null = null;
+    try {
+      const idea = await request("implementations", { title: "Native contract probe", description: "" }).then((response) => response.json());
+      await request(`implementations/${idea.id}/configure`, { machine_id: "local" });
+      const response = await request(`implementations/${idea.id}/runs`, { action: "verify-provider", idempotency_key: "native-probe" });
+      expect(response.status).toBe(202);
+      const run = await response.json(); workspaceId = run.workspace_id;
+      expect((await request(`runs/${run.id}/verify-provider`, { verified: true })).status).toBe(409);
+      const capabilities = await fetch(`http://localhost:${app.port}/api/factory/providers`).then((response) => response.json());
+      expect(capabilities.providers.every((entry: { factory_ready: boolean }) => !entry.factory_ready)).toBe(true);
+    } finally { if (workspaceId) await workspaceClose(workspaceId); app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+  it("configures a Project's checks and verifies a cloned machine checkout", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-eye-project-config-"));
+    const repo = join(state, "repo"); const clone = join(state, "clone");
+    const { mkdirSync } = await import("node:fs"); mkdirSync(repo); writeFileSync(join(repo, "notes.txt"), "base\n");
+    for (const args of [["init", "-b", "main"], ["add", "."], ["-c", "user.name=Factory test", "-c", "user.email=factory@example.invalid", "commit", "-m", "initial"]]) expect(Bun.spawnSync(["git", ...args], { cwd: repo }).exitCode).toBe(0);
+    expect(Bun.spawnSync(["git", "clone", repo, clone]).exitCode).toBe(0);
+    const app = createServer({ port: 0, stateDir: state, machines: false });
+    const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    try {
+      const project = await request("projects", { name: "Configured repository", path: repo, machine_id: "local", provider: "codex", tracker: "app" }).then((response) => response.json());
+      const configured = await request(`projects/${project.id}/configure`, { provider: "claude", checks: [["bun", "test"]], setup: [], environment: { FACTORY_DATABASE: "owned.sqlite" }, permissions: "Repository writes; ask before network or publication", shared_paths: ["bun.lock"] });
+      expect(configured.status).toBe(200);
+      expect((await configured.json()).checks).toEqual([["bun", "test"]]);
+      const checkout = await request(`projects/${project.id}/checkouts`, { machine_id: "local", path: clone });
+      expect(checkout.status).toBe(201);
+      expect((await checkout.json()).repository).toBe(project.repository);
+      expect((await request(`projects/${project.id}/configure`, { checks: ["bun test"] })).status).toBe(400);
+      expect((await request(`projects/${project.id}/configure`, { environment: { HOME: "wrong" } })).status).toBe(400);
+      const overview = await fetch(`http://localhost:${app.port}/api/factory`).then((response) => response.json());
+      expect(overview.checkouts.filter((entry: { project_id: string }) => entry.project_id === project.id)).toHaveLength(1);
+      expect(overview.projects[0].provider).toBe("claude");
+    } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+  it("submits only selected review drafts once to their owned Run", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-eye-batch-"));
+    const repo = join(state, "repo"); const { mkdirSync } = await import("node:fs"); mkdirSync(repo); writeFileSync(join(repo, "notes.txt"), "before\n");
+    for (const args of [["init", "-b", "main"], ["add", "notes.txt"], ["-c", "user.name=Factory test", "-c", "user.email=factory@example.invalid", "commit", "-m", "initial"]]) expect(Bun.spawnSync(["git", ...args], { cwd: repo }).exitCode).toBe(0);
+    const app = createServer({ port: 0, stateDir: state, machines: false, factory: { native: { version: async () => "contract-fixture", startAgent: async (options) => { await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "idle" }); }, prompt: async () => {} } } });
+    const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    let workspaceId: string | null = null;
+    try {
+      const project = await request("projects", { name: "Batch sample", path: repo, machine_id: "local", provider: "codex", tracker: "app" }).then((response) => response.json());
+      const idea = await request("implementations", { title: "Selected rework", description: "" }).then((response) => response.json());
+      const prefix = `implementations/${idea.id}`;
+      await request(`${prefix}/configure`, { project_id: project.id });
+      const run = await request(`${prefix}/runs`, { action: "grill-with-docs", idempotency_key: "owned-rework" }).then((response) => response.json());
+      workspaceId = run.workspace_id;
+      expect(run.condition).toBe("working");
+      writeFileSync(join(run.worktree, "notes.txt"), "after\n");
+      const snapshot = await request(`${prefix}/snapshots`, { run_id: run.id, mode: "workspace" }).then((response) => response.json());
+      expect(snapshot.files.some((file: { path: string }) => file.path === ".saurons-eye-access.json")).toBe(false);
+      const anchor = { snapshot_id: snapshot.id, path: "notes.txt", side: "new", line_start: 1, line_end: 1 };
+      const first = await request(`${prefix}/comments`, { ...anchor, content: "Selected finding" }).then((response) => response.json());
+      const second = await request(`${prefix}/comments`, { ...anchor, content: "Keep this draft" }).then((response) => response.json());
+      const submission = { run_id: run.id, snapshot_id: snapshot.id, comment_ids: [first.id], idempotency_key: "same-selected-batch" };
+      const sent = await request(`${prefix}/request-changes`, submission);
+      expect(sent.status).toBe(200);
+      const batch = await sent.json();
+      const repeated = await request(`${prefix}/request-changes`, submission).then((response) => response.json());
+      expect(repeated.id).toBe(batch.id);
+      const detail = await fetch(`http://localhost:${app.port}/api/factory/${prefix}`).then((response) => response.json());
+      expect(detail.comments.find((comment: { id: string }) => comment.id === first.id).status).toBe("submitted");
+      expect(detail.comments.find((comment: { id: string }) => comment.id === second.id).status).toBe("draft");
+    } finally { if (workspaceId) await workspaceClose(workspaceId); app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+  it("retains generated remote research centrally so it remains readable while the host is offline", async () => {
+    const centralState = mkdtempSync(join(tmpdir(), "saurons-eye-import-"));
+    const hostState = mkdtempSync(join(tmpdir(), "saurons-eye-generated-"));
+    const host = createServer({ port: 0, stateDir: hostState, token: "owned-artifact-host", machines: false, factory: { native: { version: async () => "remote-contract-fixture", startAgent: async (options) => { const context = JSON.parse(readFileSync(join(options.args![1]!, ".saurons-eye-context.json"), "utf8")); writeFileSync(join(context.environment.notes, "research.md"), "# Remote research\nRetain this centrally"); } } } });
+    const app = createServer({ port: 0, stateDir: centralState, machines: false, factory: { machineEndpoint: (id) => id === "research-host" ? { url: `http://localhost:${host.port}`, token: "owned-artifact-host" } : undefined } });
+    const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    let workspaceId: string | null = null;
+    try {
+      await request("machines/research-host/prepare", {});
+      const idea = await request("implementations", { title: "Remote research evidence", description: "" }).then((response) => response.json());
+      await request(`implementations/${idea.id}/configure`, { machine_id: "research-host", provider: "codex" });
+      const run = await request(`implementations/${idea.id}/runs`, { action: "grill-me", idempotency_key: "import-owned-notes" }).then((response) => response.json());
+      workspaceId = run.workspace_id;
+      expect(run.condition).toBe("working");
+      const imported = await request(`runs/${run.id}/import-artifacts`, {});
+      expect(imported.status).toBe(201);
+      const artifacts = await imported.json();
+      expect(artifacts).toHaveLength(1);
+      expect((await request(`runs/${run.id}/import-artifacts`, {}).then((response) => response.json()))[0].id).toBe(artifacts[0].id);
+      host.stop();
+      expect(await fetch(`http://localhost:${app.port}/api/factory/artifacts/${artifacts[0].id}/source`).then((response) => response.text())).toBe("# Remote research\nRetain this centrally");
+    } finally { if (workspaceId) await workspaceClose(workspaceId); app.stop(); host.stop(); rmSync(centralState, { recursive: true, force: true }); rmSync(hostState, { recursive: true, force: true }); }
+  });
+  it("stops only its owned native workspace while retaining the assignment and Run history", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-eye-stop-"));
+    const app = createServer({ port: 0, stateDir: state, machines: false, factory: { native: { version: async () => "contract-fixture", startAgent: async () => {} } } });
+    const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    let workspaceId: string | null = null;
+    try {
+      const idea = await request("implementations", { title: "Retained after Stop", description: "Original history" }).then((response) => response.json());
+      await request(`implementations/${idea.id}/configure`, { machine_id: "local" });
+      const run = await request(`implementations/${idea.id}/runs`, { action: "grill-me", idempotency_key: "stop-owned-run" }).then((response) => response.json());
+      workspaceId = run.workspace_id;
+      expect(run.condition).toBe("working");
+      const stopped = await request(`runs/${run.id}/stop`, { summary: "Owner stopped this attempt" });
+      expect(stopped.status).toBe(200);
+      expect((await stopped.json()).condition).toBe("cancelled");
+      expect((await sessionSnapshot()).workspaces.some((workspace) => workspace.workspace_id === workspaceId)).toBe(false);
+      workspaceId = null;
+      const detail = await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then((response) => response.json());
+      expect(detail.messages).toMatchObject([{ content: "Original history" }]);
+      expect(detail.runs).toHaveLength(1);
+      expect(detail.events.some((event: { kind: string }) => event.kind === "run_stopped")).toBe(true);
+      expect(existsSync(run.worktree)).toBe(true);
+    } finally { if (workspaceId) await workspaceClose(workspaceId); app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+  it("prepares an external bridge and keeps the selected Machine's owned Run after disconnect", async () => {
+    const centralState = mkdtempSync(join(tmpdir(), "saurons-eye-central-"));
+    const hostState = mkdtempSync(join(tmpdir(), "saurons-eye-host-"));
+    const host = createServer({ port: 0, stateDir: hostState, token: "owned-remote-contract", machines: false, factory: { native: { version: async () => "remote-contract-fixture", startAgent: async () => {} } } });
+    const app = createServer({ port: 0, stateDir: centralState, machines: false, factory: { skillsPath: join(import.meta.dir, "../vendor/matt-skills"), machineEndpoint: (id) => id === "external-host" ? { url: `http://localhost:${host.port}`, token: "owned-remote-contract" } : undefined } });
+    const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    let workspaceId: string | null = null;
+    try {
+      const prepared = await request("machines/external-host/prepare", {});
+      expect(prepared.status).toBe(200);
+      const capabilities = await prepared.json();
+      expect(capabilities.skill_manifest.file_count).toBe(159);
+      const idea = await request("implementations", { title: "Remote research", description: "Keep the original host" }).then((response) => response.json());
+      await request(`implementations/${idea.id}/configure`, { machine_id: "external-host", provider: "codex" });
+      const run = await request(`implementations/${idea.id}/runs`, { action: "grill-me", idempotency_key: "remote-owner-click" }).then((response) => response.json());
+      expect(run.condition).toBe("working");
+      expect(run.machine_id).toBe("external-host");
+      expect(run.worktree.startsWith(join(hostState, "factory", "inbox"))).toBe(true);
+      workspaceId = run.workspace_id;
+      host.stop();
+      const reconciled = await request(`runs/${run.id}/reconcile`, {}).then((response) => response.json());
+      expect(reconciled.condition).toBe("disconnected");
+      const duplicate = await request(`implementations/${idea.id}/runs`, { action: "grill-me", idempotency_key: "remote-owner-click" }).then((response) => response.json());
+      expect(duplicate.id).toBe(run.id);
+      const elsewhere = await request(`implementations/${idea.id}/runs`, { action: "grill-me", idempotency_key: "new-click" });
+      expect(elsewhere.status).toBe(409);
+      const retained = await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then((response) => response.json());
+      expect(retained.messages).toMatchObject([{ content: "Keep the original host" }]);
+      expect(retained.runs).toHaveLength(1);
+    } finally { if (workspaceId) await workspaceClose(workspaceId); app.stop(); host.stop(); rmSync(centralState, { recursive: true, force: true }); rmSync(hostState, { recursive: true, force: true }); }
+  });
+  it("claims a Start key once and freezes the selected provider and owned working directory", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-eye-dispatch-"));
+    const app = createServer({ port: 0, stateDir: state, machines: false, factory: {
+      skillsPath: join(import.meta.dir, "../vendor/matt-skills"),
+      native: { version: async () => "contract-fixture", startAgent: async () => {} },
+    } });
+    const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    let workspaceId: string | null = null;
+    try {
+      const idea = await request("implementations", { title: "Isolated setup", description: "" }).then((response) => response.json());
+      await request(`implementations/${idea.id}/configure`, { provider: "codex", machine_id: "local" });
+      const start = { action: "setup", idempotency_key: "same-owner-click" };
+      const [first, second] = await Promise.all([request(`implementations/${idea.id}/runs`, start).then((response) => response.json()), request(`implementations/${idea.id}/runs`, start).then((response) => response.json())]);
+      expect(first.id).toBe(second.id);
+      expect(first.condition).toBe("working");
+      expect(first.provider).toBe("codex");
+      expect(first.machine_id).toBe("local");
+      workspaceId = first.workspace_id;
+      expect(first.worktree.startsWith(join(state, "factory", "inbox"))).toBe(true);
+      await request(`implementations/${idea.id}/configure`, { provider: "claude" });
+      const detail = await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then((response) => response.json());
+      expect(detail.runs).toHaveLength(1);
+      expect(detail.runs[0].provider).toBe("codex");
+      const snapshot = await sessionSnapshot();
+      expect(snapshot.workspaces.filter((entry) => entry.label === `saurons-eye-run-${first.id}`)).toHaveLength(1);
+      expect((await request(`implementations/${idea.id}/runs`, { ...start, action: "grill-me" })).status).toBe(409);
+    } finally { if (workspaceId) await workspaceClose(workspaceId); app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+  it("anchors durable review drafts to a captured workspace and marks them outdated after edits", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-eye-review-"));
+    const repo = join(state, "repo"); const { mkdirSync } = await import("node:fs"); mkdirSync(repo);
+    writeFileSync(join(repo, "notes.txt"), "old line\n");
+    for (const args of [["init", "-b", "main"], ["add", "notes.txt"], ["-c", "user.name=Factory test", "-c", "user.email=factory@example.invalid", "commit", "-m", "initial"]]) expect(Bun.spawnSync(["git", ...args], { cwd: repo }).exitCode).toBe(0);
+    let app = createServer({ port: 0, stateDir: state, machines: false });
+    const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    try {
+      const project = await request("projects", { name: "Review sample", path: repo, machine_id: "local", provider: "codex", tracker: "app" }).then((response) => response.json());
+      const idea = await request("implementations", { title: "Review changes", description: "" }).then((response) => response.json());
+      const prefix = `implementations/${idea.id}`;
+      await request(`${prefix}/configure`, { project_id: project.id });
+      writeFileSync(join(repo, "notes.txt"), "new line\n");
+      const captured = await request(`${prefix}/snapshots`, { mode: "workspace" });
+      expect(captured.status).toBe(201);
+      const snapshot = await captured.json();
+      expect(snapshot.files).toMatchObject([{ path: "notes.txt", status: "unstaged:M" }]);
+      expect(snapshot.files[0].diff).toContain("+new line");
+      const drafted = await request(`${prefix}/comments`, { snapshot_id: snapshot.id, path: "notes.txt", side: "new", line_start: 1, line_end: 1, content: "Please make this clearer" });
+      expect(drafted.status).toBe(201);
+      const comment = await drafted.json();
+      writeFileSync(join(repo, "notes.txt"), "another edit\n");
+      await request(`${prefix}/snapshots`, { mode: "workspace" });
+      app.stop(); app = createServer({ port: 0, stateDir: state, machines: false });
+      const detail = await fetch(`http://localhost:${app.port}/api/factory/${prefix}`).then((response) => response.json());
+      expect(detail.comments).toMatchObject([{ id: comment.id, snapshot_id: snapshot.id, status: "outdated", content: "Please make this clearer" }]);
+      expect(detail.snapshots[0].files[0].diff).toContain("+new line");
+    } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+  it("refuses factory dispatch with missing scope and does not substitute an unavailable provider", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-eye-admission-"));
+    const app = createServer({ port: 0, stateDir: state, machines: false });
+    const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    try {
+      const idea = await request("implementations", { title: "No implicit start", description: "" }).then((response) => response.json());
+      const rejected = await request(`implementations/${idea.id}/runs`, { action: "implement-spec", idempotency_key: "owner-click-one" });
+      expect(rejected.status).toBe(409);
+      expect((await rejected.json()).error.code).toBe("project_required");
+      const providers = await fetch(`http://localhost:${app.port}/api/factory/providers`).then((response) => response.json());
+      expect(providers.providers.map((provider: { provider: string }) => provider.provider)).toEqual(["codex", "claude", "opencode"]);
+      expect(providers.providers.every((provider: { factory_ready: boolean }) => provider.factory_ready === false)).toBe(true);
+      const detail = await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then((response) => response.json());
+      expect(detail.runs).toEqual([]);
+    } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+  it("restores a coherent backup into separate state without replacing the original", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-eye-recovery-"));
+    const app = createServer({ port: 0, stateDir: state, machines: false });
+    let restored: ReturnType<typeof createServer> | undefined;
+    const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    try {
+      const idea = await request("implementations", { title: "Recover me", description: "Retained evidence" }).then((response) => response.json());
+      const detail = await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then((response) => response.json());
+      const artifact = await request(`implementations/${idea.id}/artifacts`, { chat_id: detail.chats[0].id, name: "note.txt", media_type: "text/plain", content_base64: "cHJlc2VydmVk", origin: "upload" }).then((response) => response.json());
+      const backupResponse = await request("backups", {});
+      expect(backupResponse.status).toBe(201);
+      const backup = await backupResponse.json();
+      await request("implementations", { title: "After backup", description: "" });
+      const restoreResponse = await request(`backups/${backup.id}/restore`, {});
+      expect(restoreResponse.status).toBe(201);
+      const recovery = await restoreResponse.json();
+      restored = createServer({ port: 0, stateDir: recovery.state_dir, machines: false });
+      const retained = await fetch(`http://localhost:${restored.port}/api/factory/implementations/${idea.id}`).then((response) => response.json());
+      expect(retained.messages).toMatchObject([{ content: "Retained evidence" }]);
+      expect(await fetch(`http://localhost:${restored.port}/api/factory/artifacts/${artifact.id}/source`).then((response) => response.text())).toBe("preserved");
+      const original = await fetch(`http://localhost:${app.port}/api/factory`).then((response) => response.json());
+      expect(original.implementations).toHaveLength(2);
+      const copy = await fetch(`http://localhost:${restored.port}/api/factory`).then((response) => response.json());
+      expect(copy.implementations).toHaveLength(1);
+    } finally { restored?.stop(); app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+  it("retains unanswered questions and reorders the board without starting work", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-eye-questions-"));
+    let app = createServer({ port: 0, stateDir: state, machines: false });
+    const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    try {
+      const first = await request("implementations", { title: "First", description: "" }).then((response) => response.json());
+      const second = await request("implementations", { title: "Second", description: "" }).then((response) => response.json());
+      expect((await request(`implementations/${second.id}/order`, { direction: -1 })).status).toBe(200);
+      const questionResponse = await request(`implementations/${first.id}/questions`, { question: "Which public interface should be tested?" });
+      expect(questionResponse.status).toBe(201);
+      const question = await questionResponse.json();
+      app.stop(); app = createServer({ port: 0, stateDir: state, machines: false });
+      const board = await fetch(`http://localhost:${app.port}/api/factory`).then((response) => response.json());
+      expect(board.implementations.map((idea: { title: string }) => idea.title)).toEqual(["Second", "First"]);
+      const detail = await fetch(`http://localhost:${app.port}/api/factory/implementations/${first.id}`).then((response) => response.json());
+      expect(detail.questions).toMatchObject([{ id: question.id, answer: null }]);
+      expect((await request(`implementations/${first.id}/approvals`, { kind: "shared_understanding", revision: detail.question_revision, scope: "Confirm" })).status).toBe(409);
+      expect(detail.runs).toEqual([]);
+      expect((await request(`implementations/${first.id}/questions/${question.id}/answer`, { revision: question.revision, answer: "Public API and browser" })).status).toBe(200);
+    } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+  it("keeps specifications immutable and refuses stale acceptance and cyclic Tickets", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-eye-specification-"));
+    const app = createServer({ port: 0, stateDir: state, machines: false });
+    const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    try {
+      const idea = await request("implementations", { title: "Stable contract", description: "" }).then((response) => response.json());
+      const prefix = `implementations/${idea.id}`;
+      const firstResponse = await request(`${prefix}/specifications`, { content: "Version one" });
+      expect(firstResponse.status).toBe(201);
+      const first = await firstResponse.json();
+      const second = await request(`${prefix}/specifications`, { content: "Version two" }).then((response) => response.json());
+      expect((await request(`${prefix}/approvals`, { kind: "specification", revision: first.id, scope: "Accept version one" })).status).toBe(409);
+      expect((await request(`${prefix}/approvals`, { kind: "specification", revision: second.id, scope: "Accept version two" })).status).toBe(201);
+      const cycle = await request(`${prefix}/tickets`, { specification_id: second.id, tickets: [{ key: "a", title: "A", acceptance: "A works", dependencies: ["b"] }, { key: "b", title: "B", acceptance: "B works", dependencies: ["a"] }] });
+      expect(cycle.status).toBe(400);
+      expect((await cycle.json()).error.code).toBe("cyclic_graph");
+      const graph = await request(`${prefix}/tickets`, { specification_id: second.id, tickets: [{ key: "a", title: "A", acceptance: "A works", dependencies: [] }, { key: "b", title: "B", acceptance: "B works", dependencies: ["a"] }] });
+      expect(graph.status).toBe(201);
+      const detail = await fetch(`http://localhost:${app.port}/api/factory/${prefix}`).then((response) => response.json());
+      expect(detail.specifications.map((spec: { content: string }) => spec.content)).toEqual(["Version one", "Version two"]);
+      expect(detail.tickets).toHaveLength(2);
+      expect(detail.tickets[1].dependencies).toEqual([detail.tickets[0].id]);
+      expect(detail.runs).toEqual([]);
+    } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+  it("imports native messages once and retains versioned attachments after restart", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-eye-artifacts-"));
+    let app = createServer({ port: 0, stateDir: state, machines: false });
+    const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    try {
+      const idea = await request("implementations", { title: "Artifact research", description: "" }).then((response) => response.json());
+      const detail = await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then((response) => response.json());
+      const chatId = detail.chats[0].id;
+      const native = { chat_id: chatId, role: "agent", content: "Retained answer", source_id: "local:codex:owned-rollout", sequence: 1 };
+      const first = await request(`implementations/${idea.id}/messages`, native);
+      expect(first.status).toBe(201);
+      const imported = await first.json();
+      const duplicate = await request(`implementations/${idea.id}/messages`, native).then((response) => response.json());
+      expect(duplicate.id).toBe(imported.id);
+      const artifactResponse = await request(`implementations/${idea.id}/artifacts`, { chat_id: chatId, name: "research.md", media_type: "text/markdown", content_base64: Buffer.from("# Research\nKeep me").toString("base64"), origin: "upload" });
+      expect(artifactResponse.status).toBe(201);
+      const artifact = await artifactResponse.json();
+      app.stop(); app = createServer({ port: 0, stateDir: state, machines: false });
+      const stored = await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then((response) => response.json());
+      expect(stored.messages).toHaveLength(1);
+      expect(stored.artifacts).toMatchObject([{ id: artifact.id, name: "research.md", version: 1, size: 18 }]);
+      const source = await fetch(`http://localhost:${app.port}/api/factory/artifacts/${artifact.id}/source`);
+      expect(await source.text()).toBe("# Research\nKeep me");
+      expect((await request(`implementations/${idea.id}/artifacts`, { chat_id: "other-chat", name: "escape", media_type: "text/plain", content_base64: "eA==", origin: "upload" })).status).toBe(400);
+    } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+  it("attaches a captured idea to a verified Project without replacing its history", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-eye-project-"));
+    const repo = join(state, "repo");
+    const { mkdirSync } = await import("node:fs");
+    mkdirSync(repo);
+    for (const args of [["init", "-b", "main"], ["-c", "user.name=Factory test", "-c", "user.email=factory@example.invalid", "commit", "--allow-empty", "-m", "initial"]]) {
+      expect(Bun.spawnSync(["git", ...args], { cwd: repo }).exitCode).toBe(0);
+    }
+    const app = createServer({ port: 0, stateDir: state, machines: false });
+    const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    try {
+      const idea = await request("implementations", { title: "Research first", description: "Original evidence" }).then((response) => response.json());
+      const projectResponse = await request("projects", { name: "Sample", path: repo, machine_id: "local", provider: "codex", tracker: "app" });
+      expect(projectResponse.status).toBe(201);
+      const project = await projectResponse.json();
+      const attached = await request(`implementations/${idea.id}/configure`, { project_id: project.id });
+      expect(attached.status).toBe(200);
+      const detail = await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then((response) => response.json());
+      expect(detail.implementation).toMatchObject({ id: idea.id, project_id: project.id });
+      expect(detail.messages).toMatchObject([{ content: "Original evidence" }]);
+      const invalid = await request("projects", { name: "Wrong", path: join(repo, "missing"), machine_id: "local", provider: "codex", tracker: "app" });
+      expect(invalid.status).toBe(400);
+    } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+  it("retains an unassigned idea and its chat across a server restart", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-eye-records-"));
+    let app = createServer({ port: 0, stateDir: state, machines: false });
+    try {
+      const created = await fetch(`http://localhost:${app.port}/api/factory/implementations`, {
+        method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" },
+        body: JSON.stringify({ title: "Explore offline notes", description: "Keep research across machines" }),
+      });
+      expect(created.status).toBe(201);
+      const idea = await created.json();
+      expect(idea).toMatchObject({ title: "Explore offline notes", project_id: null, stage: "inbox" });
+      app.stop();
+      app = createServer({ port: 0, stateDir: state, machines: false });
+      const retained = await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then((response) => response.json());
+      expect(retained.implementation.id).toBe(idea.id);
+      expect(retained.messages).toMatchObject([{ content: "Keep research across machines", role: "owner" }]);
+      expect(retained.chats).toHaveLength(1);
+    } finally {
+      app.stop();
+      rmSync(state, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("Devin conversation API", () => {
   it("keeps the terminal fallback rather than guessing a shell pane's session", async () => {
     const state = mkdtempSync(join(tmpdir(), "herdr-web-ui-devin-contract-"));

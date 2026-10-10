@@ -8,6 +8,9 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 ## [Unreleased]
 
 ### Added
+- Saurons eye adds a durable Inbox, Projects, chats and artifacts, version-scoped specification
+  and Ticket approvals, isolated native worktrees, retained checks and review findings,
+  authenticated machine preparation, scoped retrospectives and verified backup copies.
 - A Claude Code pane's subagents (the `Agent` tool) now show where OmO's background tasks do:
   the status line lists what runs and what ended in the last day, the pane's badge counts the
   running ones, and a subagent that ends leaves a card in the chat with its answer instead of

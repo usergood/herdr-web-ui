@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, isAbsolute } from "node:path";
 import type { ServerWebSocket } from "bun";
@@ -81,6 +81,9 @@ import { bridgeAgentNews, MachineManager } from "./machines.ts";
 import { handleMachineRequest } from "./machine-api.ts";
 import { MachineRelay } from "./machine-relay.ts";
 import { sameOrigin } from "./machine-security.ts";
+import { FactoryService } from "./factory.ts";
+import type { FactoryNative } from "./factory-native.ts";
+import type { MachineEndpoint } from "./factory-runtime.ts";
 
 const MAX_REPLAY_BYTES = 256 * 1024;
 /**
@@ -333,6 +336,8 @@ export function createServer(
     token?: string;
     /** where VAPID keys and push subscriptions persist; tests pass a temp dir */
     stateDir?: string;
+    /** Pinned factory source. Unset, HERDR_FACTORY_SKILLS_PATH selects it; no global installation. */
+    factory?: { skillsPath?: string; native?: Partial<FactoryNative>; machineEndpoint?: MachineEndpoint };
     /** the PC's own Tailscale login, for the identity check; tests set it, otherwise `tailscale status` says */
     tailscaleOwner?: string | null;
     /** the operator declares `tailscale serve` as this install's only ingress; HERDR_WEB_TAILSCALE_SERVE_ONLY=1 says the same */
@@ -424,6 +429,8 @@ export function createServer(
   const token = options.token ?? process.env["HERDR_WEB_TOKEN"] ?? "";
   /** paired devices (server/devices.ts) and the PC's Tailscale login: the two ways in besides the token and this PC itself */
   const devices = new DeviceStore(options.stateDir ?? defaultStateDir());
+  const bundledSkills = join(import.meta.dir, "../vendor/matt-skills");
+  const factory = new FactoryService(options.stateDir ?? defaultStateDir(), options.factory?.skillsPath ?? process.env["HERDR_FACTORY_SKILLS_PATH"] ?? (existsSync(bundledSkills) ? bundledSkills : null), options.factory?.native, options.factory?.machineEndpoint ?? ((id) => machines?.endpoint(id)));
   const usage = options.usage ?? new UsageService();
   const voice = options.voice ?? new VoiceService({ stateDir: options.stateDir ?? defaultStateDir(), env: process.env, fetch });
   /** a login named here is taken as it is: a tagged node has none of its own to read (HERDR_WEB_TAILSCALE_OWNER) */
@@ -475,7 +482,7 @@ export function createServer(
     return /(?:^|\s)@\S+$/.test(body) ? `${open}${body} ${close}` : text;
   };
 
-  async function submitText(paneId: string, text: string, payload: string, arrivedAt: number, fromTerminal = false, authorize: () => void = () => {}): Promise<void> {
+  async function submitText(paneId: string, text: string, payload: string, arrivedAt: number, fromTerminal = false, authorize: () => void = () => {}, strictAgent = false): Promise<void> {
     const inTime = (): void => {
       authorize();
       if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) {
@@ -497,11 +504,12 @@ export function createServer(
         if (claudeInputDraft(live, colors)) throw new HerdrError("input_draft", CLAUDE_INPUT_DRAFT_MESSAGE);
       }
       try {
-        await agentPrompt(paneId, closeMention(text));
+        await agentPrompt(paneId, closeMention(text), undefined, strictAgent ? () => { try { inTime(); return true; } catch { return false; } } : undefined);
         noteSubmitted(paneId, text);
         return;
       } catch (error) {
         if (!(error instanceof HerdrError)) throw error;
+        if (strictAgent) throw error;
         const queuedOnly = error.code === "agent_blocked" && await blockedOnlyByCodexQueue(paneId);
         if (error.code !== "agent_not_found" && error.code !== "agent_not_ready" && !queuedOnly) throw error;
       }
@@ -1264,11 +1272,13 @@ export function createServer(
   // a bridge (no roster of its own) tells its connection server instead (#555)
   const bridgeAgents = machines ? null : bridgeAgentNews(() => broadcastAll({ type: "session-changed" }));
 
+  if (!options.factory?.native?.prompt) factory.bindPrompt((paneId, text, _socket, guard) => serialize(paneId, () => submitText(paneId, text, text, Date.now(), false, () => { if (guard && !guard()) throw new HerdrError("cancelled", "The factory sender no longer owns this input"); }, true)));
   const collector = startStatusCollector({
     onStatus: (paneId, raw, agent, replay) => {
       // read back from a snapshot around a gap between subscriptions. An OmO pane's status there
       // is OmO's own or herdr's by turns (server/omo-status.ts), and a difference is no change
       if (replay && (omo.runs(paneId) || !completions.replayed(paneId, raw, replay))) return;
+      factory.observe(paneId, raw, agent);
       // another agent took an OmO pane: what OmO worked on there is not that agent's to finish
       if (omo.named(paneId, agent)) completions.forget(paneId);
       // the frame below names no agent: one herdr names anew is read into the roster now. An OmO
@@ -1333,6 +1343,7 @@ export function createServer(
       push.resync(panes.map((pane) => ({ ...pane, agent_status: alertStatus(settled(pane), waits.waiting(pane.pane_id)) })), newer);
     },
     onPaneEnded: (paneId) => {
+      factory.observe(paneId, "unknown", null, true);
       holdPendingPane(paneId, { code: "pane_not_found", message: "The pane ended; its pending messages were not sent" });
       pending.forget(paneId);
       waits.forget(paneId);
@@ -1358,8 +1369,9 @@ export function createServer(
     async fetch(request, bunServer) {
       const url = new URL(request.url);
       let { pathname } = url;
+      const scopedAgent = factory.agentAuthenticated(request, url);
       const bridgeAuthorized = isAuthenticated(request, bridgeToken);
-      const bridgePath = pathname === "/api/bridge" || pathname === "/api/session" || pathname === "/api/agents" || pathname.startsWith("/api/pane/") || pathname.startsWith("/api/workspace/") || pathname.startsWith("/api/worktree/") || pathname.startsWith("/api/tab/") || pathname.startsWith("/api/fs/") || pathname === "/ws";
+      const bridgePath = pathname === "/api/bridge" || pathname.startsWith("/api/factory-host/") || pathname === "/api/session" || pathname === "/api/agents" || pathname.startsWith("/api/pane/") || pathname.startsWith("/api/workspace/") || pathname.startsWith("/api/worktree/") || pathname.startsWith("/api/tab/") || pathname.startsWith("/api/fs/") || pathname === "/ws";
       const ip = bunServer.requestIP(request);
       const loopback = ip !== null && isLoopbackAddress(ip.address);
       const forwarded = cameThroughProxy(request.headers);
@@ -1372,7 +1384,7 @@ export function createServer(
       // counted at once, before any await below lets a concurrent guess pass the same check. Every
       // wrong token counts, a paired watch device's too (a right one would upgrade it to drive);
       // the connection server's own bridge token does not
-      if (presented === "wrong" && !bridgeAuthorized) recordPresentedTokenFailure(client);
+      if (presented === "wrong" && !bridgeAuthorized && !scopedAgent) recordPresentedTokenFailure(client);
       const tokenMatched = presented === "match";
       const pairedDevice = devices.match(parseCookies(request.headers.get("cookie")).get(DEVICE_COOKIE));
       const requestShape = { loopback, forwarded, funnel, tailscaleLogin, serveOnly };
@@ -1386,7 +1398,7 @@ export function createServer(
         tokenConfigured: token !== "",
         gated: devices.gated,
       });
-      const authenticated = access.level === "full" || (bridgePath && bridgeAuthorized);
+      const authenticated = access.level === "full" || (bridgePath && bridgeAuthorized) || scopedAgent;
 
       if (requiresAuth(pathname) && !authenticated) {
         // a script's Bearer guess is told to wait; a browser's cookie gets the usual 401 and its sign-in form
@@ -1396,6 +1408,7 @@ export function createServer(
       }
 
       const readOnly = access.level === "full" && access.role === "watch";
+      if (readOnly && (pathname === "/api/factory" || pathname.startsWith("/api/factory/") || pathname.startsWith("/api/factory-host/") || pathname.startsWith("/api/factory-agent/"))) return jsonResponse({ error: { code: "read_only", message: "Factory records and controls require an owner device" } }, 403);
       const mutating = !["GET", "HEAD", "OPTIONS"].includes(request.method);
       if (pathname.startsWith("/api/") && mutating && !sameOrigin(request)) {
         return jsonResponse({ error: { code: "invalid_origin", message: "Use controls from this app" } }, 403);
@@ -1407,7 +1420,7 @@ export function createServer(
       // method: file contents (those files include credentials) and a directory listing
       // (names and sizes are the shape of a repository the terminals never print), plus
       // every mutation except the two below.
-      const fileRead = /^\/api\/(?:machines\/[^/]+\/)?fs\//.test(pathname);
+      const fileRead = /^\/api\/(?:machines\/[^/]+\/)?fs\//.test(pathname) || pathname.startsWith("/api/factory/artifacts/") || pathname.startsWith("/api/factory/backups");
       const directoryListing = /^\/api\/(?:machines\/[^/]+\/)?workspace\/directories$/.test(pathname);
       // Signing a device's own alerts in is a preference of that device, so `watch` keeps
       // it. The endpoint it registers is https-only (server/push.ts), and that is the
@@ -1462,6 +1475,8 @@ export function createServer(
       }
 
       if (pathname === "/api/auth") return handleAuthRequest(request, token, client);
+      if (pathname.startsWith("/api/factory-agent/")) { bunServer.timeout(request, 360); const response = await factory.handleAgent(request, url); response.headers.set("cache-control", "private, no-store"); return response; }
+      if (pathname === "/api/factory" || pathname.startsWith("/api/factory/") || pathname.startsWith("/api/factory-host/")) { bunServer.timeout(request, 360); const response = await factory.handle(request, url); response.headers.set("cache-control", "private, no-store"); return response; }
       if (pathname === "/api/devices" || pathname.startsWith("/api/devices/")) {
         try {
           const response = await handleDeviceRequest(request, pathname, devices, access);
@@ -2597,6 +2612,7 @@ export function createServer(
       registration?.close();
       for (const paneId of [...attachments.keys()]) closeAttachment(paneId);
       server.stop(true);
+      factory.stop();
     },
   };
 }

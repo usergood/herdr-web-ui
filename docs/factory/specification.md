@@ -1,6 +1,6 @@
 # Draft Saurons eye specification
 
-Status: local draft for owner review. This covers the complete requested product. It does not authorize implementation or certify Matt's specification, testing-seam or ticket-publication gates. Product defaults below remain proposals until confirmed.
+Status: implementation requested by the owner. Both testing seams were explicitly confirmed. This remains the complete product contract; operator procedures, implementation choices and validation limits are recorded in [runtime.md](runtime.md). Production promotion and external publication remain separately scoped.
 
 ## Problem statement
 
@@ -105,7 +105,7 @@ The owner-required behavior is binding product scope. The central database, app-
 
 ## Testing decisions
 
-Proposed seams for owner confirmation before publishing this specification or writing TDD tests:
+Confirmed seams, accepted by the owner with “Confirm both proposed seams”:
 
 1. **The existing public server interface through server construction injection.** Exercise factory records, artifact ownership, approvals, launch/recovery and review commands as a caller, with temporary app state and owned Git/Herdr/SSH fixtures. Restart the server and read through the same public interface; avoid private database queries as behavioral assertions.
 2. **The browser UI through existing real-client regression runners.** Verify complete user actions, keyboard/mobile operation, visible waiting/error states, rendered artifact isolation and retained context after reconnect. Add matching demo responses for new contracts.
@@ -116,13 +116,13 @@ The primary journey captures an unassigned idea and attachment, selects a Projec
 
 Negative acceptance must reject stale/invalid spec acceptance, cyclic or unready graphs, missing dependencies, wrong repository/base/cwd, dirty existing worktree, duplicate/uncertain launches, unsupported providers, malicious Markdown/HTML/paths, outdated anchors, uncertain comment delivery, unsafe cleanup, upstream update sources and duplicate execution after SSH loss or sleep. Browser/server restart while a question is visible retains it unanswered. Failed synchronization, exhausted repair and real process errors remain visible.
 
-Testing seams are proposed, not confirmed. An eventual approved seam decision is recorded once with scope/revision and supplied to every affected worker.
+The seam confirmation above applies to this implementation. Runtime Implementations retain their own version-scoped seam approvals and supply them to every affected worker.
 
 ## Out of scope
 
 Automatic backlog scheduling/dispatch, automatic cross-machine failover or live migration, default-branch merge on successful review, unscoped deployment or destructive actions, a competing Codex process owner, global project/skill-policy mutation by retrospectives, and Conteo changes.
 
-The planning pass also excludes application implementation, live deployment inventory without supplied access, active skill installation, issue/PR publication, service changes and merges. All requested delivery slices remain in the product plan; a phased start is not a reduction of scope.
+The earlier planning-only boundary was superseded by the explicit implementation request. Live deployment changes, global skill installation, issue/PR publication, service changes and merges retain their separate owner scope. All requested delivery slices remain in the product plan; a phased start is not a reduction of scope.
 
 ## Further notes
 

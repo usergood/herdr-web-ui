@@ -41,5 +41,9 @@ export function errorResponse(error: unknown): Response {
 }
 
 export function badRequest(code: string, message: string): Response {
-  return jsonResponse({ error: { code, message } }, 400);
+  return httpError(400, code, message);
+}
+
+export function httpError(status: number, code: string, message: string): Response {
+  return jsonResponse({ error: { code, message } }, status);
 }

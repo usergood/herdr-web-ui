@@ -56,6 +56,7 @@ import { Droplet } from "./components/Droplet.tsx";
 import { dropletAllows, endedTurn, seedStatuses, showDroplet, trackTurn, type DropletKind } from "./lib/droplet.ts";
 import { canPlayAlertSound, playAlertSound, unlockAlertSound, type AlertSoundKind } from "./lib/alertSound.ts";
 import { createAlertTurnPlayer } from "./lib/alertTurns.ts";
+import { FactoryPanel } from "./components/FactoryPanel.tsx";
 
 const APP_TITLE = "herdr web ui";
 const POLL_MS = 5000;
@@ -136,6 +137,7 @@ function Brand() {
 }
 
 export function App() {
+  const [factoryOpen, setFactoryOpen] = useState(() => location.hash.startsWith("#factory"));
   const t = useT();
   const { settings, resolvedTheme, update: updateSettings } = useSettings();
   // this device's alert choices: sent with its push subscription, and applied to tab alerts here
@@ -527,6 +529,8 @@ export function App() {
   const selectedMachineRef = useRef(selectedMachineId);
   selectedMachineRef.current = selectedMachineId;
   const selectTarget = useCallback((machineId: string, paneId: string | null, view?: PaneView) => {
+    setFactoryOpen(false);
+    if (location.hash.startsWith("#factory")) history.replaceState(history.state, "", location.pathname + location.search);
     // Only another PC mounts a new terminal (and socket), which reports its own state. A pane
     // on the same PC keeps the connected socket, which never reports again: resetting here
     // left the header on "reconnecting" after every pane switch.
@@ -795,7 +799,7 @@ export function App() {
             <Search />
           </button>
         </div>
-        {selectedPane && crumb ? (
+        {factoryOpen ? <div className="context"><span className="context-title-text">Saurons eye</span></div> : selectedPane && crumb ? (
           <div className="context" title={crumb.tooltip}>
             <div className="context-title">
               {selectedAgent && <AgentMark agent={selectedAgent} size={18} />}
@@ -815,7 +819,7 @@ export function App() {
         ) : (
           <><Brand /><span className="machine-context-name">{selectedMachine?.name ?? selectedMachineId}</span></>
         )}
-        {selectedPane && (
+        {!factoryOpen && selectedPane && (
           <div className="segmented view-switch" role="group" aria-label="Pane view">
             <button type="button" aria-pressed={view === "chat"} onClick={() => setView("chat")} title={t("Chat transcript (⌘⇧J)")}>
               <MessageSquare />
@@ -829,6 +833,7 @@ export function App() {
           </div>
         )}
         <div className="header-meta">
+          {auth?.role !== "watch" && <button type="button" className="btn" aria-pressed={factoryOpen} onClick={() => { setDrawerOpen(false); setFactoryOpen((open) => !open); if (!factoryOpen) history.replaceState(history.state, "", "#factory"); else history.replaceState(history.state, "", location.pathname + location.search); }}>{t("Inbox")}</button>}
           {/* speaks only while the bridge is not live; live, it stays in the document for a screen
               reader (and the browser scripts that wait on it), drawn by nothing (styles.css) */}
           <span
@@ -868,7 +873,7 @@ export function App() {
           <RowMenu
             anchor={more.anchor}
             title={t("More")}
-            header={crumb ? (
+            header={!factoryOpen && crumb ? (
               <div className="header-more-crumb">
                 <span>{crumb.place}</span>
                 {crumb.path !== null && <span className="header-more-path">{crumb.path}</span>}
@@ -901,8 +906,9 @@ export function App() {
         {/* the tab strip's panel: its id is what each tab's aria-controls points at. No tabIndex -
             the terminal (PaneTerminal) and the composer are the focusable things inside it. */}
         <main className="terminal-host">
+          {factoryOpen && <FactoryPanel machines={machines} onOpenPane={(machineId, paneId) => { setFactoryOpen(false); selectTarget(machineId, paneId); }} />}
           {/* the panel sits inside main, so the page keeps its main landmark; it draws no box */}
-          <div id={PANE_TABPANEL_ID} className="terminal-tabpanel" role={tabPanelLabel === null ? undefined : "tabpanel"} aria-label={tabPanelLabel ?? undefined}>
+          {!factoryOpen && <div id={PANE_TABPANEL_ID} className="terminal-tabpanel" role={tabPanelLabel === null ? undefined : "tabpanel"} aria-label={tabPanelLabel ?? undefined}>
           <PaneTerminal
             key={selectedMachineId}
             title={selectedTitle}
@@ -926,7 +932,7 @@ export function App() {
             onConnectionChange={(next) => { setConnected(next); if (next) setOutputStopped(false); }}
             onServerMessage={handleServerMessage}
           />
-          </div>
+          </div>}
         </main>
         </div>
         </OpenFileContext.Provider>
