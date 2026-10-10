@@ -5,6 +5,7 @@ import { copyFileSync, chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSy
 import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { chromium } from "playwright-core";
+import type { BrowserContext, Page } from "playwright-core";
 import { createServer } from "../server/index.ts";
 import { herdrRpc, sessionSnapshot, workspaceCreate, workspaceClose } from "../server/herdr/client.ts";
 import type { SessionSnapshot, WorkspaceCreated, WorktreeOpened } from "../shared/protocol.ts";
@@ -38,6 +39,8 @@ import { UsageService } from "../server/usage.ts";
 import { openSettingsPage } from "./settings-page.ts";
 import { assertCspClean, watchCsp } from "./csp-violations.ts";
 import type { CspWatch } from "./csp-violations.ts";
+import { browserEvidencePage, browserEvidenceTracing, startBrowserEvidence } from "./browser-evidence.ts";
+import type { BrowserEvidenceSession } from "./browser-evidence.ts";
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-web-ui-browser-")));
 const workspaces: string[] = [];
@@ -50,6 +53,22 @@ const errors: string[] = [];
 const csp: CspWatch[] = [];
 let server: ReturnType<typeof createServer> | undefined;
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+const evidenceSessions: BrowserEvidenceSession[] = [];
+const evidenceDirectory = process.env.CHECK_BROWSER_EVIDENCE_DIR;
+const evidenceTrace = process.env.CHECK_BROWSER_EVIDENCE_TRACE === "1";
+async function watchBrowserEvidence(context: BrowserContext, page: Page, scenario: string): Promise<BrowserEvidenceSession | undefined> {
+  if (!evidenceDirectory) return undefined;
+  const evidence = await startBrowserEvidence({
+    page: browserEvidencePage(page),
+    tracing: browserEvidenceTracing(context),
+    directory: evidenceDirectory,
+    script: "ui-regression",
+    scenario,
+    trace: evidenceTrace,
+  });
+  evidenceSessions.push(evidence);
+  return evidence;
+}
 /** WebKit's IME commit: an Enter keydown after compositionend, isComposing false, key code 229 */
 const IME_ENTER = { key: "Enter", code: "Enter", keyCode: 229, which: 229, bubbles: true, cancelable: true };
 /** how long a send that should not happen gets to show up */
@@ -89,6 +108,7 @@ try {
   }, panes);
 
   const page = await context.newPage();
+  const pageEvidence = evidenceDirectory ? await watchBrowserEvidence(context, page, "main-app") : undefined;
   const workspaceGroup = (workspaceId: string) => page.locator(`.workspace-group[data-workspace="${workspaceId}"]`);
   const workspaceHeader = (workspaceId: string) => workspaceGroup(workspaceId).locator(":scope > .workspace-header");
   const agentRow = (paneId: string) => page.locator(`.agents-sidebar .agent-item[data-machine="local"][data-pane="${paneId}"]`);
@@ -364,6 +384,7 @@ try {
   const cachedRoster = await (await context.request.get(`${origin}/api/machines`)).json() as { machines: Machine[] };
   const offlineMachines = cachedRoster.machines.map((machine) => ({ ...machine, state: "disconnected" as const }));
   const offlineContext = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  let offlineEvidence: BrowserEvidenceSession | undefined;
   try {
     await offlineContext.addInitScript(() => localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en", alertsOn: false })));
     await offlineContext.route("**/api/machines", (route) => route.fulfill({ json: { machines: offlineMachines } }));
@@ -372,6 +393,7 @@ try {
     }));
     await offlineContext.routeWebSocket(/\/ws(?:\?|$)/, (socket) => socket.close({ code: 1000, reason: "Offline cached roster" }));
     const offlinePage = await offlineContext.newPage();
+    offlineEvidence = evidenceDirectory ? await watchBrowserEvidence(offlineContext, offlinePage, "offline-cached-roster") : undefined;
     await offlinePage.goto(`${origin}/?pane=${encodeURIComponent(paneA)}`);
     const offlineAgent = offlinePage.locator(`.agents-sidebar .agent-item[data-machine="local"][data-pane="${paneB}"] .agent-select`);
     await offlineAgent.waitFor();
@@ -380,7 +402,13 @@ try {
     await offlineAgent.dispatchEvent("click");
     assert.equal(await offlinePage.evaluate(() => sessionStorage.getItem("herdr-web-ui:selection")), selectionBefore,
       "offline Agent clicks leave the current selection unchanged");
-  } finally { await offlineContext.close(); }
+  } catch (error) {
+    await offlineEvidence?.captureFailure(error);
+    throw error;
+  } finally {
+    if (offlineEvidence) await offlineEvidence.finish();
+    await offlineContext.close();
+  }
   console.log("PASS Agents excludes shells, survives PC folds, selects its machine target and disables offline rows");
 
   // a turn that ended on work still running in the background reads BG, not DONE: drawn in the sidebar, and read in the composer
@@ -711,6 +739,7 @@ try {
     Object.defineProperty(Notification, "permission", { configurable: true, get: () => "denied" });
   });
   const blockedPage = await blocked.newPage();
+  const blockedEvidence = evidenceDirectory ? await watchBrowserEvidence(blocked, blockedPage, "blocked-notifications") : undefined;
   csp.push(await watchCsp(blockedPage));
   await blockedPage.goto(origin);
   await blockedPage.locator(".header-more-button").waitFor();
@@ -723,6 +752,7 @@ try {
   await runMoreItem(blockedPage, "Alerts");
   await until(async () => await alertsState(blockedPage) === "On in the app", "blocked alerts on again");
   assert.equal(await alertsOffMarked(blockedPage), false);
+  if (blockedEvidence) await blockedEvidence.finish();
   await blocked.close();
   console.log("PASS a device that blocks notifications keeps the Alerts item as the switch for in-app alerts");
 
@@ -1361,6 +1391,7 @@ try {
   // on a touch screen the open tab carries a chevron in place of the x: the same menu, as a sheet
   const tabPhone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   const tabPhonePage = await tabPhone.newPage();
+  const tabPhoneEvidence = evidenceDirectory ? await watchBrowserEvidence(tabPhone, tabPhonePage, "touch-tab-menu") : undefined;
   csp.push(await watchCsp(tabPhonePage));
   tabPhonePage.on("pageerror", (error) => errors.push(error.message));
   await tabPhonePage.goto(`${origin}/?pane=${encodeURIComponent(createdTab.pane_id)}`);
@@ -1374,6 +1405,7 @@ try {
   assert.deepEqual(await tabSheet.locator(".row-sheet-item").allTextContents(), ["Rename tab", "Close tab"]);
   await tabSheet.getByRole("button", { name: "Cancel", exact: true }).tap();
   await tabSheet.waitFor({ state: "detached" });
+  if (tabPhoneEvidence) await tabPhoneEvidence.finish();
   await tabPhone.close();
   // a tab whose agent is at work asks before it closes; a no leaves it
   await herdrRpc("pane.report_agent", { pane_id: createdTab.pane_id, source: "manual", agent: "codex", state: "working" });
@@ -1558,6 +1590,7 @@ try {
     Storage.prototype.getItem = () => { throw new DOMException("Storage unavailable", "SecurityError"); };
   });
   const mobilePage = await mobile.newPage();
+  const mobileEvidence = evidenceDirectory ? await watchBrowserEvidence(mobile, mobilePage, "mobile-storage-unavailable") : undefined;
   csp.push(await watchCsp(mobilePage));
   mobilePage.on("pageerror", (error) => errors.push(error.message));
   await mobilePage.goto(`${origin}/?pane=${encodeURIComponent(paneB)}`);
@@ -1612,9 +1645,11 @@ try {
   await mobilePage.getByTitle("Use the suggestion", { exact: true }).click();
   assert.equal(await mobileComposer.inputValue(), "run the tests", "the chip puts the suggestion in the box");
   await mobilePage.unroute(promptRoute);
+  try { await mobileEvidence?.finish(); } finally { await mobile.close(); }
   const plainPhone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   await plainPhone.addInitScript(() => { localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ showSuggestionChip: false })); });
   const plainPage = await plainPhone.newPage();
+  const plainEvidence = evidenceDirectory ? await watchBrowserEvidence(plainPhone, plainPage, "suggestion-chip-off") : undefined;
   csp.push(await watchCsp(plainPage));
   plainPage.on("pageerror", (error) => errors.push(error.message));
   await plainPage.route(promptRoute, (route) => route.fulfill(suggest));
@@ -1624,6 +1659,7 @@ try {
   const plainComposer = plainPage.getByRole("textbox", { name: "Message", exact: true });
   await until(async () => await plainComposer.getAttribute("placeholder") === "run the tests", "the suggestion stays the placeholder with the chip off");
   assert.equal(await plainPage.getByTitle("Use the suggestion", { exact: true }).count(), 0, "no suggestion chip once Settings turns it off");
+  if (plainEvidence) await plainEvidence.finish();
   await plainPhone.close();
   assert.equal(errors.length, 0, errors.join("\n"));
   assertCspClean(csp, "the suggestion chip loads with no CSP violation");
@@ -1636,6 +1672,7 @@ try {
   // the terminal lens on a touch screen: an input line sends whole lines; the grid raises no keyboard
   const touch = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   const touchPage = await touch.newPage();
+  const touchEvidence = evidenceDirectory ? await watchBrowserEvidence(touch, touchPage, "touch-terminal-input") : undefined;
   csp.push(await watchCsp(touchPage));
   touchPage.on("pageerror", (error) => errors.push(error.message));
   const touchSent: Array<Record<string, unknown>> = [];
@@ -1694,6 +1731,7 @@ try {
     mkdirSync(process.env.UI_EVIDENCE_DIR, { recursive: true });
     await touchPage.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "terminal-input-mobile.png") });
   }
+  if (touchEvidence) await touchEvidence.finish();
   await touch.close();
   console.log("PASS touch terminal input line sends whole lines, Enter alone, and yields to direct typing");
 
@@ -1756,6 +1794,7 @@ try {
   console.log("PASS closed and obsolete saved panes recover their selection");
   // the desktop page ran past the phone steps above: close it on the same gate
   assertCspClean(csp, "the desktop shell, the file viewer and the pane close load with no CSP violation");
+  if (pageEvidence) await pageEvidence.finish();
   await page.close();
 
   const secured = createServer({ port: 0, hostname: "127.0.0.1", token: "browser-test-token", stateDir: join(root, "secured"), tailscaleOwner: null });
@@ -1766,6 +1805,7 @@ try {
   const securedWorkspace = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-browser-signout" });
   workspaces.push(securedWorkspace.workspace.workspace_id);
   const securedPage = await securedContext.newPage();
+  const securedEvidence = await watchBrowserEvidence(securedContext, securedPage, "token-gate-signout");
   csp.push(await watchCsp(securedPage));
   await securedContext.request.post(`${securedOrigin}/api/auth`, { data: { token: "browser-test-token" } });
   await securedPage.goto(`${securedOrigin}/?pane=${encodeURIComponent(securedWorkspace.root_pane.pane_id)}`);
@@ -1786,10 +1826,17 @@ try {
   await securedPage.getByRole("button", { name: "Sign out", exact: true }).click();
   await securedPage.getByTestId("token-gate").waitFor();
   assert.equal((await securedContext.request.get(`${securedOrigin}/api/session`)).status(), 401);
+  if (securedEvidence) await securedEvidence.finish();
   await securedContext.close();
   assertCspClean(csp, "the token gate loads with no CSP violation");
   console.log("PASS token and paired-device sign out return to the access gate");
+} catch (error) {
+  for (const evidence of evidenceSessions) {
+    if (evidence.isOpen()) await evidence.captureFailure(error);
+  }
+  throw error;
 } finally {
+  for (const evidence of evidenceSessions) await evidence.finish();
   for (const release of releases) release();
   await browser?.close();
   server?.stop();

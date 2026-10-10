@@ -607,8 +607,9 @@ export interface PushPayload {
  *  Client -> server frames: attach {pane_id, cols, rows} | detach {pane_id} | input {pane_id, text}
  *    | keys {pane_id, keys} | resize {pane_id, cols, rows} | role {mode}
  *    | pty-ack {pane_id, stream_id, offset} | secret {id, pane_id, prompt, secret}
+ *    | watch {pane_id, cols, rows} | unwatch {pane_id}
  *  Server -> client frames: snapshot | pty-data | pty-exit | pane-geometry | role-ack
- *    | pane-status | pane-exited | session-changed | secret-result | error
+ *    | pane-status | pane-exited | session-changed | secret-result | watch-data | watch-end | error
  *
  *  attach {flow_control:"ack"} opts into per-subscription output credit.
  *  pty-data.flow carries a stream_id and cumulative UTF-8 payload offset;
@@ -622,6 +623,12 @@ export interface PushPayload {
  *  re-sends its role before the attach replay on reconnect.
  *  secret requires the "secret-input" feature, an interact attachment, a matching fresh
  *  prompt and an idle input queue. Its result contains only ok/code, never the value.
+ *  watch requires the "watch" feature: a read-only view of the pane drawn for the client's grid
+ *  (`herdr terminal session observe`), which, unlike an attach, leaves the pane at the size herdr's
+ *  own window gives it. It is not an attach: no input, resize, ACK or input-ready. A tab out of use
+ *  detaches and watches; it attaches again when the user is back. One watch per pane and connection;
+ *  a second watch for the same pane starts it again at the new grid. watch-end: the view ended
+ *  (unwatch does not answer one), and a pane the view could not start for gets one at once.
  */
 
 /** A connection's authority over the shared ptys: `interact` types and resizes, `observe` only watches. */
@@ -663,10 +670,13 @@ export type ClientMessage =
   | { type: "resize"; pane_id: string; cols: number; rows: number }
   /** Cumulative UTF-8 payload bytes processed by xterm, only for this subscription. */
   | { type: "pty-ack"; pane_id: string; stream_id: string; offset: number }
-  | { type: "role"; mode: ClientRole };
+  | { type: "role"; mode: ClientRole }
+  /** a read-only view of the pane at this grid, for a tab out of use (feature "watch"); never resizes the pane */
+  | { type: "watch"; pane_id: string; cols: number; rows: number }
+  | { type: "unwatch"; pane_id: string };
 
 /** What a server supports beyond the base protocol, listed in its first snapshot; older bridges list nothing. */
-export type ServerFeature = "submit" | "pending-input" | "secret-input" | "input-ready" | "take-over";
+export type ServerFeature = "submit" | "pending-input" | "secret-input" | "input-ready" | "take-over" | "watch";
 
 export type ServerMessage =
   | { type: "snapshot"; snapshot: SessionSnapshot; features?: ServerFeature[] }
@@ -692,6 +702,10 @@ export type ServerMessage =
   | { type: "pane-exited"; pane_id: string }
   /** session structure changed (pane created/closed): refetch /api/session */
   | { type: "session-changed" }
+  /** a watched pane's screen as herdr draws it for the watch's grid: whole screens and changes, written as they come; never acknowledged */
+  | { type: "watch-data"; pane_id: string; data: string }
+  /** the watch ended (pane gone, herdr closed it, or this herdr has no read-only view); the client keeps its last screen */
+  | { type: "watch-end"; pane_id: string }
   /** `pane_id` names the pane an error is about, when it is about one (`attach_held`) */
   | { type: "error"; code: string; message: string; pane_id?: string };
 

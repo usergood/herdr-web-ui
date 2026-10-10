@@ -11,6 +11,54 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 - Saurons eye adds a durable Inbox, Projects, chats and artifacts, version-scoped specification
   and Ticket approvals, isolated native worktrees, retained checks and review findings,
   authenticated machine preparation, scoped retrospectives and verified backup copies.
+
+### Changed
+- Integrate upstream v0.4.4 and v0.4.5, including read-only pane watching, Claude background-task
+  fixes, preserved chat code selections, source-bound verification reports and the dependency fix.
+- Saurons eye removes upstream install/update telemetry, automatic external fonts/media/statistics,
+  and installer account queries. External services require owner enablement/configuration;
+  remote runtimes require an explicit/local manifest and installers require a reviewed ref.
+  ([#1](https://github.com/usergood/herdr-web-ui/pull/1) by @usergood)
+
+## [0.4.5] - 2026-10-09
+
+### Changed
+- A desktop tab no longer pauses its terminal a second after you switch to another window, as
+  0.4.4 started doing: it keeps updating, as before 0.4.4. If this PC also shows herdr in a
+  terminal window, turn on **Settings → Terminal → Use alongside herdr's own window**: a second
+  after you leave the tab, it lets go of the pane so herdr's window keeps the pane at its own size,
+  and it keeps showing the pane read-only (drawn at herdr's size) until you click it to type again.
+  A server older than this one pauses the tab instead.
+  ([#699](https://github.com/devswha/herdr-web-ui/pull/699), [#700](https://github.com/devswha/herdr-web-ui/pull/700))
+- Remote PCs use runtime bundle v24 for these fixes. Choose **Update bridge…** once on each
+  connected PC after updating the app. ([#711](https://github.com/devswha/herdr-web-ui/pull/711))
+
+### Fixed
+- Claude background counts reread concurrent transcript appends and replaced transcript files
+  instead of keeping a stale count until another write. ([#701](https://github.com/devswha/herdr-web-ui/pull/701))
+- Claude process identity lookups recover after transient failures, so tasks left by an earlier
+  process stop counting as running when the process boundary becomes available. ([#702](https://github.com/devswha/herdr-web-ui/pull/702))
+- Delayed Claude transcript discovery preserves an observed turn's background wait and original
+  deadline; a replacement session does not inherit the old session's wait. ([#703](https://github.com/devswha/herdr-web-ui/pull/703))
+- Claude background badges expire day-old subagent files even when no transcript changes. ([#706](https://github.com/devswha/herdr-web-ui/pull/706))
+- Claude completion cards deduplicate consistently within each chat page, whether its turns
+  were read incrementally or loaded from scratch. ([#708](https://github.com/devswha/herdr-web-ui/pull/708))
+- Chat code blocks preserve trailing source newlines in manual text selections, with highlighting
+  on or off. The Copy code button continues to copy the original source. ([#710](https://github.com/devswha/herdr-web-ui/pull/710))
+
+### Maintenance
+- Include TanStack Highlight's MIT license in the notices shipped with the app.
+  ([#704](https://github.com/devswha/herdr-web-ui/pull/704))
+- Update source-map-js to 1.2.2 for its security fix.
+  ([#705](https://github.com/devswha/herdr-web-ui/pull/705))
+- Run native Windows and macOS session identity regressions in release validation and order
+  the browser readline fixture's input consistently. Use Debian's official ECR mirror for the
+  Docker SSH fixture to avoid Docker Hub's anonymous pull limit.
+  ([#709](https://github.com/devswha/herdr-web-ui/pull/709), [#701](https://github.com/devswha/herdr-web-ui/pull/701))
+
+## [0.4.4] - 2026-10-09
+
+### Added
 - A Claude Code pane's subagents (the `Agent` tool) now show where OmO's background tasks do:
   the status line lists what runs and what ended in the last day, the pane's badge counts the
   running ones, and a subagent that ends leaves a card in the chat with its answer instead of
@@ -40,10 +88,10 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   ([#671](https://github.com/devswha/herdr-web-ui/pull/671) by @aNNdii)
 
 ### Changed
-- Saurons eye removes upstream install/update telemetry, automatic external fonts/media/statistics,
-  and installer account queries. External services require owner enablement/configuration;
-  remote runtimes require an explicit/local manifest and installers require a reviewed ref.
-  ([#1](https://github.com/usergood/herdr-web-ui/pull/1) by @usergood)
+- Website and installer publishing waits for CI and the site build to pass on the same commit.
+  Local checks retain source-bound results and failure evidence, and critical build scripts
+  and the demo transport are typechecked alongside the app.
+  ([#692](https://github.com/devswha/herdr-web-ui/pull/692))
 - The chat's `/` command list also matches a word of a command's name, any part of it, its letters
   in order and its description, so a plugin command is found without typing its prefix. Prefix
   matches still come first.

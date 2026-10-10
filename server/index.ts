@@ -62,6 +62,7 @@ import { claudeHeldIsGrey, claudeInputDraft, viewportShowsLive, codexQuestionsCo
 import { secretPrompt, validSecret } from "../shared/secret-prompt.ts";
 import { PasteImageError, savePaneImage } from "./paste.ts";
 import { PtySession } from "./pty/session.ts";
+import { PaneWatch } from "./watch.ts";
 import { AttachOutputTail, isTakeoverExit } from "./attach-output.ts";
 import { attachableIdentity, sidecarAvailable } from "./pty/sidecar.ts";
 import { MirrorSession } from "./mirror.ts";
@@ -161,7 +162,7 @@ const MAX_WAITING_KEYS = 256;
  */
 export const SUBMIT_DEADLINE_MS = 45_000;
 const CLAUDE_INPUT_DRAFT_MESSAGE = "Claude Code's input box is not empty (a draft, bash mode, or a box that could not be read); send or clear it in the terminal, then send this message";
-const SERVER_FEATURES: ServerFeature[] = ["submit", "pending-input", "secret-input", "input-ready", "take-over"];
+const SERVER_FEATURES: ServerFeature[] = ["submit", "pending-input", "secret-input", "input-ready", "take-over", "watch"];
 
 /** Bind addresses only this machine can reach, so an unset token is nobody else's business. */
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "::1"]);
@@ -270,6 +271,7 @@ interface SocketData {
   relay?: MachineRelay;
   /** A fresh claim per attach lifetime; deleting it invalidates queued terminal keys. */
   attached: Map<string, object>;
+  watches: Map<string, PaneWatch>;
   output: Map<string, OutputWindow>;
   closing: boolean;
   /** the connection's authority: observe connections cannot type or resize */
@@ -329,6 +331,14 @@ function send(client: Client, message: ServerMessage): number {
   }
 }
 
+export interface ServerInstance {
+  port: number;
+  hostname: string;
+  statusReady: Promise<void>;
+  alertsSettled: () => Promise<void>;
+  stop: () => void;
+}
+
 export function createServer(
   options: {
     port?: number;
@@ -386,7 +396,7 @@ export function createServer(
     /** whether this runtime can run the PTY sidecar; unset, server/pty/sidecar.ts says. Tests give a runtime without Node or node-pty, while herdr keeps its own answer. */
     sidecar?: boolean;
   } = {},
-): { port: number; hostname: string; statusReady: Promise<void>; alertsSettled: () => Promise<void>; stop: () => void } {
+): ServerInstance {
   const attachments = new Map<string, PaneAttachment>();
   /** whether this bridge can `terminal attach`: herdr is asked once, and the PTY sidecar has to be runnable here (server/pty/sidecar.ts) */
   /** whether the sidecar can run, settled as the server starts so that attach, /api/health and /api/bridge tell one answer; a forced answer (tests) stands in for it */
@@ -706,9 +716,15 @@ export function createServer(
     return true;
   }
 
+  function killWatches(client: Client): void {
+    for (const watch of client.data.watches.values()) watch.kill();
+    client.data.watches.clear();
+  }
+
   function stopSlowClient(client: Client): void {
     if (client.data.closing) return;
     client.data.closing = true;
+    killWatches(client);
     pending.close(client);
     clients.delete(client);
     for (const paneId of client.data.attached.keys()) detach(paneId, client);
@@ -784,6 +800,11 @@ export function createServer(
   const claudeAgents = new ClaudeSubagentStatus({
     resolve: claudePaneSession,
     pid: claudePanePid,
+    onReset: (paneId) => {
+      const held = waits.waiting(paneId);
+      waits.reset(paneId);
+      claudeAgentsChanged(paneId, 0, 0, null, held);
+    },
     onChange: (paneId, running, turnRunning, promptAt) => claudeAgentsChanged(paneId, running, turnRunning, promptAt),
   });
   /** herdr's snapshot with OmO's own status in it: what the completion tracker and web push are given */
@@ -1250,8 +1271,8 @@ export function createServer(
    * the alerts took it for working meanwhile, so a wait that ends with no turn after it is that
    * turn's finish, told then.
    */
-  function claudeAgentsChanged(paneId: string, running: number, turnRunning: number, promptAt: number | null): void {
-    const changed = waits.running(paneId, turnRunning, promptAt);
+  function claudeAgentsChanged(paneId: string, running: number, turnRunning: number, promptAt: number | null, resetHold = false): void {
+    const changed = waits.running(paneId, turnRunning, promptAt) || resetHold;
     if (paneId === settling) return;
     const status = completions.current(paneId);
     // a pane never reported here carries its count in the next snapshot
@@ -1464,13 +1485,13 @@ export function createServer(
           try {
             relay = new MachineRelay(machines, machineId, readOnly);
             await relay.ready;
-            const upgraded = bunServer.upgrade(request, { data: { attached: new Map<string, object>(), mode: readOnly ? "observe" : "interact", output: new Map(), closing: false, roles: 0, relay, deviceId, readOnly } });
+            const upgraded = bunServer.upgrade(request, { data: { attached: new Map<string, object>(), watches: new Map<string, PaneWatch>(), mode: readOnly ? "observe" : "interact", output: new Map(), closing: false, roles: 0, relay, deviceId, readOnly } });
             if (upgraded) return undefined as unknown as Response;
             relay.close();
           } catch { relay?.close(); return new Response("remote websocket unavailable", { status: 502 }); }
           return new Response("websocket upgrade required", { status: 426 });
         }
-        const upgraded = bunServer.upgrade(request, { data: { attached: new Map<string, object>(), mode: readOnly ? "observe" : "interact", output: new Map(), closing: false, roles: 0, deviceId, readOnly } });
+        const upgraded = bunServer.upgrade(request, { data: { attached: new Map<string, object>(), watches: new Map<string, PaneWatch>(), mode: readOnly ? "observe" : "interact", output: new Map(), closing: false, roles: 0, deviceId, readOnly } });
         if (upgraded) return undefined as unknown as Response;
         return new Response("websocket upgrade required", { status: 426 });
       }
@@ -2088,6 +2109,7 @@ export function createServer(
           client.data.unwatchDevice = devices.onRevoke(client.data.deviceId, () => {
             client.data.revoked = true;
             client.data.closing = true;
+            killWatches(client);
             clients.delete(client);
             for (const paneId of client.data.attached.keys()) detach(paneId, client);
             client.data.attached.clear();
@@ -2119,6 +2141,39 @@ export function createServer(
         }
         try {
           switch (message.type) {
+            case "watch": {
+              const geometry = validGeometry(message.cols, message.rows);
+              if (!geometry) {
+                send(client, { type: "error", code: "invalid_geometry", message: "cols and rows must be integers in 1..1000" });
+                break;
+              }
+              const paneId = message.pane_id;
+              client.data.watches.get(paneId)?.kill();
+              client.data.watches.delete(paneId);
+              try {
+                const watch = new PaneWatch({
+                  paneId,
+                  ...geometry,
+                  socketPath: herdrSocketPath(),
+                  onFrame: (data) => send(client, { type: "watch-data", pane_id: paneId, data }),
+                  onEnd: () => {
+                    if (client.data.watches.get(paneId) !== watch) return;
+                    client.data.watches.delete(paneId);
+                    send(client, { type: "watch-end", pane_id: paneId });
+                  },
+                });
+                client.data.watches.set(paneId, watch);
+              } catch (error) {
+                console.warn(`[watch] ${paneId} could not start: ${error instanceof Error ? error.message : String(error)}`);
+                send(client, { type: "watch-end", pane_id: paneId });
+              }
+              break;
+            }
+            case "unwatch": {
+              client.data.watches.get(message.pane_id)?.kill();
+              client.data.watches.delete(message.pane_id);
+              break;
+            }
             case "attach": {
               if (message.flow_control !== undefined && message.flow_control !== "ack") {
                 send(client, { type: "error", code: "invalid_flow_control", message: "flow_control must be ack" });
@@ -2580,6 +2635,7 @@ export function createServer(
       close(client) {
         client.data.unwatchDevice?.();
         if (client.data.relay) { client.data.relay.close(); return; }
+        killWatches(client);
         pending.close(client);
         clients.delete(client);
         for (const paneId of client.data.attached.keys()) detach(paneId, client);
@@ -2611,6 +2667,7 @@ export function createServer(
       clearInterval(waitTimer);
       machines?.stop();
       registration?.close();
+      for (const client of clients) killWatches(client);
       for (const paneId of [...attachments.keys()]) closeAttachment(paneId);
       server.stop(true);
       factory.stop();
