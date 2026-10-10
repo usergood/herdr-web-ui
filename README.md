@@ -153,6 +153,8 @@ No. Tailscale, an SSH tunnel, a VPN or your own HTTPS proxy can provide a route 
 
 Session files stay on the PC running each agent, and their contents are served to browsers you connect. The app has no hosted relay or account service of its own. Optional voice input sends audio (and text when polishing) to the configured provider; enabled usage meters contact provider APIs. Updates, remote-PC setup and push alerts can also use external services. Saurons eye has no install/update telemetry. External services require owner enablement or configuration. The agents’ own model connections depend on their configuration. [Data flow and access →](docs/guide.md#faq)
 
+Factory attachments and retained native history are copied into private application state on the connection server, which may be a different Machine from the one running the agent. Those copies are included in factory backups; the original native session files remain on the execution PC. [Factory storage and recovery →](docs/factory/runtime.md#backup-restore-and-rollback)
+
 **Does it work on Windows?**
 
 Yes, on Windows x64 without WSL. Until herdr can attach a terminal there, the terminal is a [screen mirror](docs/remote-pcs.md#windows-pcs) with typing and a fixed grid.

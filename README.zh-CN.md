@@ -138,6 +138,8 @@ Claude Code、Codex、omp、omo、gjc 和 pi 直接从各自的会话文件读�
 
 会话文件保留在运行各个智能体的电脑上，内容会发送到你连接的浏览器。本应用没有自有的云端中继或账号服务。可选的语音输入会把录音发送给配置的服务商；启用文字整理时也会发送文本。启用用量显示后，会连接服务商的 API。更新、远程电脑设置和推送提醒也可能连接外部服务。Saurons eye 不发送安装或更新遥测。外部服务需要所有者启用或配置。智能体自身如何连接模型，取决于它的配置。[数据传输与访问 →](docs/guide.md#faq)
 
+Factory 附件和保留的原生会话历史会复制到连接服务器的私有应用状态中，该服务器可能与运行智能体的机器不同。这些副本包含在 factory 备份中，原始原生会话文件仍保留在执行电脑上。[Factory 存储和恢复 →](docs/factory/runtime.md#backup-restore-and-rollback)
+
 **支持 Windows 吗？**
 
 支持，在 Windows x64 上无需 WSL。在 herdr 支持 Windows 终端附加之前，终端是一个可以输入、网格固定的[屏幕镜像](docs/remote-pcs.md#windows-pcs)。
