@@ -166,5 +166,5 @@ try {
   if (run?.workspace_id) { try { await api(`/api/factory/runs/${run.id}/stop`, { summary: "Owned native fixture finished" }); } catch { /* isolated check runner closes its own Herdr session */ } }
   app.stop();
   if (succeeded && !resumed) rmSync(state, { recursive: true, force: true });
-  else console.log(`Owned failure evidence retained at ${state}`);
+  else console.log(`Owned ${succeeded ? "native" : "failure"} evidence retained at ${state}`);
 }

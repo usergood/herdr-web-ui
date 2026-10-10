@@ -39,27 +39,69 @@ afterAll(() => {
 const base = () => `http://localhost:${server.port}`;
 
 describe("factory records", () => {
-  it("stops an accepted child that returns from native allocation after its parent Stop", async () => {
+  it("recovers an allocated child's identity after a missing native creation receipt", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-eye-child-recovery-")); const repo = join(state, "repo");
+    const { mkdirSync } = await import("node:fs"); mkdirSync(repo); writeFileSync(join(repo, "notes.txt"), "base\n");
+    for (const args of [["init", "-b", "main"], ["add", "."], ["-c", "user.name=Factory test", "-c", "user.email=factory@example.invalid", "commit", "-m", "initial"]]) expect(Bun.spawnSync(["git", ...args], { cwd: repo }).exitCode).toBe(0);
+    const workspaces: string[] = []; let starts = 0;
+    const app = createServer({ port: 0, stateDir: state, machines: false, factory: { native: { version: async () => "owned-fixture", createWorkspace: async (options) => { const result = await workspaceCreate(options); workspaces.push(result.workspace.workspace_id); if (options.label?.startsWith("saurons-eye-worker-")) throw new Error("Native receipt unavailable"); return result; }, startAgent: async (options) => { starts++; await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "idle" }); } } } });
+    const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    try {
+      const project = await request("projects", { name: "Receipt recovery", path: repo, machine_id: "local", provider: "codex", tracker: "app" }).then((response) => response.json());
+      const idea = await request("implementations", { title: "Observe accepted child", description: "" }).then((response) => response.json());
+      await request(`implementations/${idea.id}/configure`, { project_id: project.id });
+      const run = await request(`implementations/${idea.id}/runs`, { action: "grill-with-docs", idempotency_key: "recover-parent" }).then((response) => response.json());
+      const worker = await request(`runs/${run.id}/workers`, { role: "standards", idempotency_key: "uncertain-child" }).then((response) => response.json());
+      expect(worker.condition).toBe("interrupted"); expect(worker.workspace_id).toBeNull();
+      const recovered = await request(`runs/${run.id}/workers/${worker.id}/reconcile`, {}).then((response) => response.json());
+      expect(recovered.workspace_id).toBe(workspaces[1]); expect(recovered.pane_id).not.toBeNull(); expect(recovered.condition).toBe("interrupted"); expect(starts).toBe(1);
+      expect((await request(`runs/${run.id}/workers/${worker.id}/stop`, {})).status).toBe(200);
+      expect((await sessionSnapshot()).workspaces.some((entry) => entry.workspace_id === workspaces[1])).toBe(false);
+    } finally { for (const id of workspaces) await workspaceClose(id).catch(() => {}); app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+  it.each(["allocation", "launch response", "reconciliation"])("preserves parent Stop after a late child %s", async (phase) => {
     const state = mkdtempSync(join(tmpdir(), "saurons-eye-stop-child-")); const repo = join(state, "repo");
     const { mkdirSync } = await import("node:fs"); mkdirSync(repo); writeFileSync(join(repo, "notes.txt"), "base\n");
     for (const args of [["init", "-b", "main"], ["add", "."], ["-c", "user.name=Factory test", "-c", "user.email=factory@example.invalid", "commit", "-m", "initial"]]) expect(Bun.spawnSync(["git", ...args], { cwd: repo }).exitCode).toBe(0);
-    let release!: () => void; let allocated!: () => void; let starts = 0; const workspaces: string[] = [];
+    let release!: () => void; let allocated!: () => void; let starts = 0; let holdSnapshot = false; let held = false; const workspaces: string[] = [];
     const gate = new Promise<void>((resolve) => { release = resolve; }); const allocation = new Promise<void>((resolve) => { allocated = resolve; });
-    const app = createServer({ port: 0, stateDir: state, machines: false, factory: { native: { version: async () => "owned-fixture", createWorkspace: async (options) => { const result = await workspaceCreate(options); workspaces.push(result.workspace.workspace_id); if (options.label?.startsWith("saurons-eye-worker-")) { allocated(); await gate; } return result; }, startAgent: async (options) => { starts++; await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "idle" }); } } } });
+    const app = createServer({ port: 0, stateDir: state, machines: false, factory: { native: { version: async () => "owned-fixture", snapshot: async () => { const snapshot = await sessionSnapshot(); if (holdSnapshot && !held) { held = true; allocated(); await gate; } return snapshot; }, createWorkspace: async (options) => { const result = await workspaceCreate(options); workspaces.push(result.workspace.workspace_id); if (phase === "allocation" && options.label?.startsWith("saurons-eye-worker-")) { allocated(); await gate; } return result; }, startAgent: async (options) => { starts++; await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "idle" }); if (phase === "launch response" && options.name.startsWith("eye-worker-")) { allocated(); await gate; } } } } });
     const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
     try {
       const project = await request("projects", { name: "Owned Stop race", path: repo, machine_id: "local", provider: "codex", tracker: "app" }).then((response) => response.json());
       const idea = await request("implementations", { title: "Stop accepted child", description: "" }).then((response) => response.json());
       await request(`implementations/${idea.id}/configure`, { project_id: project.id });
       const run = await request(`implementations/${idea.id}/runs`, { action: "grill-with-docs", idempotency_key: "parent-stop" }).then((response) => response.json());
-      const child = request(`runs/${run.id}/workers`, { role: "standards", idempotency_key: "accepted-child" });
+      let child = request(`runs/${run.id}/workers`, { role: "standards", idempotency_key: "accepted-child" });
+      if (phase === "reconciliation") { const worker = await child.then((response) => response.json()); holdSnapshot = true; child = request(`runs/${run.id}/workers/${worker.id}/reconcile`, {}); }
       await allocation;
       expect((await request(`runs/${run.id}/stop`, {})).status).toBe(200);
       release(); const worker = await child.then((response) => response.json());
-      expect(worker.condition).toBe("cancelled"); expect(starts).toBe(1);
+      expect(worker.condition).toBe("cancelled"); expect(starts).toBe(phase === "allocation" ? 1 : 2);
       expect((await sessionSnapshot()).workspaces.some((workspace) => workspaces.includes(workspace.workspace_id))).toBe(false);
       expect(existsSync(worker.worktree)).toBe(true);
     } finally { release(); for (const id of workspaces) await workspaceClose(id).catch(() => {}); app.stop(); rmSync(state, { recursive: true, force: true }); }
+  }, 15_000);
+  it.each(["launch response", "reconciliation"])("preserves Stop after a late coordinator %s", async (phase) => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-eye-stop-root-"));
+    let release!: () => void; let reached!: () => void; let held = false; let holdSnapshot = false; let workspaceId: string | null = null;
+    const gate = new Promise<void>((resolve) => { release = resolve; }); const barrier = new Promise<void>((resolve) => { reached = resolve; });
+    const app = createServer({ port: 0, stateDir: state, machines: false, factory: { native: { version: async () => "owned-fixture", snapshot: async () => { const snapshot = await sessionSnapshot(); if (holdSnapshot && !held) { held = true; reached(); await gate; } return snapshot; }, startAgent: async (options) => { await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "idle" }); if (phase === "launch response") { reached(); await gate; } } } } });
+    const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    try {
+      const idea = await request("implementations", { title: "Terminal Stop barrier", description: "" }).then((response) => response.json());
+      await request(`implementations/${idea.id}/configure`, { machine_id: "local" });
+      const start = request(`implementations/${idea.id}/runs`, { action: "grill-me", idempotency_key: "stop-barrier" });
+      let pending: Promise<Response>; let run;
+      if (phase === "launch response") { await barrier; run = (await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then((response) => response.json())).runs[0]; pending = start; }
+      else { run = await start.then((response) => response.json()); workspaceId = run.workspace_id; holdSnapshot = true; pending = request(`runs/${run.id}/reconcile`, {}); await barrier; }
+      expect((await request(`runs/${run.id}/stop`, {})).status).toBe(200); workspaceId = null;
+      release(); expect((await pending.then((response) => response.json())).condition).toBe("cancelled");
+      const detail = await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then((response) => response.json());
+      expect(detail.runs[0].condition).toBe("cancelled");
+      const retry = await request(`implementations/${idea.id}/runs`, { action: "grill-me", idempotency_key: "new-owner-start" }).then((response) => response.json()); workspaceId = retry.workspace_id;
+      expect(retry.condition).toBe("working");
+    } finally { release(); if (workspaceId) await workspaceClose(workspaceId).catch(() => {}); app.stop(); rmSync(state, { recursive: true, force: true }); }
   }, 15_000);
   it("releases admission when provider revalidation proves native launch never began", async () => {
     const state = mkdtempSync(join(tmpdir(), "saurons-eye-prelaunch-"));

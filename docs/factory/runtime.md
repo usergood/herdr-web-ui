@@ -62,4 +62,12 @@ bun run check run bun scripts/factory-native-contract.ts codex
 
 The genuine Codex 0.162.1 probe passed loading of all 14 pinned skills plus the recorded question/answer/consumption round on this host. That is loading/interaction evidence, not a claim that the entire Ticket factory journey has passed. Use `claude` or `opencode` only when that native CLI is installed and signed in. This check does not install or substitute a provider. A live external Machine acceptance pass additionally needs a reachable SSH address and its owner's credentials; a fixture is not evidence that an unspecified laptop has passed.
 
+The extended genuine Codex journey also passed initial Ticket work, owned candidate checks/integration, separate Standards and Spec reports, selected Request changes, a fresh rework worker, new integration/checks/reviews, owner resolution and acceptance, native history retention and preservation of the primary checkout. It uses the UI's explicit worker controls rather than claiming automatic backlog dispatch:
+
+```sh
+bun run check run bun scripts/factory-native-contract.ts codex --journey
+```
+
+The runner retains failed fixtures for diagnosis. `--resume-state /tmp/saurons-eye-native-XXXXXX` continues only a test-owned directory; genuine provider/source proof is revalidated and a new repository/Implementation is created. This is test evidence reuse, not native execution resume or copied-state activation.
+
 Before promotion, run the complete primary journey with the intended CLI/Machine versions, including ticket rework, fresh review evidence, interruption/reconnect and copied-state recovery. Preserve the evidence and limitations from each run.

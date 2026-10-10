@@ -51,15 +51,23 @@ export class FactoryPipeline {
     try { worker = await this.runtime.operation(run, "worker", { worker: claimed.worker, context: { manifest: run.manifest, ticket: (run.manifest as { tickets: FactoryTicket[] }).tickets.find((ticket) => ticket.id === claimed.worker.ticket_id), questions: this.store.list<FactoryQuestion>("questions", run.implementation_id), findings: this.store.list<import("../shared/protocol.ts").ReviewComment>("comments", run.implementation_id).filter((comment) => comment.batch_id === claimed.worker.rework_batch_id && claimed.worker.rework_batch_id !== null) } }); }
     catch { worker = { ...claimed.worker, condition: "disconnected", waiting_reason: "Worker dispatch is uncertain; preserve its reservation and reconcile" }; }
     if (worker.id !== claimed.worker.id || worker.run_id !== run.id || worker.ticket_id !== claimed.worker.ticket_id || worker.role !== role || worker.base !== tip.head) throw new FactoryError("worker_identity_changed", "The Machine returned a different worker identity; preserve the accepted reservation", 409);
+    const parent = this.store.get<FactoryRun>("runs", id)!;
+    if (!owns(parent.condition) && owns(worker.condition)) {
+      try { await this.runtime.operation(run, "stop-worker", { worker_id: worker.id }); worker = { ...worker, condition: "cancelled", waiting_reason: "The owner stopped the parent Run" }; }
+      catch { worker = { ...worker, condition: "disconnected", waiting_reason: "The parent stopped; reconcile this retained child identity before release" }; }
+    }
+    const current = this.store.get<FactoryWorker>("workers", worker.id);
+    if (current && !owns(current.condition)) worker = current;
     this.store.put("workers", { ...worker, key: claimed.worker.key }, id);
-    if (run.action === "implement-spec" && role === "implementer" && owns(worker.condition)) {
+    if (run.action === "implement-spec" && role === "implementer" && owns(parent.condition) && owns(worker.condition)) {
       const implementation = this.store.get<Implementation>("implementations", run.implementation_id)!;
       this.store.put("implementations", { ...implementation, stage: "running" });
     }
     this.store.event(run.implementation_id, "worker_observed", { worker_id: worker.id, condition: worker.condition }); return worker;
   }
   async workerAction(id: string, workerId: string, action: string): Promise<unknown> {
-    const run = this.run(id, false); const worker = this.store.get<FactoryWorker>("workers", workerId);
+    const run = ["stop", "reconcile"].includes(action) ? this.store.get<FactoryRun>("runs", id) : this.run(id, false); const worker = this.store.get<FactoryWorker>("workers", workerId);
+    if (!run) throw new FactoryError("not_found", "Run not found", 404);
     if (!worker || worker.run_id !== id) throw new FactoryError("invalid_worker", "Select this Run's worker");
     if (action === "check") return this.check(id, workerId);
     if (action === "stop") { await this.runtime.operation(run, "stop-worker", { worker_id: workerId }); this.store.put("workers", { ...worker, condition: "cancelled" }, id); return { ok: true }; }
@@ -73,8 +81,11 @@ export class FactoryPipeline {
       this.store.put("review_evidence", evidence, id); this.store.put("workers", { ...worker, head: report.head, condition: "completed" }, id); this.store.event(run.implementation_id, "review_axis_retained", { evidence_id: evidence.id, axis: evidence.axis, head: evidence.head }); return evidence;
     }
     if (action !== "refresh" && action !== "reconcile") throw new FactoryError("not_found", "Unknown worker action", 404);
+    if (!owns(worker.condition)) return worker;
     const next = await this.runtime.operation<FactoryWorker>(run, action === "reconcile" ? "reconcile-worker" : action, { worker_id: workerId });
-    if (next.id !== worker.id || next.run_id !== id || next.worktree !== worker.worktree || next.branch !== worker.branch) throw new FactoryError("worker_identity_changed", "The observed worker identity changed", 409);
+    const current = this.store.get<FactoryWorker>("workers", workerId);
+    if (current && JSON.stringify(current) !== JSON.stringify(worker)) return current;
+    if (next.id !== worker.id || next.run_id !== id || next.ticket_id !== worker.ticket_id || next.role !== worker.role || next.base !== worker.base || worker.worktree !== null && next.worktree !== worker.worktree || worker.branch !== null && next.branch !== worker.branch) throw new FactoryError("worker_identity_changed", "The observed worker identity changed", 409);
     this.store.put("workers", next, id); return next;
   }
   async check(id: string, workerId: string | null = null): Promise<FactoryCheck> {

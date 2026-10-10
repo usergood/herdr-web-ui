@@ -111,7 +111,12 @@ export class FactoryExecutionHost {
   }
   private async dispatch(run: FactoryRun, signature: string, attachments: { id: string; name: string; hash: string; size: number; content_base64: string }[]): Promise<FactoryRun> {
     let nativeAttempted = false;
-    const save = (): void => { if (!this.stopped) this.store.put("host_leases", { id: run.id, signature, run, native_attempted: nativeAttempted }); };
+    const save = (): void => {
+      if (this.stopped) return;
+      const current = this.store.get<{ run: FactoryRun; closing?: boolean }>("host_leases", run.id);
+      if (current && ["cancelled", "completed", "failed"].includes(current.run.condition)) { run = current.run; return; }
+      this.store.put("host_leases", { ...current, id: run.id, signature, run, native_attempted: nativeAttempted });
+    };
     try {
       const skills = verifySkills(this.skillPath());
       const expected = run.manifest as { skills?: { hash?: string }; checkout?: { repository?: string }; provider_version?: string };
@@ -154,11 +159,14 @@ export class FactoryExecutionHost {
       const skill = run.action === "setup" ? "setup-matt-pocock-skills" : run.action === "apply-retro" ? "tdd" : run.action;
       provisionFactoryAgent(worktree, run.provider, skill, skills, run.action === "implement-spec");
       recordScaffolding(this.store, run.id, worktree, run.provider, skills);
+      if (this.store.get<{ closing?: boolean }>("host_leases", run.id)?.closing) return this.stopRun(run.id);
       const prompt = run.action === "verify-provider"
         ? `${skills.skills.map((entry) => `${run.provider === "codex" ? "$" : run.provider === "opencode" ? "@" : "/"}${entry.name}`).join(" ")} This is an explicitly requested native skill-loading probe. Load each of these pinned skills through your supported skill mechanism and read the project-local SKILL.md and referenced support files: ${skills.skills.map((entry) => entry.name).join(", ")}. Inspect instructions only; do not execute their workflows, publish, spawn children or change global settings. Describe question and permission differences. Use bun .saurons-eye-tracker.mjs question unused '{"question":"Confirm this read-only native verification round?"}' to record one owner question, then wait for the actual answer. When explicitly resumed, read contract and use consume with its question revision. Read .saurons-eye-context.json for this disposable scope.`
         : `${run.provider === "codex" ? "$" : run.provider === "opencode" ? "@" : "/"}${skill} Read .saurons-eye-context.json for the frozen owner scope. Follow this action's confirmation gates and await actual owner answers.`;
       const coordinator = run.action === "implement-spec";
       await this.native.startAgent({ name: `saurons-${run.id.replaceAll("-", "").slice(0, 24)}`, kind: run.provider, paneId: run.pane_id!, args: factoryAgentArguments(run.provider, worktree, prompt, coordinator), timeoutMs: 60_000 });
+      const afterLaunch = this.store.get<{ run: FactoryRun; closing?: boolean }>("host_leases", run.id);
+      if (afterLaunch?.closing || afterLaunch && ["cancelled", "completed", "failed"].includes(afterLaunch.run.condition)) return this.stopRun(run.id);
       run = { ...run, condition: "working", waiting_reason: null, updated_at: new Date().toISOString() }; save(); return run;
     } catch (error) {
       const reason = error instanceof FactoryError ? error.message : error instanceof HerdrError ? `Native launch failed (${error.code}); reconcile the recorded identity before retrying` : "Launch did not finish; inspect the owned working directory and reconcile native identity";
@@ -214,6 +222,8 @@ export class FactoryExecutionHost {
       if (!pane || !workspace || workspace.label !== `saurons-eye-run-${run.id}` || !pane.cwd || realpathSync(pane.cwd) !== run.worktree) throw new FactoryError("native_identity_uncertain", "Native identity is unavailable or changed; exclusive ownership is retained", 409);
       run = { ...run, pane_id: pane.pane_id, workspace_id: workspace.workspace_id, condition: pane.agent !== run.provider ? "interrupted" : pane.agent_status === "blocked" ? "needs_you" : "working", waiting_reason: pane.agent !== run.provider ? "The workspace exists but native provider launch is unconfirmed; no retry was sent" : pane.agent_status === "blocked" ? "The native agent is waiting for an owner answer" : null };
     } catch (error) { run = { ...run, condition: "disconnected", waiting_reason: error instanceof FactoryError ? error.message : "The native Machine cannot be observed; ownership is retained" }; }
+    const current = this.store.get<typeof lease>("host_leases", id);
+    if (current && JSON.stringify(current) !== JSON.stringify(lease)) return current.run;
     run.updated_at = new Date().toISOString(); this.store.put("host_leases", { ...lease, run }); return run;
   }
   async stopRun(id: string): Promise<FactoryRun> {

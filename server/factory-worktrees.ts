@@ -84,6 +84,10 @@ export class FactoryWorktrees {
       const prompt = `${run.provider === "codex" ? "$" : run.provider === "opencode" ? "@" : "/"}${selected} Read .saurons-eye-context.json. ${worker.role === "implementer" ? "Implement only the accepted Ticket using its confirmed seams; the app's merger owns integration." : `Review only the ${worker.role === "standards" ? "Standards" : "Spec"} axis against the frozen scope. Keep this context independent of the other axis. Make no repository changes. End with FACTORY_REVIEW: PASS or FACTORY_REVIEW: FAIL and explain findings.`}`;
       const args = factoryAgentArguments(run.provider, path, prompt, worker.role !== "implementer");
       await this.native.startAgent({ kind: run.provider, paneId: record.pane_id!, name: `eye-worker-${worker.id.replaceAll("-", "").slice(0, 21)}`, args, timeoutMs: 60_000 });
+      const afterLaunch = this.store.get<FactoryWorker>("host_workers", worker.id);
+      if (afterLaunch?.condition === "cancelled") return afterLaunch;
+      const parentLease = this.store.get<Lease>("host_leases", id);
+      if (!parentLease || parentLease.closing || !["working", "needs_you", "blocked"].includes(parentLease.run.condition)) { await this.stop(id, worker.id); return { ...record, condition: "cancelled", waiting_reason: "The owner stopped the parent Run during native launch" }; }
       record = { ...record, condition: "working", updated_at: new Date().toISOString() };
     } catch { record = this.store.get<FactoryWorker>("host_workers", worker.id)?.condition === "cancelled" ? { ...record, condition: "cancelled", waiting_reason: "The owner stopped this native context" } : { ...record, condition: nativeAttempted ? "interrupted" : "failed", waiting_reason: nativeAttempted ? "Worker dispatch is uncertain; reconcile its owned identity before retrying" : "Worker provisioning failed before native allocation; files are retained for inspection" }; }
     this.store.put("host_workers", record, id); return record;
@@ -95,21 +99,30 @@ export class FactoryWorktrees {
     if (!pane?.cwd || realpathSync(pane.cwd) !== worker.worktree || workspace?.label !== `saurons-eye-worker-${worker.id}` || !["idle", "done"].includes(pane.agent_status)) throw new FactoryError("worker_busy", "Verify the worker is ready at its owned cwd before Git control", 409);
   }
   async reconcile(id: string, workerId: string): Promise<FactoryWorker> {
-    const run = this.run(id, false); const worker = this.store.get<FactoryWorker>("host_workers", workerId);
+    const run = this.store.get<Lease>("host_leases", id)?.run; const worker = this.store.get<FactoryWorker>("host_workers", workerId);
+    if (!run?.worktree || !run.branch || !run.checkout) throw new FactoryError("not_found", "Owned Run not found", 404);
     if (!worker || worker.run_id !== id) throw new FactoryError("not_found", "Worker not found", 404);
+    if (["cancelled", "completed", "failed"].includes(worker.condition)) return worker;
+    let next = worker;
     try {
       await this.identity(run, worker);
       const snapshot = await this.native.snapshot();
-      const pane = snapshot.panes.find((entry) => entry.pane_id === worker.pane_id);
-      const workspace = snapshot.workspaces.find((entry) => entry.workspace_id === worker.workspace_id);
+      const matches = snapshot.workspaces.filter((entry) => entry.label === `saurons-eye-worker-${worker.id}`);
+      const workspace = worker.workspace_id ? snapshot.workspaces.find((entry) => entry.workspace_id === worker.workspace_id) : matches.length === 1 ? matches[0] : undefined;
+      const candidates = snapshot.panes.filter((entry) => entry.workspace_id === workspace?.workspace_id && entry.cwd === worker.worktree);
+      const pane = worker.pane_id ? snapshot.panes.find((entry) => entry.pane_id === worker.pane_id) : candidates.length === 1 ? candidates[0] : undefined;
       if (!pane?.cwd || realpathSync(pane.cwd) !== worker.worktree || workspace?.label !== `saurons-eye-worker-${worker.id}`) throw new FactoryError("native_identity_uncertain", "The worker's native identity changed; preserve ownership", 409);
-      if (pane.agent !== run.provider) return { ...worker, condition: "interrupted", waiting_reason: "Native provider launch is unconfirmed; no retry was sent" };
-      if (pane.agent_status === "blocked") return { ...worker, condition: "needs_you", waiting_reason: "The native worker is waiting for an owner answer" };
-      if (pane.agent_status === "working") return { ...worker, condition: "working", waiting_reason: null };
-      if (!["idle", "done"].includes(pane.agent_status)) throw new FactoryError("native_identity_uncertain", "Native worker status is unknown; preserve ownership", 409);
-      return { ...worker, condition: "needs_you", waiting_reason: "Worker is ready; explicitly check and integrate its result" };
+      next = { ...worker, workspace_id: workspace.workspace_id, pane_id: pane.pane_id };
+      if (pane.agent !== run.provider) next = { ...next, condition: "interrupted", waiting_reason: "Native provider launch is unconfirmed; no retry was sent" };
+      else if (pane.agent_status === "blocked") next = { ...next, condition: "needs_you", waiting_reason: "The native worker is waiting for an owner answer" };
+      else if (pane.agent_status === "working") next = { ...next, condition: "working", waiting_reason: null };
+      else if (["idle", "done"].includes(pane.agent_status)) next = { ...next, condition: "needs_you", waiting_reason: "Worker is ready; explicitly check and integrate its result" };
+      else throw new FactoryError("native_identity_uncertain", "Native worker status is unknown; preserve ownership", 409);
     }
-    catch (error) { return { ...worker, condition: "disconnected", waiting_reason: error instanceof FactoryError ? error.message : "The worker cannot currently be observed" }; }
+    catch (error) { next = { ...next, condition: "disconnected", waiting_reason: error instanceof FactoryError ? error.message : "The worker cannot currently be observed" }; }
+    const current = this.store.get<FactoryWorker>("host_workers", workerId);
+    if (current && JSON.stringify(current) !== JSON.stringify(worker)) return current;
+    this.store.put("host_workers", next, id); return next;
   }
   async refresh(id: string, workerId: string): Promise<FactoryWorker> {
     const run = this.run(id); const worker = this.store.get<FactoryWorker>("host_workers", workerId);

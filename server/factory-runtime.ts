@@ -73,6 +73,8 @@ export class FactoryRuntime {
     const machineId = implementation.machine_id ?? project?.machine_id;
     if (!machineId) throw new FactoryError("machine_required", "Select an execution Machine explicitly", 409);
     if (this.store.list<FactoryRun>("runs", id).some((run) => activeConditions.has(run.condition))) throw new FactoryError("implementation_owned", "An existing or uncertain Run retains ownership; reconcile it before starting another", 409);
+    const priorRuns = new Set(this.store.list<FactoryRun>("runs", id).map((run) => run.id));
+    if (this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers").some((worker) => priorRuns.has(worker.run_id) && activeConditions.has(worker.condition))) throw new FactoryError("implementation_owned", "An accepted or uncertain child still owns this Implementation; reconcile or stop it before starting another", 409);
     const provider = implementation.provider ?? project?.provider ?? this.settings().provider;
     if (body.expected !== undefined) {
       if (!body.expected || typeof body.expected !== "object" || Array.isArray(body.expected)) throw new FactoryError("invalid_scope", "Confirm the displayed execution context");
@@ -138,6 +140,8 @@ export class FactoryRuntime {
     }
     catch (error) { run = { ...record, condition: dispatched ? "disconnected" : "failed", waiting_reason: error instanceof FactoryError ? error.message : "Launch outcome is uncertain; reconcile native identity", updated_at: new Date().toISOString() }; }
     if (!this.stopped) this.store.db.transaction(() => {
+      const current = this.store.get<FactoryRun>("runs", run.id);
+      if (current && ["cancelled", "completed", "failed"].includes(current.condition)) { run = current; return; }
       this.store.put("runs", run, run.implementation_id);
       this.store.event(run.implementation_id, run.condition === "working" ? "native_launch_confirmed" : "dispatch_uncertain", { run_id: run.id, machine_id: run.machine_id, pane_id: run.pane_id, reason: run.waiting_reason });
       if (run.condition === "working") { const idea = this.store.get<Implementation>("implementations", run.implementation_id)!; this.store.put("implementations", { ...idea, stage: run.action === "implement-spec" ? "running" : "specifying" }); }
@@ -153,8 +157,11 @@ export class FactoryRuntime {
   async reconcile(runId: string): Promise<FactoryRun> {
     let run = this.store.get<FactoryRun>("runs", runId); if (!run) throw new FactoryError("not_found", "Run not found", 404);
     if (["completed", "cancelled", "failed"].includes(run.condition)) return run;
+    const revision = hash(JSON.stringify(run));
     try { run = this.observed(run, run.machine_id === "local" ? await this.host.reconcile(run.id) : await this.remote<FactoryRun>(run.machine_id, `/runs/${run.id}/reconcile`, {})); }
     catch (error) { run = { ...run, condition: "disconnected", waiting_reason: error instanceof FactoryError ? error.message : "The Machine cannot currently be observed; ownership is retained", updated_at: new Date().toISOString() }; }
+    const current = this.store.get<FactoryRun>("runs", runId);
+    if (current && hash(JSON.stringify(current)) !== revision) return current;
     const question = this.store.list<import("../shared/protocol.ts").FactoryQuestion>("questions", run.implementation_id).find((entry) => entry.run_id === run!.id && entry.answer === null);
     if (question && run.condition === "working") run = { ...run, condition: "needs_you", waiting_reason: question.question };
     this.store.put("runs", run, run.implementation_id); this.store.event(run.implementation_id, "run_reconciled", { run_id: run.id, condition: run.condition }); return run;
