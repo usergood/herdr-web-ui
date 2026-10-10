@@ -457,7 +457,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
   2. Back to Agent Command Center
   enter continue · esc back
 `);
-    expect(trust).toMatchObject({ kind: "approval", title: "Trust this folder?", body: "Codex can read, edit, and run files here, subject to your permission settings." });
+    expect(trust).toMatchObject({ kind: "approval", title: "Trust this folder?", body: "Folder access\n/tmp/prompt-lab-codex\nCodex can read, edit, and run files here, subject to your permission settings." });
     expect(labels(trust)).toEqual(["Trust and continue", "Back to Agent Command Center"]);
     expect(answerKeys(trust!, { option_index: 0 })).toEqual([{ keys: ["enter"] }]);
   });
