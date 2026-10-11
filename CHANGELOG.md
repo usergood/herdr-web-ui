@@ -21,6 +21,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   tab reordering and pane moves, cross-PC palette search, plugin actions, agent integrations,
   compressed responses and the upstream input/security fixes. Preserve Saurons eye branding,
   factory workflows, Project references and owner-configured service/update sources.
+  ([#4](https://github.com/usergood/herdr-web-ui/pull/4) by @usergood)
 - Integrate upstream v0.4.4 and v0.4.5, including read-only pane watching, Claude background-task
   fixes, preserved chat code selections, source-bound verification reports and the dependency fix.
   ([#2](https://github.com/usergood/herdr-web-ui/pull/2) by @usergood)
