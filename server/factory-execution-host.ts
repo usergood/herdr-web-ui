@@ -17,6 +17,14 @@ import { cleanupCheckouts, recordScaffolding } from "./factory-cleanup.ts";
 import { factoryEnvironment } from "./factory-environment.ts";
 import { materializeProjectReferences, preparedProjectReferences } from "./factory-reference-context.ts";
 import type { CodexReferenceContext, ProjectReferencePayload } from "../shared/protocol.ts";
+import type { AccountBindingSnapshot } from "../shared/accounts.ts";
+import type { MachineAccounts } from "./accounts.ts";
+import { withAccountEnvironment } from "./account-execution.ts";
+
+function providerProofId(provider: string, snapshot?: AccountBindingSnapshot | null): string {
+  const profile = snapshot?.profiles.find((entry) => entry.service === provider);
+  return profile ? `${provider}:${hash(JSON.stringify(profile))}` : provider;
+}
 
 /** Machine-owned execution leases, not a second writable tracker or conversation history. */
 export class FactoryExecutionHost {
@@ -28,10 +36,10 @@ export class FactoryExecutionHost {
   private preparedPath: string | null;
   private readonly genuineNative: boolean;
   readonly worktrees: FactoryWorktrees;
-  constructor(private readonly store: FactoryStore, private readonly sourcePath: () => string | null, native: Partial<FactoryNative> = {}) {
+  constructor(private readonly store: FactoryStore, private readonly sourcePath: () => string | null, native: Partial<FactoryNative> = {}, private readonly accounts?: MachineAccounts) {
     this.native = { ...factoryNative, ...native };
-    this.genuineNative = Object.keys(native).length === 0;
-    this.worktrees = new FactoryWorktrees(store, this.native, () => this.skillPath());
+    this.genuineNative = Object.keys(native).length === 0 && accounts?.native.genuine !== false;
+    this.worktrees = new FactoryWorktrees(store, this.native, () => this.skillPath(), accounts);
     const prepared = this.store.get<{ id: string; path: string }>("host_skills", "default"); this.preparedPath = prepared?.path ?? null;
   }
   skillPath(): string | null { return this.sourcePath() ?? this.preparedPath; }
@@ -46,6 +54,12 @@ export class FactoryExecutionHost {
   }
   bindPrompt(prompt: FactoryNative["prompt"]): void { this.native.prompt = prompt; this.promptBound = true; }
   async operation(id: string, action: string, body: Record<string, unknown>): Promise<unknown> {
+    const run = this.store.get<{ run: FactoryRun }>("host_leases", id)?.run;
+    const controlOnly = ["cleanup", "check-reconcile", "reconcile-worker", "stop-worker", "head", "transcript"].includes(action);
+    const environment = controlOnly ? {} : await this.accounts?.environment((run?.manifest as { account_snapshot?: AccountBindingSnapshot } | undefined)?.account_snapshot, true) ?? {};
+    return withAccountEnvironment(environment, () => this.performOperation(id, action, body));
+  }
+  private async performOperation(id: string, action: string, body: Record<string, unknown>): Promise<unknown> {
     if (action === "cleanup") {
       const lease = this.store.get<{ run: FactoryRun }>("host_leases", id);
       if (!lease) throw new FactoryError("not_found", "Owned Run not found", 404);
@@ -66,7 +80,8 @@ export class FactoryExecutionHost {
         if (bound && bound.history_id !== conversation.history_id) throw new FactoryError("native_identity_changed", "The pane now holds another native session; its earlier history remains retained", 409);
         this.store.put("host_native_identity", { id, history_id: conversation.history_id });
         if (JSON.stringify(conversation.turns).length > 4 * 1024 * 1024) throw new FactoryError("native_history_too_large", "Capture a smaller page of this native history", 413);
-        return { source_id: `${run.provider}:${hash(conversation.history_id)}`, version: conversation.version, turns: conversation.turns.map((turn) => ({ ...turn, parts: turn.parts.map((part) => part.kind === "tool" && /\.saurons-eye-access\.json/.test(part.input) ? { ...part, output: "Scoped runtime credential redacted" } : part) })), cursor: conversation.cursor };
+        const captured = { source_id: `${run.provider}:${hash(conversation.history_id)}`, version: conversation.version, turns: conversation.turns.map((turn) => ({ ...turn, parts: turn.parts.map((part) => part.kind === "tool" && (/\.saurons-eye-access\.json/.test(part.input) || Boolean(this.accounts && part.input.includes(this.accounts.root))) ? { ...part, output: "Scoped runtime credential redacted" } : part) })), cursor: conversation.cursor };
+        return this.accounts?.sanitize(captured) ?? captured;
       } catch (error) { if (error instanceof FactoryError) throw error; throw new FactoryError("native_evidence_required", "This exact native history is unavailable; its original store remains on the Machine", 409); }
     }
     if (action === "head") return this.worktrees.head(id);
@@ -85,23 +100,24 @@ export class FactoryExecutionHost {
       catch { throw new FactoryError("native_evidence_required", "The review context has no readable native transcript; retain its reservation", 409); }
       const content = conversation.turns.filter((turn) => turn.role === "assistant").flatMap((turn) => turn.parts.flatMap((part) => part.kind === "text" ? [part.text] : [])).join("\n\n");
       if (!/FACTORY_REVIEW: (PASS|FAIL)/.test(content) || !conversation.turns.some((turn) => turn.parts.some((part) => (part.kind === "tool" || part.kind === "skill") && part.skill?.name === "code-review" && part.skill.status === "loaded"))) throw new FactoryError("review_evidence_required", "Retain actual native code-review loading and a completed axis report", 409);
-      return { content, source_id: conversation.history_id, outcome: /FACTORY_REVIEW: FAIL/.test(content) ? "failed" : "passed", head: (await git(worker.worktree!, ["rev-parse", "HEAD"])).trim() };
+      return { content: this.accounts?.sanitize(content) ?? content, source_id: hash(conversation.history_id), outcome: /FACTORY_REVIEW: FAIL/.test(content) ? "failed" : "passed", head: (await git(worker.worktree!, ["rev-parse", "HEAD"])).trim() };
     }
     throw new FactoryError("not_found", "Unknown worktree operation", 404);
   }
   prepare(body: Record<string, unknown>): void { this.preparedPath = materializeSkills(this.store.root, body); this.store.put("host_skills", { id: "default", path: this.preparedPath }); }
-  async capabilities(): Promise<FactoryCapabilities> {
+  async capabilities(snapshot?: AccountBindingSnapshot | null): Promise<FactoryCapabilities> {
+    if (snapshot) await this.accounts?.environment(snapshot);
     let manifest: SkillManifest | null = null; let problem = "";
     try { manifest = verifySkills(this.skillPath()); } catch (error) { problem = error instanceof FactoryError ? error.message : "The pinned skill source could not be verified"; }
     const skills = manifest;
     const providers = await Promise.all((["codex", "claude", "opencode"] as const).map(async (provider) => {
       const version = await this.native.version(provider);
-      const proof = this.store.get<{ id: string; version: string; manifest_hash: string; verified: boolean }>("provider_proofs", provider);
+      const proof = this.store.get<{ id: string; version: string; manifest_hash: string; verified: boolean }>("provider_proofs", providerProofId(provider, snapshot));
       const ready = this.genuineNative && proof?.verified === true && proof.version === version && proof.manifest_hash === skills?.hash;
       const reasons = [...(!version ? ["The native provider or its version is unavailable on this Machine"] : []), ...(problem ? [problem] : []), ...(!ready ? ["Verify pinned native skill loading on this provider version before factory admission"] : [])];
       return { provider, version, installed: version !== null, skills_verified: skills !== null, factory_ready: reasons.length === 0, reasons };
     }));
-    return { providers, skill_manifest: skills ? { commit: skills.commit, hash: skills.hash, file_count: skills.files.length } : null, factory_host_protocol: 1, project_reference_protocol: 1 };
+    return { providers, skill_manifest: skills ? { commit: skills.commit, hash: skills.hash, file_count: skills.files.length } : null, factory_host_protocol: 1, project_reference_protocol: 1, account_profile_protocol: 1 };
   }
   async launch(record: FactoryRun, access?: { token: string; url: string }, attachments: { id: string; name: string; hash: string; size: number; content_base64: string }[] = [], references?: ProjectReferencePayload): Promise<FactoryRun> {
     if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Native execution is disabled on a restored copy", 409);
@@ -117,7 +133,15 @@ export class FactoryExecutionHost {
     const pending = this.launches.get(record.id); if (pending) return pending;
     if (!accepted.fresh) return accepted.run;
     if (access) this.store.put("host_access", { id: record.id, ...access });
-    const launch = this.dispatch(record, signature, attachments, references); this.launches.set(record.id, launch);
+    const launch = (async () => {
+      let environment: Record<string, string>;
+      try { environment = await this.accounts?.environment((record.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot, true, record.checkout ?? undefined) ?? {}; }
+      catch {
+        const failed: FactoryRun = { ...record, condition: "failed", waiting_reason: "The frozen account scope is unavailable before native allocation" };
+        this.store.put("host_leases", { id: record.id, signature, run: failed, native_attempted: false }); return failed;
+      }
+      return withAccountEnvironment(environment, () => this.dispatch(record, signature, attachments, references));
+    })(); this.launches.set(record.id, launch);
     try { return await launch; } finally { this.launches.delete(record.id); }
   }
   private async dispatch(run: FactoryRun, signature: string, attachments: { id: string; name: string; hash: string; size: number; content_base64: string }[], references?: ProjectReferencePayload): Promise<FactoryRun> {
@@ -132,7 +156,7 @@ export class FactoryExecutionHost {
       const skills = verifySkills(this.skillPath());
       const expected = run.manifest as { skills?: { hash?: string }; checkout?: { repository?: string }; provider_version?: string };
       if (expected.skills?.hash !== skills.hash || expected.provider_version !== await this.native.version(run.provider)) throw new FactoryError("host_changed", "The Machine's provider version or skill source changed after admission", 409);
-      if (run.action === "implement-spec" && !(await this.capabilities()).providers.find((entry) => entry.provider === run.provider)?.factory_ready) throw new FactoryError("provider_unavailable", "The native factory contract has not passed on this Machine", 409);
+      if (run.action === "implement-spec" && !(await this.capabilities((run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot)).providers.find((entry) => entry.provider === run.provider)?.factory_ready) throw new FactoryError("provider_unavailable", "The native factory contract has not passed on this Machine", 409);
       if (run.checkout) {
         const checkout = await inspectCheckout(run.checkout);
         if (checkout.repository !== expected.checkout?.repository || checkout.head !== run.base || (await git(checkout.path, ["status", "--porcelain", "--untracked-files=all"])).trim()) throw new FactoryError("checkout_changed", "The verified checkout changed or has unpublished work; preserve it", 409);
@@ -147,6 +171,7 @@ export class FactoryExecutionHost {
       run = { ...run, worktree, branch, updated_at: new Date().toISOString() }; save();
       const project = (run.manifest as { project?: { environment?: Record<string, string> } }).project;
       const environment = factoryEnvironment(root, run.id, project?.environment);
+      Object.assign(environment, await this.accounts?.environment((run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot, true));
       const library = (run.manifest as { project_references?: import("../shared/protocol.ts").ProjectReferenceLibrary }).project_references;
       let referenceContext;
       if (library?.entries.length) {
@@ -183,7 +208,7 @@ export class FactoryExecutionHost {
         : `${run.provider === "codex" ? "$" : run.provider === "opencode" ? "@" : "/"}${skill} Read .saurons-eye-context.json for the frozen owner scope. Follow this action's confirmation gates and await actual owner answers.`;
       if (referenceContext) prompt += ` ${referenceContext.prompt}`;
       const coordinator = run.action === "implement-spec";
-      await this.native.startAgent({ name: `saurons-${run.id.replaceAll("-", "").slice(0, 24)}`, kind: run.provider, paneId: run.pane_id!, args: factoryAgentArguments(run.provider, worktree, prompt, coordinator), timeoutMs: 60_000 });
+      await this.native.startAgent({ name: `saurons-${run.id.replaceAll("-", "").slice(0, 24)}`, kind: run.provider, paneId: run.pane_id!, args: factoryAgentArguments(run.provider, worktree, prompt, coordinator, Boolean((run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot?.profiles.some((entry) => entry.service === run.provider))), timeoutMs: 60_000 });
       const afterLaunch = this.store.get<{ run: FactoryRun; closing?: boolean }>("host_leases", run.id);
       if (afterLaunch?.closing || afterLaunch && ["cancelled", "completed", "failed"].includes(afterLaunch.run.condition)) return this.stopRun(run.id);
       run = { ...run, condition: "working", waiting_reason: null, updated_at: new Date().toISOString() }; save(); return run;
@@ -225,8 +250,10 @@ export class FactoryExecutionHost {
     }
     const missing = manifest.skills.filter((skill) => !loaded.has(skill.name));
     if (missing.length) throw new FactoryError("native_evidence_required", `Native loading evidence is missing for: ${missing.map((skill) => skill.name).join(", ")}`, 409);
-    this.store.put("provider_proofs", { id: run.provider, version, manifest_hash: manifest.hash, verified: true, run_id: id, native_history_id: conversation.history_id, evidence_hash: hash(JSON.stringify(conversation.turns)), verified_at: new Date().toISOString() });
-    return this.capabilities();
+    const accountSnapshot = (run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot;
+    if (accountSnapshot) await this.accounts?.environment(accountSnapshot);
+    this.store.put("provider_proofs", { id: providerProofId(run.provider, accountSnapshot), version, manifest_hash: manifest.hash, verified: true, run_id: id, native_history_id: conversation.history_id, evidence_hash: hash(JSON.stringify(conversation.turns)), verified_at: new Date().toISOString() });
+    return this.capabilities(accountSnapshot);
   }
   async reconcile(id: string): Promise<FactoryRun> {
     const lease = this.store.get<{ id: string; signature: string; run: FactoryRun }>("host_leases", id);
@@ -299,7 +326,7 @@ export class FactoryExecutionHost {
       descriptor = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       const info = fstatSync(descriptor);
       if (!info.isFile() || info.nlink > 1 || info.size > 25 * 1024 * 1024) throw new FactoryError("invalid_output", "This output exceeds the import budget or is not an owned regular file", 413);
-      return readFileSync(descriptor);
+      const bytes = readFileSync(descriptor); this.accounts?.assertPublic(bytes.toString("utf8")); return bytes;
     } catch (error) { if (error instanceof FactoryError) throw error; throw new FactoryError("output_unavailable", "This Run's output is unavailable or changed during import", 409); }
     finally { if (descriptor !== undefined) closeSync(descriptor); }
   }

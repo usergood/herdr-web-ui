@@ -1,6 +1,7 @@
 /** Fictional browser-owned records. No server or filesystem imports. */
 import type { FactoryDetail, FactoryOverview, FactoryProject, FactoryRecord, Implementation, ProjectCheckout, ProjectReference } from "../../shared/factory.ts";
 import { projectReferenceTemplate } from "../../shared/project-references.ts";
+import type { AccountProfile, AccountService } from "../../shared/accounts.ts";
 
 const storageKey = "saurons-eye:demo-factory";
 const details = new Map<string, FactoryDetail>();
@@ -8,6 +9,7 @@ let projects: FactoryProject[] = []; let checkouts: ProjectCheckout[] = [];
 let settings: FactoryOverview["settings"] = { provider: "codex", max_implementations: 2, max_agents: 6, max_builds: 2, max_artifact_bytes: 25 * 1024 * 1024, max_storage_bytes: 2 * 1024 * 1024 * 1024, skills_path: null };
 const blobs = new Map<string, string>();
 let referenceVersions: ProjectReference[] = []; let referenceHeads: string[] = [];
+const accountProfiles: AccountProfile[] = [];
 function record(): FactoryRecord { const now = new Date().toISOString(); return { id: crypto.randomUUID(), created_at: now, updated_at: now }; }
 function json(body: unknown, status = 200): Response { return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } }); }
 function failure(code: string, message: string, status = 409): Response { return json({ error: { code, message } }, status); }
@@ -26,6 +28,22 @@ if (!details.size) capture("Explore release notes", "A fictional Inbox idea: kee
 
 export async function factoryDemo(url: URL, method: string, body: Record<string, unknown>): Promise<Response> {
   const path = url.pathname;
+  const accountCollection = /^\/api\/factory\/machines\/[^/]+\/accounts$/.test(path) || path === "/api/factory-host/accounts";
+  if (accountCollection && method === "GET") return json({ protocol: 1, host_id: "fictional-demo-host", profiles: accountProfiles });
+  if (accountCollection && method === "POST") {
+    if (!["github", "codex", "claude", "cf", "wrangler"].includes(String(body.service))) return failure("invalid_account_profile", "Select a supported demo service", 400);
+    const profile: AccountProfile = { ...record(), revision: crypto.randomUUID(), name: String(body.name), service: body.service as AccountService, expected_login: String(body.expected_login), expected_account_id: typeof body.expected_account_id === "string" ? body.expected_account_id : null, state: "needs_login", verified_identity: null, public_key: null, fingerprint: null, problem: "Fictional profile: native sign-in and keys require a real Machine." };
+    accountProfiles.push(profile); return json(profile, 201);
+  }
+  const accountOperation = /^\/api\/factory(?:\/machines\/[^/]+|\-host)\/accounts\/([^/]+)\/(key|verify|setup|register-key|configure|disable|recover)(?:\/(status|input|cancel))?$/.exec(path);
+  if (accountOperation) {
+    const profile = accountProfiles.find((entry) => entry.id === accountOperation[1]);
+    if (!profile) return failure("account_not_found", "Demo profile not found", 404);
+    if (accountOperation[2] === "disable") { profile.state = "disabled"; profile.revision = crypto.randomUUID(); return json(profile); }
+    if (accountOperation[2] === "configure") { profile.name = String(body.name ?? profile.name); profile.expected_login = String(body.expected_login ?? profile.expected_login); profile.revision = crypto.randomUUID(); return json(profile); }
+    return failure("demo_only", "Native sign-in, verification and SSH keys require a real execution Machine.");
+  }
+  if (path === "/api/factory-host/accounts/snapshot" || /\/projects\/[^/]+\/accounts\/verify$/.test(path)) return json({ host_id: "fictional-demo-host", profiles: [] });
   if (path === "/api/factory/reference-template" && method === "GET") return json(projectReferenceTemplate);
   const referenceRoute = /^\/api\/factory\/projects\/([^/]+)\/references(?:\/([^/]+)(?:\/(source|preview|download|remove))?)?$/.exec(path);
   if (referenceRoute) {

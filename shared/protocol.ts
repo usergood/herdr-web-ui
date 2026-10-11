@@ -1028,7 +1028,13 @@ export const DEFAULT_PORT = 7317;
  * verified Machine checkout, immutable outside-Git index; no native input or launch.
  * POST /api/factory-host/references/prepare (FactoryHostRequests.references) -> CodexReferenceContext.
  * POST .../checkouts (checkout) -> ProjectCheckout, 201; repository identity must match.
- * GET /api/factory/providers?machine_id= -> FactoryCapabilities; unsupported contracts stay disabled.
+ * GET /api/factory/providers?machine_id=&implementation_id= -> FactoryCapabilities;
+ * account-bound provider proof is scoped to its frozen profile revision.
+ * GET/POST /api/factory/machines/:machine/accounts -> AccountOverview / AccountProfile, 201.
+ * POST .../accounts/:id/(key|setup|verify|register-key|configure|disable|recover) -> public profile/setup;
+ * mutating account controls additionally require x-herdr-machine: 1.
+ * POST .../accounts/:id/setup/(status|input|cancel) -> owner-only ephemeral AccountSetup.
+ * POST /api/factory/projects/:id/accounts/verify -> credential-free AccountBindingSnapshot.
  * POST /api/factory/machines/:id/prepare (empty) -> FactoryCapabilities; pinned private source only.
  * POST /api/factory/implementations/:id/runs (start) -> FactoryRun, 202; scoped idempotent admission.
  * POST /api/factory/runs/:id/reconcile (empty) -> FactoryRun; observation never redispatches.
@@ -1055,6 +1061,9 @@ export const DEFAULT_PORT = 7317;
  * POST /api/factory/backups/:id/restore (empty) -> FactoryRestore, 201; separate disabled copy only.
  * Machine bridge routes require bridge authentication; operational leases are not a second tracker.
  * GET /api/factory-host/capabilities -> FactoryCapabilities;
+ * POST /api/factory-host/capabilities ({account_snapshot}) -> profile-scoped FactoryCapabilities.
+ * /api/factory-host/accounts and /:id/... mirror account controls on the execution Machine.
+ * POST /api/factory-host/accounts/snapshot ({bindings}) -> AccountBindingSnapshot.
  * POST /api/factory-host/prepare (FactoryHostRequests.prepare) -> FactoryCapabilities;
  * POST .../inspect (inspect) -> Omit<ProjectCheckout, id|created_at|updated_at|project_id|machine_id>;
  * POST .../review (review) -> {repository:string,head:string,files:ReviewSnapshot.files};
@@ -1085,7 +1094,7 @@ export interface FactoryRequests {
   implementation: { title: string; description: string };
   configure: { project_id?: string | null; provider?: import("./factory.ts").FactoryProvider | null; machine_id?: string | null };
   project: { name: string; path: string; machine_id: string; provider: import("./factory.ts").FactoryProvider; tracker: import("./factory.ts").FactoryProject["tracker"]; tracker_reference?: string };
-  project_settings: Partial<Pick<import("./factory.ts").FactoryProject, "checks" | "setup" | "environment" | "permissions" | "shared_paths" | "provider" | "machine_id">>;
+  project_settings: Partial<Pick<import("./factory.ts").FactoryProject, "checks" | "setup" | "environment" | "permissions" | "shared_paths" | "provider" | "machine_id" | "account_bindings">>;
   checkout: { machine_id: string; path: string };
   settings: Partial<import("./factory.ts").FactorySettings>;
   chat: { title: string };

@@ -18,6 +18,8 @@ import { HerdrError } from "./herdr/client.ts";
 import { factoryTrackerGuide } from "./factory-tracker-client.ts";
 import { FactoryReferences } from "./factory-references.ts";
 import { projectReferenceTemplate } from "../shared/project-references.ts";
+import { MachineAccounts } from "./accounts.ts";
+import type { AccountTools } from "./account-tools.ts";
 
 const providers: FactoryProvider[] = ["codex", "claude", "opencode"];
 const initialSettings: FactorySettings = { provider: "codex", max_implementations: 2, max_agents: 6, max_builds: 2, max_artifact_bytes: 25 * 1024 * 1024, max_storage_bytes: 2 * 1024 * 1024 * 1024, skills_path: null };
@@ -33,12 +35,15 @@ export class FactoryService {
   private readonly pipeline: FactoryPipeline;
   private readonly retrospectives: FactoryRetrospectives;
   private readonly references: FactoryReferences;
+  private readonly accounts: MachineAccounts;
   private stopped = false;
-  constructor(stateDir: string, private readonly skillsPath: string | null = null, native: Partial<FactoryNative> = {}, endpoint: MachineEndpoint = () => undefined, publicUrl: string | null = null) {
-    this.store = new FactoryStore(stateDir); this.artifacts = new FactoryArtifacts(this.store); this.workflow = new FactoryWorkflow(this.store); this.backup = new FactoryBackup(this.store, this.artifacts);
+  constructor(stateDir: string, private readonly skillsPath: string | null = null, native: Partial<FactoryNative> = {}, endpoint: MachineEndpoint = () => undefined, publicUrl: string | null = null, accountTools: AccountTools = {}) {
+    this.accounts = new MachineAccounts(stateDir, accountTools);
+    this.store = new FactoryStore(stateDir); this.artifacts = new FactoryArtifacts(this.store, (text) => this.accounts.assertPublic(text)); this.workflow = new FactoryWorkflow(this.store); this.backup = new FactoryBackup(this.store, this.artifacts);
+    this.accounts.usage((id) => [...this.store.list<FactoryRun>("runs"), ...this.store.list<{ run: FactoryRun; closing?: boolean }>("host_leases").map((lease) => lease.run)].some((run) => ["accepted", "working", "needs_you", "blocked", "disconnected", "interrupted"].includes(run.condition) && (run.manifest as { account_snapshot?: import("../shared/accounts.ts").AccountBindingSnapshot })?.account_snapshot?.profiles.some((profile) => profile.id === id)));
     this.references = new FactoryReferences(this.store, this.artifacts);
-    this.executionHost = new FactoryExecutionHost(this.store, () => this.settings().skills_path, native);
-    this.runtime = new FactoryRuntime(this.store, this.workflow, () => this.settings(), this.executionHost, endpoint, (record) => this.artifacts.read(record), publicUrl, this.references); this.review = new FactoryReview(this.store, (machine, path, base, mode) => this.runtime.capture(machine, path, base, mode), (machine, path) => this.runtime.inspect(machine, path));
+    this.executionHost = new FactoryExecutionHost(this.store, () => this.settings().skills_path, native, this.accounts);
+    this.runtime = new FactoryRuntime(this.store, this.workflow, () => this.settings(), this.executionHost, endpoint, (record) => this.artifacts.read(record), publicUrl, this.references, this.accounts); this.review = new FactoryReview(this.store, (machine, path, base, mode) => this.runtime.capture(machine, path, base, mode), (machine, path) => this.runtime.inspect(machine, path));
     this.pipeline = new FactoryPipeline(this.store, this.runtime, this.workflow, () => this.settings());
     this.retrospectives = new FactoryRetrospectives(this.store);
   }
@@ -53,6 +58,7 @@ export class FactoryService {
     } finally { reader.releaseLock(); }
     const value: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
     if (!isJsonObject(value)) throw new FactoryError("invalid_body", "Enter a JSON object");
+    this.accounts.assertPublic(JSON.stringify(value));
     return value;
   }
   detail(id: string): FactoryDetail | null {
@@ -143,6 +149,29 @@ export class FactoryService {
   async handle(request: Request, url: URL): Promise<Response> {
     try {
       if (request.method !== "GET" && request.headers.get("x-herdr-factory") !== "1") return httpError(403, "invalid_origin", "Use factory controls from this app");
+      const accountCollection = /^\/api\/factory\/machines\/([a-zA-Z0-9_-]+)\/accounts$/.exec(url.pathname);
+      const hostAccountCollection = url.pathname === "/api/factory-host/accounts";
+      if (accountCollection || hostAccountCollection) {
+        const machine = accountCollection?.[1] ?? "local";
+        if (request.method === "GET") return jsonResponse(await this.runtime.accountOverview(machine));
+        if (request.method === "POST") {
+          if (request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Use account controls from this app");
+          return jsonResponse(await this.runtime.createAccount(machine, await this.body(request)), 201);
+        }
+        return badRequest("method_not_allowed", "Use GET or POST");
+      }
+      const accountOperation = /^\/api\/factory\/machines\/([a-zA-Z0-9_-]+)\/accounts\/([a-zA-Z0-9-]+)\/(key|verify|setup|register-key|configure|disable|recover)(?:\/(status|input|cancel))?$/.exec(url.pathname);
+      const hostAccountOperation = /^\/api\/factory-host\/accounts\/([a-zA-Z0-9-]+)\/(key|verify|setup|register-key|configure|disable|recover)(?:\/(status|input|cancel))?$/.exec(url.pathname);
+      if ((accountOperation || hostAccountOperation) && request.method === "POST") {
+        if (request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Use account controls from this app");
+        const body = await this.body(request);
+        const machine = accountOperation?.[1] ?? "local";
+        const id = accountOperation?.[2] ?? hostAccountOperation![1]!;
+        const action = accountOperation?.[3] ?? hostAccountOperation![2]!;
+        const suffix = accountOperation?.[4] ?? hostAccountOperation?.[3];
+        return jsonResponse(await this.runtime.accountOperation(machine, id, action + (suffix ? "/" + suffix : ""), body), action === "setup" && suffix !== "status" ? 202 : 200, { "cache-control": "no-store" });
+      }
+      if (url.pathname === "/api/factory-host/accounts/snapshot" && request.method === "POST") { if (request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Use account controls from this app"); return jsonResponse(await this.accounts.freeze((await this.body(request)).bindings as import("../shared/accounts.ts").ProjectAccountBindings)); }
       if (url.pathname === "/api/factory/reference-template" && request.method === "GET") return jsonResponse(projectReferenceTemplate);
       const referencePrepare = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/references\/prepare$/.exec(url.pathname);
       if (referencePrepare && request.method === "POST") { const body = await this.body(request); if (typeof body.machine_id !== "string") throw new FactoryError("invalid_machine", "Select an execution Machine"); return jsonResponse(await this.runtime.prepareReferences(referencePrepare[1]!, body.machine_id, body.expected_revision)); }
@@ -156,6 +185,7 @@ export class FactoryService {
         if (!referenceRoute[2] && request.method === "POST") return jsonResponse(this.references.create(projectId, await this.body(request, Math.ceil(this.settings().max_artifact_bytes / 3) * 4 + 64 * 1024), this.settings()), 201);
       }
       if (url.pathname === "/api/factory-host/capabilities" && request.method === "GET") return jsonResponse(await this.executionHost.capabilities());
+      if (url.pathname === "/api/factory-host/capabilities" && request.method === "POST") { if (request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Use account controls from this app"); return jsonResponse(await this.executionHost.capabilities((await this.body(request)).account_snapshot as import("../shared/accounts.ts").AccountBindingSnapshot)); }
       if (url.pathname === "/api/factory-host/prepare" && request.method === "POST") { this.executionHost.prepare(await this.body(request, 4 * 1024 * 1024)); return jsonResponse(await this.executionHost.capabilities()); }
       if (url.pathname === "/api/factory-host/inspect" && request.method === "POST") { const body = await this.body(request); if (typeof body.path !== "string") throw new FactoryError("invalid_checkout", "Enter an absolute checkout path"); return jsonResponse(await inspectCheckout(body.path)); }
       if (url.pathname === "/api/factory-host/review" && request.method === "POST") {
@@ -198,7 +228,14 @@ export class FactoryService {
         if (body.skills_path !== undefined) { if (body.skills_path !== null && typeof body.skills_path !== "string") throw new FactoryError("invalid_skills_path", "Select an absolute pinned skill source"); settings.skills_path = body.skills_path as string | null; }
         this.store.db.transaction(() => { this.store.put("settings", { id: "default", value: settings }); this.store.event(null, "factory_settings_changed", settings); })(); return jsonResponse(settings);
       }
-      if (url.pathname === "/api/factory/providers" && request.method === "GET") return jsonResponse(await this.runtime.capabilities(url.searchParams.get("machine_id") ?? "local"));
+      if (url.pathname === "/api/factory/providers" && request.method === "GET") {
+        const machine = url.searchParams.get("machine_id") ?? "local";
+        const implementationId = url.searchParams.get("implementation_id"); const implementation = implementationId ? this.store.get<Implementation>("implementations", implementationId) : null;
+        const project = implementation?.project_id ? this.store.get<FactoryProject>("projects", implementation.project_id) : null;
+        const bindings = project?.account_bindings?.[machine];
+        const snapshot = bindings && Object.keys(bindings).length ? await this.runtime.accountSnapshot(machine, bindings) : null;
+        return jsonResponse(await this.runtime.capabilities(machine, snapshot));
+      }
       const artifactMutation = /^\/api\/factory\/artifacts\/([a-zA-Z0-9-]+)\/(note|delete)$/.exec(url.pathname);
       if (artifactMutation && request.method === "POST") return jsonResponse(this.artifacts.mutate(artifactMutation[1]!, artifactMutation[2]!, await this.body(request)));
       const retroRoute = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/retrospectives$/.exec(url.pathname);
@@ -236,12 +273,23 @@ export class FactoryService {
           return jsonResponse(checkout, 201);
         }
         const next = { ...project, updated_at: new Date().toISOString() };
+        if (body.account_bindings !== undefined) {
+          if (request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Use account controls from this app");
+          if (!isJsonObject(body.account_bindings)) throw new FactoryError("invalid_account_bindings", "Select account profiles for each configured Machine");
+          const bindings: NonNullable<FactoryProject["account_bindings"]> = Object.create(null);
+          for (const [machine, selection] of Object.entries(body.account_bindings)) {
+            if (!this.store.list<ProjectCheckout>("checkouts", project.id).some((checkout) => checkout.machine_id === machine) || !isJsonObject(selection)) throw new FactoryError("checkout_required", "Configure this Machine's Project checkout before selecting accounts", 409);
+            const selected = selection as import("../shared/accounts.ts").ProjectAccountBindings;
+            await this.runtime.accountSnapshot(machine, selected); bindings[machine] = selected;
+          }
+          next.account_bindings = bindings;
+        }
         for (const key of ["checks", "setup"] as const) if (body[key] !== undefined) {
           if (!Array.isArray(body[key]) || body[key].length > 20 || body[key].some((args: unknown) => !Array.isArray(args) || !args.length || args.length > 100 || args.some((arg: unknown) => typeof arg !== "string" || arg.length > 4096 || arg.includes("\0")))) throw new FactoryError("invalid_commands", "Configure bounded command argument arrays");
           next[key] = body[key] as string[][];
         }
         if (body.environment !== undefined) {
-          if (!isJsonObject(body.environment) || Object.entries(body.environment).some(([key, value]) => !/^[A-Z][A-Z0-9_]{0,99}$/.test(key) || /^(HOME|CODEX_HOME|PATH|GIT_|HERDR_|LD_|DYLD_)/.test(key) || typeof value !== "string" || value.length > 4096 || value.includes("\0"))) throw new FactoryError("invalid_environment", "Use task-specific environment names and bounded values");
+          if (!isJsonObject(body.environment) || Object.entries(body.environment).some(([key, value]) => !/^[A-Z][A-Z0-9_]{0,99}$/.test(key) || /^(HOME|PATH|GIT_|HERDR_|LD_|DYLD_|GH_|GITHUB_|CODEX_|CLAUDE_|OPENAI_|ANTHROPIC_|CLOUDFLARE_|WRANGLER_|DOTENV_KEY$)/.test(key) || typeof value !== "string" || value.length > 4096 || value.includes("\0"))) throw new FactoryError("invalid_environment", "Use task-specific environment names; select credentials through Machine account profiles");
           next.environment = body.environment as Record<string, string>;
         }
         if (body.permissions !== undefined) { if (typeof body.permissions !== "string" || !body.permissions.trim() || body.permissions.length > 20000) throw new FactoryError("invalid_permissions", "Record the Project's explicit execution permissions"); next.permissions = body.permissions; }
@@ -249,6 +297,15 @@ export class FactoryService {
         if (body.provider !== undefined) { if (!providers.includes(body.provider as FactoryProvider)) throw new FactoryError("invalid_provider", "Select a provider"); next.provider = body.provider as FactoryProvider; }
         if (body.machine_id !== undefined) { if (typeof body.machine_id !== "string" || !this.store.list<ProjectCheckout>("checkouts", project.id).some((entry) => entry.machine_id === body.machine_id)) throw new FactoryError("checkout_required", "Configure this Machine's checkout first"); next.machine_id = body.machine_id; }
         this.store.put("projects", next); this.store.event(null, "project_configured", { project_id: project.id }); return jsonResponse(next);
+      }
+      const projectAccountCheck = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/accounts\/verify$/.exec(url.pathname);
+      if (projectAccountCheck && request.method === "POST") {
+        if (request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Use account controls from this app");
+        const project = this.store.get<FactoryProject>("projects", projectAccountCheck[1]!);
+        if (!project) throw new FactoryError("not_found", "Project not found", 404);
+        const body = await this.body(request);
+        if (typeof body.machine_id !== "string") throw new FactoryError("invalid_machine", "Select the account execution Machine");
+        return jsonResponse(await this.runtime.accountSnapshot(body.machine_id, project.account_bindings?.[body.machine_id] ?? {}));
       }
       const reviewRoute = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/(snapshots|comments)$/.exec(url.pathname);
       if (reviewRoute && request.method === "POST") {
@@ -395,5 +452,5 @@ export class FactoryService {
       return httpError(404, "not_found", "Unknown factory endpoint");
     } catch (error) { return error instanceof FactoryError ? httpError(error.status, error.code, error.message) : error instanceof SyntaxError ? badRequest("invalid_json", "Enter valid JSON") : errorResponse(error); }
   }
-  stop(): void { if (this.stopped) return; this.stopped = true; this.runtime.stop(); this.store.close(); }
+  stop(): void { if (this.stopped) return; this.stopped = true; this.accounts.stop(); this.runtime.stop(); this.store.close(); }
 }

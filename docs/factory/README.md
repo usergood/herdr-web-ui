@@ -4,6 +4,8 @@
 
 Start with [runtime.md](runtime.md) for configuration, execution, review, remote-machine onboarding and recovery. The [specification](specification.md) remains the complete product contract. Production service changes, external publication and deployment retain their separate owner scope.
 
+Use [account setup](account-setup.md) to create Machine profiles, authorize native subscription/OAuth logins, generate and register GitHub keys, and bind accounts to a Project. The [account specification](account-profiles.md) describes the implementation; [the research](project-account-profiles-research.md) records its primary sources and initial design.
+
 ## Records and source
 
 The connection server owns the SQLite records, imported artifacts and evidence. Execution Machines own their worktrees and native processes. Repository-writing Runs use owned worktrees; the primary checkout is preserved. Existing ordinary chats and terminals remain available.

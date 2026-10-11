@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { FactoryOverview, FactoryProject, FactoryProvider } from "../../shared/protocol.ts";
 import { factoryRequest } from "../lib/factoryApi.ts";
 import { useT } from "../lib/i18n.ts";
+import { FactoryProjectAccounts } from "./FactoryProjectAccounts.tsx";
 
 export function FactoryProjectSettings({ project, overview, machineId, busy, perform }: { project: FactoryProject; overview: FactoryOverview; machineId: string; busy: boolean; perform: (action: () => Promise<void>) => Promise<void> }) {
   const t = useT();
@@ -28,5 +29,6 @@ export function FactoryProjectSettings({ project, overview, machineId, busy, per
       <label>{t("Checkout path")} · {machineId}<input className="input factory-input" required value={path} onChange={(event) => setPath(event.target.value)} /></label>
       <button className="btn factory-button" disabled={busy}>{t("Verify Machine checkout")}</button>
     </form>
+    <FactoryProjectAccounts key={`${project.id}:${machineId}`} project={project} machineId={machineId} busy={busy} perform={perform} />
   </details>;
 }
