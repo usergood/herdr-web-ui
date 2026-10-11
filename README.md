@@ -20,6 +20,8 @@
 
 This fork includes upstream releases **v0.4.4–v0.4.6**. The original browser client and its recordings below come from herdr-web-ui and its contributors.
 
+Install the bundled **Saurons eye** app from normal Android Chrome over HTTPS. Authenticated reverse proxies are supported; the manifest carries the browser login. See [Android installation and notification setup](docs/pwa-installation.md).
+
 ## What Saurons eye adds
 
 ```text

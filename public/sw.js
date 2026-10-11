@@ -1,4 +1,4 @@
-// Service worker for herdr web ui. Policy: navigations are network-first (so a
+// Service worker for Saurons eye. Policy: navigations are network-first (so a
 // fresh build always wins when online) falling back to the cached shell when
 // offline; static assets (hashed bundles, icons, favicons) are cache-first since
 // they are content-addressed or rarely change. The web manifest is not: its URL
@@ -14,7 +14,7 @@
 // one, and its shell, bundles and font chunks are all there. Deleted at activation, the first
 // reload without a network would find no shell at all. Nothing is copied across, so no hashed
 // file of an old build outlives the first navigation that reaches the server.
-const CACHE_NAME = "herdr-web-ui-v4-ram";
+const CACHE_NAME = "saurons-eye-v1";
 
 const CACHE_FIRST_PATHS = new Set([
   "/favicon.png",
@@ -121,15 +121,15 @@ self.addEventListener("push", (event) => {
     (async () => {
       const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
       const watching = windows.some((client) => client.visibilityState === "visible");
-      await self.registration.showNotification(payload.title || "herdr", {
+      await self.registration.showNotification(payload.title || "Saurons eye", {
         body: payload.body || "",
         tag: payload.tag || "herdr",
         renotify: !watching,
         silent: watching,
         data: { pane_id: payload.pane_id || null, machine_id: payload.machine_id || "local" },
-        icon: "/icons/icon-192.png?v=ram1",
+        icon: "/icons/icon-192.png?v=eye1",
         // Android's status bar and small icon: white on transparent, or Chrome's bell
-        badge: "/icons/badge-96.png?v=ram1",
+        badge: "/icons/badge-96.png?v=eye1",
       });
     })(),
   );

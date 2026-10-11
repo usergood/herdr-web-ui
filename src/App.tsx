@@ -63,7 +63,7 @@ import { canPlayAlertSound, playAlertSound, unlockAlertSound, type AlertSoundKin
 import { createAlertTurnPlayer } from "./lib/alertTurns.ts";
 import { FactoryPanel } from "./components/FactoryPanel.tsx";
 
-const APP_TITLE = "herdr web ui";
+const APP_TITLE = "Saurons eye";
 const POLL_MS = 5000;
 
 /**
@@ -133,9 +133,9 @@ function storedView(paneId: string, machineId: string, hasAgent: boolean | null,
 function Brand() {
   return (
     <h1 className="brand">
-      <img src="/icons/icon-192.png?v=ram1" alt="" width="22" height="22" className="brand-mark" />
+      <img src="/icons/icon-192.png?v=eye1" alt="" width="22" height="22" className="brand-mark" />
       <span className="brand-name">
-        herdr <span className="brand-sub">web ui</span>
+        Saurons <span className="brand-sub">eye</span>
       </span>
     </h1>
   );
@@ -840,7 +840,7 @@ export function App() {
           <main className="terminal-host">
             <div className="terminal-placeholder">
               <div className="terminal-placeholder-inner">
-                <span>{t("Connecting to herdr web ui…")}</span>
+                <span>{t("Connecting to Saurons eye…")}</span>
               </div>
             </div>
           </main>

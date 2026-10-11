@@ -53,6 +53,7 @@ run_script scripts/demo-build.ts "$HERDR_DEMO_BUILD"
 run_script scripts/ui-regression.ts
 run_script scripts/factory-browser-regression.ts
 run_script scripts/project-references-browser-regression.ts
+run_script scripts/pwa-install-regression.ts
 run_script scripts/pending-pane-switch-regression.ts
 run_script scripts/terminal-dispose-browser-qa.ts
 run_script scripts/sticky-modifiers-regression.ts
