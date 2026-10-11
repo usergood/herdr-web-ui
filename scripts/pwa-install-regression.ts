@@ -1,13 +1,13 @@
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { createServer } from "../server/index.ts";
 
 const state = mkdtempSync(join(tmpdir(), "saurons-pwa-install-"));
-const app = createServer({ port: 0, stateDir: state, machines: false });
+const app = createServer({ port: 0, stateDir: state, machines: false, token: "owned-pwa-gate-fixture" });
 const authorization = `Basic ${Buffer.from("fixture:fixture-only").toString("base64")}`;
 const manifestRequests: { authorized: boolean }[] = [];
 const proxy = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(request) {
@@ -56,5 +56,6 @@ try {
   });
   assert.equal(badge.width, 96); assert.equal(badge.height, 96); assert(badge.transparent > 0 && badge.white > 0); assert.equal(badge.colored, 0, "Android badge is white on transparent");
   assert.equal((await fetch(`${origin}/api/session`)).status, 401, "Installation support keeps application authentication intact");
+  if (process.env["UI_EVIDENCE_DIR"]) { mkdirSync(process.env["UI_EVIDENCE_DIR"], { recursive: true }); await page.locator(".access-gate-mark").waitFor(); await page.screenshot({ path: join(process.env["UI_EVIDENCE_DIR"], "pwa-install-mobile.png") }); }
   console.log("PWA install: credentialed manifest, standalone identity, icons, worker, Android badge and Chrome installability passed");
 } finally { await context.close(); proxy.stop(true); app.stop(); rmSync(state, { recursive: true, force: true }); }
