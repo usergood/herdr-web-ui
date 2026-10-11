@@ -378,7 +378,7 @@ export function createServer(
     /** where VAPID keys and push subscriptions persist; tests pass a temp dir */
     stateDir?: string;
     /** Pinned factory source. Unset, HERDR_FACTORY_SKILLS_PATH selects it; no global installation. */
-    factory?: { skillsPath?: string; native?: Partial<FactoryNative>; machineEndpoint?: MachineEndpoint; publicUrl?: string | null };
+    factory?: { skillsPath?: string; native?: Partial<FactoryNative>; machineEndpoint?: MachineEndpoint; publicUrl?: string | null; accountTools?: import("./account-tools.ts").AccountTools };
     /** the PC's own Tailscale login, for the identity check; tests set it, otherwise `tailscale status` says */
     tailscaleOwner?: string | null;
     /** the operator declares `tailscale serve` as this install's only ingress; HERDR_WEB_TAILSCALE_SERVE_ONLY=1 says the same */
@@ -473,7 +473,7 @@ export function createServer(
   /** paired devices (server/devices.ts) and the PC's Tailscale login: the two ways in besides the token and this PC itself */
   const devices = new DeviceStore(options.stateDir ?? defaultStateDir());
   const bundledSkills = join(import.meta.dir, "../vendor/matt-skills");
-  const factory = new FactoryService(options.stateDir ?? defaultStateDir(), options.factory?.skillsPath ?? process.env["HERDR_FACTORY_SKILLS_PATH"] ?? (existsSync(bundledSkills) ? bundledSkills : null), options.factory?.native, options.factory?.machineEndpoint ?? ((id) => machines?.endpoint(id)), options.factory?.publicUrl === undefined ? process.env["HERDR_FACTORY_PUBLIC_URL"] ?? null : options.factory.publicUrl);
+  const factory = new FactoryService(options.stateDir ?? defaultStateDir(), options.factory?.skillsPath ?? process.env["HERDR_FACTORY_SKILLS_PATH"] ?? (existsSync(bundledSkills) ? bundledSkills : null), options.factory?.native, options.factory?.machineEndpoint ?? ((id) => machines?.endpoint(id)), options.factory?.publicUrl === undefined ? process.env["HERDR_FACTORY_PUBLIC_URL"] ?? null : options.factory.publicUrl, options.factory?.accountTools);
   const usage = options.usage ?? new UsageService();
   const voice = options.voice ?? new VoiceService({ stateDir: options.stateDir ?? defaultStateDir(), env: process.env, fetch });
   /** a login named here is taken as it is: a tagged node has none of its own to read (HERDR_WEB_TAILSCALE_OWNER) */
