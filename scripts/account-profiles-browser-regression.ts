@@ -50,7 +50,9 @@ try {
   await updated.getByText("Needs sign-in", { exact: true }).waitFor();
   await updated.getByRole("button", { name: "Verify account identity", exact: true }).click(); await updated.getByText("Ready", { exact: true }).waitFor();
   const overview = await (await fetch(origin + "/api/factory")).json(); assert(overview.projects.find((entry: { id: string }) => entry.id === project.id).account_bindings.local.github);
-  await page.setViewportSize({ width: 390, height: 844 }); await accounts.scrollIntoViewIfNeeded();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForFunction(() => { const drawer = document.querySelector(".sidebar"); return !drawer || getComputedStyle(drawer).visibility === "hidden"; });
+  await accounts.scrollIntoViewIfNeeded();
   for (const control of [accounts.getByRole("textbox", { name: "Account name", exact: true }), accounts.getByRole("button", { name: "Save Project accounts", exact: true })]) {
     const bounds = await control.boundingBox(); assert(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 390, "Account controls fit the phone viewport");
   }
