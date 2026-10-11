@@ -194,6 +194,15 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     expect(response.status).toBe(409); expect((await response.json()).error.code).toBe("account_subscription_settings");
   });
 
+  test("Claude transcript history does not consume the credential verification or retention budget", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-accounts-claude-history-")); roots.push(state); const fixture = join(state, "claude-cli.mjs");
+    writeFileSync(fixture, `import { mkdirSync, writeFileSync } from "node:fs"; import { join } from "node:path"; const history = join(process.env.CLAUDE_CONFIG_DIR, "projects", "owned-transcripts"); mkdirSync(history, { recursive: true }); for(let i=0;i<2100;i++) writeFileSync(join(history,i+".jsonl"), "Owned native history\\n"); process.stdout.write(JSON.stringify({ loggedIn: true, authMethod: "claude.ai", email: "work@example.test", configDirectory: process.env.CLAUDE_CONFIG_DIR }));\n`);
+    const current = app(state, undefined, undefined, fixture); const route = "/api/factory/machines/local/accounts";
+    const profile = await (await fetch(current.origin + route, { method: "POST", headers, body: JSON.stringify({ name: "Claude history", service: "claude", expected_login: "work@example.test" }) })).json();
+    expect((await fetch(`${current.origin}${route}/${profile.id}/verify`, { method: "POST", headers, body: JSON.stringify({ expected_revision: profile.revision }) })).status).toBe(200);
+    expect((await fetch(current.origin + "/api/factory/implementations", { method: "POST", headers, body: JSON.stringify({ title: "History-safe capture", description: "Owned fixture" }) })).status).toBe(201);
+  });
+
   test("Cloudflare native profiles verify the specified account instead of selecting a default membership", async () => {
     const state = mkdtempSync(join(tmpdir(), "saurons-accounts-cloudflare-")); roots.push(state);
     const fixture = join(state, "cloudflare-cli.mjs"); const accountId = "1".repeat(32);

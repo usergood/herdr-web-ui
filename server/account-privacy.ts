@@ -1,6 +1,7 @@
 import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { FactoryError } from "./factory-host.ts";
+import { isAccountHistory } from "./account-history.ts";
 
 /** Only profile-owned credential/config files are read. Native histories are not scanned. */
 export function accountRedactor(root: string): (text: string) => string {
@@ -13,10 +14,11 @@ export function accountRedactor(root: string): (text: string) => string {
   function visit(directory: string, depth: number): void {
     if (depth > 5) return;
     for (const name of readdirSync(directory)) {
+      if (isAccountHistory(name)) continue;
       if (++count > 2000) throw new FactoryError("account_privacy_unavailable", "Account credential redaction needs operator recovery", 409);
       const file = join(directory, name); const stat = lstatSync(file);
       if (stat.isSymbolicLink()) throw new FactoryError("account_privacy_unavailable", "Preserve linked account state for operator recovery", 409);
-      if (stat.isDirectory()) { if (!/^(sessions|history|logs|launchers|cache|tmp|node_modules|skills|plugins)$/.test(name)) visit(file, depth + 1); continue; }
+      if (stat.isDirectory()) { visit(file, depth + 1); continue; }
       if (!stat.isFile() || !/auth|credential|hosts\.|config|token|secret|^id_ed25519$/i.test(name) || /\.pub$/.test(name)) continue;
       bytes += stat.size; if (stat.size > 1024 * 1024 || bytes > 4 * 1024 * 1024) throw new FactoryError("account_privacy_unavailable", "Account credential files exceed the redaction budget", 409);
       const text = readFileSync(file, "utf8");

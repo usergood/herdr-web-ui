@@ -3,6 +3,7 @@ import { chmodSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AccountService } from "../shared/accounts.ts";
 import { FactoryError } from "./factory-host.ts";
+import { isAccountHistory } from "./account-history.ts";
 
 export interface AccountTool { executable: string; args?: string[] }
 export type AccountTools = Partial<Record<AccountService, AccountTool>>;
@@ -14,7 +15,7 @@ function sealCredentialFiles(directory: string): void {
     const stat = lstatSync(path); if (stat.isSymbolicLink()) throw new FactoryError("account_storage_unverified", "Native credentials must stay in the profile's private storage", 409);
     if (stat.isDirectory()) {
       chmodSync(path, 0o700);
-      for (const name of readdirSync(path)) if (!/^(?:sessions|history|logs|tmp|cache|skills|plugins|node_modules)$/.test(name)) visit(join(path, name), depth + 1);
+      for (const name of readdirSync(path)) if (!isAccountHistory(name)) visit(join(path, name), depth + 1);
     } else if (stat.isFile()) { if (stat.nlink !== 1) throw new FactoryError("account_storage_unverified", "Preserve linked native credential material for operator recovery", 409); chmodSync(path, 0o600); }
   }
   visit(directory, 0);
