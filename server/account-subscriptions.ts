@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { FactoryError } from "./factory-host.ts";
 
 export const claudeSubscriptionSettings = JSON.stringify({ forceLoginMethod: "claudeai", apiKeyHelper: "", env: { ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "", ANTHROPIC_BASE_URL: "", ANTHROPIC_PROFILE: "", ANTHROPIC_FEDERATION_RULE_ID: "", ANTHROPIC_ORGANIZATION_ID: "", CLAUDE_CODE_OAUTH_TOKEN: "", CLAUDE_CODE_USE_BEDROCK: "", CLAUDE_CODE_USE_VERTEX: "", CLAUDE_CODE_USE_FOUNDRY: "" } });
@@ -27,6 +27,6 @@ export function checkClaudeSubscription(profileDirectory: string, cwd?: string, 
     const value = arg.startsWith("--settings=") ? arg.slice(11) : args[++index];
     if (!value) throw new FactoryError("account_subscription_settings", "Select valid Claude subscription settings", 409);
     if (value.trim().startsWith("{")) { try { inspect(JSON.parse(value)); } catch (error) { throw error instanceof FactoryError ? error : new FactoryError("account_subscription_settings", "Select valid Claude subscription settings", 409); } }
-    else file(join(cwd ?? process.cwd(), value));
+    else { const selected = resolve(cwd ?? process.cwd(), value); if (!existsSync(selected)) throw new FactoryError("account_subscription_settings", "The explicitly selected Claude settings file is unavailable", 409); file(selected); }
   }
 }

@@ -16,7 +16,7 @@ export function accountRedactor(root: string): (text: string) => string {
       if (++count > 2000) throw new FactoryError("account_privacy_unavailable", "Account credential redaction needs operator recovery", 409);
       const file = join(directory, name); const stat = lstatSync(file);
       if (stat.isSymbolicLink()) throw new FactoryError("account_privacy_unavailable", "Preserve linked account state for operator recovery", 409);
-      if (stat.isDirectory()) { if (!/^(sessions|history|logs|launchers|cache|node_modules|skills)$/.test(name)) visit(file, depth + 1); continue; }
+      if (stat.isDirectory()) { if (!/^(sessions|history|logs|launchers|cache|tmp|node_modules|skills|plugins)$/.test(name)) visit(file, depth + 1); continue; }
       if (!stat.isFile() || !/auth|credential|hosts\.|config|token|secret|^id_ed25519$/i.test(name) || /\.pub$/.test(name)) continue;
       bytes += stat.size; if (stat.size > 1024 * 1024 || bytes > 4 * 1024 * 1024) throw new FactoryError("account_privacy_unavailable", "Account credential files exceed the redaction budget", 409);
       const text = readFileSync(file, "utf8");

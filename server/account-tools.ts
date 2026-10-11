@@ -1,11 +1,24 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { chmodSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AccountService } from "../shared/accounts.ts";
 import { FactoryError } from "./factory-host.ts";
 
 export interface AccountTool { executable: string; args?: string[] }
 export type AccountTools = Partial<Record<AccountService, AccountTool>>;
+
+function sealCredentialFiles(directory: string): void {
+  let count = 0;
+  function visit(path: string, depth: number): void {
+    if (++count > 2000 || depth > 5) throw new FactoryError("account_storage_unverified", "Native credential storage exceeds the private verification budget", 409);
+    const stat = lstatSync(path); if (stat.isSymbolicLink()) throw new FactoryError("account_storage_unverified", "Native credentials must stay in the profile's private storage", 409);
+    if (stat.isDirectory()) {
+      chmodSync(path, 0o700);
+      for (const name of readdirSync(path)) if (!/^(?:sessions|history|logs|tmp|cache|skills|plugins|node_modules)$/.test(name)) visit(join(path, name), depth + 1);
+    } else if (stat.isFile()) { if (stat.nlink !== 1) throw new FactoryError("account_storage_unverified", "Preserve linked native credential material for operator recovery", 409); chmodSync(path, 0o600); }
+  }
+  visit(directory, 0);
+}
 
 /** Native credential selection is process-scoped; another service's credential is not inherited. */
 export function accountProcessEnvironment(service: AccountService, directory: string): Record<string, string> {
@@ -45,21 +58,24 @@ export class NativeAccountTools {
   async json(service: AccountService, args: string[], directory: string): Promise<unknown> {
     const tool = this.tool(service);
     try {
-      return await new Promise((resolve, reject) => {
+      sealCredentialFiles(directory);
+      const value = await new Promise((resolve, reject) => {
         const child = execFile(tool.executable, [...tool.args ?? [], ...args], { cwd: directory, env: this.environment(service, directory), timeout: 10_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024, windowsHide: true }, (error, stdout) => {
           this.children.delete(child); if (error) { reject(error); return; } try { resolve(JSON.parse(stdout)); } catch (error) { reject(error); }
         }); this.children.add(child);
-      });
+      }); sealCredentialFiles(directory); return value;
     } catch { throw new FactoryError("account_login_unavailable", "The selected account could not be verified; finish its native sign-in and try again", 409); }
   }
   async codexAccount(directory: string): Promise<unknown> {
     const tool = this.tool("codex");
+    sealCredentialFiles(directory);
     return new Promise((resolve, reject) => {
       const child = spawn(tool.executable, [...tool.args ?? [], "-c", 'cli_auth_credentials_store="file"', "app-server"], { cwd: directory, env: accountProcessEnvironment("codex", directory), stdio: "pipe", windowsHide: true });
       this.children.add(child); child.once("close", () => this.children.delete(child));
       let settled = false; let buffered = "";
       const finish = (value?: unknown, failed = false) => {
         if (settled) return; settled = true; clearTimeout(timer);
+        try { sealCredentialFiles(directory); } catch { failed = true; }
         if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
         const reap = setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }, 2000); reap.unref(); child.once("close", () => clearTimeout(reap));
         if (failed) reject(new FactoryError("account_login_unavailable", "The selected Codex account could not be read without refreshing credentials", 409)); else resolve(value);

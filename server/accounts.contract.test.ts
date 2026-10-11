@@ -98,13 +98,13 @@ describe("Machine account profiles through the owner HTTP interface", () => {
   test("native sign-in exposes an owner-only authorization challenge and verifies the completed selected account", async () => {
     const state = mkdtempSync(join(tmpdir(), "saurons-accounts-setup-")); roots.push(state);
     const fixture = join(state, "github-cli.mjs");
-    writeFileSync(fixture, `import { existsSync, writeFileSync } from "node:fs";
+    writeFileSync(fixture, `import { existsSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 const cache = join(process.env.GH_CONFIG_DIR, "owned-login.json");
 if (process.argv.includes("login")) {
   process.stdout.write("First copy your one-time code: ABCD-1234\\nOpen https://github.com/login/device\\n");
   process.stdin.once("data", () => { writeFileSync(cache, JSON.stringify({ login: "fictional-work", token: "owned-setup-token-never-expose" })); process.exit(0); });
-} else if (existsSync(cache)) process.stdout.write(JSON.stringify({ login: "fictional-work", id: 1042 }));
+} else if (existsSync(cache)) { if (process.platform !== "win32" && (statSync(cache).mode & 0o777) !== 0o600) process.exit(1); process.stdout.write(JSON.stringify({ login: "fictional-work", id: 1042 })); }
 else process.exit(1);
 `);
     const current = app(state, fixture); const route = "/api/factory/machines/local/accounts";
@@ -288,11 +288,13 @@ if (process.argv.includes("app-server")) {
  writeFileSync(auth, JSON.stringify({ email: "work@example.test", access_token: "owned-subscription-token" }));
  createInterface({ input: process.stdin }).on("line", line => { const m = JSON.parse(line); if (m.id === 1) process.stdout.write(JSON.stringify({ id: 1, result: {} }) + "\\n"); if (m.method === "account/read") process.stdout.write(JSON.stringify({ id: m.id, result: { account: { type: "chatgpt", email: JSON.parse(readFileSync(auth)).email } } }) + "\\n"); });
 } else process.stdout.write(JSON.stringify({ email: JSON.parse(readFileSync(auth)).email, api_key_present: Boolean(process.env.OPENAI_API_KEY) }));\n`);
+    const claude = join(state, "claude-cli.mjs"); const conflictingSettings = join(state, "claude-absolute-settings.json"); writeFileSync(conflictingSettings, JSON.stringify({ apiKeyHelper: "owned-conflicting-helper" }));
+    writeFileSync(claude, 'process.stdout.write(JSON.stringify({ loggedIn: true, authMethod: "claude.ai", email: "work@example.test", configDirectory: process.env.CLAUDE_CONFIG_DIR }));\n');
     const repo = join(state, "repo"); execFileSync("git", ["init", "-b", "main", repo], { stdio: "ignore" }); writeFileSync(join(repo, "README.md"), "# Owned execution fixture\n");
     execFileSync("git", ["add", "."], { cwd: repo }); execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "fixture"], { cwd: repo, stdio: "ignore" });
     const ownedWorkspaces: string[] = []; let coordinatorNotes: string;
     const server = createServer({ port: 0, stateDir: state, token: "account-contract-owner", machines: false, factory: {
-      accountTools: { github: { executable: process.execPath, args: [fixture, "--fixture-signin"] }, codex: { executable: process.execPath, args: [codex] } },
+      accountTools: { github: { executable: process.execPath, args: [fixture, "--fixture-signin"] }, codex: { executable: process.execPath, args: [codex] }, claude: { executable: process.execPath, args: [claude] } },
       native: { version: async () => "owned-native-fixture", createWorkspace: async (options) => {
         const workspace = await workspaceCreate(options); ownedWorkspaces.push(workspace.workspace.workspace_id);
         const observed = Bun.spawnSync([process.execPath, fixture, "api", "user"], { env: { ...process.env, ...options.env }, cwd: options.cwd });
@@ -300,7 +302,8 @@ if (process.argv.includes("app-server")) {
         expect(credentials.exitCode).toBe(0);
         const subscription = Bun.spawnSync(["codex", "--fixture-agent-receipt"], { env: { ...process.env, ...options.env, CODEX_HOME: ambientHome, OPENAI_API_KEY: "owned-ambient-api-key" }, cwd: options.cwd });
         expect(subscription.exitCode).toBe(0);
-        const receipt = { ...JSON.parse(observed.stdout.toString()), https_username: credentials.stdout.toString().match(/^username=(.+)$/m)?.[1], subscription: JSON.parse(subscription.stdout.toString()) };
+        const conflicting = Bun.spawnSync(["claude", "--settings", conflictingSettings, "owned-fixture-prompt"], { env: { ...process.env, ...options.env }, cwd: options.cwd });
+        const receipt = { ...JSON.parse(observed.stdout.toString()), https_username: credentials.stdout.toString().match(/^username=(.+)$/m)?.[1], subscription: JSON.parse(subscription.stdout.toString()), conflicting_settings_exit: conflicting.exitCode };
         if (!options.label?.startsWith("saurons-eye-worker-")) coordinatorNotes = options.env!.FACTORY_NOTES_DIR!;
         writeFileSync(join(coordinatorNotes, options.label?.startsWith("saurons-eye-worker-") ? "worker-account-observed.json" : "account-observed.json"), JSON.stringify(receipt), { mode: 0o600 });
         return workspace;
@@ -312,8 +315,9 @@ if (process.argv.includes("app-server")) {
       await post(`/machines/local/accounts/${profile.id}/verify`, { expected_revision: profile.revision });
       const subscription = await post("/machines/local/accounts", { name: "Execution subscription", service: "codex", expected_login: "work@example.test" });
       await post(`/machines/local/accounts/${subscription.id}/verify`, { expected_revision: subscription.revision });
+      const claudeSubscription = await post("/machines/local/accounts", { name: "Execution Claude", service: "claude", expected_login: "work@example.test" }); await post(`/machines/local/accounts/${claudeSubscription.id}/verify`, { expected_revision: claudeSubscription.revision });
       const project = await post("/projects", { name: "Execution Project", path: repo, machine_id: "local", provider: "codex", tracker: "app" });
-      await post(`/projects/${project.id}/configure`, { account_bindings: { local: { github: profile.id, codex: subscription.id } }, checks: [["bun", "test"]], permissions: "Owned fixtures only; no publication" });
+      await post(`/projects/${project.id}/configure`, { account_bindings: { local: { github: profile.id, codex: subscription.id, claude: claudeSubscription.id } }, checks: [["bun", "test"]], permissions: "Owned fixtures only; no publication" });
       const idea = await post("/implementations", { title: "Account environment fixture", description: "Owned context" });
       await post(`/implementations/${idea.id}/configure`, { project_id: project.id });
       const run = await post(`/implementations/${idea.id}/runs`, { action: "setup", idempotency_key: "account-environment-fixture" });
@@ -327,6 +331,7 @@ if (process.argv.includes("app-server")) {
       expect(data.login).toBe("fictional-work");
       expect(data.https_username).toBe("fictional-work");
       expect(data.subscription).toEqual({ email: "work@example.test", api_key_present: false });
+      expect(data.conflicting_settings_exit).toBe(1);
       const workerReceipt = artifacts.find((entry: { name: string }) => entry.name === "worker-account-observed.json"); expect(workerReceipt).toBeDefined();
       expect((await (await fetch(`${origin}/api/factory/artifacts/${workerReceipt.id}/source`, { headers })).json()).https_username).toBe("fictional-work");
       expect((await fetch(`${origin}/api/factory/implementations/${idea.id}/messages`, { method: "POST", headers, body: JSON.stringify({ chat_id: "owned", content: "owned-subscription-token" }) })).status).toBe(409);
