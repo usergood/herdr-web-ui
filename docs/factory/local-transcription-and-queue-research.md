@@ -4,6 +4,8 @@ Research date: 2026-10-11. Application baseline: `03c366ff04d6f21ddb74ecbc6f00a7
 
 **Recommendation:** support a CPU pilot with multilingual Whisper and one transcription at a time. On this host, base Q5_1 transcribed a public 11-second English clip in **2.36–2.62 seconds**, including CLI startup, at about **198 MiB peak inference RSS**. This establishes a working local candidate; Swedish, browser codecs and combined factory load still need evaluation. Add the explicitly authorized Implementation queue separately. Dictation needs a speech recognition model rather than a general-purpose local chat LLM. [Whisper overview][whisper]
 
+The companion [provider admission research](provider-admission-research.md) extends queue admission with explicit model/reasoning/permissions, per-account quota and API-dollar rules, and automatic resumption after a verified natural quota reset.
+
 ## What the application already does
 
 The browser records short WebM/Opus, MP4 or Ogg clips, posts them to the connection server, and inserts returned text at the composer's caret. Dictation does not send a chat message or execute a terminal command. Late polishing respects edits and recording identity, and dictation cancels on disconnect/unmount. Without configured server transcription, the client can use browser `SpeechRecognition`. That fallback is not an assurance of offline recognition; the web platform's explicit `processLocally` setting is separate and has limited availability. [Browser implementation][client-voice], [insertion behavior][dictation], [MDN][browser-local]
