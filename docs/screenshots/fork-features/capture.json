@@ -1,0 +1,153 @@
+{
+  "source_commit": "03c366ff04d6f21ddb74ecbc6f00a7b57bf85582",
+  "captured_at": "2026-10-11T18:14:00.431Z",
+  "data": "Fictional fixtures through the real HTTP API and browser client",
+  "native_execution": false,
+  "browser": "153.0.8010.12",
+  "screenshots": [
+    {
+      "file": "inbox-desktop.png",
+      "feature": "inbox",
+      "viewport": {
+        "width": 1600,
+        "height": 1000
+      },
+      "touch": false
+    },
+    {
+      "file": "inbox-mobile.png",
+      "feature": "inbox",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "touch": true
+    },
+    {
+      "file": "notes-desktop.png",
+      "feature": "notes",
+      "viewport": {
+        "width": 1600,
+        "height": 1000
+      },
+      "touch": false
+    },
+    {
+      "file": "notes-mobile.png",
+      "feature": "notes",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "touch": true
+    },
+    {
+      "file": "attachments-desktop.png",
+      "feature": "attachments",
+      "viewport": {
+        "width": 1600,
+        "height": 1000
+      },
+      "touch": false
+    },
+    {
+      "file": "attachments-mobile.png",
+      "feature": "attachments",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "touch": true
+    },
+    {
+      "file": "references-desktop.png",
+      "feature": "references",
+      "viewport": {
+        "width": 1600,
+        "height": 1000
+      },
+      "touch": false
+    },
+    {
+      "file": "references-mobile.png",
+      "feature": "references",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "touch": true
+    },
+    {
+      "file": "specification-desktop.png",
+      "feature": "specification",
+      "viewport": {
+        "width": 1600,
+        "height": 1000
+      },
+      "touch": false
+    },
+    {
+      "file": "specification-mobile.png",
+      "feature": "specification",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "touch": true
+    },
+    {
+      "file": "tickets-desktop.png",
+      "feature": "tickets",
+      "viewport": {
+        "width": 1600,
+        "height": 1000
+      },
+      "touch": false
+    },
+    {
+      "file": "tickets-mobile.png",
+      "feature": "tickets",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "touch": true
+    },
+    {
+      "file": "review-desktop.png",
+      "feature": "review",
+      "viewport": {
+        "width": 1600,
+        "height": 1000
+      },
+      "touch": false
+    },
+    {
+      "file": "review-mobile.png",
+      "feature": "review",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "touch": true
+    },
+    {
+      "file": "recovery-desktop.png",
+      "feature": "recovery",
+      "viewport": {
+        "width": 1600,
+        "height": 1000
+      },
+      "touch": false
+    },
+    {
+      "file": "recovery-mobile.png",
+      "feature": "recovery",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "touch": true
+    }
+  ]
+}
