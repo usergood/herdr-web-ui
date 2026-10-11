@@ -1019,6 +1019,14 @@ export const DEFAULT_PORT = 7317;
  * POST .../order (order) -> {ok:true}; reordering never dispatches.
  * POST /api/factory/settings (settings) -> FactorySettings; validated limits and future defaults.
  * POST /api/factory/projects/:id/configure (project_settings) -> FactoryProject;
+ * GET /api/factory/projects/:id/references -> ProjectReferenceLibrary; current immutable versions.
+ * POST .../references (project_reference) -> ProjectReference, 201; displayed revision required.
+ * GET .../references/:version/source|preview|download -> private verified bytes; Project scoped.
+ * POST .../references/:version/remove (reference_remove) -> {ok:true}; history retained.
+ * GET /api/factory/reference-template -> {name:string,media_type:text/markdown,content:string}.
+ * POST /api/factory/projects/:id/references/prepare (reference_prepare) -> CodexReferenceContext;
+ * verified Machine checkout, immutable outside-Git index; no native input or launch.
+ * POST /api/factory-host/references/prepare (FactoryHostRequests.references) -> CodexReferenceContext.
  * POST .../checkouts (checkout) -> ProjectCheckout, 201; repository identity must match.
  * GET /api/factory/providers?machine_id= -> FactoryCapabilities; unsupported contracts stay disabled.
  * POST /api/factory/machines/:id/prepare (empty) -> FactoryCapabilities; pinned private source only.
@@ -1070,6 +1078,7 @@ export const DEFAULT_PORT = 7317;
 export type { FactoryOverview, FactoryDetail, Implementation, FactoryProject, ProjectCheckout, FactoryChat, FactoryMessage, FactoryEvent, SpecificationVersion, FactoryTicket, FactoryApproval, FactoryQuestion, FactoryArtifact, FactoryRun, ReviewSnapshot, ReviewComment, FactorySettings, FactoryProvider, FactoryStage, FactoryAction, RunCondition, FactoryCapabilities, FactoryProviderCapability, FactoryOutput } from "./factory.ts";
 export type { FactoryWorker, FactoryCheck, FactoryReviewEvidence, FactoryRetrospective } from "./factory.ts";
 export type { NativeConversationSnapshot } from "./factory.ts";
+export type { ProjectReference, ProjectReferenceLibrary, CodexReferenceContext, ProjectReferencePayload } from "./factory.ts";
 
 /** Factory mutation bodies. Runtime validation still treats incoming JSON as untrusted. */
 export interface FactoryRequests {
@@ -1084,6 +1093,9 @@ export interface FactoryRequests {
   artifact: { chat_id: string; name: string; media_type: string; content_base64: string; hash?: string; size?: number; origin?: string; note?: string };
   artifact_note: { note: string };
   artifact_delete: { hash: string };
+  project_reference: { expected_revision: string; name: string; title: string; media_type: string; content_base64: string; usage_note: string; read_policy: "always" | "reference"; caption: string };
+  reference_remove: { expected_revision: string };
+  reference_prepare: { expected_revision: string; machine_id: string };
   specification: { content: string };
   tickets: { specification_id: string; tickets: { key: string; title: string; acceptance: string; dependencies: string[] }[] };
   approval: { kind: Exclude<import("./factory.ts").FactoryApproval["kind"], "review">; revision: string; scope: string };
@@ -1138,10 +1150,11 @@ export interface FactoryAgentRequests {
   proposal: { proposal: string };
 }
 export interface FactoryHostRequests {
+  references: import("./factory.ts").ProjectReferencePayload & { machine_id: string; checkout: { path: string; repository: string } };
   prepare: { files: { path: string; content_base64: string }[] };
   inspect: { path: string };
   review: { path: string; base: string; mode: "branch" | "workspace" };
-  launch: { run: import("./factory.ts").FactoryRun; access?: { token: string; url: string }; attachments?: (Pick<import("./factory.ts").FactoryArtifact, "id" | "name" | "hash" | "size"> & { content_base64: string })[] };
+  launch: { run: import("./factory.ts").FactoryRun; access?: { token: string; url: string }; attachments?: (Pick<import("./factory.ts").FactoryArtifact, "id" | "name" | "hash" | "size"> & { content_base64: string })[]; references?: import("./factory.ts").ProjectReferencePayload };
   send: { text: string };
   operation: { worker_id?: string | null; check_id?: string; tip?: string; before?: string; worker?: import("./factory.ts").FactoryWorker; check?: import("./factory.ts").FactoryCheck; context?: unknown };
 }
