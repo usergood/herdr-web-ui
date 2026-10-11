@@ -1,0 +1,50 @@
+import "./test-herdr.ts";
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { chromium } from "playwright-core";
+import { createServer } from "../server/index.ts";
+import { herdrRpc, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
+
+const state = mkdtempSync(join(tmpdir(), "saurons-plan-browser-"));
+const owned = await workspaceCreate({ cwd: state, label: "herdr-web-ui-test-plan-browser", focus: false });
+const paneId = owned.root_pane.pane_id;
+await herdrRpc("pane.report_agent", { pane_id: paneId, source: "manual", agent: "codex", state: "idle" });
+const app = createServer({ port: 0, stateDir: join(state, "app") });
+const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
+try {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, hasTouch: true });
+  const page = await context.newPage(); page.setDefaultTimeout(10_000);
+  const errors: string[] = []; page.on("pageerror", (error) => errors.push(error.message));
+  const steps = ["One", "Two", "Three", "Four", "Join"].map((label, index) => ({ id: String(index), label, active: null, status: "pending", blocked_by: index === 4 ? ["0", "1", "2", "3"] : [], owner: null, started_at: null, ended_at: null }));
+  await page.route("**/api/machines", async (route) => {
+    const response = await route.fetch(); const body = await response.json();
+    for (const machine of body.machines) for (const pane of machine.snapshot?.panes ?? []) if (pane.pane_id === paneId) pane.plan = { done: 0, total: 5 };
+    await route.fulfill({ response, json: body });
+  });
+  await page.route(`**/api/pane/plan?pane_id=${encodeURIComponent(paneId)}`, (route) => route.fulfill({ json: { plan: { steps }, server_time: new Date().toISOString() } }));
+  await page.goto(`http://localhost:${app.port}/?pane=${encodeURIComponent(paneId)}`);
+  await page.getByRole("button", { name: "Plan: 0 of 5 done", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: /^Plan/ });
+  await dialog.locator(".plan-node").nth(4).waitFor();
+  const third = dialog.locator(".plan-node").nth(2);
+  const desktopTop = await third.evaluate((node) => (node as HTMLElement).style.top);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForFunction((before) => (document.querySelectorAll<HTMLElement>(".plan-node")[2]?.style.top ?? before) !== before, desktopTop);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.waitForFunction((before) => document.querySelectorAll<HTMLElement>(".plan-node")[2]?.style.top === before, desktopTop);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForFunction((before) => (document.querySelectorAll<HTMLElement>(".plan-node")[2]?.style.top ?? before) !== before, desktopTop);
+  await page.waitForFunction(() => { const node = document.querySelector(".plan-dialog"); if (!node) return false; const bounds = node.getBoundingClientRect(); return bounds.top >= 0 && bounds.bottom <= innerHeight + 1 && node.getAnimations().every((animation) => animation.playState !== "running"); });
+  const header = await dialog.locator(".modal-header").boundingBox(); assert(header);
+  const surface = await dialog.boundingBox(); assert(surface);
+  const cdp = await context.newCDPSession(page);
+  const x = header.x + 24; const y = header.y + 24; const distance = Math.min(surface.height * 0.45, 300);
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 1 }] });
+  for (let step = 1; step <= 8; step++) await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y + distance * step / 8, id: 1 }] });
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await dialog.waitFor({ state: "detached" });
+  assert.deepEqual(errors, []);
+  console.log("Plan browser: open-plan viewport changes and phone swipe dismissal passed");
+} finally { await browser.close(); app.stop(); await workspaceClose(owned.workspace.workspace_id); rmSync(state, { recursive: true, force: true }); }

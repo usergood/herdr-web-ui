@@ -24,6 +24,10 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   ([#2](https://github.com/usergood/herdr-web-ui/pull/2) by @usergood)
 
 ### Changed
+- Integrate upstream v0.4.7: deep links, plan views, Markdown/Mermaid, mobile/terminal
+  improvements, native readers, usage pacing and push/input fixes. Preserve Saurons eye factory,
+  reference/account workflows and owner-configured services; keep telemetry removed.
+  ([#11](https://github.com/usergood/herdr-web-ui/pull/11) by @usergood)
 - Use bundled Saurons eye app, maskable, touch, favicon and notification artwork, with matching
   installed-app/browser names and fresh asset/service-worker cache versions.
   ([#5](https://github.com/usergood/herdr-web-ui/pull/5) by @usergood)

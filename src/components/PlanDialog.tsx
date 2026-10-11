@@ -8,6 +8,8 @@ import { clockOffsetMs, formatElapsed, spanMs } from "../lib/omoTasks.ts";
 import { FLOW, flowLayout, planWaves } from "../lib/plan.ts";
 import { useT } from "../lib/i18n.ts";
 import { useSettings } from "../lib/settings.ts";
+import { useSheetSwipe } from "../lib/sheets.ts";
+import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import type { PlanStep, PlanSummary } from "../../shared/protocol.ts";
 
 const POLL_MS = 3000;
@@ -46,6 +48,8 @@ export function PlanDialog({ paneId, title, onClose }: { paneId: string; title: 
   const { settings } = useSettings();
   const view = !settings.planFlow ? "steps" : picked ?? (steps?.some((step) => step.blocked_by.length > 0) ? "flow" : "steps");
   const closeRef = useRef<HTMLButtonElement>(null);
+  const surface = useRef<HTMLElement>(null);
+  useSheetSwipe(surface, onClose);
 
   useEffect(() => {
     let alive = true;
@@ -104,7 +108,7 @@ export function PlanDialog({ paneId, title, onClose }: { paneId: string; title: 
 
   return (
     <div className="modal-scrim" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="modal plan-dialog" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+      <section ref={surface} className="modal plan-dialog" role="dialog" aria-modal="true" aria-labelledby={titleId}>
         <header className="modal-header">
           <h2 className="modal-title plan-dialog-title" id={titleId}>{t("Plan")} <span className="plan-dialog-pane">{title}</span></h2>
           {settings.planFlow && <div className="segmented plan-view-switch" role="group" aria-label={t("Plan view")}>
@@ -151,7 +155,7 @@ export function PlanDialog({ paneId, title, onClose }: { paneId: string; title: 
 /** The plan as boxes: waves top to bottom, a curve from each step to the steps that wait on it. */
 function PlanFlow({ steps, meta, label, after }: { steps: PlanStep[]; meta: (step: PlanStep) => string; label: string; after: (labels: string[]) => string }) {
   // two boxes side by side at most on a phone
-  const columns = window.matchMedia?.("(max-width: 480px)").matches ? 2 : 4;
+  const columns = useMediaQuery("(max-width: 480px)") ? 2 : 4;
   const layout = useMemo(() => flowLayout(steps, columns), [steps, columns]);
   const labelOf = useMemo(() => new Map(steps.map((step) => [step.id, step.label])), [steps]);
   // an id that is also a valid url(#…) reference

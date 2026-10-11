@@ -34,6 +34,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
+import { forgetPlans } from "./session-plan.ts";
 import { closeSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import nodePath, { type PlatformPath } from "node:path";
 
@@ -979,6 +980,7 @@ function liveTurns(path: string, stream: TranscriptStream, source: RecognizedCon
 
 /** Forget every scan and parse kept between polls (tests compare against a cold read). */
 export function forgetTranscriptState(): void {
+  forgetPlans();
   cache.clear();
   writtenSessions.clear();
   forgetClaudeSessions();

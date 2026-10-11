@@ -5,7 +5,7 @@ const MachineSessionsContext = createContext<MachineSessionRegistry | null>(null
 export const useMachineSessions = () => useContext(MachineSessionsContext);
 
 /** Authenticated app lifetime, across PC and pane switches. A terminal owns only its attach. */
-export function MachineSessionsProvider({ machineIds, children }: { machineIds: readonly string[]; children: ReactNode }) {
+export function MachineSessionsProvider({ machineIds, activeMachineId, children }: { machineIds: readonly string[]; activeMachineId?: string; children: ReactNode }) {
   const [sessions] = useState(() => new MachineSessionRegistry());
   const ids = JSON.stringify(machineIds);
   useEffect(() => {
@@ -13,5 +13,6 @@ export function MachineSessionsProvider({ machineIds, children }: { machineIds: 
     if (machineIds.length) sessions.retainMachines(new Set(machineIds));
   }, [sessions, ids]);
   useEffect(() => () => sessions.closeAll(), [sessions]);
+  useEffect(() => { if (activeMachineId && machineIds.includes(activeMachineId)) sessions.get(activeMachineId).connect(); }, [sessions, ids, activeMachineId]);
   return <MachineSessionsContext.Provider value={sessions}>{children}</MachineSessionsContext.Provider>;
 }

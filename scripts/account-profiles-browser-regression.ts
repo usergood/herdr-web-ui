@@ -25,7 +25,14 @@ try {
   const projectResponse = await fetch(origin + "/api/factory/projects", { method: "POST", headers, body: JSON.stringify({ name: "Fictional account Project", path: repo, machine_id: "local", provider: "codex", tracker: "app" }) }); assert.equal(projectResponse.status, 201); const project = await projectResponse.json();
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }); page.setDefaultTimeout(10_000);
   const errors: string[] = []; page.on("pageerror", (error) => errors.push(error.message));
-  await page.goto(origin); await page.getByRole("button", { name: "Inbox", exact: true }).click();
+  const frames: { type: string; active?: boolean }[] = [];
+  page.on("websocket", (socket) => socket.on("framesent", ({ payload }) => { try { frames.push(JSON.parse(String(payload))); } catch { /* Only JSON app frames matter. */ } }));
+  await page.goto(origin + "/#factory"); await page.bringToFront();
+  await page.getByRole("textbox", { name: "Idea title", exact: true }).waitFor();
+  const presenceDeadline = Date.now() + 5000;
+  while (!frames.some((frame) => frame.type === "presence" && frame.active) && Date.now() < presenceDeadline) await Bun.sleep(25);
+  assert(frames.some((frame) => frame.type === "presence" && frame.active), "A fresh Inbox announces focused presence without opening a terminal");
+  assert(!frames.some((frame) => frame.type === "attach"), "Inbox presence does not allocate a terminal attachment");
   await page.getByRole("textbox", { name: "Idea title", exact: true }).fill("Scoped account walkthrough"); await page.getByRole("button", { name: "Capture idea", exact: true }).click();
   await page.getByRole("combobox", { name: "Project", exact: true }).selectOption(project.id);
   await page.locator("summary").filter({ hasText: /^Project execution settings$/ }).click();

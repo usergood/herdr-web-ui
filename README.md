@@ -215,7 +215,7 @@ Yes. Run the agent in a [herdr](https://github.com/herdrdev/herdr) pane on your 
 
 **Which agents does the chat view support?**
 
-Claude Code, Codex, omp, omo, gjc, pi and Hermes are read from their own session stores. For OpenCode 2, the chat reads the session herdr reports from OpenCode's database; the home screen and OpenCode 1.x use the live terminal instead. Devin CLI is a chat when herdr or the running process names its session, as `devin --resume <id>` does; a plain `devin` shows the live terminal. Any other program in a herdr pane gets the live terminal and its status. [Supported agents →](docs/guide.md#supported-agents)
+Claude Code, Codex, omp, omo, gjc, pi and Hermes are read from their own session stores. OpenCode 1.x and 2 conversations are read from their native stores. Grok and experimental Antigravity have version/platform limits documented in the guide. Devin CLI is a chat when herdr or the running process names its session, as `devin --resume <id>` does; a plain `devin` shows the live terminal. Any other program in a herdr pane gets the live terminal and its status. [Supported agents →](docs/guide.md#supported-agents)
 
 **Does it replace herdr's own TUI?**
 
