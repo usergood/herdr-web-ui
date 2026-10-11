@@ -33,6 +33,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   ([#11](https://github.com/usergood/saurons-eye/pull/11) by @usergood)
 - Document local Whisper feasibility with a measured CPU benchmark and a proposed bounded
   queue for factory Implementations, including transcription budgets and recovery semantics.
+  ([#10](https://github.com/usergood/herdr-web-ui/pull/10) by @usergood)
 - Use bundled Saurons eye app, maskable, touch, favicon and notification artwork, with matching
   installed-app/browser names and fresh asset/service-worker cache versions.
   ([#5](https://github.com/usergood/saurons-eye/pull/5) by @usergood)
