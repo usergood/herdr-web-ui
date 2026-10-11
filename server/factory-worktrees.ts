@@ -10,6 +10,7 @@ import { factoryTrackerClient, factoryTrackerGuide } from "./factory-tracker-cli
 import { runFactoryCommand } from "./factory-command.ts";
 import { recordScaffolding } from "./factory-cleanup.ts";
 import { factoryEnvironment } from "./factory-environment.ts";
+import { preparedProjectReferences } from "./factory-reference-context.ts";
 
 type Lease = { id: string; signature: string; run: FactoryRun; closing?: boolean };
 
@@ -69,7 +70,9 @@ export class FactoryWorktrees {
       if (access) { writePrivateFile(join(path, ".saurons-eye-access.json"), JSON.stringify(access), { mode: 0o600, flag: "wx" }); writePrivateFile(join(path, ".saurons-eye-tracker.mjs"), factoryTrackerClient, { mode: 0o600, flag: "wx" }); }
       const project = (run.manifest as { project: FactoryProject }).project;
       const environment = factoryEnvironment(root, id, project.environment, worker.id);
-      writePrivateFile(join(path, ".saurons-eye-context.json"), JSON.stringify({ run, worker: record, context, tracker_guide: factoryTrackerGuide, research_directory: join(dirname(run.worktree!), "notes"), environment: { notes: join(root, "notes"), cache: join(root, "cache"), state: join(root, "state"), temporary: join(root, "tmp") }, policy: "Only this worker owns writes here. Use approved testing seams. Consume versioned answers before work. Never create unmanaged children. Keep app scaffolding out of commits. Shared documents may only be written when listed in worker.shared_paths. Merge the integration tip before reporting a result; preserve conflicts for reconciliation." }, null, 2), { flag: "wx", mode: 0o600 });
+      const library = (run.manifest as { project_references?: import("../shared/protocol.ts").ProjectReferenceLibrary }).project_references;
+      const referenceContext = library?.entries.length ? preparedProjectReferences(this.store.root, library) : undefined;
+      writePrivateFile(join(path, ".saurons-eye-context.json"), JSON.stringify({ run, worker: record, context, project_reference_context: referenceContext, tracker_guide: factoryTrackerGuide, research_directory: join(dirname(run.worktree!), "notes"), environment: { notes: join(root, "notes"), cache: join(root, "cache"), state: join(root, "state"), temporary: join(root, "tmp") }, policy: "Only this worker owns writes here. Use approved testing seams. Consume versioned answers before work. Never create unmanaged children. Keep app scaffolding out of commits. Shared documents may only be written when listed in worker.shared_paths. Merge the integration tip before reporting a result; preserve conflicts for reconciliation." }, null, 2), { flag: "wx", mode: 0o600 });
       nativeAttempted = true;
       const workspace = await this.native.createWorkspace({ cwd: path, label: `saurons-eye-worker-${worker.id}`, env: environment });
       record = { ...record, workspace_id: workspace.workspace.workspace_id, pane_id: workspace.root_pane.pane_id }; this.store.put("host_workers", record, id);
@@ -81,7 +84,7 @@ export class FactoryWorktrees {
       const selected = worker.role === "implementer" ? "tdd" : "code-review";
       provisionFactoryAgent(path, run.provider, selected, verifySkills(this.skillsPath()), worker.role !== "implementer");
       recordScaffolding(this.store, worker.id, path, run.provider, verifySkills(this.skillsPath()));
-      const prompt = `${run.provider === "codex" ? "$" : run.provider === "opencode" ? "@" : "/"}${selected} Read .saurons-eye-context.json. ${worker.role === "implementer" ? "Implement only the accepted Ticket using its confirmed seams; the app's merger owns integration." : `Review only the ${worker.role === "standards" ? "Standards" : "Spec"} axis against the frozen scope. Keep this context independent of the other axis. Make no repository changes. End with FACTORY_REVIEW: PASS or FACTORY_REVIEW: FAIL and explain findings.`}`;
+      const prompt = `${run.provider === "codex" ? "$" : run.provider === "opencode" ? "@" : "/"}${selected} Read .saurons-eye-context.json. ${worker.role === "implementer" ? "Implement only the accepted Ticket using its confirmed seams; the app's merger owns integration." : `Review only the ${worker.role === "standards" ? "Standards" : "Spec"} axis against the frozen scope. Keep this context independent of the other axis. Make no repository changes. End with FACTORY_REVIEW: PASS or FACTORY_REVIEW: FAIL and explain findings.`}${referenceContext ? ` ${referenceContext.prompt}` : ""}`;
       const args = factoryAgentArguments(run.provider, path, prompt, worker.role !== "implementer");
       await this.native.startAgent({ kind: run.provider, paneId: record.pane_id!, name: `eye-worker-${worker.id.replaceAll("-", "").slice(0, 21)}`, args, timeoutMs: 60_000 });
       const afterLaunch = this.store.get<FactoryWorker>("host_workers", worker.id);

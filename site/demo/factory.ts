@@ -1,18 +1,20 @@
 /** Fictional browser-owned records. No server or filesystem imports. */
-import type { FactoryDetail, FactoryOverview, FactoryProject, FactoryRecord, Implementation, ProjectCheckout } from "../../shared/factory.ts";
+import type { FactoryDetail, FactoryOverview, FactoryProject, FactoryRecord, Implementation, ProjectCheckout, ProjectReference } from "../../shared/factory.ts";
+import { projectReferenceTemplate } from "../../shared/project-references.ts";
 
 const storageKey = "saurons-eye:demo-factory";
 const details = new Map<string, FactoryDetail>();
 let projects: FactoryProject[] = []; let checkouts: ProjectCheckout[] = [];
 let settings: FactoryOverview["settings"] = { provider: "codex", max_implementations: 2, max_agents: 6, max_builds: 2, max_artifact_bytes: 25 * 1024 * 1024, max_storage_bytes: 2 * 1024 * 1024 * 1024, skills_path: null };
 const blobs = new Map<string, string>();
+let referenceVersions: ProjectReference[] = []; let referenceHeads: string[] = [];
 function record(): FactoryRecord { const now = new Date().toISOString(); return { id: crypto.randomUUID(), created_at: now, updated_at: now }; }
 function json(body: unknown, status = 200): Response { return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } }); }
 function failure(code: string, message: string, status = 409): Response { return json({ error: { code, message } }, status); }
-function save(): void { try { localStorage.setItem(storageKey, JSON.stringify({ details: [...details], projects, checkouts, settings, blobs: [...blobs] })); } catch { /* demo storage can be blocked or full; records remain in this page */ } }
+function save(): void { try { localStorage.setItem(storageKey, JSON.stringify({ details: [...details], projects, checkouts, settings, blobs: [...blobs], referenceVersions, referenceHeads })); } catch { /* demo storage can be blocked or full; records remain in this page */ } }
 try {
   const raw = localStorage.getItem(storageKey);
-  if (raw) { const saved = JSON.parse(raw); if (Array.isArray(saved.details)) for (const [id, detail] of saved.details) details.set(id, { workers: [], checks: [], review_evidence: [], frontier: [], retrospectives: [], native_snapshots: [], ...detail }); projects = saved.projects ?? []; checkouts = saved.checkouts ?? []; settings = saved.settings ?? settings; if (Array.isArray(saved.blobs)) for (const [id, content] of saved.blobs) blobs.set(id, content); }
+  if (raw) { const saved = JSON.parse(raw); if (Array.isArray(saved.details)) for (const [id, detail] of saved.details) details.set(id, { workers: [], checks: [], review_evidence: [], frontier: [], retrospectives: [], native_snapshots: [], ...detail }); referenceVersions = saved.referenceVersions ?? []; referenceHeads = saved.referenceHeads ?? []; projects = saved.projects ?? []; checkouts = saved.checkouts ?? []; settings = saved.settings ?? settings; if (Array.isArray(saved.blobs)) for (const [id, content] of saved.blobs) blobs.set(id, content); }
 } catch { /* fictional fixtures do not depend on persistent storage */ }
 function capture(title: string, description: string): Implementation {
   const implementation: Implementation = { ...record(), title, description, project_id: null, provider: null, machine_id: null, stage: "inbox", position: details.size, outcome: "none" };
@@ -24,6 +26,31 @@ if (!details.size) capture("Explore release notes", "A fictional Inbox idea: kee
 
 export async function factoryDemo(url: URL, method: string, body: Record<string, unknown>): Promise<Response> {
   const path = url.pathname;
+  if (path === "/api/factory/reference-template" && method === "GET") return json(projectReferenceTemplate);
+  const referenceRoute = /^\/api\/factory\/projects\/([^/]+)\/references(?:\/([^/]+)(?:\/(source|preview|download|remove))?)?$/.exec(path);
+  if (referenceRoute) {
+    const projectId = referenceRoute[1]!; if (!projects.some((entry) => entry.id === projectId)) return failure("not_found", "Project not found", 404);
+    const entries = referenceVersions.filter((entry) => entry.project_id === projectId && referenceHeads.includes(entry.id)).sort((a, b) => a.name.localeCompare(b.name));
+    const digest = async (bytes: Uint8Array) => Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes as Uint8Array<ArrayBuffer>)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    const revision = await digest(new TextEncoder().encode(JSON.stringify({ project_id: projectId, entries })));
+    if (referenceRoute[2] === "prepare") return failure("unsupported", "Preparing Codex reference files requires a real execution Machine.");
+    if (referenceRoute[3]) {
+      const entry = referenceVersions.find((item) => item.id === referenceRoute[2] && item.project_id === projectId); if (!entry) return failure("not_found", "Project reference not found", 404);
+      if (referenceRoute[3] === "remove" && method === "POST") { if (body.expected_revision !== revision) return failure("references_changed", "Refresh the Project references"); referenceHeads = referenceHeads.filter((id) => id !== entry.id); save(); return json({ ok: true }); }
+      if (method === "GET" && referenceRoute[3] !== "remove") { const bytes = Uint8Array.from(atob(blobs.get(entry.id) ?? ""), (character) => character.charCodeAt(0)); return new Response(bytes, { headers: { "content-type": referenceRoute[3] === "source" ? "text/plain; charset=utf-8" : entry.media_type, "content-security-policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'", "cache-control": "no-store", "x-content-type-options": "nosniff", ...(referenceRoute[3] === "download" ? { "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(entry.name)}` } : {}) } }); }
+    } else if (!referenceRoute[2]) {
+      if (method === "GET") return json({ project_id: projectId, revision, entries });
+      if (method === "POST") {
+        if (body.expected_revision !== revision) return failure("references_changed", "Refresh the Project references");
+        if (typeof body.name !== "string" || typeof body.title !== "string" || !body.title.trim() || typeof body.content_base64 !== "string" || !["always", "reference"].includes(String(body.read_policy))) return failure("invalid_reference", "Enter Project reference guidance", 400);
+        const bytes = Uint8Array.from(atob(body.content_base64), (character) => character.charCodeAt(0)); const hash = await digest(bytes);
+        const previous = referenceVersions.filter((entry) => entry.project_id === projectId && entry.name === body.name).at(-1);
+        const entry: ProjectReference = { ...record(), project_id: projectId, reference_id: previous?.reference_id ?? crypto.randomUUID(), name: body.name, title: body.title, media_type: String(body.media_type), hash, size: bytes.length, version: (previous?.version ?? 0) + 1, usage_note: String(body.usage_note ?? ""), read_policy: body.read_policy as ProjectReference["read_policy"], caption: String(body.caption ?? "") };
+        referenceVersions.push(entry); referenceHeads = referenceHeads.filter((id) => referenceVersions.find((item) => item.id === id)?.reference_id !== entry.reference_id); referenceHeads.push(entry.id); blobs.set(entry.id, body.content_base64); save(); return json(entry, 201);
+      }
+    }
+    return failure("unsupported", "This reference action is unavailable in the demo.");
+  }
   if (path === "/api/factory" && method === "GET") return json({ implementations: [...details.values()].map((detail) => detail.implementation).sort((a, b) => a.position - b.position), projects, checkouts, settings, activity: [] } satisfies FactoryOverview);
   if (path === "/api/factory/settings" && method === "POST") { settings = { ...settings, ...body } as typeof settings; save(); return json(settings); }
   if (path === "/api/factory/providers" || /\/machines\/[^/]+\/prepare$/.test(path)) return json({ factory_host_protocol: 1, skill_manifest: null, providers: ["codex", "claude", "opencode"].map((provider) => ({ provider, version: "demo", installed: false, skills_verified: false, factory_ready: false, reasons: ["Native agents and SSH preparation require a real execution Machine. The demo retains fictional records only."] })) });

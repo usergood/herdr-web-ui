@@ -8,6 +8,8 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 ## [Unreleased]
 
 ### Added
+- Codex Project references share versioned guides and pictures outside Git, with an editable
+  documentation template, pinned Run/worker context and prepared prompts for manual sessions.
 - Saurons eye adds a durable Inbox, Projects, chats and artifacts, version-scoped specification
   and Ticket approvals, isolated native worktrees, retained checks and review findings,
   authenticated machine preparation, scoped retrospectives and verified backup copies.

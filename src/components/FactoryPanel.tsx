@@ -5,6 +5,7 @@ import type { Machine } from "../../shared/machines.ts";
 import { factoryDetail, factoryOverview, factoryRequest } from "../lib/factoryApi.ts";
 import { useT } from "../lib/i18n.ts";
 import { OpenFileContext } from "../lib/filePaths.ts";
+import { FactoryProjectReferences } from "./FactoryProjectReferences.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { FactoryWorkflowPanel } from "./FactoryWorkflowPanel.tsx";
 import { FactoryArtifactPreview } from "./FactoryArtifactPreview.tsx";
@@ -109,7 +110,7 @@ export function FactoryPanel({ machines, onOpenPane }: { machines: Machine[]; on
     {!overview && <p role="status">{t("Loading…")}</p>}
     {overview && <FactoryOperationsPanel overview={overview} busy={busy} perform={perform} />}
     {showProjects && <section className="factory-section"><h2>{t("Projects")}</h2>
-      {overview?.projects.map((project) => <p key={project.id}>{project.name} · {project.provider} · {project.machine_id}</p>)}
+      {overview?.projects.map((project) => <details key={project.id}><summary>{project.name} · {project.provider} · {project.machine_id}</summary><FactoryProjectReferences key={`${project.id}:${project.machine_id}`} project={project} machineId={project.machine_id} maxBytes={overview.settings.max_artifact_bytes} busy={busy} perform={perform} /></details>)}
       <form className="factory-form" onSubmit={(event) => { event.preventDefault(); void perform(async () => { await factoryRequest("/projects", { name: projectName, path: projectPath, provider: projectProvider, machine_id: projectMachine, tracker: "app" }); setProjectName(""); setProjectPath(""); }); }}>
         <label>{t("Project name")}<input className="input factory-input" value={projectName} onChange={(event) => setProjectName(event.target.value)} required maxLength={200} /></label>
         <label>{t("Checkout path")}<input className="input factory-input" value={projectPath} onChange={(event) => setProjectPath(event.target.value)} required /></label>
@@ -137,7 +138,7 @@ export function FactoryPanel({ machines, onOpenPane }: { machines: Machine[]; on
         </article>)}
       </section>)}</div>
     </>}
-    {selected && detail && overview && <div className="factory-detail">
+    {selected && detail && overview && !showProjects && <div className="factory-detail">
       <section className="factory-section"><h2>{detail.implementation.title}</h2><p>{stageLabel(detail.implementation.stage, t)}</p>
         <div className="factory-filters">
           <label>{t("Project")}<select className="select factory-input" value={detail.implementation.project_id ?? ""} disabled={busy} onChange={(event) => void perform(async () => { await factoryRequest(`${prefix}/configure`, { project_id: event.target.value || null }); })}><option value="">{t("Unassigned")}</option>{overview.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
@@ -147,6 +148,7 @@ export function FactoryPanel({ machines, onOpenPane }: { machines: Machine[]; on
       </section>
       <FactoryWorkflowPanel detail={detail} machineId={effectiveMachine} provider={effectiveProvider ?? "codex"} busy={busy} perform={perform} />
       {selectedProject && <FactoryProjectSettings key={`${selectedProject.id}:${effectiveMachine}`} project={selectedProject} overview={overview} machineId={effectiveMachine} busy={busy} perform={perform} />}
+      {selectedProject && <FactoryProjectReferences key={`references:${selectedProject.id}:${effectiveMachine}`} project={selectedProject} machineId={effectiveMachine} maxBytes={overview.settings.max_artifact_bytes} busy={busy} perform={perform} />}
       <FactoryExecutionPanel detail={detail} project={selectedProject} busy={busy} perform={perform} onOpenPane={onOpenPane} />
       <section className="factory-section"><h3>{t("Notes")}</h3><label>{t("Chat")}<select className="select factory-input" value={chatId} onChange={(event) => setSelectedChat(event.target.value)}>{detail.chats.map((chat) => <option key={chat.id} value={chat.id}>{chat.title}</option>)}</select></label><form className="factory-form" onSubmit={(event) => { event.preventDefault(); void perform(async () => { const chat = await factoryRequest<{ id: string }>(`${prefix}/chats`, { title: chatTitle }); setSelectedChat(chat.id); setChatTitle(""); }); }}><label>{t("Chat title")}<input className="input factory-input" required maxLength={200} value={chatTitle} onChange={(event) => setChatTitle(event.target.value)} /></label><button className="btn factory-button" disabled={busy}>{t("New chat")}</button></form>{detail.messages.filter((message) => message.chat_id === chatId).map((message) => <article className="factory-message" key={message.id}><small>{message.role} · {new Date(message.created_at).toLocaleString()}</small><Markdown>{message.content}</Markdown></article>)}
         <form className="factory-form" onSubmit={(event) => { event.preventDefault(); void perform(async () => { await factoryRequest(`${prefix}/messages`, { chat_id: chatId, role: "owner", content: note }); setNote(""); }); }}><label>{t("New note")}<textarea className="input factory-input" value={note} onChange={(event) => setNote(event.target.value)} required maxLength={100_000} /></label><button className="btn factory-button" disabled={busy}>{t("Save note")}</button></form>

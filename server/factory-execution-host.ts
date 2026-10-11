@@ -15,6 +15,8 @@ import type { FactoryCheck, FactoryWorker } from "../shared/protocol.ts";
 import { factoryTrackerClient, factoryTrackerGuide } from "./factory-tracker-client.ts";
 import { cleanupCheckouts, recordScaffolding } from "./factory-cleanup.ts";
 import { factoryEnvironment } from "./factory-environment.ts";
+import { materializeProjectReferences, preparedProjectReferences } from "./factory-reference-context.ts";
+import type { CodexReferenceContext, ProjectReferencePayload } from "../shared/protocol.ts";
 
 /** Machine-owned execution leases, not a second writable tracker or conversation history. */
 export class FactoryExecutionHost {
@@ -33,6 +35,15 @@ export class FactoryExecutionHost {
     const prepared = this.store.get<{ id: string; path: string }>("host_skills", "default"); this.preparedPath = prepared?.path ?? null;
   }
   skillPath(): string | null { return this.sourcePath() ?? this.preparedPath; }
+  async prepareReferences(payload: ProjectReferencePayload & { machine_id: string; checkout: { path: string; repository: string } }): Promise<CodexReferenceContext> {
+    if (this.stopped || existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("preparation_disabled", "Reference preparation is disabled on this bridge", 409);
+    if (typeof payload?.checkout?.path !== "string" || typeof payload.checkout.repository !== "string" || typeof payload.machine_id !== "string") throw new FactoryError("invalid_checkout", "Select a verified Machine checkout");
+    const inspected = await inspectCheckout(payload.checkout.path);
+    if (this.stopped) throw new FactoryError("stopping", "The bridge stopped during preparation", 409);
+    if (inspected.repository !== payload.checkout.repository) throw new FactoryError("wrong_checkout", "The reference context belongs to another repository", 409);
+    const context = materializeProjectReferences(this.store.root, payload);
+    return { project_id: payload.library.project_id, machine_id: payload.machine_id, revision: payload.library.revision, ...context };
+  }
   bindPrompt(prompt: FactoryNative["prompt"]): void { this.native.prompt = prompt; this.promptBound = true; }
   async operation(id: string, action: string, body: Record<string, unknown>): Promise<unknown> {
     if (action === "cleanup") {
@@ -90,9 +101,9 @@ export class FactoryExecutionHost {
       const reasons = [...(!version ? ["The native provider or its version is unavailable on this Machine"] : []), ...(problem ? [problem] : []), ...(!ready ? ["Verify pinned native skill loading on this provider version before factory admission"] : [])];
       return { provider, version, installed: version !== null, skills_verified: skills !== null, factory_ready: reasons.length === 0, reasons };
     }));
-    return { providers, skill_manifest: skills ? { commit: skills.commit, hash: skills.hash, file_count: skills.files.length } : null, factory_host_protocol: 1 };
+    return { providers, skill_manifest: skills ? { commit: skills.commit, hash: skills.hash, file_count: skills.files.length } : null, factory_host_protocol: 1, project_reference_protocol: 1 };
   }
-  async launch(record: FactoryRun, access?: { token: string; url: string }, attachments: { id: string; name: string; hash: string; size: number; content_base64: string }[] = []): Promise<FactoryRun> {
+  async launch(record: FactoryRun, access?: { token: string; url: string }, attachments: { id: string; name: string; hash: string; size: number; content_base64: string }[] = [], references?: ProjectReferencePayload): Promise<FactoryRun> {
     if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Native execution is disabled on a restored copy", 409);
     if (!/^[a-f0-9-]{36}$/.test(record.id) || !/^[a-f0-9-]{36}$/.test(record.implementation_id) || !["codex", "claude", "opencode"].includes(record.provider) || !["setup", "grill-me", "grill-with-docs", "to-spec", "to-tickets", "implement-spec", "retro", "apply-retro", "verify-provider"].includes(record.action)) throw new FactoryError("invalid_launch", "Invalid owned execution identity");
     const signature = hash(JSON.stringify(record));
@@ -106,10 +117,10 @@ export class FactoryExecutionHost {
     const pending = this.launches.get(record.id); if (pending) return pending;
     if (!accepted.fresh) return accepted.run;
     if (access) this.store.put("host_access", { id: record.id, ...access });
-    const launch = this.dispatch(record, signature, attachments); this.launches.set(record.id, launch);
+    const launch = this.dispatch(record, signature, attachments, references); this.launches.set(record.id, launch);
     try { return await launch; } finally { this.launches.delete(record.id); }
   }
-  private async dispatch(run: FactoryRun, signature: string, attachments: { id: string; name: string; hash: string; size: number; content_base64: string }[]): Promise<FactoryRun> {
+  private async dispatch(run: FactoryRun, signature: string, attachments: { id: string; name: string; hash: string; size: number; content_base64: string }[], references?: ProjectReferencePayload): Promise<FactoryRun> {
     let nativeAttempted = false;
     const save = (): void => {
       if (this.stopped) return;
@@ -136,6 +147,13 @@ export class FactoryExecutionHost {
       run = { ...run, worktree, branch, updated_at: new Date().toISOString() }; save();
       const project = (run.manifest as { project?: { environment?: Record<string, string> } }).project;
       const environment = factoryEnvironment(root, run.id, project?.environment);
+      const library = (run.manifest as { project_references?: import("../shared/protocol.ts").ProjectReferenceLibrary }).project_references;
+      let referenceContext;
+      if (library?.entries.length) {
+        if (run.provider !== "codex" || !references?.library || hash(JSON.stringify(references.library)) !== hash(JSON.stringify(library))) throw new FactoryError("invalid_references", "The Project reference payload does not match the frozen Run", 409);
+        materializeProjectReferences(this.store.root, references);
+        referenceContext = preparedProjectReferences(this.store.root, library);
+      }
       let attachmentBytes = 0;
       const research = [];
       for (const attachment of attachments) {
@@ -151,7 +169,7 @@ export class FactoryExecutionHost {
       provisionSkills(worktree, run.provider, skills);
       const access = this.store.get("host_access", run.id);
       if (access) { writePrivateFile(join(worktree, ".saurons-eye-access.json"), JSON.stringify(access), { mode: 0o600, flag: "wx" }); writePrivateFile(join(worktree, ".saurons-eye-tracker.mjs"), factoryTrackerClient, { mode: 0o600, flag: "wx" }); }
-      writePrivateFile(join(worktree, ".saurons-eye-context.json"), JSON.stringify({ run, tracker: { guide: factoryTrackerGuide, type: "Other: app-native", command: "bun .saurons-eye-tracker.mjs", instructions: "The app owns stable Ticket IDs, dependencies and resolution. Read contract and ticket IDs through this adapter. Question records require actual owner answers; consume records their version. The coordinator uses worker, refresh, check and integrate for the accepted dependency frontier. All native contexts and builds must use this adapter's reservations; never spawn unmanaged children or builds. Each worker writes only its own checkout. Shared progress/glossary/ADRs/migrations/lockfiles require explicit path claims. The backend merger alone writes integration. Do not accept your own work, publish or deploy. If synchronization fails, stop and retain the failure." }, environment: { cache: join(root, "cache"), state: join(root, "state"), notes: join(root, "notes"), temporary: join(root, "tmp") }, workflow: "Load only the explicitly selected pinned action. Preserve its owner question and approval gates. Reuse frozen approvals within their scope. Keep application scaffolding and attachments out of commits. Preserve the primary checkout and retain separate Standards and Spec evidence." }, null, 2), { mode: 0o600, flag: "wx" });
+      writePrivateFile(join(worktree, ".saurons-eye-context.json"), JSON.stringify({ run, project_reference_context: referenceContext, tracker: { guide: factoryTrackerGuide, type: "Other: app-native", command: "bun .saurons-eye-tracker.mjs", instructions: "The app owns stable Ticket IDs, dependencies and resolution. Read contract and ticket IDs through this adapter. Question records require actual owner answers; consume records their version. The coordinator uses worker, refresh, check and integrate for the accepted dependency frontier. All native contexts and builds must use this adapter's reservations; never spawn unmanaged children or builds. Each worker writes only its own checkout. Shared progress/glossary/ADRs/migrations/lockfiles require explicit path claims. The backend merger alone writes integration. Do not accept your own work, publish or deploy. If synchronization fails, stop and retain the failure." }, environment: { cache: join(root, "cache"), state: join(root, "state"), notes: join(root, "notes"), temporary: join(root, "tmp") }, workflow: "Load only the explicitly selected pinned action. Preserve its owner question and approval gates. Reuse frozen approvals within their scope. Keep application scaffolding and attachments out of commits. Preserve the primary checkout and retain separate Standards and Spec evidence." }, null, 2), { mode: 0o600, flag: "wx" });
       if (this.stopped) throw new FactoryError("stopping", "The bridge stopped before native launch; reconcile the accepted intent", 409);
       nativeAttempted = true; save();
       const workspace = await this.native.createWorkspace({ cwd: worktree, label: `saurons-eye-run-${run.id}`, env: environment });
@@ -160,9 +178,10 @@ export class FactoryExecutionHost {
       provisionFactoryAgent(worktree, run.provider, skill, skills, run.action === "implement-spec");
       recordScaffolding(this.store, run.id, worktree, run.provider, skills);
       if (this.store.get<{ closing?: boolean }>("host_leases", run.id)?.closing) return this.stopRun(run.id);
-      const prompt = run.action === "verify-provider"
+      let prompt = run.action === "verify-provider"
         ? `${skills.skills.map((entry) => `${run.provider === "codex" ? "$" : run.provider === "opencode" ? "@" : "/"}${entry.name}`).join(" ")} This is an explicitly requested native skill-loading probe. Load each of these pinned skills through your supported skill mechanism and read the project-local SKILL.md and referenced support files: ${skills.skills.map((entry) => entry.name).join(", ")}. Inspect instructions only; do not execute their workflows, publish, spawn children or change global settings. Describe question and permission differences. Use bun .saurons-eye-tracker.mjs question unused '{"question":"Confirm this read-only native verification round?"}' to record one owner question, then wait for the actual answer. When explicitly resumed, read contract and use consume with its question revision. Read .saurons-eye-context.json for this disposable scope.`
         : `${run.provider === "codex" ? "$" : run.provider === "opencode" ? "@" : "/"}${skill} Read .saurons-eye-context.json for the frozen owner scope. Follow this action's confirmation gates and await actual owner answers.`;
+      if (referenceContext) prompt += ` ${referenceContext.prompt}`;
       const coordinator = run.action === "implement-spec";
       await this.native.startAgent({ name: `saurons-${run.id.replaceAll("-", "").slice(0, 24)}`, kind: run.provider, paneId: run.pane_id!, args: factoryAgentArguments(run.provider, worktree, prompt, coordinator), timeoutMs: 60_000 });
       const afterLaunch = this.store.get<{ run: FactoryRun; closing?: boolean }>("host_leases", run.id);

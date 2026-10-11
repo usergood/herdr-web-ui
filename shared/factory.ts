@@ -38,6 +38,14 @@ export interface FactoryArtifact extends FactoryRecord {
   implementation_id: string; chat_id: string; name: string; media_type: string;
   hash: string; size: number; version: number; origin: string; note: string;
 }
+export interface ProjectReference extends FactoryRecord {
+  project_id: string; reference_id: string; name: string; title: string; media_type: string;
+  hash: string; size: number; version: number; usage_note: string;
+  read_policy: "always" | "reference"; caption: string;
+}
+export interface ProjectReferenceLibrary { project_id: string; revision: string; entries: ProjectReference[] }
+export interface CodexReferenceContext { project_id: string; machine_id: string; revision: string; index_path: string; prompt: string }
+export interface ProjectReferencePayload { library: ProjectReferenceLibrary; files: { id: string; content_base64: string }[] }
 export interface FactoryRun extends FactoryRecord {
   implementation_id: string; action: FactoryAction; provider: FactoryProvider; machine_id: string;
   condition: RunCondition; waiting_reason: string | null; idempotency_key: string;
@@ -74,7 +82,7 @@ export interface FactoryDetail {
 }
 export interface FactoryOverview { implementations: Implementation[]; projects: FactoryProject[]; checkouts: ProjectCheckout[]; settings: FactorySettings; activity: { implementation_id: string; run_id: string; condition: RunCondition; action: FactoryAction; waiting_reason: string | null; completed_tickets: number; total_tickets: number }[] }
 export interface FactoryProviderCapability { provider: FactoryProvider; version: string | null; installed: boolean; skills_verified: boolean; factory_ready: boolean; reasons: string[] }
-export interface FactoryCapabilities { providers: FactoryProviderCapability[]; skill_manifest: { commit: string; hash: string; file_count: number } | null; factory_host_protocol: 1 }
+export interface FactoryCapabilities { providers: FactoryProviderCapability[]; skill_manifest: { commit: string; hash: string; file_count: number } | null; factory_host_protocol: 1; project_reference_protocol?: 1 }
 export interface FactoryOutput { name: string; media_type: string; hash: string; size: number }
 export interface FactoryWorker extends FactoryRecord {
   run_id: string; ticket_id: string; role: "implementer" | "standards" | "spec";
