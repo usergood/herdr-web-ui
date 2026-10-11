@@ -24,8 +24,6 @@ Install the bundled **Saurons eye** app from normal Android Chrome over HTTPS. A
 
 ## What Saurons eye adds
 
-[View desktop and phone screenshots of the fork's features →](docs/fork-feature-gallery.md)
-
 ```text
 Inbox → Specifying → Ready → Running → Review → Done
 ```
@@ -41,6 +39,78 @@ Inbox → Specifying → Ready → Running → Review → Done
 - **Verified recovery and configurable services.** Back up application records and retained blobs, then restore a separate copy with execution disabled. The fork removes upstream install/update telemetry; external services require owner configuration or enablement.
 
 Factory admission requires genuine native skill and question/answer verification for the selected provider and Machine. Codex has passed that contract and the full rework/review/acceptance journey on the development host. Claude Code and OpenCode adapters remain gated until their installed, authenticated versions pass native verification. Ordinary chat and terminal support stays available independently.
+
+Desktop and phone views of the fork's features, captured with fictional data in an isolated test session. Click an image to open it at full size.
+
+<table>
+  <tr><th>Desktop</th><th>Phone</th></tr>
+  <tr>
+    <td width="75%" valign="top">
+      <a href="docs/screenshots/fork-features/inbox-desktop.png"><img src="docs/screenshots/fork-features/inbox-desktop.png" width="100%" alt="Desktop Inbox with fictional ideas in Inbox, Specifying and Ready"></a>
+      <br><b>Durable Inbox</b>
+      <br><sub>Capture ideas before choosing a Project, then track their specification and readiness.</sub>
+    </td>
+    <td width="25%" valign="top" align="center"><a href="docs/screenshots/fork-features/inbox-mobile.png"><img src="docs/screenshots/fork-features/inbox-mobile.png" width="180" alt="Phone Inbox capture form and board"></a></td>
+  </tr>
+  <tr>
+    <td width="75%" valign="top">
+      <a href="docs/screenshots/fork-features/notes-desktop.png"><img src="docs/screenshots/fork-features/notes-desktop.png" width="100%" alt="Desktop decision notes attached to an Implementation"></a>
+      <br><b>Chats and decision notes</b>
+      <br><sub>Keep the original context, add chats, and save notes with the Implementation.</sub>
+    </td>
+    <td width="25%" valign="top" align="center"><a href="docs/screenshots/fork-features/notes-mobile.png"><img src="docs/screenshots/fork-features/notes-mobile.png" width="180" alt="Phone decision notes and note editor"></a></td>
+  </tr>
+  <tr>
+    <td width="75%" valign="top">
+      <a href="docs/screenshots/fork-features/attachments-desktop.png"><img src="docs/screenshots/fork-features/attachments-desktop.png" width="100%" alt="Desktop retained HTML receipt with annotation controls"></a>
+      <br><b>Versioned attachments</b>
+      <br><sub>Retain evidence with annotations, downloads and a sandboxed HTML preview.</sub>
+    </td>
+    <td width="25%" valign="top" align="center"><a href="docs/screenshots/fork-features/attachments-mobile.png"><img src="docs/screenshots/fork-features/attachments-mobile.png" width="180" alt="Phone attachment version and sandboxed preview"></a></td>
+  </tr>
+  <tr>
+    <td width="75%" valign="top">
+      <a href="docs/screenshots/fork-features/references-desktop.png"><img src="docs/screenshots/fork-features/references-desktop.png" width="100%" alt="Desktop Project library with a refund guide and bundled eye picture"></a>
+      <br><b>Shared Project references</b>
+      <br><sub>Store guides and pictures outside Git, version them, and specify when Codex should read them.</sub>
+    </td>
+    <td width="25%" valign="top" align="center"><a href="docs/screenshots/fork-features/references-mobile.png"><img src="docs/screenshots/fork-features/references-mobile.png" width="180" alt="Phone Project reference library"></a></td>
+  </tr>
+  <tr>
+    <td width="75%" valign="top">
+      <a href="docs/screenshots/fork-features/specification-desktop.png"><img src="docs/screenshots/fork-features/specification-desktop.png" width="100%" alt="Desktop accepted refund specification with testing seam controls"></a>
+      <br><b>Versioned specifications</b>
+      <br><sub>Accept an explicit specification revision and confirm its testing seams before execution.</sub>
+    </td>
+    <td width="25%" valign="top" align="center"><a href="docs/screenshots/fork-features/specification-mobile.png"><img src="docs/screenshots/fork-features/specification-mobile.png" width="180" alt="Phone specification revision and acceptance controls"></a></td>
+  </tr>
+  <tr>
+    <td width="75%" valign="top">
+      <a href="docs/screenshots/fork-features/tickets-desktop.png"><img src="docs/screenshots/fork-features/tickets-desktop.png" width="100%" alt="Desktop three-Ticket refund dependency graph"></a>
+      <br><b>Tickets with dependencies</b>
+      <br><sub>Give each Ticket acceptance criteria and approve the dependency graph for the chosen specification.</sub>
+    </td>
+    <td width="25%" valign="top" align="center"><a href="docs/screenshots/fork-features/tickets-mobile.png"><img src="docs/screenshots/fork-features/tickets-mobile.png" width="180" alt="Phone Ticket titles, acceptance criteria and dependencies"></a></td>
+  </tr>
+  <tr>
+    <td width="75%" valign="top">
+      <a href="docs/screenshots/fork-features/review-desktop.png"><img src="docs/screenshots/fork-features/review-desktop.png" width="100%" alt="Desktop captured refund diff with an anchored draft finding"></a>
+      <br><b>Review with retained findings</b>
+      <br><sub>Capture workspace changes and save findings against the exact file, side and line.</sub>
+    </td>
+    <td width="25%" valign="top" align="center"><a href="docs/screenshots/fork-features/review-mobile.png"><img src="docs/screenshots/fork-features/review-mobile.png" width="180" alt="Phone captured diff and review anchor controls"></a></td>
+  </tr>
+  <tr>
+    <td width="75%" valign="top">
+      <a href="docs/screenshots/fork-features/recovery-desktop.png"><img src="docs/screenshots/fork-features/recovery-desktop.png" width="100%" alt="Desktop factory resource limits and successful isolated restore"></a>
+      <br><b>Verified recovery and resource limits</b>
+      <br><sub>Set limits for Implementations, native contexts and builds, then verify a backup in an isolated restore.</sub>
+    </td>
+    <td width="25%" valign="top" align="center"><a href="docs/screenshots/fork-features/recovery-mobile.png"><img src="docs/screenshots/fork-features/recovery-mobile.png" width="180" alt="Phone factory limits and recovery controls"></a></td>
+  </tr>
+</table>
+
+[Full gallery, capture coverage and regeneration instructions →](docs/fork-feature-gallery.md)
 
 To get started, open **Inbox**, capture an idea, configure a Project's checkout and checks, and prepare the execution Machine. See the [factory runtime guide](docs/factory/runtime.md) for setup, approvals, execution, review and recovery, or the [full specification](docs/factory/specification.md) for the product contract.
 
