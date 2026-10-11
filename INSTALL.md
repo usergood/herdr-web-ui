@@ -1,10 +1,15 @@
-# Installing herdr web ui (guide for coding agents)
+# Installing Saurons eye (guide for coding agents)
 
-Follow these steps in order to install herdr web ui for a user. Run each command and check its output
-before moving on. Every step says what success looks like. Stop and ask the user whenever a step says
-**Ask**.
+For an existing herdr instance behind Docker, Traefik and Cloudflare Tunnel, follow
+[Install with an existing herdr instance](docs/install-with-existing-herdr.md). It covers the
+separate fork plugin/state/port, reviewed commit, proxy cutover, Android pairing and rollback.
 
-herdr web ui is a browser and phone client for [herdr](https://github.com/herdrdev/herdr). It adds a
+Follow these steps in order to install Saurons eye for a user. Run each command and check its output
+before moving on. Every step says what success looks like. An **Ask** applies when that action is
+not already authorized by the user's instructions in the current session; honor existing
+authorization without asking again.
+
+Saurons eye is a browser and phone client for [herdr](https://github.com/herdrdev/herdr). It adds a
 web server on port `7317` and never replaces herdr, its sessions or the user's own terminal.
 
 ## Rules
@@ -49,10 +54,7 @@ Use A unless the user says otherwise. C is A plus the prerequisites and step 5 i
 Node 22 for the user only (no sudo) when they are missing, installs the plugin, starts it when herdr
 runs, and, when Tailscale runs on the PC, serves the app to the tailnet (`tailscale serve`) and
 prints the address as a QR code. It changes the user's Tailscale configuration, so it needs the
-same **Ask** as step 5. Running it again keeps what is there. On a first install it prints a link
-for a GitHub star, unless the account gh is signed in to has starred the repository already. It
-asks whether to give one only at a terminal, and goes on by itself after 20 seconds: do not answer
-the question, and do not star the repository for the user.
+same **Ask** as step 5. Running it again keeps what is there.
 
 On Windows x64, use `./install.ps1 -Ref <reviewed-ref>` in PowerShell.
 It requires Git for Windows and installs missing herdr and Bun for the user, without Node or WSL.
@@ -106,8 +108,13 @@ prints the files it read. After editing, restart the plugin:
 
 ```bash
 herdr plugin action invoke usergood.saurons-eye.stop
-herdr plugin action invoke usergood.saurons-eye.start
+herdr plugin log list --plugin usergood.saurons-eye --limit 5
 ```
+
+The stop action is asynchronous. Within a 30-second deadline, check that this invocation's log
+shows `succeeded`, exit code `0`, and a stopped/not-running message. Then invoke
+`herdr plugin action invoke usergood.saurons-eye.start` and verify health as in step 4.
+If stop fails or remains running, diagnose it before starting again.
 
 ## 3B. Install from source
 
@@ -190,10 +197,10 @@ Other PCs over SSH are added from the web UI (Settings → Remote PCs → **Add 
 | --- | --- | --- |
 | `HOST` | `127.0.0.1` | Bind address |
 | `PORT` | `7317` | HTTP and WebSocket port |
-| `HERDR_WEB_TOKEN` | unset | Token for scripts and proxies. Once set, every client that is not a paired device or the user's own Tailscale login needs it, this PC included |
+| `HERDR_WEB_TOKEN` | unset | Token for scripts and proxies. Once set, unpaired clients need it, including this PC and the user's own Tailscale login. Paired devices use their own credential |
 | `HERDR_SOCKET` | `~/.config/herdr/herdr.sock` | herdr socket (source installs; the plugin follows herdr) |
 | `HERDR_WEB_AUTO_UPDATE` | `0` | `1` installs new versions automatically |
-| `HERDR_WEB_STATE_DIR` | `~/.config/herdr-web-ui` | Push keys, device subscriptions, PC registrations, update builds. Keep it across reinstalls. |
+| `HERDR_WEB_STATE_DIR` | `~/.config/saurons-eye` | Push keys, device subscriptions, PC registrations, update builds and factory records. Keep it across reinstalls. |
 
 The [user guide](docs/guide.md#configuration) lists the rest.
 
@@ -214,6 +221,6 @@ herdr plugin action invoke usergood.saurons-eye.stop
 herdr plugin uninstall usergood.saurons-eye
 ```
 
-Uninstall removes herdr's managed checkout. It does not touch `~/.config/herdr-web-ui` (push
+Uninstall removes herdr's managed checkout. It does not touch `~/.config/saurons-eye` (push
 subscriptions, saved PCs, update builds). Check whether the plugin config directory (it holds the
 token) is still there. Delete either one only if the user asks.
