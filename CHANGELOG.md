@@ -10,6 +10,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 ### Added
 - Add a repeatable Playwright walkthrough and desktop/phone gallery for the fork's Inbox,
   notes, attachments, Project references, specifications, Tickets, review and recovery.
+  ([#8](https://github.com/usergood/herdr-web-ui/pull/8) by @usergood)
 - Codex Project references share versioned guides and pictures outside Git, with an editable
   documentation template, pinned Run/worker context and prepared prompts for manual sessions.
   ([#3](https://github.com/usergood/herdr-web-ui/pull/3) by @usergood)
