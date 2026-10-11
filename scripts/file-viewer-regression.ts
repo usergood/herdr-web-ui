@@ -9,6 +9,8 @@ import { chromium } from "playwright-core";
 import { createServer } from "../server/index.ts";
 import { herdrRpc, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { openSettingsPage } from "./settings-page.ts";
+import { sheetsSettled } from "./sheets-settled.ts";
+import type { Machine } from "../shared/protocol.ts";
 
 const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-file-back-"));
 const codexHome = join(root, "codex-home");
@@ -35,6 +37,10 @@ writeFileSync(standIn, "#!/bin/sh\nsleep 600\n");
 chmodSync(standIn, 0o755);
 copyFileSync(join(import.meta.dir, "fixtures", "file-preview.webm"), join(root, "preview.webm"));
 writeFileSync(join(root, "notes.txt"), "File preview history regression\n");
+const markdownPath = join(root, "preview #1 & 한글.MD");
+const markdownSource = "# Markdown preview\n\n한글 문서도 새 탭에서 읽을 수 있습니다.\n\n| Item | State |\n| --- | --- |\n| Preview | Ready |\n\n- [x] Rendered\n\n```ts\nconst answer = 42;\n```\n\n![Local image](./preview.svg)\n";
+writeFileSync(markdownPath, markdownSource);
+writeFileSync(join(root, "preview.svg"), '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="80"><rect width="240" height="80" fill="teal"/></svg>');
 let workspace: string | undefined;
 let server: ReturnType<typeof createServer> | undefined;
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
@@ -168,6 +174,8 @@ try {
     const settings = page.getByRole("dialog", { name: "Settings", exact: true });
     await settings.waitFor();
     await page.waitForFunction(() => history.state?.["herdr-web-ui:settings"] !== undefined);
+    // a phone's Settings rises over the preview (styles.css): look where it comes to rest
+    await sheetsSettled(page);
     const settingsClose = settings.getByRole("button", { name: "Close settings", exact: true });
     assert.equal(await settingsClose.evaluate((button) => {
       const rect = button.getBoundingClientRect();
@@ -342,6 +350,113 @@ try {
   console.log("PASS Chat plain file URI opens content through touch");
   await page.getByRole("button", { name: "Close file", exact: true }).click();
   await page.locator(".file-viewer").waitFor({ state: "hidden" });
+
+  // The real app and file server, not a component-only fixture: a fresh tab must render
+  // the same document, while raw/download keep their byte-for-byte API contract.
+  for (const width of [390, 1440]) {
+    for (const theme of ["dark", "light"]) {
+      const context = await browser.newContext({ viewport: { width, height: 900 }, isMobile: width === 390, hasTouch: width === 390 });
+      await context.addInitScript((theme) => localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en", theme })), theme);
+      const page = await context.newPage();
+      page.setDefaultTimeout(10_000);
+      await page.goto(`${origin}/?pane=${encodeURIComponent(pane)}&file=${encodeURIComponent(markdownPath)}`);
+      const markdown = page.locator(".file-viewer-markdown");
+      await markdown.getByRole("heading", { name: "Markdown preview", exact: true }).waitFor();
+      await markdown.getByRole("cell", { name: "Ready", exact: true }).waitFor();
+      await page.waitForFunction(() => {
+        const image = document.querySelector<HTMLImageElement>(".file-viewer-markdown img");
+        return image?.complete && image.naturalWidth === 240;
+      });
+      await sheetsSettled(page);
+      if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `markdown-inline-${width}-${theme}.png`) });
+      const popupReady = context.waitForEvent("page");
+      await page.getByRole("link", { name: "Open in a new tab", exact: true }).click();
+      const popup = await popupReady;
+      popup.setDefaultTimeout(10_000);
+      await popup.setViewportSize({ width, height: 900 });
+      const rendered = popup.locator(".file-viewer-markdown");
+      await rendered.getByRole("heading", { name: "Markdown preview", exact: true }).waitFor();
+      await rendered.getByRole("cell", { name: "Ready", exact: true }).waitFor();
+      await popup.waitForFunction(() => {
+        const image = document.querySelector<HTMLImageElement>(".file-viewer-markdown img");
+        return image?.complete && image.naturalWidth === 240;
+      });
+      const raw = await popup.getByRole("link", { name: "Open raw file", exact: true }).getAttribute("href");
+      assert.ok(raw);
+      assert.equal(await (await context.request.get(`${origin}${raw}`)).text(), markdownSource);
+      const download = await popup.getByRole("link", { name: "Download", exact: true }).getAttribute("href");
+      assert.ok(download);
+      const saved = await context.request.get(`${origin}${download}`);
+      assert.match(saved.headers()["content-disposition"] ?? "", /attachment/);
+      assert.equal(await saved.text(), markdownSource);
+      await popup.reload();
+      await rendered.getByRole("heading", { name: "Markdown preview", exact: true }).waitFor();
+      await popup.waitForFunction(() => {
+        const image = document.querySelector<HTMLImageElement>(".file-viewer-markdown img");
+        return image?.complete && image.naturalWidth === 240;
+      });
+      await sheetsSettled(popup);
+      assert.equal(await popup.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      if (process.env.UI_EVIDENCE_DIR) await popup.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `markdown-tab-${width}-${theme}.png`) });
+      await popup.getByRole("button", { name: "Close file", exact: true }).click();
+      await popup.locator(".file-viewer").waitFor({ state: "hidden" });
+      await popup.close();
+      await context.close();
+      console.log(`PASS Markdown inline/new tab/reload/raw/download: ${width}px ${theme}`);
+    }
+  }
+  // A file-only link owns its PC even if this browser last selected another one.
+  // The remote fixture has no panes; only the bridge hop is supplied here, and its
+  // file requests still go through the real server's stat/Range implementation.
+  const roster: { machines: Machine[] } = await (await context.request.get(`${origin}/api/machines`)).json();
+  const local = roster.machines.find((machine) => machine.id === "local");
+  assert.ok(local?.snapshot);
+  const remote: Machine = { ...local, id: "remote-fixture", name: "Remote fixture", snapshot: { ...local.snapshot, panes: [], workspaces: [], tabs: [], layouts: [], agents: [] } };
+  for (const target of ["remote-fixture", "local", "missing-fixture"]) {
+    const ownerContext = await browser.newContext();
+    const fileRequests: string[] = [];
+    await ownerContext.addInitScript(({ stored, pane }) => {
+      localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en" }));
+      sessionStorage.setItem("herdr-web-ui:selection", JSON.stringify({ machine_id: stored, pane_id: pane }));
+    }, { stored: target === "local" ? "remote-fixture" : "local", pane });
+    await ownerContext.route("**/api/**", async (route) => {
+      const request = new URL(route.request().url());
+      if (request.pathname === "/api/machines/events") { await route.abort(); return; }
+      if (request.pathname === "/api/machines") { await route.fulfill({ json: { machines: [...roster.machines, remote] } }); return; }
+      if (request.pathname === "/api/machines/remote-fixture/session") { await route.fulfill({ json: { snapshot: remote.snapshot } }); return; }
+      if (request.pathname.includes("/fs/")) {
+        fileRequests.push(request.pathname);
+        if (request.pathname.startsWith("/api/machines/remote-fixture/")) {
+          request.pathname = request.pathname.replace("/api/machines/remote-fixture/", "/api/");
+          await route.fulfill({ response: await route.fetch({ url: request.href }) });
+          return;
+        }
+      }
+      await route.continue();
+    });
+    const ownerPage = await ownerContext.newPage();
+    ownerPage.setDefaultTimeout(10_000);
+    await ownerPage.goto(`${origin}/?machine=${target}&file=${encodeURIComponent(markdownPath)}`);
+    if (target === "missing-fixture") {
+      await ownerPage.getByText("That link's PC is not set up here", { exact: true }).waitFor();
+      assert.equal(await ownerPage.locator(".file-viewer").count(), 0);
+      assert.deepEqual(fileRequests, [], "an unknown PC never reads the local file");
+    } else {
+      await ownerPage.locator(".file-viewer-markdown").getByRole("heading", { name: "Markdown preview", exact: true }).waitFor();
+      const prefix = target === "local" ? "/api/fs/" : "/api/machines/remote-fixture/fs/";
+      assert.ok(fileRequests.length >= 2 && fileRequests.every((path) => path.startsWith(prefix)), fileRequests.join(", "));
+      await ownerPage.waitForFunction((path) => new URLSearchParams(location.search).get("file") === path, markdownPath);
+      const link = await ownerPage.getByRole("link", { name: "Open in a new tab", exact: true }).getAttribute("href");
+      assert.ok(link);
+      assert.equal(new URL(link, origin).searchParams.get("machine") ?? "local", target);
+      await ownerPage.reload();
+      await ownerPage.locator(".file-viewer-markdown").getByRole("heading", { name: "Markdown preview", exact: true }).waitFor();
+    }
+    await ownerContext.close();
+    console.log(`PASS file-only link PC ownership, stored selection and pane independence: ${target}`);
+  }
+  await page.goto(`${origin}/?pane=${encodeURIComponent(pane)}&view=chat`);
+  await page.locator(".markdown-code").first().waitFor();
 
   // a chat code block the highlighter gives up on stays plain and says so, and the page runs on
   await page.locator(".markdown-code .hl-note", { hasText: "Too long to highlight" }).waitFor();
