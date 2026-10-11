@@ -24,6 +24,8 @@ Install the bundled **Saurons eye** app from normal Android Chrome over HTTPS. A
 
 ## What Saurons eye adds
 
+[View desktop and phone screenshots of the fork's features →](docs/fork-feature-gallery.md)
+
 ```text
 Inbox → Specifying → Ready → Running → Review → Done
 ```

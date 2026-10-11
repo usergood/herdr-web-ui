@@ -14,6 +14,9 @@ bun run dev      # Vite on :5173, proxies /api and /ws
 
 ## Checks
 
+For desktop/mobile media of the fork's Inbox, references, specifications, Tickets, review and
+recovery, see the [feature gallery and capture command](fork-feature-gallery.md).
+
 `bun run check` runs what CI runs, from the same script (`scripts/check.ts`):
 
 ```bash
