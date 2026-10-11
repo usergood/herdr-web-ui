@@ -7,6 +7,8 @@ import { FactoryExecutionHost } from "./factory-execution-host.ts";
 import { bundlePayload, verifySkills } from "./factory-skills.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { FactoryWorkflow } from "./factory-workflow.ts";
+import { FactoryReferences } from "./factory-references.ts";
+import type { CodexReferenceContext } from "../shared/protocol.ts";
 
 export type MachineEndpoint = (machineId: string) => { url: string; token: string } | undefined;
 type HostCapabilities = Awaited<ReturnType<FactoryExecutionHost["capabilities"]>>;
@@ -15,7 +17,26 @@ const actions: FactoryAction[] = ["setup", "grill-me", "grill-with-docs", "to-sp
 export class FactoryRuntime {
   private readonly dispatches = new Map<string, Promise<FactoryRun>>();
   private stopped = false;
-  constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly host: FactoryExecutionHost, private readonly endpoint: MachineEndpoint, private readonly readArtifact: (record: FactoryArtifact) => Buffer, private readonly publicUrl: string | null) {}
+  constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly host: FactoryExecutionHost, private readonly endpoint: MachineEndpoint, private readonly readArtifact: (record: FactoryArtifact) => Buffer, private readonly publicUrl: string | null, private readonly references: FactoryReferences) {}
+  async prepareReferences(projectId: string, machineId: string, expectedRevision: unknown): Promise<CodexReferenceContext> {
+    if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Reference preparation is disabled on a restored copy", 409);
+    if (this.stopped) throw new FactoryError("stopping", "The bridge is stopping", 409);
+    const library = this.references.current(projectId);
+    if (expectedRevision !== library.revision) throw new FactoryError("references_changed", "Refresh the Project references before preparing Codex", 409);
+    const project = this.store.get<FactoryProject>("projects", projectId)!;
+    const checkout = this.store.list<ProjectCheckout>("checkouts", projectId).find((entry) => entry.machine_id === machineId);
+    if (!checkout) throw new FactoryError("checkout_required", "Configure a verified checkout on the selected Machine", 409);
+    const inspected = await this.inspect(machineId, checkout.path);
+    if (this.stopped) throw new FactoryError("stopping", "The bridge stopped during preparation", 409);
+    if (inspected.repository !== project.repository || inspected.repository !== checkout.repository) throw new FactoryError("wrong_checkout", "The Machine checkout changed", 409);
+    if (this.references.current(projectId).revision !== library.revision) throw new FactoryError("references_changed", "The reference scope changed during preparation", 409);
+    this.references.freeze(projectId);
+    const payload = { ...this.references.payload(library), machine_id: machineId, checkout: { path: inspected.path, repository: inspected.repository } };
+    const result = machineId === "local" ? await this.host.prepareReferences(payload) : await this.remote<CodexReferenceContext>(machineId, "/references/prepare", payload);
+    if (result.project_id !== projectId || result.machine_id !== machineId || result.revision !== library.revision || typeof result.index_path !== "string" || typeof result.prompt !== "string") throw new FactoryError("references_identity_changed", "The Machine returned another reference context", 409);
+    this.store.put("project_reference_contexts", { ...this.store.record(), ...result }, projectId);
+    return result;
+  }
   private async remote<T>(machineId: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
     const endpoint = this.endpoint(machineId);
     if (!endpoint) throw new FactoryError("machine_offline", "The selected Machine is disconnected; its ownership is retained", 409);
@@ -98,25 +119,30 @@ export class FactoryRuntime {
     const selectedEvidence = new Set(retrospective?.evidence_ids ?? []);
     const selectedArtifacts = (): FactoryArtifact[] => [...this.store.list<FactoryArtifact>("artifacts"), ...this.store.list<FactoryArtifact>("deleted_artifacts")].filter((artifact) => artifact.implementation_id === id && this.store.get("artifacts", artifact.id) !== null || selectedEvidence.has(artifact.id));
     const artifacts = selectedArtifacts();
-    if (artifacts.reduce((size, artifact) => size + artifact.size, 0) > 64 * 1024 * 1024) throw new FactoryError("context_too_large", "Retained attachments exceed this Run's 64 MiB materialization budget", 413);
+    const projectReferences = project ? this.references.current(project.id) : null;
+    if (projectReferences?.entries.length && capabilities.project_reference_protocol !== 1) throw new FactoryError("factory_bridge_incompatible", "The selected Machine needs a bridge with Project reference support", 409);
+    if (projectReferences?.entries.length && provider !== "codex") throw new FactoryError("reference_provider_unavailable", "Project references currently require Codex; keep the selected provider or explicitly choose Codex", 409);
+    if (artifacts.reduce((size, artifact) => size + artifact.size, 0) + (projectReferences?.entries.reduce((size, entry) => size + entry.size, 0) ?? 0) > 64 * 1024 * 1024) throw new FactoryError("context_too_large", "Retained inputs exceed this Run's 64 MiB materialization budget", 413);
     if (action === "implement-spec") {
       if (!specification || !this.workflow.approved(id, "specification", specification.id) || !this.workflow.approved(id, "testing_seams", specification.id) || !this.workflow.tickets(id).length || !this.workflow.approved(id, "ticket_graph", graphHash)) throw new FactoryError("scope_unaccepted", "Accept the current specification, testing seams and Ticket graph", 409);
       if (!project?.checks?.length || !project.permissions?.trim()) throw new FactoryError("project_setup_required", "Configure known Project checks and execution permissions before factory admission", 409);
     }
     const api = new URL(this.publicUrl ?? origin);
     if (!["http:", "https:"].includes(api.protocol) || api.username || api.password) throw new FactoryError("invalid_factory_url", "Use an authenticated HTTP(S) app address for the tracker");
-    const contractHash = hash(JSON.stringify({ implementation, project, checkout, specification, graphHash, settings: this.settings(), skills: skills.hash, artifacts }));
+    const contractHash = hash(JSON.stringify({ implementation, project, checkout, specification, graphHash, settings: this.settings(), skills: skills.hash, artifacts, projectReferences }));
     const run = this.store.db.transaction(() => {
       const raced = this.store.list<FactoryRun>("runs", id).find((entry) => entry.idempotency_key === body.idempotency_key);
       if (raced) return { run: raced, accepted: false };
       if (this.stopped) throw new FactoryError("stopping", "The bridge is stopping; reconcile before retrying", 409);
-      const currentHash = hash(JSON.stringify({ implementation: this.store.get("implementations", id), project: project ? this.store.get("projects", project.id) : null, checkout, specification: this.workflow.specification(id), graphHash: this.workflow.graphHash(id), settings: this.settings(), skills: skills.hash, artifacts: selectedArtifacts() }));
+      const currentHash = hash(JSON.stringify({ implementation: this.store.get("implementations", id), project: project ? this.store.get("projects", project.id) : null, checkout, specification: this.workflow.specification(id), graphHash: this.workflow.graphHash(id), settings: this.settings(), skills: skills.hash, artifacts: selectedArtifacts(), projectReferences: project ? this.references.current(project.id) : null }));
       if (currentHash !== contractHash) throw new FactoryError("scope_changed", "The selected execution scope changed during admission", 409);
       const active = this.store.list<FactoryRun>("runs").filter((entry) => activeConditions.has(entry.condition));
       if (active.some((entry) => entry.implementation_id === id)) throw new FactoryError("implementation_owned", "An existing or uncertain Run still owns this Implementation", 409);
       const children = this.store.list<{ condition: string }>("workers").filter((entry) => activeConditions.has(entry.condition as FactoryRun["condition"])).length;
       if (new Set(active.map((entry) => entry.implementation_id)).size >= this.settings().max_implementations || active.length + children >= this.settings().max_agents) throw new FactoryError("capacity_exhausted", "Global execution capacity is in use; start manually after capacity is released", 409);
       const record: FactoryRun = { ...this.store.record(), implementation_id: id, action, provider, machine_id: machineId, condition: "accepted", waiting_reason: null, idempotency_key: body.idempotency_key as string, specification_id: specification?.id ?? null, graph_hash: graphHash, base: inspected?.head ?? null, checkout: inspected?.path ?? null, worktree: null, branch: null, workspace_id: null, pane_id: null, manifest: { skills, artifacts, context_message_ids: this.store.list<{ id: string }>("messages", id).map((message) => message.id), retrospective, retrospective_evidence: retrospective ? this.store.get("retro_evidence", retrospective.id) : null, implementation, project, checkout: inspected, specification, tickets: this.workflow.tickets(id), approvals: this.store.list<FactoryApproval>("approvals", id), effective_settings: this.settings(), provider_version: capability.version, permissions: "Retain native controls; publication, merge, deployment and destructive cleanup are separate owner actions", contract_hash: contractHash } };
+      record.manifest = { ...(record.manifest as object), project_references: projectReferences };
+      if (projectReferences) this.references.freeze(projectReferences.project_id);
       this.store.put("runs", record, id); this.store.event(id, "dispatch_accepted", { run_id: record.id, action }); return { run: record, accepted: true };
     }).immediate();
     const accepted = run;
@@ -135,8 +161,10 @@ export class FactoryRuntime {
     const access = this.store.get<{ token: string; url: string }>("run_access", record.id);
     try {
       const attachments = (this.store.get<{ artifacts: FactoryArtifact[] }>("run_artifacts", record.id)?.artifacts ?? []).map((artifact) => ({ ...artifact, content_base64: this.readArtifact(artifact).toString("base64") }));
+      const library = (record.manifest as { project_references?: import("../shared/protocol.ts").ProjectReferenceLibrary }).project_references;
+      const references = library?.entries.length ? this.references.payload(library) : undefined;
       dispatched = true;
-      run = this.observed(record, record.machine_id === "local" ? await this.host.launch(record, access ?? undefined, attachments) : await this.remote<FactoryRun>(record.machine_id, "/launch", { run: record, access, attachments }));
+      run = this.observed(record, record.machine_id === "local" ? await this.host.launch(record, access ?? undefined, attachments, references) : await this.remote<FactoryRun>(record.machine_id, "/launch", { run: record, access, attachments, references }));
     }
     catch (error) { run = { ...record, condition: dispatched ? "disconnected" : "failed", waiting_reason: error instanceof FactoryError ? error.message : "Launch outcome is uncertain; reconcile native identity", updated_at: new Date().toISOString() }; }
     if (!this.stopped) this.store.db.transaction(() => {

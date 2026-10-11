@@ -1,42 +1,47 @@
 import { constants, existsSync, fstatSync, lstatSync, openSync, closeSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { FactoryArtifact, FactoryChat, FactorySettings } from "../shared/protocol.ts";
+import type { FactoryArtifact, FactoryChat, FactorySettings, ProjectReference } from "../shared/protocol.ts";
 import { FactoryError, hash } from "./factory-host.ts";
 import { FactoryStore } from "./factory-store.ts";
 
 const mediaTypes = new Set(["text/plain", "text/markdown", "text/html", "application/json", "image/png", "image/jpeg", "image/gif", "image/webp"]);
 const previewPolicy = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
+type RetainedBlob = Pick<FactoryArtifact, "name" | "media_type" | "hash" | "size">;
 
 export class FactoryArtifacts {
   constructor(private readonly store: FactoryStore) {}
-  retained(): FactoryArtifact[] {
+  retained(): RetainedBlob[] {
     const evidenceIds = new Set(this.store.list<{ evidence_ids: string[] }>("retrospectives").flatMap((entry) => entry.evidence_ids));
     const runArtifacts = this.store.list<{ artifacts: FactoryArtifact[] }>("run_artifacts").flatMap((entry) => entry.artifacts);
-    return [...this.store.list<FactoryArtifact>("artifacts"), ...runArtifacts, ...this.store.list<FactoryArtifact>("deleted_artifacts").filter((entry) => evidenceIds.has(entry.id))];
+    return [...this.store.list<FactoryArtifact>("artifacts"), ...runArtifacts, ...this.store.list<FactoryArtifact>("deleted_artifacts").filter((entry) => evidenceIds.has(entry.id)), ...this.store.list<ProjectReference>("project_reference_versions")];
   }
   create(implementationId: string, body: Record<string, unknown>, settings: FactorySettings): FactoryArtifact {
     const chat = typeof body.chat_id === "string" ? this.store.get<FactoryChat>("chats", body.chat_id) : null;
     if (!chat || chat.implementation_id !== implementationId) throw new FactoryError("invalid_chat", "Select a Chat belonging to this Implementation");
+    const blob = this.retain(body, settings);
+    const versions = [...this.store.list<FactoryArtifact>("artifacts"), ...this.store.list<FactoryArtifact>("deleted_artifacts")].filter((item) => item.implementation_id === implementationId && item.name === blob.name);
+    const record: FactoryArtifact = { ...this.store.record(), ...blob, implementation_id: implementationId, chat_id: chat.id, version: Math.max(0, ...versions.map((item) => item.version)) + 1, origin: typeof body.origin === "string" ? body.origin.slice(0, 200) : "upload", note: typeof body.note === "string" ? body.note.slice(0, 10_000) : "" };
+    this.store.db.transaction(() => { this.store.put("artifacts", record, implementationId); this.store.event(implementationId, "artifact_retained", { artifact_id: record.id, hash: record.hash, size: record.size }); })();
+    return record;
+  }
+  retain(body: Record<string, unknown>, settings: FactorySettings): RetainedBlob {
     if (typeof body.name !== "string" || !body.name.trim() || body.name.length > 200 || /[\x00-\x1f/\\:]/.test(body.name) || [".", ".."].includes(body.name.trim()) || typeof body.media_type !== "string" || !mediaTypes.has(body.media_type) || typeof body.content_base64 !== "string" || body.content_base64.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(body.content_base64)) throw new FactoryError("invalid_artifact", "Use a named text or image attachment with valid base64 content");
     if (body.content_base64.length > Math.ceil(settings.max_artifact_bytes / 3) * 4) throw new FactoryError("artifact_too_large", "This attachment exceeds the configured size limit", 413);
     const bytes = Buffer.from(body.content_base64, "base64");
     const digest = hash(bytes);
     if (bytes.length > settings.max_artifact_bytes) throw new FactoryError("artifact_too_large", "This attachment exceeds the configured size limit", 413);
     if (body.hash !== undefined && body.hash !== digest || body.size !== undefined && body.size !== bytes.length) throw new FactoryError("artifact_mismatch", "The imported size or hash does not match the attachment");
-    const all = this.store.list<FactoryArtifact>("artifacts");
     const retainedBytes = readdirSync(join(this.store.root, "blobs")).reduce((total, name) => total + lstatSync(join(this.store.root, "blobs", name)).size, 0);
     if (retainedBytes + (existsSync(join(this.store.root, "blobs", digest)) ? 0 : bytes.length) > settings.max_storage_bytes) throw new FactoryError("storage_full", "Retained attachments reached the configured size limit", 413);
     const name = body.name.trim();
-    const versions = [...all, ...this.store.list<FactoryArtifact>("deleted_artifacts")].filter((item) => item.implementation_id === implementationId && item.name === name);
-    const record: FactoryArtifact = { ...this.store.record(), implementation_id: implementationId, chat_id: chat.id, name, media_type: body.media_type, hash: digest, size: bytes.length, version: Math.max(0, ...versions.map((item) => item.version)) + 1, origin: typeof body.origin === "string" ? body.origin.slice(0, 200) : "upload", note: typeof body.note === "string" ? body.note.slice(0, 10_000) : "" };
+    const record: RetainedBlob = { name, media_type: body.media_type, hash: digest, size: bytes.length };
     const destination = join(this.store.root, "blobs", digest);
     if (existsSync(destination)) this.read(record);
     else {
-      const temporary = join(this.store.root, "blobs", record.id + ".tmp");
+      const temporary = join(this.store.root, "blobs", this.store.record().id + ".tmp");
       try { writeFileSync(temporary, bytes, { mode: 0o600, flag: "wx" }); renameSync(temporary, destination); }
       finally { if (existsSync(temporary)) unlinkSync(temporary); }
     }
-    this.store.db.transaction(() => { this.store.put("artifacts", record, implementationId); this.store.event(implementationId, "artifact_retained", { artifact_id: record.id, hash: digest, size: record.size }); })();
     return record;
   }
   mutate(id: string, action: string, body: Record<string, unknown>): FactoryArtifact | { ok: true } {
@@ -56,7 +61,7 @@ export class FactoryArtifacts {
     }
     return { ok: true };
   }
-  read(record: FactoryArtifact): Buffer {
+  read(record: Pick<RetainedBlob, "hash" | "size">): Buffer {
     if (!/^[a-f0-9]{64}$/.test(record.hash)) throw new FactoryError("artifact_corrupt", "The retained attachment needs recovery", 409);
     const path = join(this.store.root, "blobs", record.hash);
     let descriptor: number | undefined;
@@ -71,7 +76,7 @@ export class FactoryArtifacts {
     } catch { throw new FactoryError("artifact_corrupt", "The retained attachment is missing or changed; restore a verified backup", 409); }
     finally { if (descriptor !== undefined) closeSync(descriptor); }
   }
-  response(record: FactoryArtifact, mode: string): Response {
+  response(record: RetainedBlob, mode: string): Response {
     const source = mode === "source";
     return new Response(new Uint8Array(this.read(record)), { headers: {
       "content-type": source ? "text/plain; charset=utf-8" : record.media_type,

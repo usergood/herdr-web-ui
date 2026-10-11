@@ -16,6 +16,8 @@ import { FactoryPipeline } from "./factory-pipeline.ts";
 import { FactoryRetrospectives } from "./factory-retrospective.ts";
 import { HerdrError } from "./herdr/client.ts";
 import { factoryTrackerGuide } from "./factory-tracker-client.ts";
+import { FactoryReferences } from "./factory-references.ts";
+import { projectReferenceTemplate } from "../shared/project-references.ts";
 
 const providers: FactoryProvider[] = ["codex", "claude", "opencode"];
 const initialSettings: FactorySettings = { provider: "codex", max_implementations: 2, max_agents: 6, max_builds: 2, max_artifact_bytes: 25 * 1024 * 1024, max_storage_bytes: 2 * 1024 * 1024 * 1024, skills_path: null };
@@ -30,11 +32,13 @@ export class FactoryService {
   private readonly executionHost: FactoryExecutionHost;
   private readonly pipeline: FactoryPipeline;
   private readonly retrospectives: FactoryRetrospectives;
+  private readonly references: FactoryReferences;
   private stopped = false;
   constructor(stateDir: string, private readonly skillsPath: string | null = null, native: Partial<FactoryNative> = {}, endpoint: MachineEndpoint = () => undefined, publicUrl: string | null = null) {
     this.store = new FactoryStore(stateDir); this.artifacts = new FactoryArtifacts(this.store); this.workflow = new FactoryWorkflow(this.store); this.backup = new FactoryBackup(this.store, this.artifacts);
+    this.references = new FactoryReferences(this.store, this.artifacts);
     this.executionHost = new FactoryExecutionHost(this.store, () => this.settings().skills_path, native);
-    this.runtime = new FactoryRuntime(this.store, this.workflow, () => this.settings(), this.executionHost, endpoint, (record) => this.artifacts.read(record), publicUrl); this.review = new FactoryReview(this.store, (machine, path, base, mode) => this.runtime.capture(machine, path, base, mode), (machine, path) => this.runtime.inspect(machine, path));
+    this.runtime = new FactoryRuntime(this.store, this.workflow, () => this.settings(), this.executionHost, endpoint, (record) => this.artifacts.read(record), publicUrl, this.references); this.review = new FactoryReview(this.store, (machine, path, base, mode) => this.runtime.capture(machine, path, base, mode), (machine, path) => this.runtime.inspect(machine, path));
     this.pipeline = new FactoryPipeline(this.store, this.runtime, this.workflow, () => this.settings());
     this.retrospectives = new FactoryRetrospectives(this.store);
   }
@@ -139,6 +143,18 @@ export class FactoryService {
   async handle(request: Request, url: URL): Promise<Response> {
     try {
       if (request.method !== "GET" && request.headers.get("x-herdr-factory") !== "1") return httpError(403, "invalid_origin", "Use factory controls from this app");
+      if (url.pathname === "/api/factory/reference-template" && request.method === "GET") return jsonResponse(projectReferenceTemplate);
+      const referencePrepare = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/references\/prepare$/.exec(url.pathname);
+      if (referencePrepare && request.method === "POST") { const body = await this.body(request); if (typeof body.machine_id !== "string") throw new FactoryError("invalid_machine", "Select an execution Machine"); return jsonResponse(await this.runtime.prepareReferences(referencePrepare[1]!, body.machine_id, body.expected_revision)); }
+      if (url.pathname === "/api/factory-host/references/prepare" && request.method === "POST") return jsonResponse(await this.executionHost.prepareReferences(await this.body(request, 90 * 1024 * 1024) as unknown as import("../shared/protocol.ts").FactoryHostRequests["references"]));
+      const referenceRoute = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/references(?:\/([a-zA-Z0-9-]+)\/(source|preview|download|remove))?$/.exec(url.pathname);
+      if (referenceRoute) {
+        const projectId = referenceRoute[1]!;
+        if (referenceRoute[2] && referenceRoute[3] !== "remove" && request.method === "GET") return this.artifacts.response(this.references.get(projectId, referenceRoute[2]), referenceRoute[3]!);
+        if (referenceRoute[2] && referenceRoute[3] === "remove" && request.method === "POST") return jsonResponse(this.references.remove(projectId, referenceRoute[2], (await this.body(request)).expected_revision));
+        if (!referenceRoute[2] && request.method === "GET") return jsonResponse(this.references.current(projectId));
+        if (!referenceRoute[2] && request.method === "POST") return jsonResponse(this.references.create(projectId, await this.body(request, Math.ceil(this.settings().max_artifact_bytes / 3) * 4 + 64 * 1024), this.settings()), 201);
+      }
       if (url.pathname === "/api/factory-host/capabilities" && request.method === "GET") return jsonResponse(await this.executionHost.capabilities());
       if (url.pathname === "/api/factory-host/prepare" && request.method === "POST") { this.executionHost.prepare(await this.body(request, 4 * 1024 * 1024)); return jsonResponse(await this.executionHost.capabilities()); }
       if (url.pathname === "/api/factory-host/inspect" && request.method === "POST") { const body = await this.body(request); if (typeof body.path !== "string") throw new FactoryError("invalid_checkout", "Enter an absolute checkout path"); return jsonResponse(await inspectCheckout(body.path)); }
@@ -148,7 +164,7 @@ export class FactoryService {
         const checkout = await inspectCheckout(body.path);
         return jsonResponse({ repository: checkout.repository, ...await captureReview(checkout.path, body.base, body.mode as "branch" | "workspace") });
       }
-      if (url.pathname === "/api/factory-host/launch" && request.method === "POST") { const body = await this.body(request, 90 * 1024 * 1024); if (!isJsonObject(body.run)) throw new FactoryError("invalid_launch", "Enter an accepted Run identity"); return jsonResponse(await this.executionHost.launch(body.run as unknown as import("../shared/protocol.ts").FactoryRun, isJsonObject(body.access) && typeof body.access.token === "string" && typeof body.access.url === "string" ? { token: body.access.token, url: body.access.url } : undefined, Array.isArray(body.attachments) ? body.attachments : []), 202); }
+      if (url.pathname === "/api/factory-host/launch" && request.method === "POST") { const body = await this.body(request, 90 * 1024 * 1024); if (!isJsonObject(body.run)) throw new FactoryError("invalid_launch", "Enter an accepted Run identity"); return jsonResponse(await this.executionHost.launch(body.run as unknown as import("../shared/protocol.ts").FactoryRun, isJsonObject(body.access) && typeof body.access.token === "string" && typeof body.access.url === "string" ? { token: body.access.token, url: body.access.url } : undefined, Array.isArray(body.attachments) ? body.attachments : [], isJsonObject(body.references) ? body.references as unknown as import("../shared/protocol.ts").ProjectReferencePayload : undefined), 202); }
       const operation = /^\/api\/factory-host\/runs\/([a-zA-Z0-9-]+)\/operations\/([a-z-]+)$/.exec(url.pathname);
       if (operation && request.method === "POST") return jsonResponse(await this.executionHost.operation(operation[1]!, operation[2]!, await this.body(request)));
       const hostReconcile = /^\/api\/factory-host\/runs\/([a-zA-Z0-9-]+)\/reconcile$/.exec(url.pathname);

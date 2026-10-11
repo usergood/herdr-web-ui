@@ -16,6 +16,8 @@ The connection server owns `stateDir/factory/records.sqlite`, immutable blob fil
 
 ## Native eligibility and owner gates
 
+Codex Project references are managed from Inbox → Projects or a linked Implementation. Upload a guide/picture, set its usage note and reading policy, and use the guide template for reusable instructions. New Codex Runs/workers receive a frozen library index outside Git; Prepare Codex references returns a prompt for manually started sessions. See [Codex Project references](codex-project-references.md) for the template, limits, bridge requirements and native read proof.
+
 Start native verification uses the selected native CLI in an owned disposable context. Verify native evidence requires genuine project-local loading of every required skill and a real recorded question/answer/consumption round. A test adapter or a client-supplied `verified` flag cannot certify a provider. Changed source or provider versions invalidate the proof.
 
 Codex uses project-local `.agents/skills`, Claude uses `.claude/skills`, and OpenCode uses `.opencode/skills`. OpenCode receives a separate local agent policy because it does not share Claude's invocation metadata. These are adapter projections of the exact pinned source, not edits to the vendor. Native child-agent tools are restricted so contexts use the application reservations. Existing native permission prompts remain operative. [Claude CLI reference](https://code.claude.com/docs/en/cli-reference), [OpenCode CLI](https://opencode.ai/docs/cli/), [OpenCode skill permissions](https://opencode.ai/docs/skills/).
