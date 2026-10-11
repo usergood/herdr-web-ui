@@ -31,6 +31,8 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   improvements, native readers, usage pacing and push/input fixes. Preserve Saurons eye factory,
   reference/account workflows and owner-configured services; keep telemetry removed.
   ([#11](https://github.com/usergood/saurons-eye/pull/11) by @usergood)
+- Document local Whisper feasibility with a measured CPU benchmark and a proposed bounded
+  queue for factory Implementations, including transcription budgets and recovery semantics.
 - Use bundled Saurons eye app, maskable, touch, favicon and notification artwork, with matching
   installed-app/browser names and fresh asset/service-worker cache versions.
   ([#5](https://github.com/usergood/saurons-eye/pull/5) by @usergood)

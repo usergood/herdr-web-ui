@@ -20,6 +20,11 @@ Codex is the installed primary provider. Native readiness requires genuine pinne
 
 Manual starts are the first-version scope. Reordering, reconnecting and changing defaults do not dispatch or migrate work. The app retains uncertain ownership and requires explicit observation/control of accepted identities. Global limits cover root agents, Ticket workers, independent review contexts and builds.
 
+The [local dictation and queue research](local-transcription-and-queue-research.md) records a
+working CPU Whisper benchmark and proposes managed transcription setup plus an automatic queue
+for factory Implementations only. These remain proposed extensions; existing worker controls,
+owner approvals and ordinary chat behavior retain their current scope.
+
 ## Planning provenance
 
 The original [handoff](handoff.md), [baseline](baseline.md), [dependency plan](implementation-plan.md), [glossary](GLOSSARY.md), [skills/provider research](skills-and-providers.md) and [server kickoff](server-kickoff.md) preserve the earlier decisions and source investigation. Their historical planning statements do not revoke the later implementation request or confirmed testing seams. There is no Conteo work in this repository.
