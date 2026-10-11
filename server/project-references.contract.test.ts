@@ -140,7 +140,9 @@ describe("Project references through HTTP", () => {
     gateway = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(request) {
       const url = new URL(request.url); const response = await fetch(`http://localhost:${host.port}${url.pathname}${url.search}`, { method: request.method, headers: request.headers, ...(request.method === "GET" ? {} : { body: await request.text() }) });
       if (legacy && url.pathname.endsWith("/capabilities")) { const capabilities = await response.json(); delete capabilities.project_reference_protocol; return Response.json(capabilities); }
-      return response;
+      // fetch decoded the body: mirror the real relay rather than forwarding stale wire headers.
+      const headers = new Headers(response.headers); headers.delete("content-encoding"); headers.delete("content-length");
+      return new Response(await response.arrayBuffer(), { status: response.status, headers });
     } });
     try {
       const project = await f.project("Bridge library"); expect((await f.request(`/projects/${project.id}/checkouts`, { machine_id: "reference-host", path: clone })).status).toBe(201);
