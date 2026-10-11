@@ -31,6 +31,20 @@ try {
   await page.getByRole("button", { name: "Edit reference", exact: true }).click();
   await page.getByRole("textbox", { name: "Reference text", exact: true }).fill("# Refund guidance\n\nKeep refund identifiers stable.");
   await page.getByRole("button", { name: "Save Project reference", exact: true }).click(); await page.getByRole("heading", { name: "Refunds · v2", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Edit reference", exact: true }).click();
+  await page.getByRole("textbox", { name: "Reference text", exact: true }).fill("# Refund guidance\n\nAn older draft to retain.");
+  const secondTab = await browser.newPage(); await secondTab.goto(page.url());
+  await secondTab.getByRole("button", { name: "Edit reference", exact: true }).click();
+  await secondTab.getByRole("textbox", { name: "Reference text", exact: true }).fill("# Refund guidance\n\nNewer owner guidance from another tab.");
+  await secondTab.getByRole("button", { name: "Save Project reference", exact: true }).click(); await secondTab.getByRole("heading", { name: "Refunds · v3", exact: true }).waitFor(); await secondTab.close();
+  await page.getByRole("button", { name: "Refresh references", exact: true }).click(); await page.getByRole("heading", { name: "Refunds · v3", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Save Project reference", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: "Project references changed" }).waitFor();
+  assert((await page.getByRole("textbox", { name: "Reference text", exact: true }).inputValue()).includes("An older draft to retain."));
+  await page.getByRole("button", { name: "Edit reference", exact: true }).click();
+  assert((await page.getByRole("textbox", { name: "Reference text", exact: true }).inputValue()).includes("Newer owner guidance from another tab."));
+  await page.getByRole("textbox", { name: "Reference text", exact: true }).fill("# Refund guidance\n\nExplicitly merged owner guidance.");
+  await page.getByRole("button", { name: "Save Project reference", exact: true }).click(); await page.getByRole("heading", { name: "Refunds · v4", exact: true }).waitFor();
   await page.getByRole("region", { name: "Project references", exact: true }).locator('input[type="file"]').setInputFiles({ name: "menu.png", mimeType: "image/png", buffer: readFileSync(join(import.meta.dir, "../public/icons/icon-192.png")) });
   await page.getByRole("textbox", { name: "Reference title", exact: true }).fill("Menu reference");
   await page.getByRole("textbox", { name: "Picture caption or additional context", exact: true }).fill("Fictional visual reference");
@@ -41,7 +55,7 @@ try {
   await page.waitForFunction(() => (document.querySelector('textarea[name="codex-reference-prompt"]') as HTMLTextAreaElement)?.value.includes("Always read"));
   assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd: repo, encoding: "utf8" }), "");
   const hash = new URL(page.url()).hash; app.stop(); app = createServer({ port: 0, stateDir: join(state, "app"), machines: false }); await page.goto(`http://localhost:${app.port}/${hash}`);
-  await page.getByRole("heading", { name: "Refunds · v2", exact: true }).waitFor(); await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("heading", { name: "Refunds · v4", exact: true }).waitFor(); await page.setViewportSize({ width: 390, height: 844 });
   assert(await page.getByRole("button", { name: "Use guide template", exact: true }).isVisible());
   assert(await page.getByRole("button", { name: "Prepare Codex references", exact: true }).isVisible());
   if (process.env["UI_EVIDENCE_DIR"]) { mkdirSync(process.env["UI_EVIDENCE_DIR"], { recursive: true }); await page.getByRole("heading", { name: "Project references", exact: true }).scrollIntoViewIfNeeded(); await page.screenshot({ path: join(process.env["UI_EVIDENCE_DIR"], "project-references-mobile.png"), fullPage: true }); }

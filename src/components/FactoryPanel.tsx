@@ -6,6 +6,7 @@ import { factoryDetail, factoryOverview, factoryRequest } from "../lib/factoryAp
 import { useT } from "../lib/i18n.ts";
 import { OpenFileContext } from "../lib/filePaths.ts";
 import { FactoryProjectReferences } from "./FactoryProjectReferences.tsx";
+import { base64FromBytes } from "../lib/api.ts";
 import { Markdown } from "./Markdown.tsx";
 import { FactoryWorkflowPanel } from "./FactoryWorkflowPanel.tsx";
 import { FactoryArtifactPreview } from "./FactoryArtifactPreview.tsx";
@@ -96,10 +97,8 @@ export function FactoryPanel({ machines, onOpenPane }: { machines: Machine[]; on
     await perform(async () => {
       if (!overview || file.size > overview.settings.max_artifact_bytes) throw new Error(t("This attachment exceeds the size limit."));
       const bytes = new Uint8Array(await file.arrayBuffer());
-      let binary = "";
-      for (let start = 0; start < bytes.length; start += 8192) binary += String.fromCharCode(...bytes.subarray(start, start + 8192));
       const media = file.name.toLowerCase().endsWith(".md") ? "text/markdown" : file.type || "text/plain";
-      await factoryRequest(`${prefix}/artifacts`, { chat_id: chatId, name: file.name, media_type: media, content_base64: btoa(binary), size: file.size, origin: "upload" });
+      await factoryRequest(`${prefix}/artifacts`, { chat_id: chatId, name: file.name, media_type: media, content_base64: base64FromBytes(bytes), size: file.size, origin: "upload" });
     });
   }
 
