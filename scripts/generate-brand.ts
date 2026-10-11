@@ -1,39 +1,46 @@
-/** Export the supplied artwork without redrawing it. Requires ffmpeg with drawtext. */
-import { mkdirSync } from "node:fs";
+/** Export the fork's SVG artwork to install, notification and sharing assets. */
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { chromium } from "playwright-core";
 
-const root = new URL("..", import.meta.url).pathname;
-const source = join(root, "docs/brand/icon-source.png");
-mkdirSync(join(root, "public/icons"), { recursive: true });
-
-function exportImage(path: string, filter: string, extra: string[] = []): void {
-  const result = spawnSync("ffmpeg", [
-    "-hide_banner", "-loglevel", "error", "-y", "-i", source,
-    "-vf", filter, "-frames:v", "1", "-threads", "1", ...extra, join(root, path),
-  ], { stdio: "inherit" });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`Could not export ${path}`);
-  console.log(path);
-}
-
-for (const size of [192, 512]) {
-  exportImage(`public/icons/icon-${size}.png`, `scale=${size}:${size}:flags=lanczos`);
-  const inset = Math.round(size * 0.76);
-  exportImage(`public/icons/icon-maskable-${size}.png`,
-    `scale=${inset}:${inset}:flags=lanczos,pad=${size}:${size}:(ow-iw)/2:(oh-ih)/2:color=0xd7d8d8`);
-}
-// Android draws a notification's small icon from its alpha alone: the dark artwork becomes
-// white on transparent, cropped to the mark. Without it Chrome shows its own bell.
-exportImage("public/icons/badge-96.png",
-  "crop=1040:1040:145:127,scale=96:96:flags=lanczos,format=rgba,geq=r=255:g=255:b=255:a='clip((200-r(X,Y))*2.5,0,255)'");
-exportImage("public/apple-touch-icon.png", "scale=180:180:flags=lanczos");
-exportImage("public/favicon.png", "scale=64:64:flags=lanczos");
-exportImage("public/favicon.ico", "scale=32:32:flags=lanczos", ["-c:v", "bmp"]);
-exportImage("public/social-preview.png", [
-  "scale=640:640:flags=lanczos",
-  "pad=1280:640:0:0:color=0xd7d8d8",
-  "drawtext=font=DejaVu Sans:fontcolor=0x2c3133:fontsize=76:text='herdr web ui':x=660:y=218",
-  "drawtext=font=DejaVu Sans:fontcolor=0x454c50:fontsize=28:text='Run herdr from anywhere.':x=664:y=330",
-  "drawtext=font=DejaVu Sans:fontcolor=0x454c50:fontsize=20:text='CHAT  /  TERMINAL  /  MOBILE':x=666:y=410",
-].join(","));
+const root = fileURLToPath(new URL("..", import.meta.url));
+const mark = readFileSync(join(root, "public/icons/saurons-eye.svg"), "utf8");
+const badge = readFileSync(join(root, "public/icons/saurons-eye-badge.svg"), "utf8");
+const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
+try {
+  const page = await browser.newPage();
+  async function png(svg: string, size: number): Promise<Buffer> {
+    const encoded = await page.evaluate(async ({ svg, size }) => {
+      const image = new Image(); image.src = "data:image/svg+xml," + encodeURIComponent(svg); await image.decode();
+      const canvas = document.createElement("canvas"); canvas.width = size; canvas.height = size;
+      canvas.getContext("2d")!.drawImage(image, 0, 0, size, size);
+      return canvas.toDataURL("image/png").split(",")[1]!;
+    }, { svg, size });
+    return Buffer.from(encoded, "base64");
+  }
+  function save(path: string, bytes: Buffer): void { writeFileSync(join(root, path), bytes); console.log(path); }
+  mkdirSync(join(root, "public/icons"), { recursive: true });
+  for (const size of [192, 512]) {
+    save(`public/icons/icon-${size}.png`, await png(mark, size));
+    // Full opaque background; every meaningful mark fits the central maskable safe zone.
+    save(`public/icons/icon-maskable-${size}.png`, await png(mark.replace('rx="104"', 'rx="0"'), size));
+  }
+  save("public/icons/badge-96.png", await png(badge, 96));
+  save("public/apple-touch-icon.png", await png(mark, 180));
+  save("public/favicon.png", await png(mark, 64));
+  const small = await png(mark, 32); const header = Buffer.alloc(22);
+  header.writeUInt16LE(1, 2); header.writeUInt16LE(1, 4); header[6] = 32; header[7] = 32;
+  header.writeUInt16LE(1, 10); header.writeUInt16LE(32, 12); header.writeUInt32LE(small.length, 14); header.writeUInt32LE(22, 18);
+  save("public/favicon.ico", Buffer.concat([header, small]));
+  const preview = await page.evaluate(async (svg) => {
+    const image = new Image(); image.src = "data:image/svg+xml," + encodeURIComponent(svg); await image.decode();
+    const canvas = document.createElement("canvas"); canvas.width = 1280; canvas.height = 640;
+    const context = canvas.getContext("2d")!; context.fillStyle = "#181613"; context.fillRect(0, 0, 1280, 640);
+    context.drawImage(image, 32, 64, 512, 512); context.fillStyle = "#ffcf73"; context.font = "bold 72px sans-serif"; context.fillText("Saurons eye", 600, 265);
+    context.fillStyle = "#ddd6ca"; context.font = "28px sans-serif"; context.fillText("Your agents. Any screen.", 602, 320);
+    context.font = "20px sans-serif"; context.fillText("CHAT  /  TERMINAL  /  PROJECT GUIDANCE", 603, 372);
+    return canvas.toDataURL("image/png").split(",")[1]!;
+  }, mark);
+  save("public/social-preview.png", Buffer.from(preview, "base64"));
+} finally { await browser.close(); }

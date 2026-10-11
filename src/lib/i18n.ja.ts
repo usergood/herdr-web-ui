@@ -211,7 +211,7 @@ export const JA: Record<string, string> = {
   "Agent {status}": "エージェント {status}",
 
   // ---- app header and shell ----
-  "Connecting to herdr web ui…": "herdr web ui に接続しています…",
+  "Connecting to Saurons eye…": "Saurons eye に接続しています…",
   "Close workspace list": "ワークスペース一覧を閉じる",
   "Open workspace list": "ワークスペース一覧を開く",
   "Show workspace list": "ワークスペース一覧を表示",

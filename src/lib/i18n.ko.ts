@@ -209,7 +209,7 @@ export const KO: Record<string, string> = {
   "Agent {status}": "에이전트 {status}",
 
   // ---- app header and shell ----
-  "Connecting to herdr web ui…": "herdr web ui에 연결하는 중…",
+  "Connecting to Saurons eye…": "Saurons eye에 연결하는 중…",
   "Close workspace list": "워크스페이스 목록 닫기",
   "Open workspace list": "워크스페이스 목록 열기",
   "Show workspace list": "워크스페이스 목록 보이기",

@@ -213,7 +213,7 @@ export const ZH: Record<string, string> = {
   "Agent {status}": "Agent 状态：{status}",
 
   // ---- app header and shell ----
-  "Connecting to herdr web ui…": "正在连接 herdr web ui…",
+  "Connecting to Saurons eye…": "正在连接 Saurons eye…",
   "Close workspace list": "关闭工作区列表",
   "Open workspace list": "打开工作区列表",
   "Show workspace list": "显示工作区列表",
