@@ -42,6 +42,7 @@ try {
   await page.getByRole("alert").filter({ hasText: "Project references changed" }).waitFor();
   assert((await page.getByRole("textbox", { name: "Reference text", exact: true }).inputValue()).includes("An older draft to retain."));
   await page.getByRole("button", { name: "Edit reference", exact: true }).click();
+  await page.waitForFunction(() => (document.querySelector('textarea[name="reference-content"]') as HTMLTextAreaElement)?.value.includes("Newer owner guidance from another tab."));
   assert((await page.getByRole("textbox", { name: "Reference text", exact: true }).inputValue()).includes("Newer owner guidance from another tab."));
   await page.getByRole("textbox", { name: "Reference text", exact: true }).fill("# Refund guidance\n\nExplicitly merged owner guidance.");
   await page.getByRole("button", { name: "Save Project reference", exact: true }).click(); await page.getByRole("heading", { name: "Refunds · v4", exact: true }).waitFor();
@@ -56,8 +57,22 @@ try {
   assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd: repo, encoding: "utf8" }), "");
   const hash = new URL(page.url()).hash; app.stop(); app = createServer({ port: 0, stateDir: join(state, "app"), machines: false }); await page.goto(`http://localhost:${app.port}/${hash}`);
   await page.getByRole("heading", { name: "Refunds · v4", exact: true }).waitFor(); await page.setViewportSize({ width: 390, height: 844 });
+  const referenceHeading = page.getByRole("heading", { name: "Project references", exact: true });
+  await referenceHeading.scrollIntoViewIfNeeded();
+  const referenceBounds = await page.getByRole("region", { name: "Project references", exact: true }).boundingBox();
+  assert(referenceBounds && referenceBounds.x >= 0 && referenceBounds.x + referenceBounds.width <= 390, `Project references fit the phone viewport: ${JSON.stringify(referenceBounds)}`);
   assert(await page.getByRole("button", { name: "Use guide template", exact: true }).isVisible());
   assert(await page.getByRole("button", { name: "Prepare Codex references", exact: true }).isVisible());
-  if (process.env["UI_EVIDENCE_DIR"]) { mkdirSync(process.env["UI_EVIDENCE_DIR"], { recursive: true }); await page.getByRole("heading", { name: "Project references", exact: true }).scrollIntoViewIfNeeded(); await page.screenshot({ path: join(process.env["UI_EVIDENCE_DIR"], "project-references-mobile.png"), fullPage: true }); }
+  const phone = await browser.newPage({ viewport: { width: 390, height: 844 } }); phone.setDefaultTimeout(5000); phone.on("pageerror", (error) => errors.push(error.message));
+  await phone.goto(page.url());
+  const phoneReferences = phone.getByRole("region", { name: "Project references", exact: true });
+  await phoneReferences.getByRole("heading", { name: "Refunds · v4", exact: true }).waitFor();
+  await phoneReferences.getByRole("heading", { name: "Project references", exact: true }).evaluate((heading) => heading.scrollIntoView({ block: "start", inline: "nearest" }));
+  for (const control of [phoneReferences.getByRole("heading", { name: "Project references", exact: true }), phoneReferences.getByRole("button", { name: "Use guide template", exact: true }), phoneReferences.getByRole("button", { name: "Prepare Codex references", exact: true })]) {
+    const bounds = await control.boundingBox();
+    assert(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 390, `Mobile reference controls fit the viewport: ${JSON.stringify(bounds)}`);
+  }
+  if (process.env["UI_EVIDENCE_DIR"]) { mkdirSync(process.env["UI_EVIDENCE_DIR"], { recursive: true }); await phone.screenshot({ path: join(process.env["UI_EVIDENCE_DIR"], "project-references-mobile.png"), fullPage: true }); }
+  await phone.close();
   assert.deepEqual(errors, []); console.log("Project references browser: template, save, read, Codex preparation, restart and mobile passed");
 } finally { app.stop(); await browser.close(); rmSync(state, { recursive: true, force: true }); }
