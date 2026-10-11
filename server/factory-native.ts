@@ -33,8 +33,8 @@ export const factoryNative: FactoryNative = {
 };
 
 /** Keep native permission prompts; child processes must use application reservations. */
-export function factoryAgentArguments(provider: FactoryProvider, cwd: string, prompt: string, readonly = false): string[] {
-  if (provider === "codex") return ["-C", cwd, "--disable", "multi_agent", "--sandbox", readonly ? "read-only" : "workspace-write", ...(!readonly ? ["notes", "state", "cache", "tmp"].flatMap((name) => ["--add-dir", join(dirname(cwd), name)]) : []), prompt];
+export function factoryAgentArguments(provider: FactoryProvider, cwd: string, prompt: string, readonly = false, subscriptionProfile = false): string[] {
+  if (provider === "codex") return ["-C", cwd, ...(subscriptionProfile ? ["-c", 'cli_auth_credentials_store="file"', "-c", 'forced_login_method="chatgpt"', "-c", 'model_provider="openai"'] : []), "--disable", "multi_agent", "--sandbox", readonly ? "read-only" : "workspace-write", ...(!readonly ? ["notes", "state", "cache", "tmp"].flatMap((name) => ["--add-dir", join(dirname(cwd), name)]) : []), prompt];
   if (provider === "claude") return ["--tools", "Bash,Edit,Read,Write,Glob,Grep,Skill,AskUserQuestion,TodoWrite", ...(readonly ? ["--permission-mode", "plan"] : []), prompt];
   return ["--agent", "saurons-eye", "--prompt", prompt];
 }

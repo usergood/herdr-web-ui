@@ -1,5 +1,6 @@
 /** Durable factory records. IDs belong to the application; native pane IDs are provenance. */
 import type { ConversationTurn } from "./protocol.ts";
+import type { ProjectAccountBindings } from "./accounts.ts";
 export type FactoryProvider = "codex" | "claude" | "opencode";
 export type FactoryStage = "inbox" | "specifying" | "ready" | "running" | "review" | "done";
 export type RunCondition = "accepted" | "working" | "needs_you" | "blocked" | "disconnected" | "interrupted" | "failed" | "cancelled" | "completed";
@@ -15,6 +16,7 @@ export interface FactoryProject extends FactoryRecord {
   tracker: "app" | "github" | "gitlab" | "local"; tracker_reference: string;
   checks?: string[][]; setup?: string[][]; environment?: Record<string, string>;
   permissions?: string; shared_paths?: string[];
+  account_bindings?: Record<string, ProjectAccountBindings>;
 }
 export interface ProjectCheckout extends FactoryRecord {
   project_id: string; machine_id: string; path: string; repository: string; head: string;
@@ -82,7 +84,7 @@ export interface FactoryDetail {
 }
 export interface FactoryOverview { implementations: Implementation[]; projects: FactoryProject[]; checkouts: ProjectCheckout[]; settings: FactorySettings; activity: { implementation_id: string; run_id: string; condition: RunCondition; action: FactoryAction; waiting_reason: string | null; completed_tickets: number; total_tickets: number }[] }
 export interface FactoryProviderCapability { provider: FactoryProvider; version: string | null; installed: boolean; skills_verified: boolean; factory_ready: boolean; reasons: string[] }
-export interface FactoryCapabilities { providers: FactoryProviderCapability[]; skill_manifest: { commit: string; hash: string; file_count: number } | null; factory_host_protocol: 1; project_reference_protocol?: 1 }
+export interface FactoryCapabilities { providers: FactoryProviderCapability[]; skill_manifest: { commit: string; hash: string; file_count: number } | null; factory_host_protocol: 1; project_reference_protocol?: 1; account_profile_protocol?: 1 }
 export interface FactoryOutput { name: string; media_type: string; hash: string; size: number }
 export interface FactoryWorker extends FactoryRecord {
   run_id: string; ticket_id: string; role: "implementer" | "standards" | "spec";

@@ -4,10 +4,7 @@
 
 Start with [runtime.md](runtime.md) for configuration, execution, review, remote-machine onboarding and recovery. The [specification](specification.md) remains the complete product contract. Production service changes, external publication and deployment retain their separate owner scope.
 
-For proposed per-Project GitHub, Codex/Claude subscription and Cloudflare account selection,
-see [account-profile research](project-account-profiles-research.md). It documents supported
-CLI isolation, linked-worktree behavior, private Machine bindings and implementation checks;
-the account-selection feature is not implemented by that report.
+Use [account setup](account-setup.md) to create Machine profiles, authorize native subscription/OAuth logins, generate and register GitHub keys, and bind accounts to a Project. The [account specification](account-profiles.md) describes the implementation; [the research](project-account-profiles-research.md) records its primary sources and initial design.
 
 ## Records and source
 

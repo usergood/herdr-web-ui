@@ -1,6 +1,6 @@
 # Project account profiles: GitHub, Codex, Claude and Cloudflare
 
-Research date: 2026-10-11. Repository inspected at `03c366ff04d6f21ddb74ecbc6f00a7b57bf85582`. This is a design proposal; account selection is not implemented by this report.
+Research date: 2026-10-11. Repository inspected at `03c366ff04d6f21ddb74ecbc6f00a7b57bf85582`. This report records the initial design proposal. PR #9 now implements Machine profiles and Project bindings; see [account setup](account-setup.md) and [the specification](account-profiles.md).
 
 **Recommendation:** let each Project select named account profiles on each execution Machine, freeze those selections when a Run starts, and resolve credentials privately on that Machine. Preserve the owner's existing Git SSH setup. Add process-scoped selection instead of changing a shared active account whenever an agent starts. The owner selected **subscription logins for both Codex and Claude**: use their native subscription/OAuth identities and preserve that billing model.
 
@@ -92,7 +92,7 @@ A launcher helps consistency; it is not an access-control boundary against arbit
 | `gh` | `gh auth status --active --hostname …` without token output; optionally `gh api user --jq .login` under the selected context | Parse identity and errors, not merely JSON exit status: `auth status --json` can exit zero despite authentication issues. [Status reference][gh-status] |
 | Codex | `codex login status` reports auth method. A private local integration can inspect supported `account/read` metadata without refresh | Method alone does not prove a particular organization/API project. The app-server example exposes ChatGPT email/plan, and API-key mode only a type; no identity probe was run. Do not make account tokens a hosted web auth service. [CLI auth][codex-auth], [app-server boundaries and metadata][codex-app-server] |
 | Claude | Owner-visible `/status`, or a verified version's safe auth-status contract | Check account/org and billing method after precedence. No installed CLI was available for a runtime check. [Authentication status][claude-auth] |
-| `cf` / Wrangler | `cf auth whoami` / `wrangler whoami`, plus target-account and resource permission checks under explicit profile selection | A valid token or listed membership does not prove every intended permission. Restrict normalized receipts to safe metadata. [cf sign-in][cf-start], [Wrangler whoami][wrangler-commands] |
+| `cf` / Wrangler | `cf auth whoami --profile` / isolated-home `wrangler whoami --json`, plus target-account and resource permission checks | A valid token or listed membership does not prove every intended permission. Restrict normalized receipts to safe metadata. [cf sign-in][cf-start], [Wrangler whoami][wrangler-commands] |
 
 Do not run `gh auth token`, `wrangler auth token`, dump config files, enable diagnostic environment dumps, or capture login flows in screenshots. A future redaction test should use fake secrets and assert absence from API responses, Run manifests, context files, logs, artifacts and backups. Scope-check commands should not create resources or deploy.
 

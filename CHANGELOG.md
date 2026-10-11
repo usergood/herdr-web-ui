@@ -12,8 +12,8 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   gallery for the fork's Inbox, notes, attachments, Project references, specifications, Tickets,
   review and recovery.
   ([#8](https://github.com/usergood/herdr-web-ui/pull/8) by @usergood)
-- Document a proposed per-Project account-profile design for GitHub, Codex/Claude subscription
-  logins and Cloudflare, including credential isolation and linked-worktree routing checks.
+- Add private Machine account profiles, native subscription/OAuth setup, managed GitHub SSH
+  keys and Project bindings with frozen Run/worker/check execution scopes and account verification.
   ([#9](https://github.com/usergood/herdr-web-ui/pull/9) by @usergood)
 - Codex Project references share versioned guides and pictures outside Git, with an editable
   documentation template, pinned Run/worker context and prepared prompts for manual sessions.

@@ -4,6 +4,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { promisify } from "node:util";
 import type { ProjectCheckout } from "../shared/protocol.ts";
+import { currentAccountEnvironment } from "./account-execution.ts";
 
 export class FactoryError extends Error {
   constructor(readonly code: string, message: string, readonly status = 400) { super(message); }
@@ -17,7 +18,7 @@ export async function git(cwd: string, args: string[]): Promise<string> {
   try {
     const { stdout } = await execute("git", ["-C", cwd, ...args], {
       timeout: 15_000, maxBuffer: 4 * 1024 * 1024, encoding: "utf8",
-      env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))), GIT_TERMINAL_PROMPT: "0" },
+      env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))), ...currentAccountEnvironment(), GIT_TERMINAL_PROMPT: "0" },
     });
     return stdout;
   } catch { throw new FactoryError("git_failed", "The repository operation failed; verify the checkout and preserve unexpected work"); }

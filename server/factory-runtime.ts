@@ -9,6 +9,9 @@ import { FactoryStore } from "./factory-store.ts";
 import { FactoryWorkflow } from "./factory-workflow.ts";
 import { FactoryReferences } from "./factory-references.ts";
 import type { CodexReferenceContext } from "../shared/protocol.ts";
+import type { AccountBindingSnapshot, ProjectAccountBindings } from "../shared/accounts.ts";
+import type { AccountOverview, AccountProfile, AccountSetup } from "../shared/accounts.ts";
+import type { MachineAccounts } from "./accounts.ts";
 
 export type MachineEndpoint = (machineId: string) => { url: string; token: string } | undefined;
 type HostCapabilities = Awaited<ReturnType<FactoryExecutionHost["capabilities"]>>;
@@ -17,7 +20,17 @@ const actions: FactoryAction[] = ["setup", "grill-me", "grill-with-docs", "to-sp
 export class FactoryRuntime {
   private readonly dispatches = new Map<string, Promise<FactoryRun>>();
   private stopped = false;
-  constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly host: FactoryExecutionHost, private readonly endpoint: MachineEndpoint, private readonly readArtifact: (record: FactoryArtifact) => Buffer, private readonly publicUrl: string | null, private readonly references: FactoryReferences) {}
+  constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly host: FactoryExecutionHost, private readonly endpoint: MachineEndpoint, private readonly readArtifact: (record: FactoryArtifact) => Buffer, private readonly publicUrl: string | null, private readonly references: FactoryReferences, private readonly accounts: MachineAccounts) {}
+  async accountSnapshot(machineId: string, bindings: ProjectAccountBindings): Promise<AccountBindingSnapshot> {
+    return machineId === "local" ? this.accounts.freeze(bindings) : this.remote(machineId, "/accounts/snapshot", { bindings });
+  }
+  async accountOverview(machineId: string): Promise<AccountOverview> {
+    const result = machineId === "local" ? this.accounts.overview() : await this.remote<AccountOverview>(machineId, "/accounts");
+    if (result.protocol !== 1 || typeof result.host_id !== "string" || !Array.isArray(result.profiles)) throw new FactoryError("account_bridge_required", "Update this Machine's bridge before selecting accounts", 409);
+    return result;
+  }
+  async createAccount(machineId: string, body: Record<string, unknown>): Promise<AccountProfile> { return machineId === "local" ? this.accounts.create(body) : this.remote(machineId, "/accounts", body); }
+  async accountOperation(machineId: string, id: string, operation: string, body: Record<string, unknown>): Promise<AccountProfile | AccountSetup> { return machineId === "local" ? this.accounts.operation(id, operation, body) : this.remote(machineId, `/accounts/${id}/${operation}`, body); }
   async prepareReferences(projectId: string, machineId: string, expectedRevision: unknown): Promise<CodexReferenceContext> {
     if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Reference preparation is disabled on a restored copy", 409);
     if (this.stopped) throw new FactoryError("stopping", "The bridge is stopping", 409);
@@ -42,13 +55,13 @@ export class FactoryRuntime {
     if (!endpoint) throw new FactoryError("machine_offline", "The selected Machine is disconnected; its ownership is retained", 409);
     try {
       const deadline = AbortSignal.timeout(path.endsWith("/operations/check") ? 325_000 : path === "/launch" ? 75_000 : 15_000);
-      const response = await fetch(`${endpoint.url}/api/factory-host${path}`, { method: body === undefined ? "GET" : "POST", headers: { authorization: `Bearer ${endpoint.token}`, "x-herdr-factory": "1", "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), redirect: "error", signal: signal ? AbortSignal.any([signal, deadline]) : deadline });
+      const response = await fetch(`${endpoint.url}/api/factory-host${path}`, { method: body === undefined ? "GET" : "POST", headers: { authorization: `Bearer ${endpoint.token}`, "x-herdr-factory": "1", "x-herdr-machine": "1", "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), redirect: "error", signal: signal ? AbortSignal.any([signal, deadline]) : deadline });
       if (!response.ok) throw new FactoryError("remote_factory_unavailable", "The selected Machine rejected this factory operation; verify its bridge, native tools and checkout", response.status === 404 ? 409 : response.status);
       return await response.json() as T;
     } catch (error) { if (error instanceof FactoryError) throw error; throw new FactoryError("machine_disconnected", "The selected Machine could not be observed; reconcile its accepted identity before retrying", 409); }
   }
-  async capabilities(machineId = "local"): Promise<HostCapabilities> {
-    const capabilities = machineId === "local" ? await this.host.capabilities() : await this.remote<HostCapabilities>(machineId, "/capabilities");
+  async capabilities(machineId = "local", snapshot?: AccountBindingSnapshot | null): Promise<HostCapabilities> {
+    const capabilities = machineId === "local" ? await this.host.capabilities(snapshot) : await this.remote<HostCapabilities>(machineId, "/capabilities", snapshot ? { account_snapshot: snapshot } : undefined);
     if (capabilities.factory_host_protocol !== 1 || !Array.isArray(capabilities.providers) || capabilities.providers.length !== 3) throw new FactoryError("factory_bridge_incompatible", "This Machine's factory bridge needs an explicitly approved update", 409);
     return capabilities;
   }
@@ -103,7 +116,9 @@ export class FactoryRuntime {
       if (expected.provider !== provider || expected.machine_id !== machineId || expected.project_id !== implementation.project_id || expected.specification_id !== (this.workflow.specification(id)?.id ?? null) || expected.graph_hash !== this.workflow.graphHash(id)) throw new FactoryError("scope_changed", "The displayed execution context changed; inspect it before starting", 409);
     }
     const skills = verifySkills(this.settings().skills_path ?? this.host.skillPath());
-    const capabilities = await this.capabilities(machineId);
+    const accountSnapshot = project?.account_bindings?.[machineId] && Object.keys(project.account_bindings[machineId]!).length ? await this.accountSnapshot(machineId, project.account_bindings[machineId]!) : null;
+    const capabilities = await this.capabilities(machineId, accountSnapshot);
+    if (accountSnapshot && capabilities.account_profile_protocol !== 1) throw new FactoryError("account_bridge_required", "The selected Machine needs account-profile bridge support", 409);
     const capability = capabilities.providers.find((entry) => entry.provider === provider);
     if (!capability?.installed || !capability.skills_verified || capabilities.skill_manifest?.hash !== skills.hash || action === "implement-spec" && !capability.factory_ready) throw new FactoryError("provider_unavailable", capability?.reasons.join("; ") || "The selected provider has no verified native contract on this Machine", 409);
     const checkout = project ? this.store.list<ProjectCheckout>("checkouts", project.id).find((entry) => entry.machine_id === machineId) : null;
@@ -141,7 +156,7 @@ export class FactoryRuntime {
       const children = this.store.list<{ condition: string }>("workers").filter((entry) => activeConditions.has(entry.condition as FactoryRun["condition"])).length;
       if (new Set(active.map((entry) => entry.implementation_id)).size >= this.settings().max_implementations || active.length + children >= this.settings().max_agents) throw new FactoryError("capacity_exhausted", "Global execution capacity is in use; start manually after capacity is released", 409);
       const record: FactoryRun = { ...this.store.record(), implementation_id: id, action, provider, machine_id: machineId, condition: "accepted", waiting_reason: null, idempotency_key: body.idempotency_key as string, specification_id: specification?.id ?? null, graph_hash: graphHash, base: inspected?.head ?? null, checkout: inspected?.path ?? null, worktree: null, branch: null, workspace_id: null, pane_id: null, manifest: { skills, artifacts, context_message_ids: this.store.list<{ id: string }>("messages", id).map((message) => message.id), retrospective, retrospective_evidence: retrospective ? this.store.get("retro_evidence", retrospective.id) : null, implementation, project, checkout: inspected, specification, tickets: this.workflow.tickets(id), approvals: this.store.list<FactoryApproval>("approvals", id), effective_settings: this.settings(), provider_version: capability.version, permissions: "Retain native controls; publication, merge, deployment and destructive cleanup are separate owner actions", contract_hash: contractHash } };
-      record.manifest = { ...(record.manifest as object), project_references: projectReferences };
+      record.manifest = { ...(record.manifest as object), project_references: projectReferences, account_snapshot: accountSnapshot };
       if (projectReferences) this.references.freeze(projectReferences.project_id);
       this.store.put("runs", record, id); this.store.event(id, "dispatch_accepted", { run_id: record.id, action }); return { run: record, accepted: true };
     }).immediate();

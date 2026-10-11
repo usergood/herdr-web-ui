@@ -4,7 +4,7 @@ import { factoryRequest } from "../lib/factoryApi.ts";
 import { useT } from "../lib/i18n.ts";
 
 type Perform = (action: () => Promise<void>) => Promise<void>;
-export function FactoryWorkflowPanel({ detail, machineId, provider, busy, perform }: { detail: FactoryDetail; machineId: string; provider: FactoryProvider; busy: boolean; perform: Perform }) {
+export function FactoryWorkflowPanel({ detail, machineId, provider, busy, perform, accountScope = "" }: { detail: FactoryDetail; machineId: string; provider: FactoryProvider; busy: boolean; perform: Perform; accountScope?: string }) {
   const t = useT();
   const [capabilities, setCapabilities] = useState<FactoryCapabilities | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
@@ -14,9 +14,9 @@ export function FactoryWorkflowPanel({ detail, machineId, provider, busy, perfor
   useEffect(() => {
     let live = true;
     setCapabilities(null); setProblem(null);
-    factoryRequest<FactoryCapabilities>(`/providers?machine_id=${encodeURIComponent(machineId)}`).then((result) => { if (live) setCapabilities(result); }, (error: unknown) => { if (live) setProblem(error instanceof Error ? error.message : String(error)); });
+    factoryRequest<FactoryCapabilities>(`/providers?machine_id=${encodeURIComponent(machineId)}&implementation_id=${encodeURIComponent(detail.implementation.id)}`).then((result) => { if (live) setCapabilities(result); }, (error: unknown) => { if (live) setProblem(error instanceof Error ? error.message : String(error)); });
     return () => { live = false; };
-  }, [machineId]);
+  }, [machineId, detail.implementation.id, accountScope]);
   const capability = capabilities?.providers.find((entry) => entry.provider === provider);
   const active = detail.runs.some((run) => ["accepted", "working", "needs_you", "blocked", "disconnected", "interrupted"].includes(run.condition));
   const start = (action: FactoryAction) => perform(async () => { await factoryRequest(`${prefix}/runs`, { action, idempotency_key: crypto.randomUUID(), expected: { provider, machine_id: machineId, project_id: detail.implementation.project_id, specification_id: detail.specifications.at(-1)?.id ?? null, graph_hash: detail.graph_hash } }); });

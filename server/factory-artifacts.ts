@@ -9,7 +9,7 @@ const previewPolicy = "sandbox; default-src 'none'; style-src 'unsafe-inline'; i
 type RetainedBlob = Pick<FactoryArtifact, "name" | "media_type" | "hash" | "size">;
 
 export class FactoryArtifacts {
-  constructor(private readonly store: FactoryStore) {}
+  constructor(private readonly store: FactoryStore, private readonly publicMaterial: (text: string) => void = () => {}) {}
   retained(): RetainedBlob[] {
     const evidenceIds = new Set(this.store.list<{ evidence_ids: string[] }>("retrospectives").flatMap((entry) => entry.evidence_ids));
     const runArtifacts = this.store.list<{ artifacts: FactoryArtifact[] }>("run_artifacts").flatMap((entry) => entry.artifacts);
@@ -28,6 +28,7 @@ export class FactoryArtifacts {
     if (typeof body.name !== "string" || !body.name.trim() || body.name.length > 200 || /[\x00-\x1f/\\:]/.test(body.name) || [".", ".."].includes(body.name.trim()) || typeof body.media_type !== "string" || !mediaTypes.has(body.media_type) || typeof body.content_base64 !== "string" || body.content_base64.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(body.content_base64)) throw new FactoryError("invalid_artifact", "Use a named text or image attachment with valid base64 content");
     if (body.content_base64.length > Math.ceil(settings.max_artifact_bytes / 3) * 4) throw new FactoryError("artifact_too_large", "This attachment exceeds the configured size limit", 413);
     const bytes = Buffer.from(body.content_base64, "base64");
+    this.publicMaterial(bytes.toString("utf8"));
     const digest = hash(bytes);
     if (bytes.length > settings.max_artifact_bytes) throw new FactoryError("artifact_too_large", "This attachment exceeds the configured size limit", 413);
     if (body.hash !== undefined && body.hash !== digest || body.size !== undefined && body.size !== bytes.length) throw new FactoryError("artifact_mismatch", "The imported size or hash does not match the attachment");
