@@ -18,7 +18,7 @@
 
 **Saurons eye** is a fork of [herdr-web-ui](https://github.com/devswha/herdr-web-ui), the browser and phone client for [herdr](https://github.com/herdrdev/herdr). It keeps upstream's native chats and live terminals and adds a durable workflow for taking ideas through specifications, implementation, review and owner acceptance.
 
-This fork includes upstream releases **v0.4.4 and v0.4.5**. The original browser client and its recordings below come from herdr-web-ui and its contributors.
+This fork includes upstream releases **v0.4.4–v0.4.6**. The original browser client and its recordings below come from herdr-web-ui and its contributors.
 
 ## What Saurons eye adds
 
