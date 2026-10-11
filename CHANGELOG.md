@@ -19,6 +19,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 ### Changed
 - Use bundled Saurons eye app, maskable, touch, favicon and notification artwork, with matching
   installed-app/browser names and fresh asset/service-worker cache versions.
+  ([#5](https://github.com/usergood/herdr-web-ui/pull/5) by @usergood)
 - Integrate upstream v0.4.6: native split-pane layouts, terminal-history search and scrollbar,
   tab reordering and pane moves, cross-PC palette search, plugin actions, agent integrations,
   compressed responses and the upstream input/security fixes. Preserve Saurons eye branding,
@@ -38,6 +39,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 ### Fixed
 - Let Chrome fetch the installation manifest through authenticated reverse proxies by carrying
   the page's login credentials; preserve authentication for the application and its APIs.
+  ([#5](https://github.com/usergood/herdr-web-ui/pull/5) by @usergood)
 
 ## [0.4.6] - 2026-10-11
 
