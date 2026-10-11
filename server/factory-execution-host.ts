@@ -135,7 +135,7 @@ export class FactoryExecutionHost {
     if (access) this.store.put("host_access", { id: record.id, ...access });
     const launch = (async () => {
       let environment: Record<string, string>;
-      try { environment = await this.accounts?.environment((record.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot, true) ?? {}; }
+      try { environment = await this.accounts?.environment((record.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot, true, record.checkout ?? undefined) ?? {}; }
       catch {
         const failed: FactoryRun = { ...record, condition: "failed", waiting_reason: "The frozen account scope is unavailable before native allocation" };
         this.store.put("host_leases", { id: record.id, signature, run: failed, native_attempted: false }); return failed;

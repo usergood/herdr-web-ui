@@ -20,6 +20,9 @@ export function FactoryProjectAccounts({ project, machineId, busy, perform }: { 
   const [bindings, setBindings] = useState<ProjectAccountBindings>(project.account_bindings?.[machineId] ?? {}); const [saved, setSaved] = useState(false);
   const [setup, setSetup] = useState<AccountSetup | null>(null); const setupStarted = useRef(0);
   const [editing, setEditing] = useState<string | null>(null);
+  const responseInput = useRef<HTMLInputElement>(null);
+  const clearResponse = () => { if (responseInput.current) responseInput.current.value = ""; };
+  useEffect(() => { const hidden = () => { if (document.hidden) clearResponse(); }; window.addEventListener("pagehide", clearResponse); document.addEventListener("visibilitychange", hidden); return () => { clearResponse(); window.removeEventListener("pagehide", clearResponse); document.removeEventListener("visibilitychange", hidden); }; }, []);
   const epoch = useRef(0); const bindingSignature = JSON.stringify(project.account_bindings?.[machineId] ?? {});
   useEffect(() => { setBindings(JSON.parse(bindingSignature)); }, [bindingSignature]);
   async function reload(current = epoch.current): Promise<void> { const value = await accountRequest<AccountOverview>(prefix); if (current === epoch.current) setOverview(value); }
@@ -86,8 +89,8 @@ export function FactoryProjectAccounts({ project, machineId, busy, perform }: { 
       {setup.user_code && <p><code>{setup.user_code}</code></p>}
       {["starting", "authorizing"].includes(setup.phase) && <>
         <button className="btn factory-button" disabled={busy} onClick={() => void action(async () => { setSetup(await accountRequest(`${prefix}/${setup.profile_id}/setup/input`, { session_id: setup.session_id, input: "" })); })}>{t("Continue sign-in")}</button>
-        <form className="factory-form" onSubmit={(event) => { event.preventDefault(); const form = event.currentTarget; const value = String(new FormData(form).get("authorization-response") ?? ""); form.reset(); void action(async () => { setSetup(await accountRequest(`${prefix}/${setup.profile_id}/setup/input`, { session_id: setup.session_id, input: value })); }); }}><label>{t("Native authorization response")}<input className="input factory-input" name="authorization-response" type="password" autoComplete="off" maxLength={4096} /></label><button className="btn factory-button" disabled={busy}>{t("Send authorization response")}</button></form>
-        <button className="btn factory-button" disabled={busy} onClick={() => void action(async () => { setSetup(await accountRequest(`${prefix}/${setup.profile_id}/setup/cancel`, { session_id: setup.session_id })); })}>{t("Cancel sign-in")}</button>
+        <form className="factory-form" onSubmit={(event) => { event.preventDefault(); const form = event.currentTarget; const value = String(new FormData(form).get("authorization-response") ?? ""); form.reset(); void action(async () => { setSetup(await accountRequest(`${prefix}/${setup.profile_id}/setup/input`, { session_id: setup.session_id, input: value })); }); }}><label>{t("Native authorization response")}<input className="input factory-input" ref={responseInput} name="authorization-response" type="password" autoComplete="off" maxLength={4096} /></label><button className="btn factory-button" disabled={busy}>{t("Send authorization response")}</button></form>
+        <button className="btn factory-button" disabled={busy} onClick={() => { clearResponse(); void action(async () => { setSetup(await accountRequest(`${prefix}/${setup.profile_id}/setup/cancel`, { session_id: setup.session_id })); }); }}>{t("Cancel sign-in")}</button>
       </>}
     </div>}
     <form className="factory-form" onSubmit={(event) => { event.preventDefault(); void action(async () => { await accountRequest(`/projects/${project.id}/configure`, { account_bindings: { ...project.account_bindings, [machineId]: bindings } }); setSaved(true); }); }}>

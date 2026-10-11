@@ -36,6 +36,8 @@ try {
   const card = accounts.getByRole("article").filter({ has: page.getByRole("heading", { name: "Work account", exact: true }) });
   await card.getByRole("button", { name: "Generate managed SSH key", exact: true }).click(); await card.getByText(/^SHA256:/).waitFor();
   await card.getByRole("button", { name: "Start sign-in", exact: true }).click(); await accounts.getByText("DEMO-1234", { exact: true }).waitFor();
+  const authorization = accounts.getByLabel("Native authorization response", { exact: true }); await authorization.fill("owned-unsent-authorization-response");
+  await page.evaluate(() => window.dispatchEvent(new Event("pagehide"))); assert.equal(await authorization.inputValue(), "");
   await accounts.getByRole("button", { name: "Continue sign-in", exact: true }).click();
   await card.getByText("Ready", { exact: true }).waitFor();
   await card.getByRole("button", { name: "Register public key with GitHub", exact: true }).click(); await card.getByText("Public key registered", { exact: true }).waitFor();

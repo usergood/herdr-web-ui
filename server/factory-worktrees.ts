@@ -72,7 +72,7 @@ export class FactoryWorktrees {
       if (access) { writePrivateFile(join(path, ".saurons-eye-access.json"), JSON.stringify(access), { mode: 0o600, flag: "wx" }); writePrivateFile(join(path, ".saurons-eye-tracker.mjs"), factoryTrackerClient, { mode: 0o600, flag: "wx" }); }
       const project = (run.manifest as { project: FactoryProject }).project;
       const environment = factoryEnvironment(root, id, project.environment, worker.id);
-      Object.assign(environment, await this.accounts?.environment((run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot, true));
+      Object.assign(environment, await this.accounts?.environment((run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot, true, path));
       const library = (run.manifest as { project_references?: import("../shared/protocol.ts").ProjectReferenceLibrary }).project_references;
       const referenceContext = library?.entries.length ? preparedProjectReferences(this.store.root, library) : undefined;
       writePrivateFile(join(path, ".saurons-eye-context.json"), JSON.stringify({ run, worker: record, context, project_reference_context: referenceContext, tracker_guide: factoryTrackerGuide, research_directory: join(dirname(run.worktree!), "notes"), environment: { notes: join(root, "notes"), cache: join(root, "cache"), state: join(root, "state"), temporary: join(root, "tmp") }, policy: "Only this worker owns writes here. Use approved testing seams. Consume versioned answers before work. Never create unmanaged children. Keep app scaffolding out of commits. Shared documents may only be written when listed in worker.shared_paths. Merge the integration tip before reporting a result; preserve conflicts for reconciliation." }, null, 2), { flag: "wx", mode: 0o600 });
@@ -160,11 +160,11 @@ export class FactoryWorktrees {
     const results: FactoryCheck["commands"] = [];
     const root = worker ? dirname(path) : dirname(run.worktree!);
     const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))), ...factoryEnvironment(root, id, project.environment, workerId ?? undefined) };
-    Object.assign(env, await this.accounts?.environment((run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot, true));
+    Object.assign(env, await this.accounts?.environment((run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot, true, path));
     const deadline = Date.now() + 300_000;
     for (const args of [...project.setup ?? [], ...project.checks ?? []]) {
       const result = await runFactoryCommand(args, path, env, signal, deadline - Date.now());
-      results.push({ args, ...result }); if (result.exit_code || signal.aborted) break;
+      results.push(this.accounts?.sanitize({ args, ...result }) ?? { args, ...result }); if (result.exit_code || signal.aborted) break;
     }
     const unchanged = head === (await git(path, ["rev-parse", "HEAD"])).trim() && before === await this.workspaceHash(path);
     return { ...check, head, workspace_hash: before, commands: results, condition: unchanged && results.length > 0 && results.every((entry) => entry.exit_code === 0) ? "passed" : "failed", updated_at: new Date().toISOString() };

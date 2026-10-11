@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AccountProfile, AccountService, AccountSetup } from "../shared/accounts.ts";
 import { FactoryError } from "./factory-host.ts";
@@ -60,7 +60,8 @@ export class AccountSetups {
     env["GH_BROWSER"] = process.platform === "win32" ? "cmd /c exit 0" : "true";
     env["BROWSER"] = env["GH_BROWSER"];
     const child = spawn(tool.executable, [...tool.args ?? [], ...argumentsFor(profile)], { cwd: directory, env, windowsHide: true, stdio: "pipe" });
-    writeFileSync(join(lease, "process.json"), JSON.stringify({ pid: child.pid ?? null }), { flag: "wx", mode: 0o600 });
+    const processRecord = join(lease, randomUUID() + ".tmp");
+    writeFileSync(processRecord, JSON.stringify({ pid: child.pid ?? null }), { flag: "wx", mode: 0o600 }); renameSync(processRecord, join(lease, "process.json"));
     const status: AccountSetup = { session_id: randomUUID(), profile_id: profile.id, phase: "starting", verification_url: null, user_code: null, problem: null };
     const session: Session = { status, child, output: "", lease, timer: setTimeout(() => { this.cancel(status.session_id); }, 10 * 60_000) };
     for (const [id, previous] of this.sessions) if (!pending(previous.status)) this.sessions.delete(id);

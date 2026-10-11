@@ -5,10 +5,12 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync
 import { join } from "node:path";
 import type { AccountBindingSnapshot, AccountIdentity, AccountOverview, AccountProfile, AccountService, AccountSetup, ProjectAccountBindings } from "../shared/accounts.ts";
 import { FactoryError, hash } from "./factory-host.ts";
-import { accountProcessEnvironment, NativeAccountTools, type AccountTools } from "./account-tools.ts";
+import { NativeAccountTools, type AccountTools } from "./account-tools.ts";
 import { AccountSetups, setupLease } from "./account-setup.ts";
 import { accountRedactor } from "./account-privacy.ts";
 import { checkCloudflareScope } from "./account-command-scope.ts";
+import { checkClaudeSubscription, claudeSubscriptionSettings } from "./account-subscriptions.ts";
+import { writePrivateFile } from "./factory-files.ts";
 
 const services: AccountService[] = ["github", "codex", "claude", "cf", "wrangler"];
 const execute = promisify(execFile);
@@ -85,7 +87,7 @@ export class MachineAccounts {
     }
     return { host_id: this.registry.host_id, profiles };
   }
-  async environment(snapshot: AccountBindingSnapshot | null | undefined, launchers = false): Promise<Record<string, string>> {
+  async environment(snapshot: AccountBindingSnapshot | null | undefined, launchers = false, cwd?: string): Promise<Record<string, string>> {
     if (!snapshot) return {};
     if (snapshot.host_id !== this.registry.host_id || !Array.isArray(snapshot.profiles)) throw new FactoryError("account_host_changed", "The frozen account scope belongs to another Machine", 409);
     const environment: Record<string, string> = {};
@@ -95,6 +97,7 @@ export class MachineAccounts {
       const verified = await this.verify(reference.id, { expected_revision: reference.revision });
       if (JSON.stringify(verified.verified_identity) !== JSON.stringify(reference.identity)) throw new FactoryError("account_identity_mismatch", "The frozen native identity changed", 409);
       const directory = join(entry.directory, reference.service);
+      if (reference.service === "claude") checkClaudeSubscription(directory, cwd);
       if (reference.service === "github") Object.assign(environment, { GH_CONFIG_DIR: directory, GH_HOST: "github.com", GH_TOKEN: "", GITHUB_TOKEN: "", GH_ENTERPRISE_TOKEN: "", GITHUB_ENTERPRISE_TOKEN: "" });
       if (reference.service === "codex") Object.assign(environment, { CODEX_HOME: directory, CODEX_API_KEY: "", CODEX_ACCESS_TOKEN: "", OPENAI_API_KEY: "", OPENAI_BASE_URL: "" });
       if (reference.service === "claude") Object.assign(environment, { CLAUDE_CONFIG_DIR: directory, ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "", ANTHROPIC_BASE_URL: "", CLAUDE_CODE_OAUTH_TOKEN: "", CLAUDE_CODE_USE_BEDROCK: "", CLAUDE_CODE_USE_VERTEX: "", CLAUDE_CODE_USE_FOUNDRY: "" });
@@ -105,7 +108,7 @@ export class MachineAccounts {
       const directory = join(this.root, "launchers", hash(JSON.stringify({ snapshot, tools })).slice(0, 24));
       const bin = join(directory, "bin"); mkdirSync(bin, { recursive: true, mode: 0o700 });
       const scope = join(directory, "scope.json");
-      if (!existsSync(scope)) writeFileSync(scope, JSON.stringify({ state_dir: join(this.root, ".."), snapshot, tools }), { mode: 0o600, flag: "wx" });
+      if (!existsSync(scope)) writePrivateFile(scope, JSON.stringify({ state_dir: join(this.root, ".."), snapshot, tools }));
       const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
       const entry = join(import.meta.dir, "account-command.ts");
       for (const reference of snapshot.profiles) {
@@ -133,7 +136,8 @@ export class MachineAccounts {
     if (args.some((arg) => ["auth", "login", "logout"].includes(arg)) && !credentialHelper || args[0] === "config") throw new FactoryError("account_mutation_forbidden", "Use the owner account controls to change native authentication", 409);
     if (args.some((arg) => /^--(?:profile|account-id|account|hostname|host)(?:=|$)/.test(arg))) throw new FactoryError("account_override_forbidden", "This command cannot override its frozen account selection", 409);
     const entry = this.entry(reference.id); const tool = this.native.tool(service);
-    const env = accountProcessEnvironment(service, join(entry.directory, service));
+    const env = this.native.environment(service, join(entry.directory, service));
+    if (service === "claude") { checkClaudeSubscription(join(entry.directory, service), process.cwd(), args); args = [...args, "--settings", claudeSubscriptionSettings]; }
     if (service === "codex") {
       for (const arg of args) if (/(?:api_key|access_token|base_url|model_provider|forced_login_method|cli_auth_credentials_store)\s*=/.test(arg) && !['cli_auth_credentials_store="file"', 'forced_login_method="chatgpt"', 'model_provider="openai"'].includes(arg)) throw new FactoryError("account_override_forbidden", "Keep the selected subscription and native credential store", 409);
       args = ["-c", 'cli_auth_credentials_store="file"', "-c", 'forced_login_method="chatgpt"', "-c", 'model_provider="openai"', ...args];
@@ -158,7 +162,7 @@ export class MachineAccounts {
     const options = new Map(resolved.stdout.split("\n").map((line) => { const offset = line.indexOf(" "); return [line.slice(0, offset), line.slice(offset + 1)] as const; }));
     const hostname = options.get("hostname"); const port = options.get("port");
     if (!["github.com", "ssh.github.com"].includes(hostname ?? "") || options.get("user") !== "git" || !/^\d+$/.test(port ?? "")) throw new FactoryError("account_host_mismatch", "The selected GitHub account cannot authenticate to this SSH destination", 409);
-    const own = ["-F", "none", "-o", "HostName=" + hostname, "-p", port!, "-i", join(this.entry(reference.id).directory, "id_ed25519"), "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none"];
+    const own = ["-F", "none", "-o", "HostName=" + hostname, "-l", "git", "-p", port!, "-i", join(this.entry(reference.id).directory, "id_ed25519"), "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none"];
     for (const key of ["proxycommand", "proxyjump"] as const) { const value = options.get(key); if (value && value !== "none") own.push("-o", `${key}=${value}`); }
     const child = Bun.spawn([executable, ...own, ...args], { stdin: "inherit", stdout: "inherit", stderr: "inherit", windowsHide: true });
     const forward = (signal: NodeJS.Signals) => { if (child.exitCode === null) child.kill(signal); };
@@ -217,7 +221,7 @@ export class MachineAccounts {
     if (["setup/status", "setup/input", "setup/cancel"].includes(operation)) return this.setupOperation(id, operation.slice("setup/".length), body);
     throw new FactoryError("not_found", "Unknown account operation", 404);
   }
-  stop(): void { this.setups.stop(); this.stopped = true; }
+  stop(): void { this.setups.stop(); this.stopped = true; this.native.stop(); }
   async verify(id: string, body: Record<string, unknown>, current?: () => boolean): Promise<AccountProfile> {
     const entry = this.entry(id);
     if (!current && existsSync(setupLease(join(entry.directory, entry.profile.service)))) throw new FactoryError("account_setup_busy", "Finish or recover the native sign-in before verification", 409);
@@ -236,6 +240,7 @@ export class MachineAccounts {
     } else if (entry.profile.service === "claude") {
       const directory = join(entry.directory, "claude");
       const result = await this.native.json("claude", ["auth", "status"], directory) as { loggedIn?: unknown; authMethod?: unknown; email?: unknown; configDirectory?: unknown };
+      checkClaudeSubscription(directory);
       if (result?.loggedIn !== true || result.authMethod !== "claude.ai") throw new FactoryError("account_subscription_required", "Sign in with the selected Claude subscription; API keys and third-party billing are not accepted", 409);
       if (typeof result.configDirectory !== "string" || realpathSync(result.configDirectory) !== realpathSync(directory)) throw new FactoryError("account_storage_unverified", "Update Claude Code to a version that confirms the selected configuration directory", 409);
       if (typeof result.email !== "string" || result.email.length > 200) throw new FactoryError("account_identity_unavailable", "The native CLI did not identify the selected subscription login", 409);

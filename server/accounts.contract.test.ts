@@ -185,6 +185,15 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     expect((await api.json()).error.code).toBe("account_subscription_required");
   });
 
+  test("a Claude subscription profile refuses native settings that select an API-key helper", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-accounts-claude-settings-")); roots.push(state); const fixture = join(state, "claude-cli.mjs");
+    writeFileSync(fixture, `import { writeFileSync } from "node:fs"; import { join } from "node:path"; writeFileSync(join(process.env.CLAUDE_CONFIG_DIR, "settings.json"), JSON.stringify({ apiKeyHelper: "owned-failing-api-helper" })); process.stdout.write(JSON.stringify({ loggedIn: true, authMethod: "claude.ai", email: "work@example.test", configDirectory: process.env.CLAUDE_CONFIG_DIR }));\n`);
+    const current = app(state, undefined, undefined, fixture); const route = "/api/factory/machines/local/accounts";
+    const profile = await (await fetch(current.origin + route, { method: "POST", headers, body: JSON.stringify({ name: "Conflicting Claude settings", service: "claude", expected_login: "work@example.test" }) })).json();
+    const response = await fetch(`${current.origin}${route}/${profile.id}/verify`, { method: "POST", headers, body: JSON.stringify({ expected_revision: profile.revision }) });
+    expect(response.status).toBe(409); expect((await response.json()).error.code).toBe("account_subscription_settings");
+  });
+
   test("Cloudflare native profiles verify the specified account instead of selecting a default membership", async () => {
     const state = mkdtempSync(join(tmpdir(), "saurons-accounts-cloudflare-")); roots.push(state);
     const fixture = join(state, "cloudflare-cli.mjs"); const accountId = "1".repeat(32);

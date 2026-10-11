@@ -1,11 +1,11 @@
-import { execFile, spawn } from "node:child_process";
-import { promisify } from "node:util";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { AccountService } from "../shared/accounts.ts";
 import { FactoryError } from "./factory-host.ts";
 
 export interface AccountTool { executable: string; args?: string[] }
 export type AccountTools = Partial<Record<AccountService, AccountTool>>;
-const execute = promisify(execFile);
 
 /** Native credential selection is process-scoped; another service's credential is not inherited. */
 export function accountProcessEnvironment(service: AccountService, directory: string): Record<string, string> {
@@ -21,8 +21,22 @@ export function accountProcessEnvironment(service: AccountService, directory: st
 }
 
 export class NativeAccountTools {
+  private readonly children = new Set<ChildProcess>();
   readonly genuine: boolean;
   constructor(private readonly tools: AccountTools = {}) { this.genuine = Object.keys(tools).length === 0; }
+  environment(service: AccountService, directory: string): Record<string, string> {
+    const env = accountProcessEnvironment(service, directory);
+    if (service === "github" && !this.tools.github) {
+      try {
+        const hosts = Bun.YAML.parse(readFileSync(join(directory, "hosts.yml"), "utf8")) as Record<string, { user?: string; oauth_token?: string; users?: Record<string, { oauth_token?: string }> }>;
+        const host = hosts["github.com"]; const token = host?.user && host.users?.[host.user]?.oauth_token || host?.oauth_token;
+        if (typeof token !== "string" || !/^[a-zA-Z0-9_]{20,256}$/.test(token)) throw new Error();
+        env["GH_TOKEN"] = token;
+      } catch { throw new FactoryError("account_file_login_required", "Finish this profile's private file-based GitHub sign-in before verification", 409); }
+    }
+    return env;
+  }
+  stop(): void { for (const child of this.children) if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
   tool(service: AccountService): AccountTool {
     const executable = this.tools[service] ?? (() => { const path = Bun.which(service === "github" ? "gh" : service); return path ? { executable: path } : undefined; })();
     if (!executable) throw new FactoryError("account_tool_missing", "Install the selected native CLI on this Machine before setting up its account", 409);
@@ -31,18 +45,23 @@ export class NativeAccountTools {
   async json(service: AccountService, args: string[], directory: string): Promise<unknown> {
     const tool = this.tool(service);
     try {
-      const result = await execute(tool.executable, [...tool.args ?? [], ...args], { cwd: directory, env: accountProcessEnvironment(service, directory), timeout: 10_000, maxBuffer: 64 * 1024, windowsHide: true });
-      return JSON.parse(result.stdout);
+      return await new Promise((resolve, reject) => {
+        const child = execFile(tool.executable, [...tool.args ?? [], ...args], { cwd: directory, env: this.environment(service, directory), timeout: 10_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024, windowsHide: true }, (error, stdout) => {
+          this.children.delete(child); if (error) { reject(error); return; } try { resolve(JSON.parse(stdout)); } catch (error) { reject(error); }
+        }); this.children.add(child);
+      });
     } catch { throw new FactoryError("account_login_unavailable", "The selected account could not be verified; finish its native sign-in and try again", 409); }
   }
   async codexAccount(directory: string): Promise<unknown> {
     const tool = this.tool("codex");
     return new Promise((resolve, reject) => {
       const child = spawn(tool.executable, [...tool.args ?? [], "-c", 'cli_auth_credentials_store="file"', "app-server"], { cwd: directory, env: accountProcessEnvironment("codex", directory), stdio: "pipe", windowsHide: true });
+      this.children.add(child); child.once("close", () => this.children.delete(child));
       let settled = false; let buffered = "";
       const finish = (value?: unknown, failed = false) => {
         if (settled) return; settled = true; clearTimeout(timer);
         if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+        const reap = setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }, 2000); reap.unref(); child.once("close", () => clearTimeout(reap));
         if (failed) reject(new FactoryError("account_login_unavailable", "The selected Codex account could not be read without refreshing credentials", 409)); else resolve(value);
       };
       const timer = setTimeout(() => finish(undefined, true), 10_000);

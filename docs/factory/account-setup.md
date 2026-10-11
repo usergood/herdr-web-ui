@@ -29,6 +29,9 @@ Account **Ready** means native authentication matched the expected identity. Fac
 readiness separately requires genuine skill loading and the recorded owner-question round for
 the selected account revision. A successful fixture check cannot certify a personal subscription.
 An existing verification for the Machine's ambient account does not certify a new bound account.
+Subscription launchers also reject Claude API-key helpers and conflicting auth settings in
+private, Project, main-checkout local or explicit CLI settings. Session overrides pin subscription
+login so lower-priority Project settings cannot silently select API billing.
 
 ## Native tools and storage
 
@@ -72,7 +75,9 @@ Profile state lives in the Machine's private `accounts/` directory beside factor
 publication uses atomic rename, files 0600 and directories 0700. Keys and native login caches
 are excluded from factory backups and restored execution copies. Private paths and known
 literal credentials are removed from imported native history; capture/upload controls reject
-known account credential material. Original native CLI histories remain on their Machine.
+known account credential material, and retained check output receives the same redaction.
+GitHub verification requires this profile's native file credential and cannot fall back to a
+global OS keychain login. Original native CLI histories remain on their Machine.
 
 Account selection is a convenience and consistency mechanism. Same-user native processes can
 read other credentials or bypass a launcher; it does not provide tenant isolation or make an
