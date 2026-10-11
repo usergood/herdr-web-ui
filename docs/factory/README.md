@@ -4,6 +4,11 @@
 
 Start with [runtime.md](runtime.md) for configuration, execution, review, remote-machine onboarding and recovery. The [specification](specification.md) remains the complete product contract. Production service changes, external publication and deployment retain their separate owner scope.
 
+For proposed per-Project GitHub, Codex/Claude subscription and Cloudflare account selection,
+see [account-profile research](project-account-profiles-research.md). It documents supported
+CLI isolation, linked-worktree behavior, private Machine bindings and implementation checks;
+the account-selection feature is not implemented by that report.
+
 ## Records and source
 
 The connection server owns the SQLite records, imported artifacts and evidence. Execution Machines own their worktrees and native processes. Repository-writing Runs use owned worktrees; the primary checkout is preserved. Existing ordinary chats and terminals remain available.
