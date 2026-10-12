@@ -21,7 +21,7 @@ https://github.com/user-attachments/assets/d854dbb6-64bd-4eba-81c7-fbd3f525726b
 
 <p align="center"><sub>Tek bir Claude Code oturumu: önce herdr'ın terminalinde, sonra tarayıcının Terminal ve Sohbet görünümlerinde, en sonda telefonda — yanında yeni bir worktree açılır · canlı kayıt, kesmesiz</sub></p>
 
-**Saurons eye**, [herdr-web-ui](https://github.com/devswha/herdr-web-ui) projesinin bir çatallamasıdır. v0.4.4–v0.4.7 sürümlerini içerir; aşağıdaki kayıtlar özgün proje ve katkıda bulunanlar tarafından hazırlanmıştır. Gelen kutusu, Projeler, kalıcı notlar ve ekler, Codex başvuru kitaplığı, belirtimler, Ticket iş akışları, inceleme ve makineye özel hesap profilleri ekler. [Çatala özgü özellikler →](README.md#what-saurons-eye-adds)
+**Saurons eye**, [herdr-web-ui](https://github.com/devswha/herdr-web-ui) projesinin bir çatallamasıdır. v0.4.4–v0.4.8 sürümlerini içerir; aşağıdaki kayıtlar özgün proje ve katkıda bulunanlar tarafından hazırlanmıştır. Gelen kutusu, Projeler, kalıcı notlar ve ekler, Codex başvuru kitaplığı, belirtimler, Ticket iş akışları, inceleme ve makineye özel hesap profilleri ekler. [Çatala özgü özellikler →](README.md#what-saurons-eye-adds)
 
 **Claude Code ve Codex, telefonunuzdan.**
 

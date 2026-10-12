@@ -136,7 +136,9 @@ async function checkDesktop(browser: Browser, origin: string, first: string, sec
     await tabMenu.waitFor();
     const narrowItems = await tabMenu.getByRole("menuitem").allTextContents();
     assert.deepEqual(narrowItems.slice(0, 2).sort(), ["canvas-first", "canvas-second"], "a narrow window's tab menu lists the tab's panes first");
-    assert.deepEqual(narrowItems.slice(2), ["New tab", "Rename tab", "Close tab"]);
+    assert.deepEqual(narrowItems.slice(-3), ["New tab", "Rename tab", "Close tab"]);
+    assert.deepEqual(narrowItems.slice(2, -3).filter((item) => item !== "Clear pane name"),
+      ["Rename pane", "Split right", "Split down", "Zoom pane", "Send right-clicks to pane", "Close pane"], "the touch menu carries the open pane's actions, in order, between its panes and the tab's");
     await page.setViewportSize({ width: 1280, height: 800 });
     await tabMenu.waitFor({ state: "detached" });
     await narrowMenu.waitFor({ state: "hidden" });
@@ -485,7 +487,9 @@ async function checkPhone(browser: Browser, origin: string, first: string, secon
     // herdr's own pane order stands (the desktop check above swapped the two)
     const phoneItems = await tabSheet.locator(".row-sheet-item").allTextContents();
     assert.deepEqual(phoneItems.slice(0, 2).sort(), ["canvas-first", "canvas-second"], "the split tab's panes lead its menu on a phone");
-    assert.deepEqual(phoneItems.slice(2), ["New tab", "Rename tab", "Close tab"]);
+    assert.deepEqual(phoneItems.slice(-3), ["New tab", "Rename tab", "Close tab"]);
+    assert.deepEqual(phoneItems.slice(2, -3).filter((item) => item !== "Clear pane name"),
+      ["Rename pane", "Split right", "Split down", "Zoom pane", "Send right-clicks to pane", "Close pane"], "the open pane's actions sit between its panes and the tab's");
     assert.equal(await tabSheet.getByRole("button", { name: "canvas-first", exact: true }).getAttribute("aria-current"), "true", "the open pane is marked");
     // The menu is a phone's way to the other pane, and picking one leaves herdr's layout alone.
     await sheetsSettled(page);
@@ -523,18 +527,18 @@ async function checkPhone(browser: Browser, origin: string, first: string, secon
       await until(async () => await page.locator(".tab-strip").getAttribute("aria-busy") === "false", "restored touch order acknowledged");
     } finally { await tabClose(sibling.tab.tab_id); }
     await page.getByRole("tab", { name: "touch-reorder", exact: true }).waitFor({ state: "detached" });
-    await frame(page, first).locator(".pane-frame-menu").tap();
-    const paneSheet = page.getByRole("dialog", { name: /^Pane actions for / });
-    await paneSheet.waitFor();
+    assert.equal(await frame(page, first).locator(".pane-frame-menu").isVisible(), false, "the lone pane draws no ellipsis beside the tab's");
+    await touchMenu.tap();
+    await tabSheet.waitFor();
     await sheetsSettled(page);
-    const cancel = paneSheet.getByRole("button", { name: "Cancel", exact: true });
+    const cancel = tabSheet.getByRole("button", { name: "Cancel", exact: true });
     assert.ok((await rect(cancel, "Cancel")).bottom <= viewport.height + 1, "Cancel remains reachable");
-    await paneSheet.locator(".row-sheet-items").evaluate((node) => { node.scrollTop = node.scrollHeight; });
-    const close = paneSheet.getByRole("button", { name: "Close pane", exact: true });
-    assert.ok((await rect(close, "Close pane")).bottom <= (await rect(cancel, "Cancel")).top + 1, "the pane menu's last action is reachable after scrolling");
+    await tabSheet.locator(".row-sheet-items").evaluate((node) => { node.scrollTop = node.scrollHeight; });
+    const close = tabSheet.getByRole("button", { name: "Close tab", exact: true });
+    assert.ok((await rect(close, "Close tab")).bottom <= (await rect(cancel, "Cancel")).top + 1, "the menu's last action is reachable after scrolling");
     await screenshot(page, `canvas-phone-${viewport.width}`);
     await cancel.tap();
-    await paneSheet.waitFor({ state: "detached" });
+    await tabSheet.waitFor({ state: "detached" });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, "the canvas never overflows the phone sideways");
     assert.deepEqual(errors, []);
   } finally { await context.close(); }
@@ -554,7 +558,10 @@ async function checkTouchTablet(browser: Browser, origin: string, first: string)
     await button.tap();
     const menu = page.getByRole("menu", { name: TAB, exact: true });
     await menu.waitFor();
-    assert.deepEqual(await menu.getByRole("menuitem").allTextContents(), ["New tab", "Rename tab", "Close tab"]);
+    const tabletItems = await menu.getByRole("menuitem").allTextContents();
+    // a wide touch screen shows both panes, so the menu has no pane list: the open pane's actions lead it
+    assert.deepEqual(tabletItems.filter((item) => item !== "Clear pane name"),
+      ["Rename pane", "Split right", "Split down", "Zoom pane", "Send right-clicks to pane", "Close pane", "New tab", "Rename tab", "Close tab"], "the touch menu carries the open pane's actions, in order, before the tab's");
     await page.keyboard.press("Escape");
     await menu.waitFor({ state: "detached" });
   } finally { await context.close(); }

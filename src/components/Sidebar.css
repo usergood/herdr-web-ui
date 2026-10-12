@@ -539,7 +539,8 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
     transition: none;
   }
 
-  .sidebar-status[data-status="working"] svg { animation: none; }
+  /* no turn, but RUN still has to read apart from BG, the same arc held still: it fades in steps */
+  .sidebar-status[data-status="working"] svg { animation: pulse var(--dur-pulse) var(--ease-pulse) infinite; }
 }
 
 /* a finger presses a row as an iPhone list row is pressed: it fills, it does not dim (styles.css) */

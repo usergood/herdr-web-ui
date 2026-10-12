@@ -93,6 +93,8 @@ run_script scripts/prompt-dock-demo-regression.ts
 run_script scripts/plugin-actions-demo-regression.ts
 run_script scripts/palette-machines-demo-regression.ts
 run_script scripts/narrow-pane-demo-regression.ts
+run_script scripts/touch-long-press-demo-regression.ts
+run_script scripts/phone-split-grid-demo-regression.ts
 run_script scripts/recent-folders-regression.ts
 run_script scripts/machine-dialog-regression.ts
 run_script scripts/machine-conflict-regression.ts

@@ -1181,7 +1181,7 @@ class DemoSocket extends EventTarget {
       const open = new Event("open");
       this.onopen?.(open);
       this.dispatchEvent(open);
-      this.push({ type: "snapshot", snapshot: snapshot(), features: ["submit", "pending-input", "secret-input", "input-ready", "conversation-watch"] });
+      this.push({ type: "snapshot", snapshot: snapshot(), features: ["submit", "pending-input", "pending-hold", "secret-input", "input-ready", "conversation-watch"] });
     }, 20);
     this.timers.add(opening);
   }
@@ -1297,7 +1297,7 @@ class DemoSocket extends EventTarget {
           break;
         }
         if (message.pane_id && message.text !== undefined && message.id !== undefined) {
-          const queued = message.delivery === "queue";
+          const queued = message.delivery === "queue" || message.delivery === "hold";
           const text = queued ? message.text.replace(/[\r\n]+$/, "").replace(/\r\n?/g, "\n") : message.text;
           let code: string | null = null;
           if ((message.delivery !== undefined && message.delivery !== "immediate" && !queued) || (queued && message.typed !== undefined && message.typed !== false)) code = "invalid_delivery";
@@ -1311,8 +1311,8 @@ class DemoSocket extends EventTarget {
             this.completeRequest({ type: "submit-result", id: message.id, pane_id: message.pane_id, ok: false, code, message: "The demo agent cannot take this submission." });
             break;
           }
-          if (queued && paneOf(message.pane_id)?.agent_status === "working") {
-            const pending: PendingMessage = { id: `demo-pending-${nextPending++}`, request_id: message.id, text, state: "queued", created_at: now() };
+          if (queued && (message.delivery === "hold" || paneOf(message.pane_id)?.agent_status === "working")) {
+            const pending: PendingMessage = { id: `demo-pending-${nextPending++}`, request_id: message.id, text, state: message.delivery === "hold" ? "held" : "queued", created_at: now() };
             this.pending.set(message.pane_id, [...(this.pending.get(message.pane_id) ?? []), pending]);
             const reply: ServerMessage = { type: "submit-result", id: message.id, pane_id: message.pane_id, ok: true, pending: structuredClone(pending) };
             this.rememberRequest(reply);

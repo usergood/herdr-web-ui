@@ -14,7 +14,7 @@ import { MAX_INLINE_IMAGE_BYTES, markdownImagePreview } from "../lib/markdownIma
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
 import { readFilePreviewText } from "../lib/filePreviewText.ts";
-import { linkSearch } from "../lib/deepLink.ts";
+import { readerHref } from "../lib/fileReader.ts";
 
 /** Text shows its first part: the rest is a download away. */
 const TEXT_PREVIEW_BYTES = 256 * 1024;
@@ -28,13 +28,15 @@ export interface FileViewerProps {
   keyboardActive?: boolean;
   /** a file chosen in a folder's listing: opened as the preview, so history and a reload keep it */
   onOpen?: (path: string) => void;
+  /** the document is the page (a markdown file's own tab, FileReader): no dialog, nothing to close */
+  page?: boolean;
 }
 
 /**
  * A file an agent wrote, opened in the browser: images, video and audio (streamed, so they
  * play and seek at once), PDFs, and the start of a text file (markdown drawn, its images read through the file endpoint). Anything can be downloaded.
  */
-export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActive = true }: FileViewerProps) {
+export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActive = true, page = false }: FileViewerProps) {
   const t = useT();
   const { fetchFileInfo, fileUrl, fetchDirectories } = useMachineApi();
   // a remote PC's bridge reads a relative folder from the pane's folder only from its next bundle
@@ -51,8 +53,8 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
   const [textTruncated, setTextTruncated] = useState(false);
   const [textTotal, setTextTotal] = useState<number | undefined>(undefined);
   // Escape closes it, Tab stays in it, and the focus goes back to the row that opened it
-  const surface = useFocusTrap<HTMLElement>(true);
-  useSheetSwipe(surface, onClose);
+  const surface = useFocusTrap<HTMLElement>(!page);
+  useSheetSwipe(surface, page ? null : onClose);
   useEffect(() => setPath(asked), [asked]);
 
   useEffect(() => {
@@ -90,22 +92,20 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
   }, [path, paneId, fetchFileInfo, fileUrl, fetchDirectories, remote]);
 
   useEffect(() => {
-    if (!keyboardActive) return;
+    if (!keyboardActive || page) return;
     // the FilesDialog beneath listens on window too (and stands down while this is open); this
     // one is the topmost overlay, so it takes the key, unless a native modal (Add PC) is over it
     const onKey = (event: KeyboardEvent): void => { if (event.key === "Escape" && !nativeModalOver(surface.current)) onClose(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, keyboardActive]);
+  }, [onClose, keyboardActive, page]);
 
   // the file found (a bare name may have been found deeper in the folder), else as asked
   const url = fileUrl(info?.path ?? path, paneId);
   const filePath = info?.path ?? path;
   const markdown = info?.kind === "text" && /\.(?:md|markdown)$/i.test(info.name);
-  const previewUrl = `${window.location.pathname}${linkSearch({
-    machine: machineId, workspace: null, pane: null, view: null,
-    file: filePath, settings: null,
-  })}`;
+  // a page of just the document, not the app over it (FileReader)
+  const previewUrl = readerHref(machineId, filePath);
   // images of a markdown file load through the file endpoint, as the file itself does
   const imagePreview = useCallback((src: string) => markdownImagePreview(
     src, filePath, (target) => fetchFileInfo(target, paneId), (target, download) => fileUrl(target, paneId, download),
@@ -132,7 +132,7 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
       case "text":
         return text === null ? <p className="file-viewer-note">{t("Opening…")}</p> : <>
           {markdown
-            ? <MarkdownImageContext.Provider value={imagePreview}><Markdown className="file-viewer-markdown">{text}</Markdown></MarkdownImageContext.Provider>
+            ? <MarkdownImageContext.Provider value={imagePreview}><Markdown className="file-viewer-markdown" html>{text}</Markdown></MarkdownImageContext.Provider>
             : <pre className="file-viewer-text">{text}</pre>}
           {textTruncated && (textTotal ?? 0) <= TEXT_PREVIEW_BYTES ? <p className="file-viewer-note">{t("Only part of this file is shown. Download it to read the rest.")}</p>
             : (textTotal ?? info.size) > TEXT_PREVIEW_BYTES && <p className="file-viewer-note">{t("Showing the first {shown} of {total}.", { shown: formatBytes(TEXT_PREVIEW_BYTES), total: formatBytes(textTotal ?? info.size) })}</p>}
@@ -142,20 +142,34 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
     }
   })();
 
+  const name = info?.name ?? path.split("/").pop();
+  const title = <div className="file-viewer-title">
+    {page ? <h1 className="modal-title">{name}</h1> : <h2 className="modal-title">{name}</h2>}
+    <p className="file-viewer-meta" title={info?.path ?? path}>
+      {info && <span className="file-viewer-size">{formatBytes(info.size)}</span>}
+      <span className="file-viewer-path"><span dir="ltr">{info?.path ?? path}</span></span>
+    </p>
+  </div>;
+  const download = <a className="icon-button" href={fileUrl(info?.path ?? path, paneId, true)} download={info?.name ?? true} aria-label={t("Download")} title={t("Download")}><Download aria-hidden="true" /></a>;
+  if (page) return (
+    <main ref={surface} className="file-reader">
+      <header className="modal-header file-viewer-header file-reader-header">
+        {title}
+        <a className="icon-button" href={url} target="_blank" rel="noopener" aria-label={t("Open raw file")} title={t("Open raw file")}><Code aria-hidden="true" /></a>
+        {download}
+      </header>
+      <div className="file-viewer-body file-reader-body">{body}</div>
+    </main>
+  );
+
   return (
     <div className="modal-scrim file-viewer-scrim" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section ref={surface} className="modal file-viewer" role="dialog" aria-modal="true" aria-label={info?.name ?? path} tabIndex={-1}>
         <header className="modal-header file-viewer-header">
-          <div className="file-viewer-title">
-            <h2 className="modal-title">{info?.name ?? path.split("/").pop()}</h2>
-            <p className="file-viewer-meta" title={info?.path ?? path}>
-              {info && <span className="file-viewer-size">{formatBytes(info.size)}</span>}
-              <span className="file-viewer-path"><span dir="ltr">{info?.path ?? path}</span></span>
-            </p>
-          </div>
+          {title}
           <a className="icon-button" href={markdown ? previewUrl : url} target="_blank" rel="noopener" aria-label={t("Open in a new tab")} title={t("Open in a new tab")}><ExternalLink aria-hidden="true" /></a>
           {markdown && <a className="icon-button" href={url} target="_blank" rel="noopener" aria-label={t("Open raw file")} title={t("Open raw file")}><Code aria-hidden="true" /></a>}
-          <a className="icon-button" href={fileUrl(info?.path ?? path, paneId, true)} download={info?.name ?? true} aria-label={t("Download")} title={t("Download")}><Download aria-hidden="true" /></a>
+          {download}
           <button type="button" className="icon-button" aria-label={t("Close file")} onClick={onClose}><X aria-hidden="true" /></button>
         </header>
         <div className="file-viewer-body">{body}</div>

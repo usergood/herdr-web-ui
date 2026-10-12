@@ -38,8 +38,9 @@ chmodSync(standIn, 0o755);
 copyFileSync(join(import.meta.dir, "fixtures", "file-preview.webm"), join(root, "preview.webm"));
 writeFileSync(join(root, "notes.txt"), "File preview history regression\n");
 const markdownPath = join(root, "preview #1 & 한글.MD");
-const markdownSource = "# Markdown preview\n\n한글 문서도 새 탭에서 읽을 수 있습니다.\n\n| Item | State |\n| --- | --- |\n| Preview | Ready |\n\n- [x] Rendered\n\n```ts\nconst answer = 42;\n```\n\n![Local image](./preview.svg)\n";
+const markdownSource = "<p align=\"center\">\n  <img src=\"./preview.svg\" alt=\"Logo\" width=\"64\">\n</p>\n\n<p align=\"center\"><a href=\"https://example.com/\">website</a> &middot; <strong>bold</strong></p>\n\n# Markdown preview\n\n한글 문서도 새 탭에서 읽을 수 있습니다.\n\n| Item | State |\n| --- | --- |\n| Preview | Ready |\n\n- [x] Rendered\n\nSee [the other notes](other.md).\n\n```ts\nconst answer = 42;\n```\n\n![Local image](./preview.svg)\n";
 writeFileSync(markdownPath, markdownSource);
+writeFileSync(join(root, "other.md"), "# Other notes\n\nLinked from the preview.\n");
 writeFileSync(join(root, "preview.svg"), '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="80"><rect width="240" height="80" fill="teal"/></svg>');
 let workspace: string | undefined;
 let server: ReturnType<typeof createServer> | undefined;
@@ -363,6 +364,11 @@ try {
       const markdown = page.locator(".file-viewer-markdown");
       await markdown.getByRole("heading", { name: "Markdown preview", exact: true }).waitFor();
       await markdown.getByRole("cell", { name: "Ready", exact: true }).waitFor();
+      // a README's HTML header is drawn, centered, never shown as tags
+      assert.equal((await markdown.innerText()).includes("<p"), false, "HTML tags are not shown as text");
+      assert.equal(await markdown.locator('.markdown-center img[alt="Logo"]').getAttribute("width"), "64");
+      assert.equal(await markdown.locator(".markdown-center").first().evaluate((node) => getComputedStyle(node).textAlign), "center");
+      await markdown.getByRole("link", { name: "website", exact: true }).waitFor();
       await page.waitForFunction(() => {
         const image = document.querySelector<HTMLImageElement>(".file-viewer-markdown img");
         return image?.complete && image.naturalWidth === 240;
@@ -374,6 +380,9 @@ try {
       const popup = await popupReady;
       popup.setDefaultTimeout(10_000);
       await popup.setViewportSize({ width, height: 900 });
+      // the tab is the document alone, not the app over it
+      await popup.locator(".file-reader").waitFor();
+      assert.ok(new URL(popup.url()).searchParams.get("read")?.endsWith("preview #1 & 한글.MD"), popup.url());
       const rendered = popup.locator(".file-viewer-markdown");
       await rendered.getByRole("heading", { name: "Markdown preview", exact: true }).waitFor();
       await rendered.getByRole("cell", { name: "Ready", exact: true }).waitFor();
@@ -398,8 +407,16 @@ try {
       await sheetsSettled(popup);
       assert.equal(await popup.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
       if (process.env.UI_EVIDENCE_DIR) await popup.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `markdown-tab-${width}-${theme}.png`) });
-      await popup.getByRole("button", { name: "Close file", exact: true }).click();
-      await popup.locator(".file-viewer").waitFor({ state: "hidden" });
+      assert.equal(await popup.locator(".agents-sidebar, .terminal-host, .modal-scrim").count(), 0, "no app around the document");
+      assert.equal(await popup.getByRole("button", { name: "Close file", exact: true }).count(), 0, "nothing to close: the tab is the document");
+      assert.equal(await popup.getByRole("link", { name: "Open in a new tab", exact: true }).count(), 0);
+      assert.match(await popup.title(), /^preview #1 & 한글\.MD · /);
+      // a link to another file opens it here, from the document's folder, and Back returns
+      await rendered.getByRole("button", { name: /the other notes/ }).click();
+      await rendered.getByRole("heading", { name: "Other notes", exact: true }).waitFor();
+      assert.ok(new URL(popup.url()).searchParams.get("read")?.endsWith("/other.md"), popup.url());
+      await popup.goBack();
+      await rendered.getByRole("heading", { name: "Markdown preview", exact: true }).waitFor();
       await popup.close();
       await context.close();
       console.log(`PASS Markdown inline/new tab/reload/raw/download: ${width}px ${theme}`);
@@ -440,7 +457,13 @@ try {
     if (target === "missing-fixture") {
       await ownerPage.getByText("That link's PC is not set up here", { exact: true }).waitFor();
       assert.equal(await ownerPage.locator(".file-viewer").count(), 0);
-      assert.deepEqual(fileRequests, [], "an unknown PC never reads the local file");
+      assert.equal(fileRequests.length, 0, "an unknown PC never reads the local file");
+      // nor does the document's own tab, for a PC that is not set up here
+      const readerPage = await ownerContext.newPage();
+      await readerPage.goto(`${origin}/?read=${encodeURIComponent(markdownPath)}&machine=${target}`);
+      await readerPage.locator(".file-reader .file-viewer-note").waitFor();
+      assert.equal(fileRequests.some((path) => path.startsWith("/api/fs/")), false, "the reader never reads the local file for another PC");
+      await readerPage.close();
     } else {
       await ownerPage.locator(".file-viewer-markdown").getByRole("heading", { name: "Markdown preview", exact: true }).waitFor();
       const prefix = target === "local" ? "/api/fs/" : "/api/machines/remote-fixture/fs/";
@@ -449,6 +472,13 @@ try {
       const link = await ownerPage.getByRole("link", { name: "Open in a new tab", exact: true }).getAttribute("href");
       assert.ok(link);
       assert.equal(new URL(link, origin).searchParams.get("machine") ?? "local", target);
+      // the document's own tab reads the file from that PC too
+      fileRequests.length = 0;
+      const readerPage = await ownerContext.newPage();
+      await readerPage.goto(new URL(link, origin).href);
+      await readerPage.locator(".file-reader .file-viewer-markdown").getByRole("heading", { name: "Markdown preview", exact: true }).waitFor();
+      assert.ok(fileRequests.length >= 2 && fileRequests.every((path) => path.startsWith(prefix)), fileRequests.join(", "));
+      await readerPage.close();
       await ownerPage.reload();
       await ownerPage.locator(".file-viewer-markdown").getByRole("heading", { name: "Markdown preview", exact: true }).waitFor();
     }

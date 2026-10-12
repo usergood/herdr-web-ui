@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, it } from "bun:test";
 import { HerdrSocket } from "./ws.ts";
 import type { PendingMessage } from "../../shared/protocol.ts";
+import { OUTPUT_STALLED_CLOSE_CODE } from "../../shared/terminal-flow.ts";
 
 /** A WebSocket the test drives: it opens, receives and records what the client sends. */
 class FakeSocket {
@@ -116,6 +117,40 @@ it("refuses queued delivery on older bridges without writing its text or a fallb
     expect(submissions(socket)).toEqual([]);
     client.close();
   }
+});
+
+it("holds a message for Send now on bridges that list pending-hold, and queues it on older ones", async () => {
+  for (const [features, delivery] of [[["submit", "pending-input"], "queue"], [["submit", "pending-input", "pending-hold"], "hold"]] as const) {
+    const client = new HerdrSocket("ws://test/ws");
+    client.connect();
+    const socket = FakeSocket.last;
+    socket.open();
+    socket.receive(snapshot([...features]));
+    expect(client.canHoldMessages()).toBe(delivery === "hold");
+    const result = client.submit("w1:p1", "later", "later", false, "hold");
+    for (let turn = 0; turn < 10 && submissions(socket).length === 0; turn++) await Promise.resolve();
+    expect(submissions(socket)).toEqual([{ type: "submit", id: 1, pane_id: "w1:p1", text: "later", payload: "later", delivery }]);
+    const pending: PendingMessage = { id: "pending-1", request_id: 1, text: "later", state: delivery === "hold" ? "held" : "queued", created_at: "2026-10-06T00:00:00Z" };
+    socket.receive({ type: "submit-result", id: 1, pane_id: "w1:p1", ok: true, pending });
+    expect(await result).toEqual({ ok: true, pending });
+    client.close();
+  }
+});
+
+it("decides a hold once the snapshot arrives, so a Send before it still holds", async () => {
+  const client = new HerdrSocket("ws://test/ws");
+  client.connect();
+  const socket = FakeSocket.last;
+  socket.open();
+  const result = client.submit("w1:p1", "later", "later", false, "hold");
+  await Promise.resolve();
+  expect(submissions(socket)).toEqual([]);
+  socket.receive(snapshot(["submit", "pending-input", "pending-hold"]));
+  for (let turn = 0; turn < 10 && submissions(socket).length === 0; turn++) await Promise.resolve();
+  expect(submissions(socket)).toEqual([{ type: "submit", id: 1, pane_id: "w1:p1", text: "later", payload: "later", delivery: "hold" }]);
+  socket.receive({ type: "submit-result", id: 1, pane_id: "w1:p1", ok: false, code: "agent_not_ready", message: "fixture" });
+  await result;
+  client.close();
 });
 
 it("accepts an owner-only pending item as the submit receipt when its separate ACK was lost", async () => {
@@ -585,4 +620,40 @@ it("tells the server whether the page is in use: on connect, on a change, and ag
   second.open();
   expect(presence(second)).toEqual([{ type: "presence", active: false }]);
   client.close();
+});
+
+it("reconnects at once when the page wakes instead of waiting out the backoff, and starts the backoff over", () => {
+  const client = new HerdrSocket("ws://test/ws");
+  client.connect();
+  const first = FakeSocket.last;
+  first.open();
+  // a phone asleep: each attempt fails and the backoff grows toward its cap
+  first.disconnect();
+  for (let attempt = 0; attempt < 5; attempt++) {
+    client.wake();
+    FakeSocket.last.disconnect();
+  }
+  const sleeping = FakeSocket.last;
+  client.wake();
+  expect(FakeSocket.last).not.toBe(sleeping);
+  const woken = FakeSocket.last;
+  woken.open();
+  expect(woken.sent.map((frame) => frame.type)).toEqual(["role"]);
+  // a live connection has no timer to skip: waking opens nothing more
+  client.wake();
+  expect(FakeSocket.last).toBe(woken);
+  client.close();
+});
+
+it("does not wake a connection whose output stopped, nor one that was closed", () => {
+  const client = new HerdrSocket("ws://test/ws");
+  client.connect();
+  const socket = FakeSocket.last;
+  socket.open();
+  (socket as unknown as { emit(type: string, event: unknown): void }).emit("close", { code: OUTPUT_STALLED_CLOSE_CODE });
+  client.wake();
+  expect(FakeSocket.last).toBe(socket);
+  client.close();
+  client.wake();
+  expect(FakeSocket.last).toBe(socket);
 });

@@ -3,6 +3,7 @@
  * New tab / Rename / Close at the pointer. Pane actions belong to PaneCanvas.
  * A phone keeps an ellipsis on the selected tab as a touch entry to the same menu. Where the
  * canvas shows a split tab's panes one at a time (SOLO_PANE_QUERY), that menu lists them first.
+ * That menu also carries the open pane's actions, so a lone pane shows no ellipsis of its own.
  */
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { ArrowLeft, ArrowRight, Ellipsis, Pencil, Plus, Terminal, X } from "lucide-react";
@@ -39,9 +40,11 @@ export interface TabStripProps {
   selectedPane: PaneInfo;
   onSelectPane: (paneId: string) => void;
   onNewTab: () => void;
+  /** the open pane's actions (PaneCanvas), offered in the touch menu */
+  paneActions?: (paneId: string) => RowMenuItem[];
 }
 
-export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNewTab }: TabStripProps) {
+export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNewTab, paneActions }: TabStripProps) {
   const t = useT();
   const machineId = useMachineId();
   const { closeTab, renameTab, moveTab } = useMachineApi();
@@ -297,18 +300,20 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
 
   // Native tab menu: pane actions live on the pane itself. A split tab drawn one pane at a time
   // has no other way to its panes, so they lead its menu, the open one marked.
-  const pickerItems = (tab: HerdrTab): RowMenuItem[] => {
+  // The touch menu also holds the open pane's actions, between its panes and the tab's own.
+  const pickerItems = (tab: HerdrTab, touch: boolean): RowMenuItem[] => {
     const own = soloPanes ? panesOf(tab) : [];
-    const actions = tabActions(tab);
-    if (own.length < 2) return actions;
-    return [
-      ...own.map((pane): RowMenuItem => ({
+    const paneItems = touch && tab.tab_id === selectedPane.tab_id ? paneActions?.(selectedPane.pane_id) ?? [] : [];
+    const groups: RowMenuItem[][] = [
+      own.length < 2 ? [] : own.map((pane): RowMenuItem => ({
         id: `pane:${pane.pane_id}`, label: displayPaneTitle(pane), icon: Terminal,
         glyph: pane.agent ? <AgentMark agent={pane.agent} size={16} /> : undefined,
         current: pane.pane_id === selectedPane.pane_id, run: () => onSelectPane(pane.pane_id),
       })),
-      ...actions.map((action, index) => index === 0 ? { ...action, divider: true } : action),
-    ];
+      paneItems,
+      tabActions(tab),
+    ].filter((group) => group.length > 0);
+    return groups.flatMap((group, at) => at === 0 ? group : group.map((item, index) => index === 0 ? { ...item, divider: true } : item));
   };
   const tabActions = (tab: HerdrTab): RowMenuItem[] => [
     ...(!reorder.moving && tabs.findIndex((entry) => entry.tab_id === tab.tab_id) > 0
@@ -404,7 +409,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
         {error && <span className="tab-strip-error" role="alert">{error}</span>}
       </div>
       {picker && <RowMenu anchor={picker.anchor} point={picker.point} restoreFocusTo={picker.previousFocus}
-        title={nameOf(picker.tab)} items={pickerItems(picker.tab)} align="start" onClose={() => setPicker(null)} />}
+        title={nameOf(picker.tab)} items={pickerItems(picker.tab, picker.touch)} align="start" onClose={() => setPicker(null)} />}
       {confirm && <ConfirmDialog title={confirm.title} body={confirm.body} confirmLabel={t("Close tab")} onConfirm={async () => { await close(confirm.tab); setConfirm(null); }} onClose={() => setConfirm(null)} />}
     </>
   );

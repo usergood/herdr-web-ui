@@ -13,7 +13,7 @@ import { AccessGate } from "./components/AccessGate.tsx";
 import { AgentMark } from "./components/AgentMark.tsx";
 import { NewSessionDialog, type NewTabTarget } from "./components/NewSessionDialog.tsx";
 import { MovePaneMenu } from "./components/MovePaneMenu.tsx";
-import { recentDirectories } from "./lib/recent-directories.ts";
+import { passingFolder, recentDirectories } from "./lib/recent-directories.ts";
 import { TabStrip } from "./components/TabStrip.tsx";
 import { SettingsDialog } from "./components/SettingsDialog.tsx";
 import { loadedOnSettingsEntry, onSettingsHistory, recordSettings, settingsEntry } from "./lib/settingsHistory.ts";
@@ -54,8 +54,8 @@ import { notificationTargetFromSearch, notificationViewForPane, onNotificationTa
 import { useUpdates } from "./lib/updates.ts";
 import { UpdateNotice } from "./components/UpdateControls.tsx";
 import { FilesDialog } from "./components/FilesDialog.tsx";
-import { PlanButton, PlanDialog } from "./components/PlanDialog.tsx";
 import { FileViewer } from "./components/FileViewer.tsx";
+import { PlanButton, PlanDialog } from "./components/PlanDialog.tsx";
 import { OpenFileContext } from "./lib/filePaths.ts";
 import { useFileViewer } from "./lib/useFileViewer.ts";
 import { useT } from "./lib/i18n.ts";
@@ -163,8 +163,13 @@ export function App() {
   useEffect(() => {
     for (const machine of machines) {
       if (machine.state !== "connected" || !machine.snapshot) continue;
+      // a worktree's checkout or a temporary folder is no project to start a workspace in
+      const linked = machine.snapshot.workspaces.filter((workspace) => workspace.worktree?.is_linked_worktree);
+      const inLinked = new Set(linked.map((workspace) => workspace.workspace_id));
+      const worktrees = linked.map((workspace) => workspace.worktree!.checkout_path);
       recentDirectories.remember(machine.id, machine.snapshot.panes
-        .filter((pane) => !pane.restore_error).map((pane) => pane.cwd).reverse());
+        .filter((pane) => !pane.restore_error && !inLinked.has(pane.workspace_id) && !(pane.cwd && passingFolder(pane.cwd, worktrees)))
+        .map((pane) => pane.cwd).reverse());
     }
   }, [machines]);
   const [selectedMachineId, setSelectedMachineId] = useState(() => {
@@ -261,7 +266,10 @@ export function App() {
   const [findRequest, setFindRequest] = useState<{ paneId: string | null; serial: number }>({ paneId: null, serial: 0 });
   // the header's More menu: its button, and whether it opened on a phone-width screen
   const [more, setMore] = useState<{ anchor: HTMLElement; phone: boolean } | null>(null);
+  const [planOpen, setPlanOpen] = useState(false);
   const closeMore = useCallback(() => setMore(null), []);
+  // the pane canvas's actions, for the phone's tab menu (TabStrip)
+  const paneActionsRef = useRef<((target: HerdrPane) => RowMenuItem[]) | null>(null);
   const moreOpen = more !== null;
   // a sheet stays up through a resize: its palette item follows the header's palette button,
   // which the same breakpoint hides
@@ -274,7 +282,6 @@ export function App() {
   }, [moreOpen]);
   // the Files dialog, and the file open in the viewer (a path as the chat or the dialog gave it)
   const [filesOpen, setFilesOpen] = useState(false);
-  const [planOpen, setPlanOpen] = useState(false);
   const [movingPane, setMovingPane] = useState<{ machineId: string; paneId: string; anchor: HTMLElement } | null>(null);
   const movingOwner = movingPane ? machines.find((machine) => machine.id === movingPane.machineId) : null;
   const movingLivePane = movingOwner?.state === "connected" ? movingOwner.snapshot?.panes.find((pane) => pane.pane_id === movingPane?.paneId) : null;
@@ -1135,9 +1142,8 @@ export function App() {
             </button>
           </div>
         )}
-        {/* the selected pane's plan, in the chat and the terminal alike; an offline PC's cached plan cannot be read */}
-        {settings.planButton && selectedPane && selectedMachine?.state === "connected" && (selectedPane as HerdrPane).plan && <PlanButton plan={(selectedPane as HerdrPane).plan!} onOpen={() => setPlanOpen(true)} />}
         <div className="header-meta">
+          {!factoryOpen && settings.planButton && selectedPane && selectedMachine?.state === "connected" && (selectedPane as HerdrPane).plan && <PlanButton plan={(selectedPane as HerdrPane).plan!} onOpen={() => setPlanOpen(true)} />}
           {auth?.role !== "watch" && <button type="button" className="btn header-inbox" aria-label={t("Inbox")} title={t("Inbox")} aria-pressed={factoryOpen} onClick={() => { setDrawerOpen(false); setFactoryOpen((open) => !open); if (!factoryOpen) history.replaceState(history.state, "", "#factory"); else history.replaceState(history.state, "", location.pathname + location.search); }}><Inbox aria-hidden="true" /><span className="header-desktop-only">{t("Inbox")}</span></button>}
           {/* speaks only while the bridge is not live; live, it stays in the document for a screen
               reader (and the browser scripts that wait on it), drawn by nothing (styles.css) */}
@@ -1208,7 +1214,14 @@ export function App() {
         <MachineActionBanner machines={machines} onSetup={(machine, update = false) => { setDrawerOpen(false); setUpdateRemote(update); setMachineDialog(machine); }} />
         {layoutNotice && <p className="pane-notice" role="alert">{layoutNotice}</p>}
         {snapshot && selectedPane && selectedWorkspace && (
-          <TabStrip snapshot={snapshot} workspace={selectedWorkspace} selectedPane={selectedPane} onSelectPane={selectPane} onNewTab={() => actions.openNewTab()} />
+          <TabStrip snapshot={snapshot} workspace={selectedWorkspace} selectedPane={selectedPane} onSelectPane={selectPane} onNewTab={() => actions.openNewTab()}
+            paneActions={(paneId) => {
+              const target = snapshot.panes.find((item) => item.pane_id === paneId);
+              if (!target || !paneActionsRef.current) return [];
+              // the strip renders before the canvas, so its items come from the canvas's previous render:
+              // an action runs against the canvas's latest one, where a snapshot change has landed
+              return paneActionsRef.current(target).map((item) => ({ ...item, run: () => (paneActionsRef.current?.(target).find((fresh) => fresh.id === item.id) ?? item).run() }));
+            }} />
         )}
         {/* the tab strip's panel: its id is what each tab's aria-controls points at. No tabIndex -
             the terminal (PaneTerminal) and the composer are the focusable things inside it. */}
@@ -1216,7 +1229,7 @@ export function App() {
           {factoryOpen && <FactoryPanel machines={machines} onOpenPane={(machineId, paneId) => { setFactoryOpen(false); selectTarget(machineId, paneId); }} />}
           {/* the panel sits inside main, so the page keeps its main landmark; it draws no box */}
           {!factoryOpen && <div id={PANE_TABPANEL_ID} className="terminal-tabpanel" role={tabPanelLabel === null ? undefined : "tabpanel"} aria-label={tabPanelLabel ?? undefined}>
-          <PaneCanvas key={selectedMachineId} snapshot={snapshot} pane={selectedPane} selectedPaneId={selectedPaneId} onSelect={selectPane} onChanged={actions.refresh}
+          <PaneCanvas key={selectedMachineId} snapshot={snapshot} pane={selectedPane} selectedPaneId={selectedPaneId} onSelect={selectPane} onChanged={actions.refresh} actionsRef={paneActionsRef}
             isTerminal={(item) => (item.pane_id === selectedPaneId ? view : storedView(lenses, item.pane_id, selectedMachineId, item.agent != null, terminalAttach)) === "terminal"}
             renderPane={(item, active, split) => <OpenFileContext.Provider value={item ? (path) => openFile({ path, paneId: item.pane_id, machineId: selectedMachineId }) : null}>
               <PaneTerminal
@@ -1228,6 +1241,8 @@ export function App() {
                 agent={item?.agent ?? null}
                 agentStatus={item?.agent_status}
                 backgroundTasks={item?.background_tasks ?? 0}
+                // an offline PC's cached plan cannot be read
+                plan={selectedMachine?.state === "connected" ? (item as HerdrPane | undefined)?.plan ?? null : null}
                 backgroundWait={item?.background_wait === true}
                 cwd={item?.cwd ?? null}
                 machineName={selectedMachine?.name ?? selectedMachineId}
@@ -1256,6 +1271,7 @@ export function App() {
       <MachineContext.Provider value={newSessionMachineId}><NewSessionDialog
         key={newSessionMachineId}
         machineName={machines.find((m) => m.id === newSessionMachineId)?.name ?? newSessionMachineId}
+        worktrees={machines.find((m) => m.id === newSessionMachineId)?.snapshot?.workspaces.flatMap((workspace) => workspace.worktree?.is_linked_worktree ? [workspace.worktree.checkout_path] : []) ?? []}
         open={newSessionOpen}
         tab={newTab}
         defaultCwd={newSessionMachineId === selectedMachineId ? selectedPane?.cwd ?? null : null}
@@ -1270,6 +1286,7 @@ export function App() {
         }}
       /></MachineContext.Provider>
       {machineDialog && <MachineDialog updateRemote={updateRemote} machine={machineDialog === "new" ? undefined : machineDialog} onClose={closeMachineDialog} onConnected={(id) => { closeMachineDialog(); selectTarget(id, null); void load(); }} />}
+      {planOpen && selectedPane && <PlanDialog paneId={selectedPane.pane_id} title={selectedTitle ?? ""} onClose={() => setPlanOpen(false)} />}
       <Droplet onOpen={(machineId, paneId) => {
         // an ended pane's card outlives the pane: the refetch has dropped it, and selecting it attaches nothing
         if (!machinesRef.current.find((m) => m.id === machineId)?.snapshot?.panes.some((p) => p.pane_id === paneId)) return;
@@ -1281,7 +1298,6 @@ export function App() {
         paneTitle={displayPaneTitle(movingLivePane)} onMoved={(moved) => actions.paneMoved(movingPane.machineId, moved.previous_pane_id, moved.pane.pane_id)}
         onError={(reason) => setLayoutNotice(t("Move failed: {reason}", { reason }))} onClose={() => setMovingPane(null)} /></MachineContext.Provider>}
       <SettingsDialog auth={auth} herdrVersion={health?.herdr?.version ?? null} open={settingsOpen} section={settingsSection} linkPage={settingsLinkPage} linkSection={settingsLinkSection} onPage={onSettingsPage} onClose={closeSettings} actions={actions} updates={updates} onEnableNotifications={enableNotifications} overPreview={viewing !== null} />
-      {planOpen && selectedPane && <PlanDialog paneId={selectedPane.pane_id} title={selectedTitle ?? ""} onClose={() => setPlanOpen(false)} />}
       {filesOpen && selectedPane && (
         <FilesDialog start={selectedPane.foreground_cwd ?? selectedPane.cwd ?? ""} viewing={viewing !== null} onOpenFile={viewFile} onClose={() => setFilesOpen(false)} />
       )}
