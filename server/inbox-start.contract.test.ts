@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "./index.ts";
-import { herdrRpc, workspaceClose, workspaceCreate } from "./herdr/client.ts";
+import { herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 
 describe("starting an Inbox idea through the public API", () => {
   it("starts work in a new owned workspace while preserving changes in the Project checkout", async () => {
@@ -66,6 +66,21 @@ describe("starting an Inbox idea through the public API", () => {
       expect(specification.manifest.artifacts.filter((a:any)=>first.some((old:any)=>old.id===a.id))).toHaveLength(1);
       const reimported=await post(`/runs/${specification.id}/import-artifacts`,{}).then(r=>r.json());expect(reimported).toEqual([]);
       expect(execFileSync("git",["status","--porcelain"],{cwd:repo,encoding:"utf8"})).toBe("");
+    } finally {app.stop();for(const id of owned)await workspaceClose(id).catch(()=>{});rmSync(root,{recursive:true,force:true});}
+  });
+  it("refuses a head changed during final native capture and preserves Run ownership", async () => {
+    const root=mkdtempSync(join(tmpdir(),"saurons-accept-capture-"));const repo=join(root,"repo");mkdirSync(repo);writeFileSync(join(repo,"README.md"),"Owned baseline\n");
+    for(const args of [["init","-b","main"],["add","."],["-c","user.name=Fixture","-c","user.email=fixture@example.invalid","commit","-m","initial"]])execFileSync("git",args,{cwd:repo,stdio:"ignore"});
+    const owned:string[]=[];let advance:string|null=null;let changed=false;
+    const app=createServer({port:0,stateDir:join(root,"state"),machines:false,factory:{accountDiscoveryHome:root,native:{version:async()=>"codex-cli 0.162.1",createWorkspace:async options=>{const w=await workspaceCreate(options);owned.push(w.workspace.workspace_id);return w;},startAgent:async options=>{await herdrRpc("pane.report_agent",{pane_id:options.paneId,source:"manual",agent:"codex",state:"idle"});},snapshot:async()=>{
+      if(advance){const cwd=advance;advance=null;writeFileSync(join(cwd,"receipt.md"),"New unreviewed receipt decision\n");for(const args of [["add","receipt.md"],["-c","user.name=Fixture","-c","user.email=fixture@example.invalid","commit","-m","unreviewed change"]])execFileSync("git",args,{cwd,stdio:"ignore"});changed=true;}
+      return sessionSnapshot();
+    }}}});
+    const post=(path:string,body:unknown)=>fetch(`http://localhost:${app.port}/api/factory${path}`,{method:"POST",headers:{"content-type":"application/json","x-herdr-factory":"1"},body:JSON.stringify(body)});
+    try {
+      const project=await post("/projects",{name:"Acceptance Project",path:repo,machine_id:"local",provider:"codex",tracker:"app"}).then(r=>r.json());const idea=await post("/implementations",{title:"Review receipt",description:"",project_id:project.id}).then(r=>r.json());const run=await post(`/implementations/${idea.id}/runs`,{action:"grill-with-docs",idempotency_key:"capture-race"}).then(r=>r.json());expect(run.condition).toBe("working");
+      advance=run.worktree;const accepted=await post(`/runs/${run.id}/accept`,{head:run.base});expect(accepted.status).toBe(409);expect((await accepted.json()).error.code).toBe("review_stale");expect(changed).toBe(true);
+      const detail=await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then(r=>r.json());expect(detail.runs.at(-1).condition).toBe("working");expect(detail.approvals.some((a:any)=>a.kind==="review")).toBe(false);expect((await sessionSnapshot()).panes.some(p=>p.pane_id===run.pane_id)).toBe(true);
     } finally {app.stop();for(const id of owned)await workspaceClose(id).catch(()=>{});rmSync(root,{recursive:true,force:true});}
   });
 });

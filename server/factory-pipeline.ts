@@ -130,7 +130,10 @@ export class FactoryPipeline {
     this.store.event(run.implementation_id, "ticket_integrated", { worker_id: workerId, ticket_id: worker.ticket_id, head: next.head }); return next;
   }
   async accept(id: string, body: Record<string, unknown>): Promise<FactoryRun> {
-    const run = this.run(id, false); const current = await this.runtime.operation<{ head: string; workspace_hash: string }>(run, "head");
+    const run = this.run(id, false);
+    await this.retainBeforeStop(id);
+    this.run(id, false); // Capture may overlap an owner action; validate the live scope afterwards.
+    const current = await this.runtime.operation<{ head: string; workspace_hash: string }>(run, "head");
     if (body.head !== current.head) throw new FactoryError("review_stale", "Accept the exact current integration head", 409);
     const check = this.store.list<FactoryCheck>("checks", id).filter((entry) => entry.worker_id === null).at(-1);
     const reviews = this.store.list<FactoryReviewEvidence>("review_evidence", id);
@@ -142,7 +145,6 @@ export class FactoryPipeline {
     const approval = { ...this.store.record(), implementation_id: run.implementation_id, kind: "review", revision: current.head, scope: `Run ${id}; checks ${check.id}; independent Standards and Spec reports` };
     this.store.put("approvals", approval, run.implementation_id);
     // Release native ownership explicitly, while retaining Git and all evidence.
-    await this.retainBeforeStop(id);
     const stopped = await this.runtime.stopRun(id, { summary: `Owner accepted implementation at ${current.head}` });
     const completed: FactoryRun = { ...stopped, condition: "completed" };
     this.store.put("runs", completed, run.implementation_id);
