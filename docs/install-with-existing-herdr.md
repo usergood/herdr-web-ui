@@ -63,11 +63,11 @@ configuration. The initial setup below deliberately refuses existing settings.
 
 ## 2. Install the reviewed fork
 
-This exact merged application commit includes the PWA fix and bundled eye artwork:
+This reviewed application commit includes the PWA fix, bundled eye artwork and GitHub workflows:
 
 ```bash
 herdr plugin install usergood/saurons-eye \
-  --ref 03c366ff04d6f21ddb74ecbc6f00a7b57bf85582 --yes
+  --ref c97b2cbd824a74996d4bb8835ada64a2535041c0 --yes
 herdr plugin list --plugin usergood.saurons-eye --json
 ```
 
