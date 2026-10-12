@@ -48,6 +48,9 @@ account; execution-Machine account selectors keep their own scope. Select a save
 login to import it privately without switching the native active account. An SSH
 alias can identify the GitHub remote, while dynamic SSH or shell routing requires
 explicit selection. Existing SSH files and global configuration remain untouched.
+An offline execution host does not hide retained GitHub policy, connection-server
+accounts or synchronization. Existing policy can be saved while that host is offline
+if its repository and verified checkout/account scope are unchanged.
 
 Repository metadata supplies available reviewers and branch check names for the
 advanced automation choices. Issue import works with basic settings; automatic

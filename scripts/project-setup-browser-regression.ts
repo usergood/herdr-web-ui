@@ -57,6 +57,14 @@ try {
   await saveSettings();await customA.waitFor({state:"hidden"});assert.equal(await customB.getByRole("checkbox").isChecked(),true);
   await page.getByRole("combobox",{name:"Context handoff target",exact:true}).selectOption("200000");await saveSettings();
   const saved=await page.request.get(`http://localhost:${app.port}/api/factory?navigation=1`).then(r=>r.json());assert.deepEqual(saved.projects.find((p:any)=>p.id===projectId).checks,[["echo","custom B"]]);
+  const accountId=saved.projects.find((p:any)=>p.id===projectId).account_bindings.local.github;
+  assert.equal((await post(`/projects/${projectId}/github/configure`,{expected_revision:null,repository:"fictional/storefront",account_profile_id:accountId,sync_enabled:false,import_issues:true,import_fixes:false,auto_update:false,auto_merge:false,trusted_reviewers:[],required_checks:[],review_context:"Owned review fixture",poll_minutes:5})).status(),200);
+  await page.route("**/api/factory/project-discovery",route=>route.fulfill({status:409,json:{error:{code:"machine_offline",message:"Owned execution host is offline"}}}));
+  await page.getByRole("tab",{name:"GitHub",exact:true}).click();
+  await page.waitForFunction(()=>document.querySelector('[data-testid="project-github"] input[readonly]')?.getAttribute("value")==="fictional/storefront");
+  assert.equal(await page.getByRole("button",{name:"Sync GitHub",exact:true}).isEnabled(),true);
+  assert.equal(await page.getByRole("combobox",{name:"GitHub account",exact:true}).inputValue(),accountId);
+  await page.unroute("**/api/factory/project-discovery");
   await page.getByRole("button",{name:"Close settings",exact:true}).click();
   const group=page.locator(".project-navigation-group").filter({has:page.locator("summary").filter({hasText:"storefront"})});await group.locator('summary [data-status="working"]').waitFor();
   await group.locator("summary").click();await herdrRpc("pane.report_agent",{pane_id:workspace.root_pane.pane_id,source:"manual",agent:"codex",state:"blocked"});await group.locator('summary [data-status="blocked"]').waitFor();assert.equal(await group.getAttribute("open"),null);

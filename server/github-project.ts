@@ -87,7 +87,8 @@ export class ProjectGitHub {
       if (value.expected_revision !== (prior?.revision ?? null)) throw new FactoryError("github_policy_changed", "Refresh the Project GitHub settings", 409);
       if (!/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(value.repository ?? "") || typeof value.account_profile_id !== "string" || !Number.isInteger(value.poll_minutes) || value.poll_minutes < 5 || value.poll_minutes > 1440 || typeof value.review_context !== "string" || value.review_context.length > 30_000) throw new FactoryError("invalid_github_policy", "Select a repository, account and bounded polling interval");
       const checkout = this.store.list<ProjectCheckout>("checkouts", id).find((item) => item.machine_id === "local");
-      if (checkout || this.discover) {
+      const retainedRepository = !checkout && prior?.project_scope === projectScope && prior.repository.toLowerCase() === value.repository.toLowerCase();
+      if (checkout || this.discover && !retainedRepository) {
         const canonical = await this.repository(id);
         if (canonical?.toLowerCase() !== value.repository.toLowerCase()) throw new FactoryError("github_repository_mismatch", "Select this Project's registered GitHub repository", 409);
       }

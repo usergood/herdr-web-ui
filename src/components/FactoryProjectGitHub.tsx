@@ -15,6 +15,7 @@ export function FactoryProjectGitHub({ project, busy, perform, checkoutPath, che
   const [accounts, setAccounts] = useState<AccountOverview | null>(null);
   const [defaults, setDefaults] = useState<ProjectGitHubSettings | null>(null);
   const [problem, setProblem] = useState("");
+  const [notice, setNotice] = useState("");
   const [diffs, setDiffs] = useState<Record<number, ProjectGitHubFiles>>({});
   const epoch = useRef(0);
   const [form, setForm] = useState<ProjectGitHubConfiguration>({ expected_revision: null, repository: "", account_profile_id: "", sync_enabled: false, import_issues: false, import_fixes: false, auto_update: false, auto_merge: false, trusted_reviewers: [], required_checks: [], review_context: "Review against the repository's coding standards, domain language and accepted scope.", poll_minutes: 5 });
@@ -22,15 +23,18 @@ export function FactoryProjectGitHub({ project, busy, perform, checkoutPath, che
   async function reloadAccounts() { const id = epoch.current; const next = await accountRequest<AccountOverview>("/machines/local/accounts"); if (id === epoch.current) setAccounts(next); return next; }
   useEffect(() => {
     const id = ++epoch.current;
-    setDefaults(null); setProblem("");
-    void Promise.all([factoryRequest<ProjectGitHubOverview>(route), accountRequest<AccountOverview>("/machines/local/accounts"), checkout ? factoryRequest<ProjectDiscovery>("/project-discovery", { machine_id: checkout.machine_id, path: checkout.path }) : Promise.resolve(null)]).then(([next, profiles, repository]) => {
+    setDefaults(null); setProblem(""); setNotice("");
+    const metadata = checkout ? factoryRequest<ProjectDiscovery>("/project-discovery", { machine_id: checkout.machine_id, path: checkout.path }).catch(error => { if (id === epoch.current) setNotice(error.message); return null; }) : Promise.resolve(null);
+    void Promise.all([factoryRequest<ProjectGitHubOverview>(route), accountRequest<AccountOverview>("/machines/local/accounts")]).then(async ([next, profiles]) => {
       if (id !== epoch.current) return;
       setView(next); setAccounts(profiles);
       if (next.policy) { const policy = next.policy; setForm({ repository: policy.repository, account_profile_id: policy.account_profile_id, sync_enabled: policy.sync_enabled, import_issues: policy.import_issues, import_fixes: policy.import_fixes, auto_update: policy.auto_update, auto_merge: policy.auto_merge, trusted_reviewers: policy.trusted_reviewers, required_checks: policy.required_checks, review_context: policy.review_context, poll_minutes: policy.poll_minutes, expected_revision: policy.revision }); }
       else {
+        const repository = await metadata;
+        if (id !== epoch.current) return;
         const ready = profiles.profiles.filter(p => p.service === "github" && p.state === "ready");
         const chosen = project.account_bindings?.local?.github ?? ready.find(p => p.expected_login.toLowerCase() === repository?.github.account_hint?.toLowerCase())?.id ?? (ready.length === 1 ? ready[0]!.id : "");
-        setForm(current => ({ ...current, repository: repository?.github.repository ?? "", account_profile_id: chosen }));
+        setForm(current => ({ ...current, repository: repository?.github.repository ?? "", account_profile_id: current.account_profile_id || chosen }));
       }
     }).catch(error => { if (id === epoch.current) setProblem(error.message); });
     return () => { epoch.current++; };
@@ -44,6 +48,7 @@ export function FactoryProjectGitHub({ project, busy, perform, checkoutPath, che
   const ready = accounts?.profiles.find(p => p.id === form.account_profile_id)?.state === "ready";
   return <section className="factory-section" data-testid="project-github"><h3>{t("Project GitHub workflow")}</h3>
     <p className="field-hint">{t("GitHub uses a verified account on the connection server: {name}", { name: machineName ?? t("Machine") })}</p>
+    {notice && <p role="status">{notice}</p>}
     {problem && <p role="alert">{problem}</p>}
     <form className="factory-form" onSubmit={event => { event.preventDefault(); void perform(async () => {
       const id = epoch.current;

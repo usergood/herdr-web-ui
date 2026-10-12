@@ -48,6 +48,11 @@ export async function githubDirectory(path: string, home = homedir()) {
 export async function discoverProject(path: string, native: Pick<FactoryNative, "version">, home?: string): Promise<ProjectDiscovery> {
   if (!isAbsolute(path) || path.includes("\0")) throw new FactoryError("invalid_checkout", "Choose a repository folder");
   const inspected = await inspectCheckout(path); const root = inspected.path;
+  const present = (name: string) => {
+    const file = join(root, name); if (!existsSync(file)) return false;
+    const info = lstatSync(file);
+    return info.isFile() && !info.isSymbolicLink() && withinRoot(root, realpathSync(file));
+  };
   const read = (name: string) => {
     const file = join(root, name); if (!existsSync(file)) return null;
     const info = lstatSync(file); if (!info.isFile() || info.isSymbolicLink() || info.size > 1024 * 1024 || !withinRoot(root, realpathSync(file))) return null;
@@ -57,7 +62,7 @@ export async function discoverProject(path: string, native: Pick<FactoryNative, 
   try {
     const pkg = JSON.parse(read("package.json") ?? "null");
     if (pkg && typeof pkg.scripts === "object" && pkg.scripts) {
-      const manager = read("bun.lock") !== null || read("bun.lockb") !== null ? "bun" : read("pnpm-lock.yaml") !== null ? "pnpm" : read("yarn.lock") !== null ? "yarn" : "npm";
+      const manager = present("bun.lock") || present("bun.lockb") ? "bun" : present("pnpm-lock.yaml") ? "pnpm" : present("yarn.lock") ? "yarn" : "npm";
       const names = ["typecheck", "lint", pkg.scripts["test:unit"] ? "test:unit" : "test", "build"];
       for (const name of names) if (typeof pkg.scripts[name] === "string") checks.push({ id: `script:${name}`, name, args: [manager, "run", name] });
     }
