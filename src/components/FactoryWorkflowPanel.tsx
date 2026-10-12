@@ -1,32 +1,24 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { FactoryAction, FactoryCapabilities, FactoryDetail, FactoryProvider } from "../../shared/protocol.ts";
 import { factoryRequest } from "../lib/factoryApi.ts";
 import { useT } from "../lib/i18n.ts";
 
 type Perform = (action: () => Promise<void>) => Promise<void>;
-export function FactoryWorkflowPanel({ detail, machineId, provider, busy, perform, accountScope = "", showQuestions = true }: { detail: FactoryDetail; machineId: string; provider: FactoryProvider; busy: boolean; perform: Perform; accountScope?: string; showQuestions?: boolean }) {
+export function FactoryWorkflowPanel({ detail, machineId, provider, busy, perform, showQuestions = true, capabilities, problem, onCapabilities }: { detail: FactoryDetail; machineId: string; provider: FactoryProvider; busy: boolean; perform: Perform; showQuestions?: boolean; capabilities: FactoryCapabilities | null; problem: string | null; onCapabilities: (value: FactoryCapabilities) => void }) {
   const t = useT();
-  const [capabilities, setCapabilities] = useState<FactoryCapabilities | null>(null);
-  const [problem, setProblem] = useState<string | null>(null);
   const [question, setQuestion] = useState("");
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const prefix = `/implementations/${detail.implementation.id}`;
-  useEffect(() => {
-    let live = true;
-    setCapabilities(null); setProblem(null);
-    factoryRequest<FactoryCapabilities>(`/providers?machine_id=${encodeURIComponent(machineId)}&implementation_id=${encodeURIComponent(detail.implementation.id)}`).then((result) => { if (live) setCapabilities(result); }, (error: unknown) => { if (live) setProblem(error instanceof Error ? error.message : String(error)); });
-    return () => { live = false; };
-  }, [machineId, detail.implementation.id, accountScope]);
   const capability = capabilities?.providers.find((entry) => entry.provider === provider);
   const active = detail.runs.some((run) => ["accepted", "working", "needs_you", "blocked", "disconnected", "interrupted"].includes(run.condition));
   const start = (action: FactoryAction) => perform(async () => { await factoryRequest(`${prefix}/runs`, { action, idempotency_key: crypto.randomUUID(), expected: { provider, machine_id: machineId, project_id: detail.implementation.project_id, specification_id: detail.specifications.at(-1)?.id ?? null, graph_hash: detail.graph_hash } }); });
   return <section className="factory-section"><h3>{t("Workflow")}</h3>
     <p>{provider} · {capability?.version ?? t("Not verified")}</p>
-    {problem && <p role="status">{problem}</p>}
+    {problem && <p role="alert">{problem}</p>}
     {capability && !capability.factory_ready && <p role="status">{capability.reasons.join(". ")}</p>}
-    <div className="factory-actions"><button className="btn factory-button" disabled={busy || active} onClick={() => void perform(async () => { setCapabilities(await factoryRequest(`/machines/${encodeURIComponent(machineId)}/prepare`, {})); })}>{t("Prepare this Machine")}</button>
+    <div className="factory-actions"><button className="btn factory-button" disabled={busy || active} onClick={() => void perform(async () => { onCapabilities(await factoryRequest(`/machines/${encodeURIComponent(machineId)}/prepare`, {})); })}>{t("Prepare this Machine")}</button>
       <button className="btn factory-button" disabled={busy || active || !capability?.installed || !capability.skills_verified} onClick={() => void start("verify-provider")}>{t("Start native verification")}</button>
-      <button className="btn factory-button" disabled={busy || !detail.runs.some((run) => run.action === "verify-provider")} onClick={() => void perform(async () => { const run = detail.runs.filter((run) => run.action === "verify-provider").at(-1)!; setCapabilities(await factoryRequest(`/runs/${run.id}/verify-provider`, {})); })}>{t("Verify native evidence")}</button>
+      <button className="btn factory-button" disabled={busy || !detail.runs.some((run) => run.action === "verify-provider")} onClick={() => void perform(async () => { const run = detail.runs.filter((run) => run.action === "verify-provider").at(-1)!; onCapabilities(await factoryRequest(`/runs/${run.id}/verify-provider`, {})); })}>{t("Verify native evidence")}</button>
       <button className="btn factory-button" disabled={busy || active || !capability?.installed || !capability.skills_verified} onClick={() => void start("setup")}>{t("Set up Project skills")}</button>
       <button className="btn factory-button" disabled={busy || active || !capability?.installed || !capability.skills_verified} onClick={() => void start("grill-me")}>{t("Grill me")}</button>
       <button className="btn factory-button" disabled={busy || active || !detail.implementation.project_id || !capability?.installed || !capability.skills_verified} onClick={() => void start("grill-with-docs")}>{t("Grill with docs")}</button>

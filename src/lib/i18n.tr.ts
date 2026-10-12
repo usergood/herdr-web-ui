@@ -1227,4 +1227,6 @@ export const TR: Record<string, string> = {
   "Mark work done": "Çalışmayı tamamlandı olarak işaretle",
   "Start implementation": "Uygulamayı başlat",
   "Automated implementation needs a verified agent skill setup. Direct work and planning are available before verification.": "Otomatik uygulama için doğrulanmış bir ajan beceri kurulumu gerekir. Doğrulamadan önce doğrudan çalışma ve planlama kullanılabilir.",
+  "Some planning context could not be retained. Check the previous agent chat and documents before starting the next step.": "Planlama bağlamının bir kısmı saklanamadı. Sonraki adımı başlatmadan önce önceki ajan sohbetini ve belgeleri kontrol edin.",
+  "Continue with available context": "Mevcut bağlamla devam et",
 };

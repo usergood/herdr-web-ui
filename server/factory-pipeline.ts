@@ -7,7 +7,7 @@ import { FactoryWorkflow } from "./factory-workflow.ts";
 const owns = (condition: string): boolean => !["completed", "cancelled", "failed"].includes(condition);
 /** Admission reservations cover all native contexts and builds, including uncertain remote work. */
 export class FactoryPipeline {
-  constructor(private readonly store: FactoryStore, private readonly runtime: FactoryRuntime, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings) {}
+  constructor(private readonly store: FactoryStore, private readonly runtime: FactoryRuntime, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly retainBeforeStop: (id: string) => Promise<void>) {}
   private run(id: string, factoryRequired = true): FactoryRun {
     const run = this.store.get<FactoryRun>("runs", id);
     if (!run || factoryRequired && run.action !== "implement-spec" || !run.checkout || !["working", "needs_you", "blocked"].includes(run.condition)) throw new FactoryError("factory_run_required", "Reconcile an admitted repository Run first", 409);
@@ -142,6 +142,7 @@ export class FactoryPipeline {
     const approval = { ...this.store.record(), implementation_id: run.implementation_id, kind: "review", revision: current.head, scope: `Run ${id}; checks ${check.id}; independent Standards and Spec reports` };
     this.store.put("approvals", approval, run.implementation_id);
     // Release native ownership explicitly, while retaining Git and all evidence.
+    await this.retainBeforeStop(id);
     const stopped = await this.runtime.stopRun(id, { summary: `Owner accepted implementation at ${current.head}` });
     const completed: FactoryRun = { ...stopped, condition: "completed" };
     this.store.put("runs", completed, run.implementation_id);

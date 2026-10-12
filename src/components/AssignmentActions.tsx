@@ -6,18 +6,10 @@ import { useT } from "../lib/i18n.ts";
 import { Markdown } from "./Markdown.tsx";
 import "./AssignmentActions.css";
 
-export function AssignmentActions({ detail, project, machineId, machineName, provider, busy, perform, onOpenPane }: { detail: FactoryDetail; project?: FactoryProject; machineId: string; machineName: string; provider: FactoryProvider; busy: boolean; perform: (action: () => Promise<void>) => Promise<void>; onOpenPane: (machineId: string, paneId: string) => void }) {
+export function AssignmentActions({ detail, project, machineId, machineName, provider, busy, perform, onOpenPane, capabilities, problem, onCapabilities }: { detail: FactoryDetail; project?: FactoryProject; machineId: string; machineName: string; provider: FactoryProvider; busy: boolean; perform: (action: () => Promise<void>) => Promise<void>; onOpenPane: (machineId: string, paneId: string) => void; capabilities: FactoryCapabilities | null; problem: string | null; onCapabilities: (value: FactoryCapabilities) => void }) {
   const t = useT(); const live = useRef(true);
-  const [capabilities, setCapabilities] = useState<FactoryCapabilities | null>(null);
-  const [problem, setProblem] = useState("");
   const prefix = `/implementations/${detail.implementation.id}`;
-  const accountScope = JSON.stringify(project?.account_bindings?.[machineId] ?? {});
   useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
-  useEffect(() => {
-    let current = true; setCapabilities(null); setProblem("");
-    void factoryRequest<FactoryCapabilities>(`/providers?machine_id=${encodeURIComponent(machineId)}&implementation_id=${detail.implementation.id}`).then(value => { if (current) setCapabilities(value); }, error => { if (current) setProblem(error.detail ?? error.message); });
-    return () => { current = false; };
-  }, [machineId, provider, detail.implementation.id, accountScope]);
   const capability = capabilities?.providers.find(entry => entry.provider === provider);
   const active = [...detail.runs].reverse().find(run => ["accepted", "working", "needs_you", "blocked", "disconnected", "interrupted"].includes(run.condition));
   const specification = detail.specifications.at(-1);
@@ -26,6 +18,12 @@ export function AssignmentActions({ detail, project, machineId, machineName, pro
   const understood = !detail.questions.length || detail.questions.every(q => q.answer !== null) && approved("shared_understanding", detail.question_revision);
   const discussed = detail.runs.some(run => run.action === "grill-with-docs" || run.action === "grill-me");
   const verification = [...detail.runs].reverse().find(run => run.action === "verify-provider");
+  const latest = detail.runs.at(-1);
+  const lastHandoffEvent = (kinds: string[]) => latest && detail.events.filter(event => kinds.includes(event.kind) && (event.data as { run_id?: string }).run_id === latest.id).at(-1)?.kind;
+  const handoffProblem = lastHandoffEvent(["native_snapshot_unavailable", "planning_handoff_retained"]) === "native_snapshot_unavailable" || lastHandoffEvent(["planning_documents_unavailable", "planning_documents_retained"]) === "planning_documents_unavailable";
+  const [acknowledgedHandoff, setAcknowledgedHandoff] = useState<string | null>(null);
+  const incompleteHandoff = handoffProblem && acknowledgedHandoff !== latest?.id;
+  const check = active ? detail.checks.filter(c=>c.run_id===active.id&&c.worker_id===null).at(-1) : undefined;
   async function start(action: FactoryAction) {
     await perform(async () => {
       if (!capability?.skills_verified) await factoryRequest(`/machines/${encodeURIComponent(machineId)}/prepare`, {});
@@ -38,24 +36,26 @@ export function AssignmentActions({ detail, project, machineId, machineName, pro
   const disabled = busy || !project || !!project.removed_at || !!detail.implementation.archived_at || !capability?.installed;
   return <section className="assignment-actions factory-section" aria-label={t("Next step")}>
     <p role="status">{project ? t("Work uses {agent} on {machine} with this Project's settings.", { agent: provider, machine: machineName }) : t("Choose a Project to start work or plan implementation.")}</p>
-    {problem && <p role="status">{problem}</p>}
+    {problem && <p role="alert">{problem}</p>}
+    {!active && handoffProblem && <div><p role="alert">{t("Some planning context could not be retained. Check the previous agent chat and documents before starting the next step.")}</p>{incompleteHandoff && <button className="btn" disabled={busy} onClick={() => setAcknowledgedHandoff(latest?.id ?? null)}>{t("Continue with available context")}</button>}</div>}
     {project && !capability?.installed && capabilities && <p role="status">{t("Install or sign in to this Project's agent on its Machine, then try again.")}</p>}
     {active ? <div className="factory-actions">
       <button className="btn btn-primary" disabled={busy || !active.pane_id} onClick={() => active.pane_id && onOpenPane(active.machine_id, active.pane_id)}><MessageSquare />{t("Continue in agent chat")}</button>
-      <button className="btn" disabled={busy} onClick={() => void perform(async () => { if(active.action==="work")await factoryRequest(prefix+"/complete-work",{run_id:active.id});else await factoryRequest(`/runs/${active.id}/stop`, { summary: "Owner finished this workflow step; retained work remains available" }); })}>{active.action==="work"?t("Mark work done"):t("Finish this step")}</button>
+      {active.action==="implement-spec" ? <button className="btn" disabled={busy||check?.condition!=="passed"} onClick={()=>void perform(async()=>{await factoryRequest(`/runs/${active.id}/accept`,{head:check?.head??""});})}>{t("Accept reviewed head")}</button> : <button className="btn" disabled={busy} onClick={() => void perform(async () => { if(active.action==="work")await factoryRequest(prefix+"/complete-work",{run_id:active.id});else await factoryRequest(`/runs/${active.id}/stop`, { summary: "Owner finished this workflow step; retained work remains available" }); })}>{active.action==="work"?t("Mark work done"):t("Finish this step")}</button>}
+      {active.action==="implement-spec" && detail.review_evidence.filter(r=>r.run_id===active.id).map(r=><details key={r.id}><summary>{r.axis} · {r.outcome}</summary><pre>{r.content}</pre></details>)}
       <p className="field-hint">{t("Answer questions in the agent chat. Finish this step when its proposal is ready, then review it here.")}</p>
     </div> : <div className="factory-actions">
       <button className="btn btn-primary" disabled={disabled} onClick={() => void start("work")}><Play />{t("Start work")}</button>
       {!specification && <button className="btn" disabled={disabled} onClick={() => void start("grill-with-docs")}><ListChecks />{t("Plan implementation")}</button>}
-      {!specification && discussed && understood && <button className="btn" disabled={disabled} onClick={() => void start("to-spec")}>{t("Create specification")}</button>}
-      {specReady && !detail.tickets.length && <button className="btn" disabled={disabled} onClick={() => void start("to-tickets")}>{t("Plan tickets")}</button>}
+      {!specification && discussed && understood && <button className="btn" disabled={disabled || incompleteHandoff} onClick={() => void start("to-spec")}>{t("Create specification")}</button>}
+      {specReady && !detail.tickets.length && <button className="btn" disabled={disabled || incompleteHandoff} onClick={() => void start("to-tickets")}>{t("Plan tickets")}</button>}
       {detail.tickets.length > 0 && approved("ticket_graph", detail.graph_hash) && <button className="btn" disabled={disabled || !capability?.factory_ready} onClick={() => void start("implement-spec")}>{t("Start implementation")}</button>}
     </div>}
     {!active && !specification && <p className="field-hint">{t("Plan implementation starts Grill with docs: discuss the idea, approve a specification, then plan Tickets.")}</p>}
     <p className="field-hint">{t("New workspaces use the latest commit. Local changes stay in the original folder.")}</p>
     {detail.tickets.length > 0 && approved("ticket_graph",detail.graph_hash) && !capability?.factory_ready && <div className="assignment-proposal"><p>{t("Automated implementation needs a verified agent skill setup. Direct work and planning are available before verification.")}</p>
       {!active && <button className="btn" disabled={disabled} onClick={()=>void start("verify-provider")}>{t("Start native verification")}</button>}
-      {verification && <button className="btn" disabled={busy} onClick={()=>void perform(async()=>{const result=await factoryRequest<FactoryCapabilities>(`/runs/${verification.id}/verify-provider`,{});if(live.current)setCapabilities(result);})}>{t("Verify native evidence")}</button>}
+      {verification && <button className="btn" disabled={busy} onClick={()=>void perform(async()=>{const result=await factoryRequest<FactoryCapabilities>(`/runs/${verification.id}/verify-provider`,{});if(live.current)onCapabilities(result);})}>{t("Verify native evidence")}</button>}
     </div>}
     {specification && <div className="assignment-proposal"><h3>{t("Specification")}</h3><Markdown>{specification.content}</Markdown><div className="factory-actions">
       {!approved("specification", specification.id) && <button className="btn" disabled={busy} onClick={()=>void perform(async()=>{await factoryRequest(prefix+"/approvals",{kind:"specification",revision:specification.id,scope:`Specification ${specification.id}, SHA-256 ${specification.hash}`});})}>{t("Accept specification")}</button>}

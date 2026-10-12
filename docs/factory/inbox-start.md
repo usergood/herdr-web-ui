@@ -20,6 +20,32 @@ controls belong under advanced controls. Actual owner questions and approvals
 remain visible, and factory implementation still requires approved scope and a
 genuinely verified provider. No fixture can certify a real provider.
 
+To use it, open **Inbox chat** under a Project, enter the idea title and optional
+notes, and choose **Capture idea**. The saved Assignment offers **Start work** or
+**Plan implementation**. Start work opens the selected CLI's chat immediately.
+Return to the Assignment to **Continue in agent chat** or **Mark work done**, then
+archive completed work. Completion retains the worktree; it does not merge or
+publish its changes.
+
+For planning, answer the agent's questions in its chat or the recorded **Questions**
+form. Confirm shared understanding, then choose **Finish this step** and **Create
+specification**. Read and accept the specification and its testing plan before
+**Plan tickets**. Approve the Ticket graph before **Start implementation**. If the
+provider has not passed native factory verification, the page explains the gate
+and offers the verification round. Reviewing implementation offers **Accept
+reviewed head**; the server still requires fresh checks and independent passing
+Standards and Spec evidence for that exact head.
+
+Finishing planning retains a text-only native discussion handoff of at most
+50,000 characters and exports changed Markdown documents from the owned worktree
+(50 files, 512 KiB per file, 2 MiB total). The next workspace receives their frozen
+versions and a source/hash index. Revised captures use the latest document copies;
+older captures stay in history. Tool output, reasoning and scoped credentials are
+excluded from the discussion handoff. The original native store and worktree remain
+on the execution host. A partial transcript is labelled; failed capture shows a
+warning and requires **Continue with available context** before guided planning
+continues. Stop still releases native ownership when capture fails.
+
 Planning and direct work must tolerate changes in the primary checkout because
 they create owned workspaces. They preserve frozen repository/account identities,
 idempotency, uncertain-run ownership, registered-host routing and retained history.

@@ -1272,4 +1272,6 @@ export const KO: Record<string, string> = {
   "Mark work done": "작업 완료 표시",
   "Start implementation": "구현 시작",
   "Automated implementation needs a verified agent skill setup. Direct work and planning are available before verification.": "자동 구현에는 검증된 에이전트 스킬 설정이 필요합니다. 검증 전에도 직접 작업과 계획을 시작할 수 있습니다.",
+  "Some planning context could not be retained. Check the previous agent chat and documents before starting the next step.": "일부 계획 맥락을 보존하지 못했습니다. 다음 단계를 시작하기 전에 이전 에이전트 채팅과 문서를 확인하세요.",
+  "Continue with available context": "사용 가능한 맥락으로 계속",
 };

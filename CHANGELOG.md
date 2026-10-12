@@ -8,6 +8,9 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 ## [Unreleased]
 
 ### Added
+- Add direct native work and guided Matt Pocock planning from Inbox ideas, visible owner
+  questions and approvals, retained planning handoffs, and completion/archive controls.
+  Restore Project agents in the global Agents overview.
 - Add guided Project registration, detected checks and GitHub settings, native permission
   choices, private import of saved GitHub logins, Matt Pocock repository-guidance Assignments,
   and Herdr status indicators on folded Projects and their native chats.
