@@ -59,7 +59,7 @@ same **Ask** as step 5. Running it again keeps what is there.
 On Windows x64, use `./install.ps1 -Ref <reviewed-ref>` in PowerShell.
 It requires Git for Windows and installs missing herdr and Bun for the user, without Node or WSL.
 It starts the plugin when herdr runs. Phone access stays optional: use the **Phone setup** action.
-`HERDR_WEB_UI_REF` selects a branch or tag for testing; otherwise it installs the latest release.
+Select a reviewed branch/tag/SHA with `-Ref` or `HERDR_WEB_UI_REF`; an explicit ref is required.
 
 ## 3A. Install as a herdr plugin
 

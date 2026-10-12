@@ -108,7 +108,7 @@ settings = (
     "HERDR_WEB_APP_NAME=Saurons eye\n"
     "HERDR_WEB_AUTO_UPDATE=0\n"
     "HERDR_WEB_TAILSCALE_SERVE_ONLY=0\n"
-    "HERDR_FACTORY_PUBLIC_URL=https://herdr.glappet.eu\n"
+    "HERDR_FACTORY_PUBLIC_URL=http://127.0.0.1:7437\n"
     f"HERDR_WEB_TOKEN={secrets.token_hex(32)}\n"
 )
 temporary = directory / ".env.setup.tmp"
@@ -129,9 +129,12 @@ separate app state keeps the fork's devices, push keys, updates and factory reco
 of the original installation. Do not copy the original state into it to bypass phone pairing.
 Herdr separately provides the plugin's process-state directory for its PID and server log.
 
-`HERDR_FACTORY_PUBLIC_URL` gives remote workers the deployed callback address. A future remote
-worker must be able to reach and authenticate through the proxy too; this URL alone does not
-grant access. See [factory configuration](factory/runtime.md#start-and-configure).
+`HERDR_FACTORY_PUBLIC_URL` gives local agents a loopback callback address for their scoped Run
+credentials. This keeps local factory calls working while Traefik BasicAuth protects the browser
+hostname. Before using remote factory workers, configure a private callback route that their
+Machines can reach and that accepts the scoped bearer credential, then verify it from those
+Machines. Keep the public browser gate intact. See
+[factory configuration](factory/runtime.md#start-and-configure).
 
 ## 4. Start and verify locally
 
