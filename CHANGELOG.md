@@ -11,6 +11,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 - Add guided Project registration, detected checks and GitHub settings, native permission
   choices, private import of saved GitHub logins, Matt Pocock repository-guidance Assignments,
   and Herdr status indicators on folded Projects and their native chats.
+  ([#16](https://github.com/usergood/saurons-eye/pull/16) by @usergood)
 - Add independent Project management, host folder browsing, Project sidebar chats and child
   workers, scoped idea capture, retained archive/restore, and per-Project workflow/context targets.
   ([#15](https://github.com/usergood/saurons-eye/pull/15) by @usergood)
