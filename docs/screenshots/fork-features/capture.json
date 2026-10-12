@@ -1,6 +1,6 @@
 {
-  "source_commit": "03c366ff04d6f21ddb74ecbc6f00a7b57bf85582",
-  "captured_at": "2026-10-11T18:14:00.431Z",
+  "source_commit": "8fb8bdc75bfd8424f1bc018d7b1387686e5624cb",
+  "captured_at": "2026-10-12T17:35:28.385Z",
   "data": "Fictional fixtures through the real HTTP API and browser client",
   "native_execution": false,
   "browser": "153.0.8010.12",
