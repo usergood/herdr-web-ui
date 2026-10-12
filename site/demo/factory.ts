@@ -1,6 +1,8 @@
+import { nativeSessionRef } from "../../shared/native-pane.ts";
 /** Fictional browser-owned records. No server or filesystem imports. */
 import type { FactoryDetail, FactoryOverview, FactoryProject, FactoryRecord, Implementation, ProjectCheckout, ProjectReference } from "../../shared/factory.ts";
 import { projectReferenceTemplate } from "../../shared/project-references.ts";
+import type { Machine } from "../../shared/machines.ts";
 import type { AccountProfile, AccountService } from "../../shared/accounts.ts";
 import type { ProjectGitHubOverview, ProjectGitHubPolicy } from "../../shared/github-project.ts";
 import { fictionalGitHubPull } from "./github-fixtures.ts";
@@ -30,12 +32,15 @@ function capture(title: string, description: string): Implementation {
 }
 if (!details.size) capture("Explore release notes", "A fictional Inbox idea: keep release research and decisions in one place before selecting a Project.");
 
-export async function factoryDemo(url: URL, method: string, body: Record<string, unknown>): Promise<Response> {
+export async function factoryDemo(url: URL, method: string, body: Record<string, unknown>, machines: Machine[] = []): Promise<Response> {
   const path = url.pathname;
   if (path === "/api/factory-host/pane-state") return failure("demo_only", "Native state is unavailable in the fictional demo", 409);
   if (path === "/api/factory/pane-archives" && method === "POST") {
     const previous = paneArchives.find((a) => a.machine_id === body.machine_id && a.pane_id === body.pane_id);
-    const next = { ...(previous ?? record()), machine_id: String(body.machine_id), pane_id: String(body.pane_id), archived_at: body.archived ? new Date().toISOString() : null };
+    const pane = machines.find((m) => m.id === body.machine_id)?.snapshot?.panes.find((p) => p.pane_id === body.pane_id) as import("../../shared/protocol.ts").HerdrPane | undefined;
+    if (body.archived && (!pane || !["idle", "done"].includes(pane.agent_status) || (pane.background_tasks ?? 0) > 0)) return failure("pane_busy", "Finish native work before archiving");
+    if (body.archived && (pane?.terminal_id !== body.terminal_id || pane && nativeSessionRef(pane) !== body.session_ref)) return failure("pane_identity_changed", "Refresh the native chat");
+    const next = { ...(previous ?? record()), ...(body.archived && pane ? { terminal_id: pane.terminal_id, session_ref: nativeSessionRef(pane), title: pane.label || pane.title || pane.pane_id } : {}), machine_id: String(body.machine_id), pane_id: String(body.pane_id), archived_at: body.archived ? new Date().toISOString() : null };
     paneArchives = [...paneArchives.filter((a) => a.id !== previous?.id), next]; save(); return json(next);
   }
   const githubRoute = /^\/api\/factory\/projects\/([^/]+)\/github(?:\/(configure|sync)|\/pulls\/(\d+)\/(merge|update|rerequest|import|files))?$/.exec(path);
@@ -93,7 +98,7 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
     }
     return failure("unsupported", "This reference action is unavailable in the demo.");
   }
-  if (path === "/api/factory" && method === "GET") return json({ implementations: [...details.values()].map((detail) => detail.implementation).sort((a, b) => a.position - b.position), projects, checkouts, settings, activity: [], pane_links: [...details.values()].flatMap((d) => d.runs.flatMap((run) => [...(run.pane_id ? [{ implementation_id: d.implementation.id, run_id: run.id, worker_id: null, machine_id: run.machine_id, pane_id: run.pane_id, provider: run.provider, title: run.action, condition: run.condition }] : []), ...d.workers.filter((w) => w.run_id === run.id && w.pane_id).map((w) => ({ implementation_id: d.implementation.id, run_id: run.id, worker_id: w.id, machine_id: run.machine_id, pane_id: w.pane_id!, provider: run.provider, title: w.role, condition: w.condition }))])), pane_archives: paneArchives } satisfies FactoryOverview);
+  if (path === "/api/factory" && method === "GET") return json({ implementations: [...details.values()].map((detail) => detail.implementation).sort((a, b) => a.position - b.position), projects, checkouts, settings, activity: [], pane_links: [...details.values()].flatMap((d) => d.runs.flatMap((run) => [...(run.pane_id ? [{ project_id: d.implementation.project_id, implementation_id: d.implementation.id, run_id: run.id, worker_id: null, worktree: run.worktree, workspace_id: run.workspace_id, machine_id: run.machine_id, pane_id: run.pane_id, provider: run.provider, title: run.action, condition: run.condition }] : []), ...d.workers.filter((w) => w.run_id === run.id && w.pane_id).map((w) => ({ project_id: d.implementation.project_id, implementation_id: d.implementation.id, run_id: run.id, worker_id: w.id, worktree: w.worktree, workspace_id: w.workspace_id, machine_id: run.machine_id, pane_id: w.pane_id!, provider: run.provider, title: w.role, condition: w.condition }))])), pane_archives: paneArchives } satisfies FactoryOverview);
   if (path === "/api/factory/settings" && method === "POST") { settings = { ...settings, ...body } as typeof settings; save(); return json(settings); }
   if (path === "/api/factory/providers" || /\/machines\/[^/]+\/prepare$/.test(path)) return json({ factory_host_protocol: 1, skill_manifest: null, providers: ["codex", "claude", "opencode"].map((provider) => ({ provider, version: "demo", installed: false, skills_verified: false, factory_ready: false, reasons: ["Native agents and SSH preparation require a real execution Machine. The demo retains fictional records only."] })) });
   if (path === "/api/factory/implementations" && method === "POST") { if (typeof body.title !== "string" || !body.title.trim()) return failure("invalid_implementation", "Enter an idea title", 400); const project = projects.find((p) => p.id === body.project_id && !p.removed_at); if (body.project_id != null && !project) return failure("invalid_project", "Select a registered Project", 400); const idea = capture(body.title, typeof body.description === "string" ? body.description : ""); idea.project_id = project?.id ?? null; save(); return json(idea, 201); }

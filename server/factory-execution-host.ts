@@ -1,3 +1,4 @@
+import { nativeSessionRef } from "../shared/native-pane.ts";
 import { projectWorkflowPrompt } from "./factory-project-policy.ts";
 import { writePrivateFile } from "./factory-files.ts";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync } from "node:fs";
@@ -58,7 +59,7 @@ export class FactoryExecutionHost {
     const pane = this.native.paneState ? await this.native.paneState(paneId) : (await this.native.snapshot()).panes.find((entry) => entry.pane_id === paneId);
     if (!pane) throw new FactoryError("pane_not_found", "This native pane is no longer available", 404);
     const decorated = pane as import("../shared/protocol.ts").HerdrPane;
-    return { pane_id: decorated.pane_id, agent_status: decorated.agent_status, background_tasks: decorated.background_tasks, background_wait: decorated.background_wait };
+    return { pane_id: decorated.pane_id, terminal_id: decorated.terminal_id, session_ref: nativeSessionRef(decorated), title: decorated.label?.trim() || decorated.terminal_title_stripped?.trim() || decorated.title?.trim() || decorated.pane_id, agent_status: decorated.agent_status, background_tasks: decorated.background_tasks, background_wait: decorated.background_wait };
   }
   async operation(id: string, action: string, body: Record<string, unknown>): Promise<unknown> {
     const run = this.store.get<{ run: FactoryRun }>("host_leases", id)?.run;

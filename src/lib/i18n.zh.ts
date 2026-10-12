@@ -1225,4 +1225,7 @@ export const ZH: Record<string, string> = {
   "Removing a Project preserves its history and leaves native sessions running.": "移除项目会保留历史记录，原生会话将继续运行。",
   "Restore": "恢复",
   "Restore chat": "恢复聊天",
+  "Select a Machine": "选择主机",
+  "Project settings": "项目设置",
+  "Project settings for {name}": "{name} 的项目设置",
 };

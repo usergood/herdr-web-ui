@@ -20,7 +20,7 @@ Implementation base: `defd5d0` on the documentation branch. Jev remains research
 
 ## Use it
 
-Open Inbox → Projects and expand a registered Project, or open an Implementation linked to it. Under Project references, choose Use guide template, fill the title and usage note, edit the text, and save. Upload reference accepts text, Markdown, JSON, HTML and PNG/JPEG/GIF/WebP pictures. Add a caption explaining the picture's purpose. Edit reference creates an immutable new version; Remove from library hides the current entry while preserving version history.
+Open the settings button beside a registered Project, then select **Project references**. There, choose Use guide template, fill the title and usage note, edit the text, and save. Upload reference accepts text, Markdown, JSON, HTML and PNG/JPEG/GIF/WebP pictures. Add a caption explaining the picture's purpose. Edit reference creates an immutable new version; Remove from library hides the current entry while preserving version history.
 
 The downloadable starting guide is [project-reference.md](../templates/project-reference.md). The application template is defined in [shared/project-references.ts](../../shared/project-references.ts); the Markdown file is an exported example from this first version.
 

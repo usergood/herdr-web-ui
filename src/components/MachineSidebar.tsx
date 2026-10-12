@@ -1,5 +1,4 @@
 import type { ReactNode } from "react";
-import { remainingMachines } from "../lib/projectNavigation.ts";
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Download, Monitor, Plus, Settings, SlidersHorizontal, X } from "lucide-react";
 import type { Machine, MachineState, MachineUpdate } from "../../shared/machines.ts";
@@ -28,7 +27,6 @@ export const STATE_WORD: Readonly<Record<MachineState, string>> = {
 interface Props { projectNavigation?: ReactNode; excludedPanes?: Set<string>; machines: Machine[]; selectedMachineId: string; selectedPaneId: string | null; actions: AppActions; onSelect(machineId: string, paneId: string | null): void; onNew(machineId: string): void; onSetup(machine: Machine, update?: boolean): void }
 export function MachineSidebar(props: Props) {
   const t = useT();
-  const roster = props.excludedPanes ? remainingMachines(props.machines, props.excludedPanes) : props.machines;
   const { canInstall, installed, install, help } = useInstallPrompt();
   const [installHelpOpen, setInstallHelpOpen] = useState(false);
   // both lists draw from it: live counters per PC and the finishes looked at here (lib/sidebarActivity.tsx)
@@ -38,10 +36,10 @@ export function MachineSidebar(props: Props) {
     <div className="machine-list" aria-label={t("PCs and workspaces")}>
       {props.projectNavigation}
       {props.projectNavigation && <p className="project-navigation-label">Herdr</p>}
-      {roster.map((machine) => <MachineGroup key={machine.id} {...props} machine={machine} />)}
+      {props.machines.map((machine) => <MachineGroup key={machine.id} {...props} machine={machine} />)}
       {!props.machines.length && <p className="tree-state" role="status">{t("Loading PCs…")}</p>}
     </div>
-    <AgentSidebar machines={roster} selectedMachineId={props.selectedMachineId} selectedPaneId={props.selectedPaneId} stateWord={(machine) => t(STATE_WORD[machine.state])} onSelect={props.onSelect} />
+    <AgentSidebar excludedPanes={props.excludedPanes} machines={props.machines} selectedMachineId={props.selectedMachineId} selectedPaneId={props.selectedPaneId} stateWord={(machine) => t(STATE_WORD[machine.state])} onSelect={props.onSelect} />
     <footer className="sidebar-footer">
       {/* browsers without an install prompt (iOS, plain HTTP) get the steps instead */}
       {!installed && <button className="btn btn-ghost sidebar-footer-action" aria-expanded={canInstall ? undefined : installHelpOpen} onClick={() => { if (canInstall) void install(); else setInstallHelpOpen(!installHelpOpen); }}><Download aria-hidden="true" />{t("Install app")}</button>}
@@ -109,7 +107,7 @@ function MachineGroup({ machine, ...props }: Props & { machine: Machine }) {
     </div>}
     {error && <p className="machine-error" role="alert">{error}</p>}
     {!collapsed && <div className={online ? "" : "machine-offline"} {...(!online ? { inert: "" } : {})}>
-      {!online && !machine.snapshot ? <p className="tree-state machine-empty" role="status">{t("No saved sessions")}</p> : <MachineContext.Provider value={machine.id}><Sidebar snapshot={machine.snapshot} online={online} selectedPaneId={props.selectedMachineId === machine.id ? props.selectedPaneId : null} actions={actions} /></MachineContext.Provider>}
+      {!online && !machine.snapshot ? <p className="tree-state machine-empty" role="status">{t("No saved sessions")}</p> : <MachineContext.Provider value={machine.id}><Sidebar excludedPanes={props.excludedPanes} snapshot={machine.snapshot} online={online} selectedPaneId={props.selectedMachineId === machine.id ? props.selectedPaneId : null} actions={actions} /></MachineContext.Provider>}
     </div>}
   </section>;
 }

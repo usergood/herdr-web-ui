@@ -3,13 +3,13 @@ import { Archive, ArchiveRestore } from "lucide-react";
 import { factoryRequest } from "../lib/factoryApi.ts";
 import { useT } from "../lib/i18n.ts";
 
-export function ProjectChatArchive({ machineId, paneId, archived, onArchived }: { machineId: string; paneId: string; archived: boolean; onArchived: () => void }) {
+export function ProjectChatArchive({ machineId, paneId, terminalId, sessionRef, archived, onArchived }: { machineId: string; paneId: string; terminalId: string; sessionRef: string | null; archived: boolean; onArchived: () => void }) {
   const t = useT(); const [busy, setBusy] = useState(false); const [error, setError] = useState<string | null>(null);
   const live = useRef(true);
   useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
   async function archive() {
     if (busy) return; setBusy(true); setError(null);
-    try { await factoryRequest("/pane-archives", { machine_id: machineId, pane_id: paneId, archived: !archived }); if (live.current && !archived) onArchived(); }
+    try { await factoryRequest("/pane-archives", { machine_id: machineId, pane_id: paneId, terminal_id: terminalId, session_ref: sessionRef, archived: !archived }); if (live.current && !archived) onArchived(); }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(false); }
   }

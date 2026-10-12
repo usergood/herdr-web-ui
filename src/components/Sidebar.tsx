@@ -1,3 +1,4 @@
+import { paneStorageId } from "../../shared/machines.ts";
 import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { ChevronDown, ChevronRight, Ellipsis, Folder, FolderOpen, GitBranch, Layers, ListChecks, LoaderCircle, Pencil, Plus, Terminal, Trash2, TriangleAlert, X } from "lucide-react";
 
@@ -153,6 +154,7 @@ interface MenuState { anchor: HTMLElement; point?: { x: number; y: number }; pre
 interface ConfirmState { title: string; body: string; action?: string; run: () => Promise<void>; escalation?: { label: string; code: string; run: () => Promise<void> } }
 
 export interface SidebarProps {
+  excludedPanes?: Set<string>;
   snapshot: SessionSnapshot | null;
   online: boolean;
   selectedPaneId: string | null;
@@ -163,7 +165,7 @@ export interface SidebarProps {
  * Spaces follow herdr's workspace roster. A workspace opens its current pane; tabs and split
  * panes are navigated through the tab strip, while Agents is an independent API-backed list.
  */
-export function Sidebar({ snapshot, online, selectedPaneId, actions }: SidebarProps) {
+export function Sidebar({ snapshot, online, selectedPaneId, actions, excludedPanes }: SidebarProps) {
   const t = useT();
   const { settings } = useSettings();
   const twoLine = settings.sidebarRows === "two";
@@ -235,8 +237,8 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions }: SidebarPr
     const byId = new Map(snapshot.workspaces.map((workspace) => [workspace.workspace_id, workspace]));
     return workspaceOrder.map((id) => byId.get(id)).filter((workspace): workspace is WorkspaceInfo => workspace !== undefined);
   }, [snapshot, workspaceOrder]);
-  const roster = useMemo(() => rosterPanes(snapshot?.panes ?? [], selectedPaneId), [snapshot?.panes, selectedPaneId]);
-  const agentRows = useMemo(() => sidebarAgents(snapshot), [snapshot]);
+  const roster = useMemo(() => rosterPanes((snapshot?.panes ?? []).filter((pane) => !excludedPanes?.has(paneStorageId(machineId, pane.pane_id))), selectedPaneId), [snapshot?.panes, selectedPaneId, excludedPanes, machineId]);
+  const agentRows = useMemo(() => sidebarAgents(snapshot).filter((entry) => !excludedPanes?.has(paneStorageId(machineId, entry.pane.pane_id))), [snapshot, excludedPanes, machineId]);
   const agentByPane = useMemo(() => new Map(agentRows.map((entry) => [entry.pane.pane_id, entry])), [agentRows]);
   const agentNames = useMemo(() => workspaceAgentLabels(agentRows), [agentRows]);
   // herdr packs a repository's worktree workspaces under the one on its main checkout; a worktree
@@ -257,6 +259,8 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions }: SidebarPr
     }
     return top.map((workspace) => ({ workspace, children: childrenOf.get(workspace.workspace_id) ?? [] }));
   }, [orderedWorkspaces]);
+  const visibleWorkspace = (id: string) => roster.some((pane) => pane.workspace_id === id);
+  const visibleGroups = worktreeGroups.filter((group) => visibleWorkspace(group.workspace.workspace_id) || group.children.some((child) => visibleWorkspace(child.workspace_id)));
 
   useLayoutEffect(() => {
     const id = revealOpenedWorkspace.current;
@@ -433,16 +437,17 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions }: SidebarPr
   // one (herdr keeps its worktrees packed behind it), and a worktree moves among its siblings.
   // The index herdr gets is the edge of the group the move lands on.
   const moveIndex = (workspaceId: string, direction: -1 | 1): number | null => {
-    const groupIndex = worktreeGroups.findIndex((group) => group.workspace.workspace_id === workspaceId);
+    const groupIndex = visibleGroups.findIndex((group) => group.workspace.workspace_id === workspaceId);
     if (groupIndex >= 0) {
-      const target = worktreeGroups[groupIndex + direction];
+      const target = visibleGroups[groupIndex + direction];
       if (!target) return null;
       const edge = direction === 1 ? (target.children[target.children.length - 1] ?? target.workspace) : target.workspace;
       return workspaceOrder.indexOf(edge.workspace_id);
     }
     const parent = worktreeGroups.find((group) => group.children.some((child) => child.workspace_id === workspaceId));
     if (!parent) return null;
-    const sibling = parent.children[parent.children.findIndex((child) => child.workspace_id === workspaceId) + direction];
+    const siblings = parent.children.filter((child) => visibleWorkspace(child.workspace_id));
+    const sibling = siblings[siblings.findIndex((child) => child.workspace_id === workspaceId) + direction];
     return sibling ? workspaceOrder.indexOf(sibling.workspace_id) : null;
   };
   const moveVisible = (workspaceId: string, direction: -1 | 1): void => {
@@ -630,19 +635,20 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions }: SidebarPr
               <button type="button" className="btn" onClick={actions.openNewSession}><Plus aria-hidden="true" />{t("New workspace")}</button>
             </div>
           )}
-          <ul className="workspace-list">{worktreeGroups.map(({ workspace, children }) => {
-            const childrenHidden = collapsedWorktrees.has(workspace.worktree?.repo_key ?? "") && !children.some((child) => roster.some((pane) => pane.workspace_id === child.workspace_id && pane.pane_id === selectedPaneId));
+          <ul className="workspace-list">{visibleGroups.map(({ workspace, children }) => {
+            const visibleChildren = children.filter((child) => visibleWorkspace(child.workspace_id));
+            const childrenHidden = visibleWorkspace(workspace.workspace_id) && collapsedWorktrees.has(workspace.worktree?.repo_key ?? "") && !children.some((child) => roster.some((pane) => pane.workspace_id === child.workspace_id && pane.pane_id === selectedPaneId));
             // a group moved below this one lands after its worktrees, and the line says so
             const afterChildren = dropMark?.id === workspace.workspace_id && dropMark.children;
             return <Fragment key={workspace.workspace_id}>
-              {renderWorkspaceRow(workspace, children, false, dropMark?.id === workspace.workspace_id && (!dropMark.children || childrenHidden) ? dropMark.side : undefined)}
-              {children.length > 0 && <li
+              {renderWorkspaceRow(workspace, visibleChildren, false, dropMark?.id === workspace.workspace_id && (!dropMark.children || childrenHidden) ? dropMark.side : undefined)}
+              {visibleChildren.length > 0 && <li
                 className="worktree-children"
                 id={`${rosterId}-worktrees-${encodeURIComponent(workspace.worktree!.repo_key)}`}
                 hidden={childrenHidden}
                 data-drop={afterChildren && !childrenHidden ? "after" : undefined}
               ><ul className="workspace-list">
-                {children.filter((child) => !collapsedWorktrees.has(workspace.worktree!.repo_key) || roster.some((pane) => pane.workspace_id === child.workspace_id && pane.pane_id === selectedPaneId)).map((child) => renderWorkspaceRow(child, [], true, dropMark?.id === child.workspace_id ? dropMark.side : undefined))}
+                {visibleChildren.filter((child) => !childrenHidden || roster.some((pane) => pane.workspace_id === child.workspace_id && pane.pane_id === selectedPaneId)).map((child) => renderWorkspaceRow(child, [], true, dropMark?.id === child.workspace_id ? dropMark.side : undefined))}
               </ul></li>}
             </Fragment>;
           })}</ul>

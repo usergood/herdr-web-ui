@@ -1,3 +1,4 @@
+import { nativeSessionRef } from "../shared/native-pane.ts";
 import { describe, expect, it, beforeAll, afterAll } from "bun:test";
 import { Database } from "bun:sqlite";
 import { appendFileSync, chmodSync, copyFileSync, mkdirSync, mkdtempSync, existsSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
@@ -41,6 +42,18 @@ afterAll(() => {
 const base = () => `http://localhost:${server.port}`;
 
 describe("factory records", () => {
+  it("requires a currently registered host when changing Project execution defaults", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-host-default-")); const repo = join(state, "repo"); mkdirSync(repo); writeFileSync(join(repo, "README.md"), "Owned host fixture\n");
+    for (const args of [["init", "-b", "main"], ["add", "."], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "initial"]]) expect(Bun.spawnSync(["git", ...args], { cwd: repo }).exitCode).toBe(0);
+    const remote = createServer({ port: 0, stateDir: join(state, "remote"), machines: false, token: "owned-fixture-token" }); let registered = true;
+    const app = createServer({ port: 0, stateDir: join(state, "connection"), machines: false, factory: { machineEndpoint: (id) => registered && id === "fixture-host" ? { url: `http://localhost:${remote.port}`, token: "owned-fixture-token" } : undefined } });
+    const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    try {
+      const response = await request("/projects", { name: "Registered host", path: repo, machine_id: "fixture-host", provider: "codex", tracker: "app" }); expect(response.status).toBe(201); const project = await response.json();
+      registered = false;
+      const saved = await request(`/projects/${project.id}/configure`, { machine_id: "fixture-host" }); expect(saved.status).toBe(400); expect((await saved.json()).error.code).toBe("invalid_machine");
+    } finally { app.stop(); remote.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
   it("archives an idle native chat durably, refuses working chats, and restores without closing a pane", async () => {
     const state = mkdtempSync(join(tmpdir(), "saurons-pane-archive-"));
     const workspace = await workspaceCreate({ label: "herdr-web-ui-test-project-archive" });
@@ -49,9 +62,11 @@ describe("factory records", () => {
     const request = (body?: unknown) => fetch(`http://localhost:${app.port}/api/factory${body ? "/pane-archives" : ""}`, body ? { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) } : {});
     try {
       await herdrRpc("pane.report_agent", { pane_id: paneId, source: "manual", agent: "codex", state: "working" });
-      const busy = await request({ machine_id: "local", pane_id: paneId, archived: true }); expect(await busy.json()).toMatchObject({ error: { code: "pane_busy" } }); expect(busy.status).toBe(409);
+      const busy = await request({ machine_id: "local", pane_id: paneId, terminal_id: workspace.root_pane.terminal_id, session_ref: nativeSessionRef(workspace.root_pane), archived: true }); expect(await busy.json()).toMatchObject({ error: { code: "pane_busy" } }); expect(busy.status).toBe(409);
       await herdrRpc("pane.report_agent", { pane_id: paneId, source: "manual", agent: "codex", state: "idle" });
-      expect((await request({ machine_id: "local", pane_id: paneId, archived: true })).status).toBe(200);
+      expect((await request({ machine_id: "local", pane_id: paneId, terminal_id: "another-terminal", session_ref: null, archived: true })).status).toBe(409);
+      expect((await request({ machine_id: "local", pane_id: paneId, terminal_id: workspace.root_pane.terminal_id, session_ref: "another-history", archived: true })).status).toBe(409);
+      expect((await request({ machine_id: "local", pane_id: paneId, terminal_id: workspace.root_pane.terminal_id, session_ref: nativeSessionRef(workspace.root_pane), archived: true })).status).toBe(200);
       app.stop(); app = createServer({ port: 0, stateDir: state, machines: false });
       const retained = await request().then((r) => r.json()); expect(retained.pane_archives[0]).toMatchObject({ machine_id: "local", pane_id: paneId, archived_at: expect.any(String) });
       expect((await sessionSnapshot()).panes.some((p) => p.pane_id === paneId)).toBe(true);
@@ -113,6 +128,7 @@ describe("factory records", () => {
       expect(worker.condition).toBe("interrupted"); expect(worker.workspace_id).toBeNull();
       const recovered = await request(`runs/${run.id}/workers/${worker.id}/reconcile`, {}).then((response) => response.json());
       expect(recovered.workspace_id).toBe(workspaces[1]); expect(recovered.pane_id).not.toBeNull(); expect(recovered.condition).toBe("interrupted"); expect(starts).toBe(1);
+      expect((await request(`implementations/${idea.id}/configure`, { project_id: null })).status).toBe(409);
       const navigation = await fetch(`http://localhost:${app.port}/api/factory`).then((response) => response.json());
       expect(navigation.pane_links).toContainEqual(expect.objectContaining({ implementation_id: idea.id, run_id: run.id, worker_id: worker.id, pane_id: recovered.pane_id, provider: "codex", title: "standards" }));
       await request(`projects/${project.id}/configure`, { context_target_tokens: 200000 });
@@ -376,6 +392,8 @@ describe("factory records", () => {
       const overview = await fetch(`http://localhost:${app.port}/api/factory`).then((response) => response.json());
       expect(overview.checkouts.filter((entry: { project_id: string }) => entry.project_id === project.id)).toHaveLength(1);
       expect(overview.checkouts[0].instructions).toContainEqual(expect.objectContaining({ path: "nested/AGENTS.md", content: "Only the nested module owns its files.\n" }));
+      const navigation = await fetch(`http://localhost:${app.port}/api/factory?navigation=1`).then((response) => response.json());
+      expect(navigation.checkouts[0].instructions).toBeUndefined(); expect(navigation.checkouts[0].path).toBe(realpathSync(clone));
       expect(overview.projects[0].provider).toBe("claude");
     } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
   });

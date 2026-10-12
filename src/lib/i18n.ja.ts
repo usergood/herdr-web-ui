@@ -1223,4 +1223,7 @@ export const JA: Record<string, string> = {
   "Removing a Project preserves its history and leaves native sessions running.": "プロジェクトを削除しても履歴は保持され、ネイティブセッションは実行を続けます。",
   "Restore": "復元",
   "Restore chat": "チャットを復元",
+  "Select a Machine": "マシンを選択",
+  "Project settings": "プロジェクト設定",
+  "Project settings for {name}": "{name} のプロジェクト設定",
 };

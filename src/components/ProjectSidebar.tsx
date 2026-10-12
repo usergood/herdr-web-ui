@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Folder, Inbox, MessageSquare, Plus, SquareTerminal } from "lucide-react";
+import { Folder, Inbox, MessageSquare, Plus, SquareTerminal, Settings } from "lucide-react";
 import type { FactoryOverview } from "../../shared/factory.ts";
 import type { OmoTask } from "../../shared/protocol.ts";
 import { MachineContext } from "../lib/machineContext.tsx";
@@ -16,13 +16,14 @@ export function ProjectSidebar({ overview, machines, error, onNavigate, onOpenPa
   return <nav className="project-navigation" aria-label={t("Projects")}>
     <div className="project-navigation-heading"><button onClick={() => onNavigate({ kind: "projects" })}><Folder />{t("Projects")}</button><button className="icon-button" title={t("Register Project")} aria-label={t("Register Project")} onClick={() => onNavigate({ kind: "projects" })}><Plus /></button></div>
     <button className="project-navigation-row" onClick={() => onNavigate({ kind: "inbox" })}><Inbox />{t("Inbox")}</button>
+    <button className="project-navigation-row" onClick={() => onNavigate({ kind: "assignments" })}><SquareTerminal />{t("Assignments")}</button>
     {error && <p className="tree-state" role="alert">{error}</p>}
     {overview?.projects.filter((p) => !p.removed_at).map((project) => <details className="project-navigation-group" key={project.id} open>
       <summary><span>{project.name}</span></summary><div className="project-navigation-children">
-      <button className="project-navigation-row" onClick={() => onNavigate({ kind: "project", id: project.id })}><Folder />{project.name}</button>
+      <div className="project-navigation-heading"><button className="project-navigation-row" onClick={() => onNavigate({ kind: "project", id: project.id })}><Folder />{project.name}</button><button className="icon-button" aria-label={t("Project settings for {name}", { name: project.name })} title={t("Project settings")} onClick={() => onNavigate({ kind: "project-settings", id: project.id })}><Settings /></button></div>
       <button className="project-navigation-row" onClick={() => onNavigate({ kind: "project-inbox", id: project.id })}><MessageSquare />{t("Inbox chat")}</button>
       <span className="project-navigation-label">{t("Assignments")}</span>
-      {overview.implementations.filter((i) => i.project_id === project.id && !i.archived_at).map((idea) => <div className="project-assignment" key={idea.id}>
+      {overview.implementations.filter((i) => (i.project_id === project.id || rows.some((row) => row.projectId === project.id && row.link?.implementation_id === i.id)) && !i.archived_at).map((idea) => <div className="project-assignment" key={idea.id}>
         <button className="project-navigation-row" onClick={() => onNavigate({ kind: "assignment", id: idea.id })}><AgentMark agent={idea.provider ?? project.provider} /><span>{idea.title}</span><small>{idea.stage}</small></button>
         <div className="project-navigation-children">{rows.filter((r) => r.projectId === project.id && r.link?.implementation_id === idea.id && !r.archived).map((row) => <ProjectPaneRow key={`${row.machine.id}:${row.pane.pane_id}`} row={row} onOpenPane={onOpenPane} selected={selectedMachineId === row.machine.id && selectedPaneId === row.pane.pane_id} />)}</div>
       </div>)}
@@ -32,7 +33,7 @@ export function ProjectSidebar({ overview, machines, error, onNavigate, onOpenPa
 }
 function ProjectPaneRow({ row, selected, onOpenPane }: { row: ProjectPane; selected: boolean; onOpenPane: (machineId: string, paneId: string) => void }) {
   const t = useT(); const [expanded, setExpanded] = useState(false);
-  return <div className="project-pane-row"><button className={`project-navigation-row${selected ? " is-selected" : ""}`} title={`${row.machine.name} · ${row.pane.cwd ?? ""}`} onClick={() => onOpenPane(row.machine.id, row.pane.pane_id)}>
+  return <div className="project-pane-row"><button className={`project-navigation-row${selected ? " is-selected" : ""}`} aria-current={selected ? "true" : undefined} title={`${row.machine.name} · ${row.pane.cwd ?? ""}`} onClick={() => onOpenPane(row.machine.id, row.pane.pane_id)}>
     {row.pane.agent || row.link?.provider ? <AgentMark agent={row.pane.agent ?? row.link!.provider} /> : <SquareTerminal />}<span>{row.link?.title ?? displayPaneTitle(row.pane)}</span><small role="status">{row.pane.agent_status}</small>
   </button>{(!!row.pane.background_tasks || ["claude", "omo"].includes(row.pane.agent ?? row.link?.provider ?? "")) && <><button className="project-navigation-row" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{t("Child tasks")}{!!row.pane.background_tasks && ` · ${row.pane.background_tasks}`}</button>{expanded && <MachineContext.Provider value={row.machine.id}><NativeChildren paneId={row.pane.pane_id} provider={row.pane.agent ?? ""} onOpen={() => onOpenPane(row.machine.id, row.pane.pane_id)} /></MachineContext.Provider>}</>}</div>;
 }

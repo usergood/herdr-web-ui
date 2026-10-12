@@ -290,12 +290,12 @@ unverified provider. [Factory setup](factory/runtime.md),
 Use **app** as the factory Ticket tracker. GitHub synchronization imports external work into
 this local workflow and retains its source links.
 
-Use **Project execution settings → Project accounts** to create and verify separate GitHub,
+Use **Project settings → Accounts** to create and verify separate GitHub,
 Codex/Claude subscription and Cloudflare profiles. Bind the intended profiles for each Machine
 before running agents. Keys and native sign-in state stay in private machine storage; do not copy
 them into repository files or the shared reference library. [Account setup](factory/account-setup.md)
 
-For GitHub work, open **Project execution settings → Project GitHub workflow**. Select the
+For GitHub work, open **Project settings → GitHub**. Select the
 repository and a verified GitHub profile on the connection server, enter review rules, trusted
 reviewer logins and exact GitHub check names, then save. Enable issue import and use **Sync GitHub**
 first. The PR view includes feedback, unresolved conversations and **Source** patches. Requested

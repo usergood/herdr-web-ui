@@ -1221,4 +1221,7 @@ export const KO: Record<string, string> = {
   "Removing a Project preserves its history and leaves native sessions running.": "프로젝트를 제거해도 기록은 유지되고 네이티브 세션은 계속 실행됩니다.",
   "Restore": "복원",
   "Restore chat": "채팅 복원",
+  "Select a Machine": "머신 선택",
+  "Project settings": "프로젝트 설정",
+  "Project settings for {name}": "{name} 프로젝트 설정",
 };

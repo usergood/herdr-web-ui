@@ -1067,6 +1067,8 @@ export const DEFAULT_PORT = 7317;
  * keys below; all JSON errors are ApiError. Mutations require same-origin and
  * x-herdr-factory: 1; reads and writes require owner access.
  * GET /api/factory -> FactoryOverview; GET /api/factory/implementations/:id -> FactoryDetail.
+ * GET /api/factory?navigation=1 -> FactoryOverview without checkout instruction contents;
+ * sidebar/page polling uses metadata; full instructions remain in frozen Run context.
  * POST /api/factory/implementations (implementation) -> Implementation, 201, initial Chat retained.
  * POST /api/factory/projects (project) -> FactoryProject, 201, checkout verified on selected Machine.
  * POST /api/factory/projects/:id/remove|restore (empty) -> FactoryProject;
@@ -1074,7 +1076,8 @@ export const DEFAULT_PORT = 7317;
  * POST /api/factory/implementations/:id/archive|restore (empty) -> Implementation;
  * only completed Assignments with no active work can be archived.
  * POST /api/factory/pane-archives (pane_archive) -> FactoryPaneArchive;
- * archive requires native idle/done state and no active children; restore retains the pane.
+ * archive requires matching terminal/session identity, native idle/done state and no active
+ * children; restore retains the pane. Reused pane IDs cannot hide unrelated native chats.
  * POST /api/factory-host/pane-state ({pane_id}) -> native status/background counts;
  * read-only state for authenticated Machine bridge archive validation.
  * POST /api/factory/implementations/:id/configure (configure) -> Implementation; future defaults only.
@@ -1166,7 +1169,7 @@ export type { ProjectReference, ProjectReferenceLibrary, CodexReferenceContext, 
 
 /** Factory mutation bodies. Runtime validation still treats incoming JSON as untrusted. */
 export interface FactoryRequests {
-  pane_archive: { machine_id: string; pane_id: string; archived: boolean };
+  pane_archive: { machine_id: string; pane_id: string; archived: boolean; terminal_id?: string; session_ref?: string | null };
   github_configuration: import("./github-project.ts").ProjectGitHubConfiguration;
   github_action: { head: string; base: string; policy_revision: string };
   implementation: { title: string; description: string; project_id?: string | null };

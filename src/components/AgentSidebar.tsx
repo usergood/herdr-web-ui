@@ -49,6 +49,7 @@ function AgentRowBody({ mark, markKind, title, name, context, backgroundTasks, p
 }
 
 export interface AgentSidebarProps {
+  excludedPanes?: Set<string>;
   machines: Machine[];
   selectedMachineId: string;
   selectedPaneId: string | null;
@@ -72,7 +73,7 @@ interface AgentRow { machine: Machine; entry: SidebarAgent }
  * the cards that hold pins first; off (the default), or in Activity order, which mixes
  * workspaces, the rows stand alone.
  */
-export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stateWord, onSelect }: AgentSidebarProps) {
+export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stateWord, onSelect, excludedPanes }: AgentSidebarProps) {
   const t = useT();
   const listId = useId();
   const [collapsed, setCollapsed] = useState(() => window.matchMedia?.(DRAWER_QUERY).matches === true);
@@ -81,18 +82,19 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   const activity = useSidebarActivity();
   // Settings → Agents order: herdr's order, or Activity within each PC (each herdr counts its own changes)
   const byActivity = settings.agentOrder === "activity";
-  const rows = useMemo(() => machines.flatMap((machine) => {
+  const allRows = useMemo(() => machines.flatMap((machine) => {
     const agents = sidebarAgents(machine.snapshot);
     return (byActivity ? activityOrder(agents, (entry) => entry.pane, activity.seqs(machine.id)) : agents).map((entry): AgentRow => ({ machine, entry }));
   }), [machines, byActivity, activity]);
+  const rows = useMemo(() => allRows.filter(({ machine, entry }) => !excludedPanes?.has(paneStorageId(machine.id, entry.pane.pane_id))), [allRows, excludedPanes]);
   // pins lead: alone, the pinned rows stand first; in cards, each stays in its own card, first there,
   // and a card that holds one comes before the cards that hold none
   const split = useMemo(() => splitPinnedRows(rows, settings.agentPins ? pinned : NO_PINS, ({ machine, entry }) => sidebarPinKey(machine.id, entry.pane.pane_id)), [rows, pinned, settings.agentPins]);
   useEffect(() => {
-    const live = new Set(rows.map(({ machine, entry }) => sidebarPinKey(machine.id, entry.pane.pane_id)));
+    const live = new Set(allRows.map(({ machine, entry }) => sidebarPinKey(machine.id, entry.pane.pane_id)));
     const next = pruneSidebarPins(pinned, live, machines);
     if (next.length !== pinned.length) { setPinned(next); saveSidebarPins(next); }
-  }, [machines, rows, pinned]);
+  }, [machines, allRows, pinned]);
   // a pin moves the row, and maybe its card, so React may draw a new star: a star that had the
   // keyboard focus hands it to its successor
   const sectionRef = useRef<HTMLElement>(null);

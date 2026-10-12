@@ -40,7 +40,7 @@ export class FactoryService {
   private readonly accounts: MachineAccounts;
   private readonly github: ProjectGitHub;
   private stopped = false;
-  constructor(stateDir: string, private readonly skillsPath: string | null = null, native: Partial<FactoryNative> = {}, endpoint: MachineEndpoint = () => undefined, publicUrl: string | null = null, accountTools: AccountTools = {}) {
+  constructor(stateDir: string, private readonly skillsPath: string | null = null, native: Partial<FactoryNative> = {}, endpoint: MachineEndpoint = () => undefined, publicUrl: string | null = null, accountTools: AccountTools = {}, private readonly registeredMachine: (id: string) => boolean = (id) => id === "local" || !!endpoint(id)) {
     this.accounts = new MachineAccounts(stateDir, accountTools);
     this.store = new FactoryStore(stateDir); this.artifacts = new FactoryArtifacts(this.store, (text) => this.accounts.assertPublic(text)); this.workflow = new FactoryWorkflow(this.store); this.backup = new FactoryBackup(this.store, this.artifacts);
     this.accounts.usage((id) => [...this.store.list<FactoryRun>("runs"), ...this.store.list<{ run: FactoryRun; closing?: boolean }>("host_leases").map((lease) => lease.run)].some((run) => ["accepted", "working", "needs_you", "blocked", "disconnected", "interrupted"].includes(run.condition) && (run.manifest as { account_snapshot?: import("../shared/accounts.ts").AccountBindingSnapshot })?.account_snapshot?.profiles.some((profile) => profile.id === id)));
@@ -56,10 +56,15 @@ export class FactoryService {
     const runs = this.store.list<FactoryRun>("runs", id); const ids = new Set(runs.map((run) => run.id));
     return runs.some((run) => !["completed", "failed", "cancelled"].includes(run.condition)) || this.store.list<import("../shared/factory.ts").FactoryWorker>("workers").some((worker) => ids.has(worker.run_id) && !["completed", "failed", "cancelled"].includes(worker.condition));
   }
+  private projectActive(id: string): boolean {
+    const runs = this.store.list<FactoryRun>("runs").filter((run) => (run.manifest as { project?: FactoryProject })?.project?.id === id);
+    const ids = new Set(runs.map((run) => run.id));
+    return runs.some((run) => !["completed", "failed", "cancelled"].includes(run.condition)) || this.store.list<import("../shared/factory.ts").FactoryWorker>("workers").some((worker) => ids.has(worker.run_id) && !["completed", "failed", "cancelled"].includes(worker.condition));
+  }
   private paneLinks(): import("../shared/factory.ts").FactoryPaneLink[] {
     return this.store.list<FactoryRun>("runs").flatMap((run) => {
-      const base = { implementation_id: run.implementation_id, run_id: run.id, machine_id: run.machine_id, provider: run.provider };
-      return [...(run.pane_id ? [{ ...base, pane_id: run.pane_id, worker_id: null, title: run.action, condition: run.condition }] : []), ...this.store.list<import("../shared/factory.ts").FactoryWorker>("workers", run.id).filter((worker) => worker.pane_id).map((worker) => ({ ...base, pane_id: worker.pane_id!, worker_id: worker.id, title: (run.manifest as { tickets?: { id: string; title: string }[] })?.tickets?.find((ticket) => ticket.id === worker.ticket_id)?.title ?? worker.role, condition: worker.condition }))];
+      const base = { project_id: (run.manifest as { project?: FactoryProject })?.project?.id ?? null, implementation_id: run.implementation_id, run_id: run.id, machine_id: run.machine_id, provider: run.provider };
+      return [...(run.pane_id ? [{ ...base, pane_id: run.pane_id, worker_id: null, worktree: run.worktree, workspace_id: run.workspace_id, title: run.action, condition: run.condition }] : []), ...this.store.list<import("../shared/factory.ts").FactoryWorker>("workers", run.id).filter((worker) => worker.pane_id).map((worker) => ({ ...base, pane_id: worker.pane_id!, worker_id: worker.id, worktree: worker.worktree, workspace_id: worker.workspace_id, title: (run.manifest as { tickets?: { id: string; title: string }[] })?.tickets?.find((ticket) => ticket.id === worker.ticket_id)?.title ?? worker.role, condition: worker.condition }))];
     });
   }
   bindPrompt(prompt: FactoryNative["prompt"]): void { this.executionHost.bindPrompt(prompt); }
@@ -170,13 +175,18 @@ export class FactoryService {
       if (url.pathname === "/api/factory/pane-archives" && request.method === "POST") {
         const body = await this.body(request);
         if (typeof body.machine_id !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(body.machine_id) || typeof body.pane_id !== "string" || (!body.pane_id || body.pane_id.length > 200 || /[\0\r\n]/.test(body.pane_id)) || typeof body.archived !== "boolean") throw new FactoryError("invalid_archive", "Select a Machine and native pane");
+        let identity: { terminal_id: string; session_ref: string | null; title: string } | undefined;
         if (body.archived) {
+          if (typeof body.terminal_id !== "string" || !body.terminal_id) throw new FactoryError("invalid_archive", "Capture the native terminal identity before archiving");
           const pane = await this.runtime.paneState(body.machine_id, body.pane_id);
+          if (typeof pane.terminal_id !== "string" || !pane.terminal_id) throw new FactoryError("archive_bridge_required", "Update this host’s bridge before archiving native chats", 409);
+          if (body.terminal_id !== pane.terminal_id || body.session_ref !== pane.session_ref) throw new FactoryError("pane_identity_changed", "The native chat changed; refresh before archiving", 409);
+          identity = { terminal_id: pane.terminal_id, session_ref: pane.session_ref, title: (typeof pane.title === "string" ? pane.title : pane.pane_id).slice(0, 500) };
           const link = this.paneLinks().find((entry) => entry.machine_id === body.machine_id && entry.pane_id === body.pane_id);
           if (pane.pane_id !== body.pane_id || !["idle", "done"].includes(pane.agent_status) || (pane.background_tasks ?? 0) > 0 || pane.background_wait || link && this.activeWork(link.implementation_id)) throw new FactoryError("pane_busy", "Finish or stop native work before archiving this chat", 409);
         }
         const id = hash(JSON.stringify([body.machine_id, body.pane_id])); const previous = this.store.get<import("../shared/factory.ts").FactoryPaneArchive>("pane_archives", id);
-        const record = { ...(previous ?? this.store.record()), id, machine_id: body.machine_id, pane_id: body.pane_id, archived_at: body.archived ? new Date().toISOString() : null, updated_at: new Date().toISOString() };
+        const record = { ...(previous ?? this.store.record()), id, machine_id: body.machine_id, pane_id: body.pane_id, ...identity, archived_at: body.archived ? new Date().toISOString() : null, updated_at: new Date().toISOString() };
         this.store.put("pane_archives", record); return jsonResponse(record);
       }
       const github = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/github(?:\/(configure|sync)|\/pulls\/(\d+)\/(merge|update|rerequest|import|files))?$/.exec(url.pathname);
@@ -254,7 +264,7 @@ export class FactoryService {
       if (hostOutputs && request.method === "GET") return jsonResponse(hostOutputs[2] ? this.executionHost.output(hostOutputs[1]!, url.searchParams.get("name") ?? "", url.searchParams.get("hash") ?? "") : this.executionHost.outputs(hostOutputs[1]!));
       const prepareRoute = /^\/api\/factory\/machines\/([a-zA-Z0-9_-]+)\/prepare$/.exec(url.pathname);
       if (prepareRoute && request.method === "POST") return jsonResponse(await this.runtime.prepare(prepareRoute[1]!));
-      if (url.pathname === "/api/factory" && request.method === "GET") return jsonResponse({ implementations: this.store.list<Implementation>("implementations").sort((a, b) => a.position - b.position), pane_links: this.paneLinks(), pane_archives: this.store.list("pane_archives"), projects: this.store.list("projects"), checkouts: this.store.list("checkouts"), settings: this.settings(), activity: this.store.list<Implementation>("implementations").flatMap((idea) => { const run = this.store.list<FactoryRun>("runs", idea.id).at(-1); return run ? [{ implementation_id: idea.id, run_id: run.id, condition: run.condition, action: run.action, waiting_reason: run.waiting_reason, completed_tickets: this.workflow.tickets(idea.id).filter((ticket) => ticket.status === "done").length, total_tickets: this.workflow.tickets(idea.id).length }] : []; }) });
+      if (url.pathname === "/api/factory" && request.method === "GET") return jsonResponse({ implementations: this.store.list<Implementation>("implementations").sort((a, b) => a.position - b.position), pane_links: this.paneLinks(), pane_archives: this.store.list("pane_archives"), projects: this.store.list("projects"), checkouts: this.store.list<ProjectCheckout>("checkouts").map((entry) => { if (url.searchParams.get("navigation") !== "1") return entry; const { instructions: _instructions, ...metadata } = entry; return metadata; }), settings: this.settings(), activity: this.store.list<Implementation>("implementations").flatMap((idea) => { const run = this.store.list<FactoryRun>("runs", idea.id).at(-1); return run ? [{ implementation_id: idea.id, run_id: run.id, condition: run.condition, action: run.action, waiting_reason: run.waiting_reason, completed_tickets: this.workflow.tickets(idea.id).filter((ticket) => ticket.status === "done").length, total_tickets: this.workflow.tickets(idea.id).length }] : []; }) });
       if (url.pathname === "/api/factory/settings" && request.method === "POST") {
         const body = await this.body(request); const settings = { ...this.settings() };
         const known = new Set(Object.keys(settings));
@@ -300,18 +310,18 @@ export class FactoryService {
       }
       const projectRoute = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/(configure|checkouts|remove|restore)$/.exec(url.pathname);
       if (projectRoute && request.method === "POST") {
+        const body = await this.body(request);
         const project = this.store.get<FactoryProject>("projects", projectRoute[1]!);
         if (!project) throw new FactoryError("not_found", "Project not found", 404);
-        const body = await this.body(request);
         if (projectRoute[2] === "remove" || projectRoute[2] === "restore") {
-          const active = this.store.list<Implementation>("implementations").filter((idea) => idea.project_id === project.id).some((idea) => this.activeWork(idea.id));
+          const active = this.projectActive(project.id);
           if (projectRoute[2] === "remove" && active) throw new FactoryError("project_busy", "Finish or stop active Project work before removing its registration", 409);
           const next = { ...project, removed_at: projectRoute[2] === "remove" ? new Date().toISOString() : null, updated_at: new Date().toISOString() };
           this.store.put("projects", next); this.store.event(null, "project_registration_changed", { project_id: project.id, removed_at: next.removed_at }); return jsonResponse(next);
         }
         if (project.removed_at) throw new FactoryError("project_removed", "Restore this Project before editing it", 409);
         if (projectRoute[2] === "checkouts") {
-          if (typeof body.machine_id !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(body.machine_id) || typeof body.path !== "string") throw new FactoryError("invalid_checkout", "Select a Machine and absolute checkout path");
+          if (typeof body.machine_id !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(body.machine_id) || !this.registeredMachine(body.machine_id) || typeof body.path !== "string") throw new FactoryError("invalid_checkout", "Select a Machine and absolute checkout path");
           const inspected = await this.runtime.inspect(body.machine_id, body.path);
           if (inspected.repository !== project.repository) throw new FactoryError("wrong_checkout", "This checkout belongs to a different repository", 409);
           if (this.store.get<FactoryProject>("projects", project.id)?.removed_at) throw new FactoryError("project_removed", "Restore this Project before editing it", 409);
@@ -346,7 +356,7 @@ export class FactoryService {
         if (body.permissions !== undefined) { if (typeof body.permissions !== "string" || !body.permissions.trim() || body.permissions.length > 20000) throw new FactoryError("invalid_permissions", "Record the Project's explicit execution permissions"); next.permissions = body.permissions; }
         if (body.shared_paths !== undefined) { if (!Array.isArray(body.shared_paths) || body.shared_paths.some((path: unknown) => typeof path !== "string" || !path || path.startsWith("/") || path.split(/[\\/]/).includes(".."))) throw new FactoryError("invalid_shared_paths", "Select repository-relative shared documents"); next.shared_paths = body.shared_paths as string[]; }
         if (body.provider !== undefined) { if (!providers.includes(body.provider as FactoryProvider)) throw new FactoryError("invalid_provider", "Select a provider"); next.provider = body.provider as FactoryProvider; }
-        if (body.machine_id !== undefined) { if (typeof body.machine_id !== "string" || !this.store.list<ProjectCheckout>("checkouts", project.id).some((entry) => entry.machine_id === body.machine_id)) throw new FactoryError("checkout_required", "Configure this Machine's checkout first"); next.machine_id = body.machine_id; }
+        if (body.machine_id !== undefined) { if (typeof body.machine_id !== "string" || !this.registeredMachine(body.machine_id)) throw new FactoryError("invalid_machine", "Select a registered execution Machine"); if (!this.store.list<ProjectCheckout>("checkouts", project.id).some((entry) => entry.machine_id === body.machine_id)) throw new FactoryError("checkout_required", "Configure this Machine's checkout first"); next.machine_id = body.machine_id; }
         if (hash(JSON.stringify(this.store.get("projects", project.id))) !== hash(JSON.stringify(project))) throw new FactoryError("project_changed", "Refresh this Project before saving changes", 409);
         this.store.put("projects", next); this.store.event(null, "project_configured", { project_id: project.id }); return jsonResponse(next);
       }
@@ -463,7 +473,7 @@ export class FactoryService {
       if (url.pathname === "/api/factory/projects" && request.method === "POST") {
         const body = await this.body(request);
         if (typeof body.name !== "string" || !body.name.trim() || body.name.length > 200 || typeof body.path !== "string" || !providers.includes(body.provider as FactoryProvider) || !["app", "github", "gitlab", "local"].includes(String(body.tracker))) return badRequest("invalid_project", "Enter a name, checkout, provider and tracker");
-        if (typeof body.machine_id !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(body.machine_id)) throw new FactoryError("invalid_machine", "Select an execution Machine");
+        if (typeof body.machine_id !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(body.machine_id) || !this.registeredMachine(body.machine_id)) throw new FactoryError("invalid_machine", "Select an execution Machine");
         const inspected = await this.runtime.inspect(body.machine_id, body.path);
         const project: FactoryProject = { ...this.store.record(), name: body.name.trim(), repository: inspected.repository, provider: body.provider as FactoryProvider, machine_id: body.machine_id, tracker: body.tracker as FactoryProject["tracker"], tracker_reference: typeof body.tracker_reference === "string" ? body.tracker_reference : "" };
         const checkout: ProjectCheckout = { ...this.store.record(), ...inspected, project_id: project.id, machine_id: body.machine_id };
@@ -472,21 +482,22 @@ export class FactoryService {
       }
       const archiveRoute = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/(archive|restore)$/.exec(url.pathname);
       if (archiveRoute && request.method === "POST") {
+        await this.body(request);
         const record = this.store.get<Implementation>("implementations", archiveRoute[1]!);
         if (!record) throw new FactoryError("not_found", "Assignment not found", 404);
-        await this.body(request);
         if (archiveRoute[2] === "archive" && (record.stage !== "done" || this.activeWork(record.id))) throw new FactoryError("assignment_unfinished", "Finish or stop all work and complete the Assignment before archiving", 409);
         const next = { ...record, archived_at: archiveRoute[2] === "archive" ? new Date().toISOString() : null, updated_at: new Date().toISOString() };
         this.store.put("implementations", next); this.store.event(record.id, "assignment_archive_changed", { archived_at: next.archived_at }); return jsonResponse(next);
       }
       const configured = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/configure$/.exec(url.pathname);
       if (configured && request.method === "POST") {
+        const body = await this.body(request);
         const record = this.store.get<Implementation>("implementations", configured[1]!);
         if (!record) throw new FactoryError("not_found", "Implementation not found", 404);
-        const body = await this.body(request);
+        if (body.project_id !== undefined && body.project_id !== record.project_id && this.activeWork(record.id)) throw new FactoryError("assignment_busy", "Finish or stop active work before changing its Project", 409);
         if (body.project_id !== undefined && body.project_id !== null && (typeof body.project_id !== "string" || !this.store.get<FactoryProject>("projects", body.project_id) || this.store.get<FactoryProject>("projects", body.project_id)?.removed_at)) throw new FactoryError("invalid_project", "Select a registered Project");
         if (body.provider !== undefined && body.provider !== null && !providers.includes(body.provider as FactoryProvider)) throw new FactoryError("invalid_provider", "Select a supported provider");
-        if (body.machine_id !== undefined && body.machine_id !== null && (typeof body.machine_id !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(body.machine_id))) throw new FactoryError("invalid_machine", "Select a Machine");
+        if (body.machine_id !== undefined && body.machine_id !== null && (typeof body.machine_id !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(body.machine_id) || !this.registeredMachine(body.machine_id))) throw new FactoryError("invalid_machine", "Select a Machine");
         const next: Implementation = { ...record, updated_at: new Date().toISOString(), ...(body.project_id === undefined ? {} : { project_id: body.project_id as string | null }), ...(body.provider === undefined ? {} : { provider: body.provider as FactoryProvider | null }), ...(body.machine_id === undefined ? {} : { machine_id: body.machine_id as string | null }) };
         this.store.db.transaction(() => { this.store.put("implementations", next); this.store.event(record.id, "implementation_configured", { project_id: next.project_id, provider: next.provider, machine_id: next.machine_id }); })();
         return jsonResponse(next);

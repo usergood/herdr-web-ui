@@ -10,5 +10,5 @@ export async function factoryRequest<T>(path = "", body?: FactoryRequestBody, me
   if (method !== "GET") window.dispatchEvent(new Event("factory-changed"));
   return result as T;
 }
-export function factoryOverview(): Promise<FactoryOverview> { return factoryRequest(); }
+export function factoryOverview(): Promise<FactoryOverview> { return factoryRequest("?navigation=1"); }
 export function factoryDetail(id: string): Promise<FactoryDetail> { return factoryRequest(`/implementations/${encodeURIComponent(id)}`); }

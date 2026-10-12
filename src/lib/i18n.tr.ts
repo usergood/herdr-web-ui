@@ -1176,4 +1176,7 @@ export const TR: Record<string, string> = {
   "Removing a Project preserves its history and leaves native sessions running.": "Projeyi kaldırmak geçmişini korur ve yerel oturumları çalışır durumda bırakır.",
   "Restore": "Geri yükle",
   "Restore chat": "Sohbeti geri yükle",
+  "Select a Machine": "Bir makine seçin",
+  "Project settings": "Proje ayarları",
+  "Project settings for {name}": "{name} için proje ayarları",
 };

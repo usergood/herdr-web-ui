@@ -45,6 +45,15 @@ Factory admission requires genuine native skill and question/answer verification
 
 Desktop and phone views of the fork's features, captured with fictional data in an isolated test session. Click an image to open it at full size.
 
+The Project workspace update gives Inbox its own page and Project settings the existing Settings layout.
+
+| Project settings | Project Inbox on a phone |
+| --- | --- |
+| [![Project settings](docs/screenshots/project-workspaces/project-settings-desktop.png)](docs/screenshots/project-workspaces/project-settings-desktop.png) | [![Project Inbox](docs/screenshots/project-workspaces/project-inbox-mobile.png)](docs/screenshots/project-workspaces/project-inbox-mobile.png) |
+
+[Project assignments and child workers](docs/screenshots/project-workspaces/project-assignments-desktop.png) · [Global Inbox](docs/screenshots/project-workspaces/global-inbox-desktop.png) · [Phone workflow settings](docs/screenshots/project-workspaces/project-settings-mobile.png)
+
+
 <table>
   <tr><th>Desktop</th><th>Phone</th></tr>
   <tr>
