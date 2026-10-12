@@ -17,7 +17,7 @@ class Pc {
     mkdirSync(bin);
     mkdirSync(join(this.scratch, "plugin", "scripts"), { recursive: true });
     writeFileSync(join(this.scratch, "plugin", "scripts", "plugin.ts"), 'console.log("owned phone setup");\n');
-    for (const name of ["sh", "cat", "uname", "ldd", "grep", "tar", "awk", "sed", "mktemp", "rm"]) {
+    for (const name of ["sh", "cat", "uname", "ldd", "grep", "tar", "awk", "sed", "mktemp", "rm", "sha256sum", "shasum", "mkdir", "chmod", "mv", "unzip", "ln"]) {
       const tool = Bun.which(name);
       if (tool) symlinkSync(tool, join(bin, name));
     }
@@ -58,6 +58,15 @@ esac`,
 }
 
 describe.skipIf(platform() === "win32")("owner-configured installer", () => {
+  it("rejects a tampered prerequisite download before installing or executing it", async () => {
+    const pc = new Pc();
+    rmSync(join(pc.scratch, "bin", "herdr"));
+    writeFileSync(join(pc.scratch, "bin", "curl"), `#!/bin/sh\nwhile [ "$#" -gt 0 ]; do if [ "$1" = "-o" ]; then shift; printf 'tampered runtime' > "$1"; exit 0; fi; shift; done\nprintf 'tampered runtime'\n`);
+    const result = await pc.install("reviewed-commit");
+    expect(result.exitCode).not.toBe(0); expect(result.output).toContain("checksum");
+    expect(existsSync(join(pc.scratch, ".local/bin/herdr"))).toBe(false);
+    expect(pc.calls("herdr.calls")).toEqual([]);
+  });
   it("requires a reviewed ref before querying accounts or installing anything", async () => {
     const pc = new Pc();
     const { output, exitCode } = await pc.install("");
@@ -71,7 +80,7 @@ describe.skipIf(platform() === "win32")("owner-configured installer", () => {
     const { output, exitCode } = await pc.install("reviewed-commit");
     expect(exitCode).toBe(0);
     expect(output).toContain("Installed usergood.saurons-eye");
-    expect(pc.calls("herdr.calls")).toContain("plugin install usergood/herdr-web-ui --ref reviewed-commit --yes");
+    expect(pc.calls("herdr.calls")).toContain("plugin install usergood/saurons-eye --ref reviewed-commit --yes");
     expect(pc.calls("external.calls")).toEqual([]);
     expect(output).not.toContain("star it now");
   });

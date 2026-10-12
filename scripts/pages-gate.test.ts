@@ -31,6 +31,7 @@ describe("Pages deployment gate", () => {
     const build = pageJob("build");
     const deploy = pageJob("deploy");
     expect(validate).toContain("uses: ./.github/workflows/ci.yml");
+    expect(validate).toContain("full: true");
     expect(build).not.toContain("needs:");
     expect(deploy).toMatch(/needs:\s*\[validate, build\]/);
   });
@@ -59,7 +60,7 @@ describe("Pages deployment gate", () => {
     expect(deploy).toContain("set -euo pipefail");
     expect(deploy).toContain('gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq \'.sha\'');
     expect(deploy).toContain('if [[ "$latest_sha" != "$EXPECTED_SHA" ]]');
-    expect(deploy.indexOf("Verify deployment SHA is current")).toBeLessThan(deploy.indexOf("actions/deploy-pages@v5"));
+    expect(deploy.indexOf("Verify deployment SHA is current")).toBeLessThan(deploy.indexOf("actions/deploy-pages@"));
   });
 
   it("summarizes the validated, built, and deployed source SHAs", () => {
@@ -70,24 +71,27 @@ describe("Pages deployment gate", () => {
     expect(deploy).toContain("${{ needs.build.outputs.sha }}");
   });
 
-  it("keeps reports and nested verification evidence for CI jobs on success or failure", () => {
+  it("retains failure reports and nested evidence for one day", () => {
     expect(ciJob("fast")).toContain("CHECK_DIR: ${{ github.workspace }}/.ci");
     expect(ciJob("integration")).toContain("CHECK_DIR: ${{ github.workspace }}/.ci");
     const fast = ciJob("fast");
     expect(fast).toContain(".ci/report.json");
-    expect(fast).toContain("if: always()");
+    expect(fast).toContain("if: failure()");
+    expect(fast).toContain("retention-days: 1");
     expect(fast).toContain(".ci/**/*.log");
     expect(fast).toContain(".ci/browser-evidence/**/*.png");
     expect(fast).toContain(".ci/browser-evidence/**/*.json");
     expect(fast).toContain(".ci/browser-evidence/**/*.zip");
     const integration = ciJob("integration");
     expect(integration).toContain(".ci/report.json");
-    expect(integration).toContain("if: always()");
+    expect(integration).toContain("if: failure()");
+    expect(integration).toContain("retention-days: 1");
     expect(integration).toContain(".ci/**/*.log");
     expect(integration).toContain(".ci/config/herdr/sessions/*/test-server.log");
     for (const name of ["browser-main", "browser-other"]) {
       const job = ciJob(name);
-      expect(job).toContain("if: always()");
+      expect(job).toContain("if: failure()");
+      expect(job).toContain("retention-days: 1");
       expect(job).toContain(".ci/browser-logs/**");
       expect(job).toContain(".ci/browser-evidence/**/*.png");
       expect(job).toContain(".ci/browser-evidence/**/*.json");

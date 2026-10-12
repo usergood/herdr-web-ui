@@ -476,6 +476,40 @@ in the checkout.
 See [Terminal input](terminal-input.md) for input readiness, draft ownership and the mobile
 input regression matrix.
 
+## Saurons eye CI and publication controls
+
+Only CI is enabled for this fork. PRs and pushes to `main` run fast Linux checks for source
+changes; documentation-only changes skip code checks. Full validation is an explicit action:
+
+```sh
+gh workflow run ci.yml --repo usergood/saurons-eye --ref <reviewed-branch> -f full=true
+```
+
+Run it on the final source revision before merging application changes. An automatic fast
+run reports **Full validation not requested**, not a passing **Integration and browser** gate.
+Release/Website/remote-bundle validation forces the full suite, even after a docs-only commit.
+All runners are standard GitHub-hosted machines. The public repository's compute does not
+consume private-repository Free-plan minutes; artifact/cache storage has separate allowances.
+Failure artifacts expire after one day, and superseded CI runs are cancelled. Do not raise
+paid storage limits or inject production account/provider secrets into test jobs.
+
+Release, Website, Remote PC bundles and Windows install remain disabled. They are manual
+workflows; no weekly installer job or tag-triggered publication is scheduled. Publishing
+uses the owner's protected `release` environment. Website redesign is documented in
+[site-redesign.md](factory/site-redesign.md); GitHub Pages remains unconfigured.
+
+Installers download pinned, checksum-verified Herdr/Bun/Node prerequisites. Keep an existing
+compatible runtime; a reviewed fork commit installs without tag history. The separate Windows
+update acceptance runner requires explicit `-UpdateFrom vX.Y.Z -UpdateTo vA.B.C` fork tags,
+checks their plugin identity and requests update discovery explicitly. Inherited upstream tags
+are not fork release fixtures. No fork release is published just by merging or renaming.
+
+The repository is `usergood/saurons-eye`; stable `usergood.saurons-eye` plugin identity and
+runtime/state namespaces stay compatible. GitHub redirects the old repository URLs, so do
+not reuse `usergood/herdr-web-ui` for another repository. Keep original-project attribution.
+Full decisions, accepted test seams and immutable dependency pins are in
+[ci-activation.md](factory/ci-activation.md) and [ci-dependency-pins.md](factory/ci-dependency-pins.md).
+
 ## Layout
 
 | Path | Contents |

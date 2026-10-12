@@ -107,7 +107,7 @@ Windows x64 请在 PowerShell 中运行：
 已经安装了所需依赖？只需安装插件：
 
 ```bash
-herdr plugin install usergood/herdr-web-ui --ref <reviewed-ref>
+herdr plugin install usergood/saurons-eye --ref <reviewed-ref>
 ```
 
 在 herdr 运行时，打开 **[localhost:7317](http://localhost:7317)**。选择一个窗格，或点击 **New workspace（新建工作区）** 启动智能体。要在手机上使用，请扫描安装程序提供的二维码，并将应用添加到主屏幕。[快速入门 →](docs/guide.md#quick-start)
@@ -173,8 +173,8 @@ Factory 附件和保留的原生会话历史会复制到连接服务器的私有
 ## 开发
 
 ```bash
-git clone https://github.com/usergood/herdr-web-ui.git
-cd herdr-web-ui
+git clone https://github.com/usergood/saurons-eye.git
+cd saurons-eye
 bun install
 
 bun run server      # API + WebSocket on :7317

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { writeTestHerdrConfig } from "./herdr-test-config.ts";
 const windows = process.platform === "win32";
 // macOS's per-user TMPDIR is long enough to push herdr's socket names past the 104-byte sun_path limit
 const root = realpathSync(mkdtempSync(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "herdr-bundle-smoke-")));
@@ -11,6 +12,7 @@ const home = join(root, "home");
 // On Windows it follows APPDATA instead, and the bundle carries no herdr: the one herdr's own
 // installer left (the stable alias under %LOCALAPPDATA%), or HERDR_WEB_HERDR_BIN.
 const xdg = join(home, "xdg");
+writeTestHerdrConfig(join(xdg, "herdr"));
 mkdirSync(bundle); mkdirSync(home);
 const bun = join(bundle, windows ? "bin/bun.exe" : "bin/bun");
 const herdr = windows ? process.env["HERDR_WEB_HERDR_BIN"] || join(process.env["LOCALAPPDATA"] ?? "", "Programs/Herdr/bin/herdr.exe") : join(bundle, "bin/herdr");

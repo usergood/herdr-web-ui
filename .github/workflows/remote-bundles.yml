@@ -1,25 +1,47 @@
 name: Remote PC bundles
 on:
-  pull_request:
-    paths:
-      - 'server/**'
-      - 'shared/**'
-      - 'scripts/build-remote-bundle.ts'
-      - 'scripts/remote-bundle-smoke.ts'
-      - 'scripts/ssh-*.ts'
-      - 'package.json'
-      - 'bun.lock'
-      - '.github/workflows/remote-bundles.yml'
   workflow_dispatch:
-  push:
-    tags: ['remote-v*']
+    inputs:
+      publish:
+        description: Publish the validated runtime to this repository
+        type: boolean
+        default: false
+      version:
+        description: Runtime number N (required only for publication)
+        type: string
+        required: false
 permissions:
   contents: read
 concurrency:
   group: remote-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.2
+      - name: Validate explicit publication target
+        if: inputs.publish
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          test "$GITHUB_REF" = refs/heads/main
+          bun -e 'import {REMOTE_BUNDLE_VERSION} from "./shared/machines.ts"; const v=process.env.RELEASE_VERSION; if (!v || !/^[0-9]+$/.test(v) || v!==REMOTE_BUNDLE_VERSION) throw Error("Choose the current runtime version");'
+          if git show-ref --verify --quiet "refs/tags/remote-v$RELEASE_VERSION"; then exit 1; fi
+  validate:
+    needs: preflight
+    uses: ./.github/workflows/ci.yml
+    with:
+      full: true
   bundle:
+    needs: validate
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -27,36 +49,43 @@ jobs:
         os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, macos-15-intel]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.4.2
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: '22'
+          node-version: '22.23.2'
       - run: bun install --frozen-lockfile
       - run: bun run typecheck && bun run build
       - run: bun run scripts/build-remote-bundle.ts
       - run: bun run scripts/remote-bundle-smoke.ts
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
+          retention-days: 1
           name: remote-${{ matrix.os }}
           path: remote-bundles/*
   # Windows bundles are Bun alone, assembled on Linux from the pinned release; the smoke job
   # below runs the result on a real Windows runner against herdr's own installer
   bundle-windows:
+    needs: validate
     timeout-minutes: 20
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
       - run: bun run typecheck && bun run build
       - run: bun run scripts/build-remote-bundle.ts win32-x64
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
+          retention-days: 1
           name: remote-win32-x64
           path: remote-bundles/*
   smoke-windows:
@@ -64,19 +93,23 @@ jobs:
     needs: bundle-windows
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.4.2
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: remote-win32-x64
           path: remote-bundles
-      - name: Install herdr with its own installer
-        shell: cmd
-        run: curl.exe -fsSLo install.cmd https://herdr.dev/install.cmd && install.cmd && del install.cmd
-      - run: bun run scripts/remote-bundle-smoke.ts
+      - name: Install checksum-pinned Herdr
         shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-prerequisites.ps1 -Tool herdr
+      - shell: pwsh
+        run: |
+          $env:HERDR_WEB_HERDR_BIN = Join-Path $env:LOCALAPPDATA 'Programs\Herdr\bin\herdr.exe'
+          bun scripts/remote-bundle-smoke.ts
       # what only a real Windows PC shows: its process table and its path rules (server/windows-native.test.ts)
       - run: bun install --frozen-lockfile
       - name: Windows-only code on Windows
@@ -85,16 +118,19 @@ jobs:
           HERDR_TEST_MODE: unit
         run: bun test ./server/windows-native.test.ts
   ssh:
+    needs: validate
     timeout-minutes: 20
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.4.2
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: '22'
+          node-version: '22.23.2'
       - run: sudo bash scripts/ci-bounded-retry.sh 300 bash -c 'apt-get update && apt-get install -y openssh-server' && sudo mkdir -p /run/sshd
       - run: bun install --frozen-lockfile && bun run build && bun run scripts/build-remote-bundle.ts
       - run: bun run scripts/ssh-integration.ts
@@ -102,19 +138,20 @@ jobs:
           SSH_TEST_PASSWORD: 1
       - run: bun run scripts/ssh-password-docker.ts
   release:
-    if: startsWith(github.ref, 'refs/tags/remote-v')
+    if: inputs.publish && github.ref == 'refs/heads/main'
     needs: [bundle, smoke-windows, ssh]
+    environment: release
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: bundles
           merge-multiple: true
       - name: Merge pinned platform checksums
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: remote-v${{ inputs.version }}
           REPOSITORY: ${{ github.repository }}
         run: |
           python3 - <<'PY'
@@ -134,5 +171,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: gh release create "$RELEASE_TAG" bundles/*.tgz bundles/manifest.json --title "$RELEASE_TAG" --notes 'SSH remote bridge runtimes with SHA-256 manifest.' --latest=false
+          RELEASE_TAG: remote-v${{ inputs.version }}
+        run: gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" bundles/*.tgz bundles/manifest.json --title "$RELEASE_TAG" --notes 'SSH remote bridge runtimes with SHA-256 manifest.' --latest=false

@@ -12,11 +12,13 @@ import { herdrRpc } from "../server/herdr/client.ts";
 import type { Machine, SetupJob, SetupRequest } from "../shared/machines.ts";
 import type { ServerMessage, SessionSnapshot, WorkspaceCreated } from "../shared/protocol.ts";
 import { shellQuote } from "../server/machine-security.ts";
+import { writeTestHerdrConfig } from "./herdr-test-config.ts";
 
 const root = mkdtempSync(join(tmpdir(), "herdr-ssh-qa-"));
 const remoteHome = join(root, "remote");
 const state = join(root, "manager");
 mkdirSync(join(remoteHome, ".ssh"), { recursive: true });
+writeTestHerdrConfig(join(remoteHome, ".config/herdr"));
 writeFileSync(join(remoteHome, ".zshrc"), "# isolated SSH test session\n");
 const passwordMode = process.env["SSH_TEST_PASSWORD"] === "1";
 const password = "herdr-fixture-secret-only";

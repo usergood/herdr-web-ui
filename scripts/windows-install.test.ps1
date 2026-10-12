@@ -1,23 +1,15 @@
-# Run with: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows-install.test.ps1
+# Public installer CLI with an owned profile and prerequisite/tool stand-ins.
 $ErrorActionPreference = 'Stop'
-$installer = Join-Path $PSScriptRoot '..\install.ps1'
-$originalPath = $env:PATH
-$originalLocalAppData = $env:LOCALAPPDATA
-$originalUserProfile = $env:USERPROFILE
-$originalRef = $env:HERDR_WEB_UI_REF
-$state = @{ installed = $false; installs = 0; uninstalls = 0; ref = ''; running = $true; started = $false; failInstall = $false; bunVersion = '1.4.2'; failBun = $false; windowsRelease = $true }
-# A real directory: the installer reads the installed copy to tell whether it can run on Windows.
-$pluginRoot = Join-Path ([IO.Path]::GetTempPath()) "herdr plugin with spaces $PID"
+$source = Join-Path $PSScriptRoot '..\install.ps1'
+$root = Join-Path ([IO.Path]::GetTempPath()) ('saurons-install-fixture-' + [guid]::NewGuid().ToString('N'))
+$originalPath = $env:PATH; $originalUserProfile = $env:USERPROFILE; $originalLocalAppData = $env:LOCALAPPDATA; $originalRef = $env:HERDR_WEB_UI_REF
+$state = @{ installed = $false; installs = 0; uninstalls = 0; ref = ''; running = $true; started = $false; failInstall = $false; bunVersion = '1.4.2'; failBun = $false; windowsRelease = $true; hasHerdr = $true; failHerdr = $false; bootstraps = @() }
+$pluginRoot = Join-Path $root 'plugin'
 $launcher = Join-Path $pluginRoot 'scripts\plugin.ps1'
 function Assert([bool]$Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
-
-# Tool boundaries only: no downloads, installed plugins, processes or user settings are changed.
-function git {
-    $global:LASTEXITCODE = 0
-    "aaa`trefs/tags/v1.9.0"
-    "bbb`trefs/tags/v1.10.0"
-    "ccc`trefs/tags/v2.0.0-rc.1"
-    "ddd`trefs/tags/remote-v99"
+function Get-Command([string]$Name, [string]$ErrorAction) {
+    if ($Name -eq 'herdr' -and -not $state.hasHerdr) { return $null }
+    Microsoft.PowerShell.Core\Get-Command $Name -ErrorAction SilentlyContinue
 }
 function bun {
     $global:LASTEXITCODE = 0
@@ -29,116 +21,59 @@ function herdr {
     $global:LASTEXITCODE = 0
     switch ($args -join ' ') {
         '--version' { 'herdr 0.9.3' }
-        'plugin list --json' {
-            $plugins = @()
-            if ($state.installed) { $plugins = @(@{ plugin_id = 'usergood.saurons-eye'; plugin_root = $pluginRoot }) }
-            @{ result = @{ plugins = $plugins } } | ConvertTo-Json -Depth 4 -Compress
-        }
+        'plugin list --json' { $plugins = @(); if ($state.installed) { $plugins = @(@{ plugin_id = 'usergood.saurons-eye'; plugin_root = $pluginRoot }) }; @{ result = @{ plugins = $plugins } } | ConvertTo-Json -Depth 4 -Compress }
         'status server --json' { @{ running = $state.running } | ConvertTo-Json -Compress }
         'plugin action invoke usergood.saurons-eye.start-windows' { $state.started = $true; '{}' }
         'plugin uninstall usergood.saurons-eye' { $state.installed = $false; $state.uninstalls++; 'Uninstalled' }
         default {
             if ($args[0] -eq 'plugin' -and $args[1] -eq 'install') {
                 if ($state.failInstall) { $global:LASTEXITCODE = 1; return }
+                Assert ($args[2] -eq 'usergood/saurons-eye') 'Install must target the renamed fork'
                 $state.installed = $true; $state.installs++; $state.ref = $args[4]
                 Remove-Item -LiteralPath $pluginRoot -Recurse -Force -ErrorAction SilentlyContinue
                 New-Item -ItemType Directory -Force -Path (Split-Path $launcher) | Out-Null
                 if ($state.windowsRelease) { Set-Content -LiteralPath $launcher -Value '' }
-                'Installed herdr web ui'
-            } else { throw "Unexpected herdr command: $args" }
+                'Installed Saurons eye'
+            } else { throw "Unexpected Herdr command: $args" }
         }
     }
 }
-function Invoke-WebRequest {
-    # herdr's installer, as the stand-in the test wrote: -OutFile is the last argument
-    if ($args[0] -eq 'https://herdr.dev/install.cmd') { Set-Content -LiteralPath $args[-1] -Value $state.herdrInstaller -Encoding Ascii; return }
-    if ($args[0] -ne 'https://bun.sh/install.ps1') { throw "Unexpected download: $args" }
-    if ($state.failBun) { return @{ Content = 'param($Version)' } }
-    # as Bun's installer does: the session is left with the user's PATH and nothing of the machine's
-    @{ Content = 'param($Version) $state.bunVersion = $Version; $env:PATH = "C:\Users\someone\.bun\bin"' }
-}
-
 try {
-    $failed = $false
-    try { & $installer -Ref '' } catch { $failed = $_.Exception.Message -match 'reviewed Saurons eye' }
-    Assert ($failed -and $state.installs -eq 0) 'A missing reviewed ref must stop before installation'
-    $env:HERDR_WEB_UI_REF = 'reviewed-commit'
+    New-Item -ItemType Directory -Force -Path (Join-Path $root 'scripts') | Out-Null
+    $installer = Join-Path $root 'install.ps1'
+    Copy-Item -LiteralPath $source -Destination $installer
+    @'
+param($Tool)
+$state.bootstraps += $Tool
+if ($Tool -eq 'herdr') { if ($state.failHerdr) { throw 'Fixture Herdr prerequisite failed' }; $state.hasHerdr = $true }
+else { if (-not $state.failBun) { $state.bunVersion = '1.4.2' }; $env:PATH = "$env:USERPROFILE\.bun\bin;$env:PATH" }
+'@ | Set-Content -LiteralPath (Join-Path $root 'scripts\install-prerequisites.ps1')
+    $env:USERPROFILE = Join-Path $root 'profile'; $env:LOCALAPPDATA = Join-Path $root 'local'; $env:HERDR_WEB_UI_REF = ''
+    $failed = $false; try { & $installer -Ref '' } catch { $failed = $_.Exception.Message -match 'reviewed Saurons eye' }
+    Assert ($failed -and $state.installs -eq 0 -and $state.bootstraps.Count -eq 0) 'Missing reviewed ref must stop before prerequisites or installation'
     & $installer -Ref 'reviewed-commit'
-    Assert ($state.installed -and $state.ref -eq 'reviewed-commit' -and $state.started) 'Install must use the reviewed ref and start a running server'
-    & $installer -Ref 'reviewed-commit'
-    Assert ($state.installs -eq 1) 'Rerun must preserve the installed plugin'
-    & {
-        $ErrorActionPreference = 'Continue'
-        Invoke-Expression (Get-Content -Raw $installer)
-        Assert ($ErrorActionPreference -eq 'Continue') 'The one-line installer must preserve the caller error preference'
-        Assert (-not (Test-Path Function:\Run-Tool)) 'The one-line installer must keep helper functions in its own scope'
-    }
-
-    $state.bunVersion = '1.3.0'
-    & $installer -Ref 'reviewed-commit'
-    Assert ($state.bunVersion -eq '1.4.2') 'An old Bun must be updated through its installer'
-    Assert ($env:PATH.EndsWith($originalPath)) "Bun's installer must not leave the session without the machine PATH"
-    $state.bunVersion = '1.3.0'; $state.failBun = $true
-    $failed = $false
+    Assert ($state.installed -and $state.ref -eq 'reviewed-commit' -and $state.started) 'Install uses the reviewed ref and starts a running server'
+    & $installer -Ref 'reviewed-commit'; Assert ($state.installs -eq 1) 'Rerun preserves the installed plugin'
+    $state.bunVersion = '1.3.0'; & $installer -Ref 'reviewed-commit'
+    Assert ($state.bunVersion -eq '1.4.2' -and $state.bootstraps[-1] -eq 'bun') 'Old Bun uses the pinned prerequisite command'
+    Assert ($env:PATH.EndsWith($originalPath)) 'Prerequisite installation must preserve the machine PATH'
+    $state.bunVersion = '1.3.0'; $state.failBun = $true; $failed = $false
     try { & $installer -Ref 'reviewed-commit' } catch { $failed = $_.Exception.Message -match 'Needs Bun' }
-    Assert $failed 'An unsuccessful Bun bootstrap must stop installation'
-    $state.bunVersion = '1.4.2'; $state.failBun = $false
-
-    $state.installed = $false; $state.running = $false; $state.started = $false
-    & $installer -Ref 'feat/windows-install'
-    Assert ($state.ref -eq 'feat/windows-install' -and -not $state.started) 'Explicit ref must install without starting herdr'
-
-    $state.installed = $false; $state.failInstall = $true; $state.started = $false
-    $failed = $false
+    Assert $failed 'An unsuccessful Bun prerequisite must stop installation'; $state.bunVersion = '1.4.2'; $state.failBun = $false
+    $state.hasHerdr = $false; & $installer -Ref 'reviewed-commit'
+    Assert ($state.hasHerdr -and $state.bootstraps[-1] -eq 'herdr') 'Missing Herdr uses the pinned prerequisite command'
+    $state.hasHerdr = $false; $state.failHerdr = $true; $failed = $false
+    try { & $installer -Ref 'reviewed-commit' } catch { $failed = $true }
+    Assert $failed 'A failed Herdr prerequisite must stop'; $state.hasHerdr = $true; $state.failHerdr = $false
+    $state.installed = $false; $state.running = $false; $state.started = $false; & $installer -Ref 'reviewed-branch'
+    Assert ($state.ref -eq 'reviewed-branch' -and -not $state.started) 'A stopped server is not started implicitly'
+    $state.installed = $false; $state.failInstall = $true; $failed = $false
     try { & $installer -Ref 'broken' } catch { $failed = $_.Exception.Message -match 'herdr failed' }
-    Assert ($failed -and -not $state.started) 'A failed native command must stop installation'
-
-    # A copy from a release without Windows support: installed, listed, and unable to start.
-    $state.failInstall = $false; $state.running = $true; $state.installed = $false; $state.windowsRelease = $false
-    $failed = $false
-    try { & $installer -Ref 'reviewed-commit' } catch { $failed = $_.Exception.Message -match 'does not support Windows yet' }
-    Assert ($failed -and -not $state.started) 'A release without Windows support must not be reported as installed'
-    $state.windowsRelease = $true; $installs = $state.installs
-    & $installer -Ref 'reviewed-commit'
-    Assert ($state.uninstalls -eq 1 -and $state.installs -eq $installs + 1 -and $state.started) 'A copy without Windows support must be replaced and started'
-    Write-Host 'PASS native installer explicit ref, rerun, Bun bootstrap, explicit ref, stopped herdr, install failure and a copy without Windows support'
-
-    # A PC without herdr: its installer is a stand-in .cmd, and nothing of this PC's own herdr is in reach.
-    $scratch = Join-Path ([IO.Path]::GetTempPath()) "herdr-installer-test-$PID"
-    New-Item -ItemType Directory -Force -Path $scratch | Out-Null
-    $runs = Join-Path $scratch 'runs.txt'
-    $marker = Join-Path $scratch 'second-run'
-    $herdrStandIn = ${function:herdr}
-    Remove-Item Function:\herdr
-    $env:PATH = "$env:SystemRoot\System32"; $env:LOCALAPPDATA = $scratch; $env:USERPROFILE = $scratch
-    Assert (-not (Get-Command herdr -ErrorAction SilentlyContinue)) 'The herdr installer cases need a session without herdr'
-    $slow = 'echo curl: (28) Operation too slow. Less than 1024 bytes/sec transferred the last 30 seconds 1>&2'
-    $attempts = { @(Get-Content -LiteralPath $runs -ErrorAction SilentlyContinue).Count }
-
-    $state.herdrInstaller = "@echo off`r`necho run>>`"$runs`"`r`n$slow`r`nexit /b 1"
-    $message = ''
-    try { & $installer -Ref 'reviewed-commit' } catch { $message = $_.Exception.Message }
-    Assert ($message -match 'could not be downloaded' -and (& $attempts) -eq 2) "A download that fails twice must be tried twice and named as a download: $message"
-
-    Remove-Item -LiteralPath $runs -Force
-    $state.herdrInstaller = "@echo off`r`necho run>>`"$runs`"`r`nexit /b 1"
-    $message = ''
-    try { & $installer -Ref 'reviewed-commit' } catch { $message = $_.Exception.Message }
-    Assert ($message -match 'security software' -and (& $attempts) -eq 1) "A stop without a download error must not be retried: $message"
-
-    # The second try succeeds: the script goes on to ask herdr its version, and this session has none.
-    Remove-Item -LiteralPath $runs -Force
-    $state.herdrInstaller = "@echo off`r`necho run>>`"$runs`"`r`nif exist `"$marker`" exit /b 0`r`necho.>`"$marker`"`r`n$slow`r`nexit /b 1"
-    $message = ''
-    try { & $installer -Ref 'reviewed-commit' } catch { $message = $_.Exception.Message }
-    Assert ($message -and $message -notmatch 'could not be downloaded|did not finish' -and (& $attempts) -eq 2) "A download that succeeds on the second try must carry on: $message"
-    Write-Host 'PASS herdr installer: a failed download is retried once and named, a silent stop is not retried'
+    Assert $failed 'A failed plugin install must stop'; $state.failInstall = $false
+    $state.installed = $true; Remove-Item -LiteralPath $launcher -Force
+    & $installer -Ref 'reviewed-commit'; Assert ($state.uninstalls -eq 1 -and (Test-Path -LiteralPath $launcher)) 'An incompatible old plugin is explicitly replaced'
+    Write-Host 'PASS Windows installer: reviewed ref, pinned prerequisites, failures, retained PATH, rerun and native plugin decisions'
 } finally {
-    $env:PATH = $originalPath
-    $env:LOCALAPPDATA = $originalLocalAppData
-    $env:USERPROFILE = $originalUserProfile
-    $env:HERDR_WEB_UI_REF = $originalRef
-    if ($herdrStandIn) { Set-Item Function:\herdr $herdrStandIn }
-    if ($scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue }
-    Remove-Item -LiteralPath $pluginRoot -Recurse -Force -ErrorAction SilentlyContinue
+    $env:PATH = $originalPath; $env:USERPROFILE = $originalUserProfile; $env:LOCALAPPDATA = $originalLocalAppData; $env:HERDR_WEB_UI_REF = $originalRef
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }

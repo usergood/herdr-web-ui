@@ -12,13 +12,6 @@ function Run-Tool([string]$Tool, [string[]]$Arguments) {
     & $Tool @Arguments
     if ($LASTEXITCODE -ne 0) { throw "$Tool failed (exit $LASTEXITCODE). Fix the error above and run this again." }
 }
-function Run-HerdrInstaller([string]$Installer) {
-    # Its errors join its output, so a failed download can be told from a silent stop. Under Stop,
-    # Windows PowerShell would end this script at the first line curl writes to stderr.
-    $ErrorActionPreference = 'Continue'
-    & $Installer 2>&1 | ForEach-Object { $line = "$_"; Write-Host $line; $line }
-}
-
 # The official installers keep these user-local directories on PATH for future terminals.
 $env:PATH = "$env:USERPROFILE\.bun\bin;$env:LOCALAPPDATA\Programs\Herdr\bin;$env:PATH"
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
@@ -26,22 +19,7 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 }
 if (-not (Get-Command herdr -ErrorAction SilentlyContinue)) {
     Write-Host 'herdr web ui: installing herdr for your user'
-    $installer = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName() + '.cmd')
-    try {
-        Invoke-WebRequest 'https://herdr.dev/install.cmd' -UseBasicParsing -OutFile $installer
-        # herdr's installer gives up on a download that stays under 1 KB/s for 30 seconds.
-        $download = 'curl: \(\d+\)|Failed to download'
-        $output = @(Run-HerdrInstaller $installer)
-        if ($LASTEXITCODE -ne 0 -and ($output -match $download)) {
-            Write-Host "herdr web ui: herdr's download did not finish; trying once more"
-            $output = @(Run-HerdrInstaller $installer)
-        }
-        if ($LASTEXITCODE -ne 0) {
-            if ($output -match $download) { throw "herdr could not be downloaded: the connection was too slow or was cut off (curl's message is above). Run this again, on another network if it keeps failing, or install herdr from https://herdr.dev first." }
-            # Seen stopping without a message of its own on a PC with banking security software.
-            throw "herdr's installer did not finish. If it showed no error, security software may have stopped it: install herdr from https://herdr.dev, then run this again."
-        }
-    } finally { Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue }
+    & (Join-Path $PSScriptRoot 'scripts\install-prerequisites.ps1') -Tool herdr
 }
 $herdrVersion = (Run-Tool herdr @('--version')) -replace '^herdr\s+', '' -replace '-.*$', ''
 if ([version]$herdrVersion -lt [version]'0.9.0') {
@@ -51,11 +29,7 @@ if ([version]$herdrVersion -lt [version]'0.9.0') {
 $bun = Get-Command bun -ErrorAction SilentlyContinue
 if (-not $bun -or [version]((Run-Tool bun @('--version')) -replace '-.*$', '') -lt [version]'1.4.0') {
     Write-Host 'herdr web ui: installing Bun 1.4.2 for your user'
-    # The same stable runtime as CI; use Bun's official installer rather than a second downloader.
-    # It leaves this session with the user's PATH alone: without the machine's, neither this script nor herdr finds git.
-    $path = $env:PATH
-    & ([scriptblock]::Create((Invoke-WebRequest 'https://bun.sh/install.ps1' -UseBasicParsing).Content)) -Version '1.4.2'
-    $env:PATH = $path
+    & (Join-Path $PSScriptRoot 'scripts\install-prerequisites.ps1') -Tool bun
 }
 if (-not (Get-Command bun -ErrorAction SilentlyContinue)) { throw 'Bun did not install. See https://bun.sh.' }
 $bunVersion = Run-Tool bun @('--version')
@@ -78,7 +52,7 @@ if ($plugin -and -not (Test-WindowsPlugin $plugin)) {
 }
 if (-not $plugin) {
     Write-Host "herdr web ui: installing the plugin at $Ref"
-    Run-Tool herdr @('plugin', 'install', 'usergood/herdr-web-ui', '--ref', $Ref, '--yes')
+    Run-Tool herdr @('plugin', 'install', 'usergood/saurons-eye', '--ref', $Ref, '--yes')
     $plugin = Find-Plugin
     if (-not $plugin.plugin_root) { throw 'herdr does not list the plugin after installing it. See: herdr plugin list' }
     # herdr installs a release without Windows build steps as a success that cannot start.

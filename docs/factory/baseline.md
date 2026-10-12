@@ -6,7 +6,7 @@ The local fork matches the handoff's research baseline. Choosing a production fo
 
 | Fact | Evidence |
 | --- | --- |
-| Repository | `origin` is `https://github.com/usergood/herdr-web-ui.git` |
+| Repository | `origin` is `https://github.com/usergood/saurons-eye.git` |
 | Commit and version | `b87d9d50019cdb87422415f7650ad29285a832cc`; `package.json` version `0.4.3` |
 | Primary checkout | `/home/kurri/Personal/herdr-web-ui`; clean `main` tracking `origin/main` when planning began |
 | Planning isolation | A separate worktree on `docs/factory-planning`, initially `/home/kurri/Personal/herdr-web-ui-factory-planning` |

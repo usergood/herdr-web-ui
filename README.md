@@ -200,7 +200,7 @@ Requires [Git for Windows](https://git-scm.com/download/win). Installs missing h
 Already have the prerequisites? Install just the plugin:
 
 ```bash
-herdr plugin install usergood/herdr-web-ui --ref <reviewed-ref>
+herdr plugin install usergood/saurons-eye --ref <reviewed-ref>
 ```
 
 With herdr running, open **[localhost:7317](http://localhost:7317)**. Pick a pane or start an agent with **New workspace**. To use your phone, scan the installer's QR code and add the app to your home screen. [Quick start →](docs/guide.md#quick-start)
@@ -264,8 +264,8 @@ Helping someone install the app? Follow [INSTALL.md](INSTALL.md). For repository
 ## development
 
 ```bash
-git clone https://github.com/usergood/herdr-web-ui.git
-cd herdr-web-ui
+git clone https://github.com/usergood/saurons-eye.git
+cd saurons-eye
 bun install
 
 bun run server      # API + WebSocket on :7317

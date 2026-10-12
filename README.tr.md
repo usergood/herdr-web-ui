@@ -100,7 +100,7 @@ Windows x64, PowerShell'de:
 Önkoşullarınız zaten var mı? Yalnızca eklentiyi kurun:
 
 ```bash
-herdr plugin install usergood/herdr-web-ui
+herdr plugin install usergood/saurons-eye --ref <reviewed-ref>
 ```
 
 herdr çalışırken **[localhost:7317](http://localhost:7317)** adresini açın. Bir panel seçin ya da **Yeni çalışma alanı** ile bir ajan başlatın. Telefonunuzu kullanmak için kurulumun QR kodunu okutun ve uygulamayı ana ekranınıza ekleyin. [Hızlı başlangıç →](docs/guide.md#quick-start)
@@ -160,8 +160,8 @@ Birine uygulama kurduruyor musunuz? [INSTALL.md](INSTALL.md)'yi izleyin. Depo de
 ## geliştirme
 
 ```bash
-git clone https://github.com/usergood/herdr-web-ui.git
-cd herdr-web-ui
+git clone https://github.com/usergood/saurons-eye.git
+cd saurons-eye
 bun install
 
 bun run server      # API + WebSocket, :7317

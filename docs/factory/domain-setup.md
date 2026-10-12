@@ -10,7 +10,7 @@ Other registered projects are independent. Discover each repository's existing g
 
 ## Tracker proposal for this fork
 
-Propose GitHub Issues in `usergood/herdr-web-ui`, matching the fork remote. No choice, issue creation, triage labels or external PR-request surface is approved yet. Upstream CONTRIBUTING links are reference process, not authorization to publish this fork's factory work to `devswha/herdr-web-ui`.
+Propose GitHub Issues in `usergood/saurons-eye`, matching the fork remote. No choice, issue creation, triage labels or external PR-request surface is approved yet. Upstream CONTRIBUTING links are reference process, not authorization to publish this fork's factory work to `devswha/herdr-web-ui`.
 
 After the owner-invoked setup confirms the choice, record canonical tracker operations in `docs/agents/issue-tracker.md` and domain consumer rules in `docs/agents/domain.md`; add a brief pointer in the existing instruction file chosen by the skill. Configure triage-label documentation only if that workflow is installed and its vocabulary is confirmed. No setup files or instruction edits are applied in this pass.
 
