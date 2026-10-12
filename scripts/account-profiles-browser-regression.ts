@@ -55,7 +55,7 @@ try {
   await card.getByRole("button", { name: "Register public key with GitHub", exact: true }).click(); await card.getByText("Public key registered", { exact: true }).waitFor();
   await accounts.getByRole("combobox", { name: "GitHub profile", exact: true }).selectOption({ label: "Work account" });
   await accounts.getByRole("button", { name: "Save Project accounts", exact: true }).click(); await accounts.getByText("Project accounts saved", { exact: true }).waitFor();
-  const github = page.getByTestId("project-github"); await github.locator("summary").click();
+  const github = page.getByTestId("project-github"); await github.locator(":scope > summary").click();
   assert(!(await github.getByRole("checkbox", { name: "Import GitHub issues", exact: true }).isChecked()));
   assert(!(await github.getByRole("checkbox", { name: "Import requested changes", exact: true }).isChecked()));
   await github.getByRole("textbox", { name: "Repository (owner/name)", exact: true }).fill("fictional/project");
@@ -74,7 +74,7 @@ try {
   const imported = await (await fetch(origin + "/api/factory")).json();
   assert(imported.implementations.some((idea: { title: string }) => idea.title === "Fictional GitHub ticket"));
   if (process.env["UI_EVIDENCE_DIR"]) { mkdirSync(process.env["UI_EVIDENCE_DIR"], { recursive: true }); await github.screenshot({ path: join(process.env["UI_EVIDENCE_DIR"], "github-project-workflow.png") }); }
-  await github.locator("summary").click();
+  await github.locator(":scope > summary").click();
   await card.getByRole("button", { name: "Edit account profile", exact: true }).click();
   await card.getByRole("textbox", { name: "Account name", exact: true }).fill("Updated work account");
   await card.getByRole("button", { name: "Save account profile", exact: true }).click();
