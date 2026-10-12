@@ -286,6 +286,9 @@ must pass verification on that Machine; installation of the web app does not ena
 unverified provider. [Factory setup](factory/runtime.md),
 [shared documents and template](factory/codex-project-references.md)
 
+Use **app** as the factory Ticket tracker. GitHub synchronization imports external work into
+this local workflow and retains its source links.
+
 Use **Project execution settings → Project accounts** to create and verify separate GitHub,
 Codex/Claude subscription and Cloudflare profiles. Bind the intended profiles for each Machine
 before running agents. Keys and native sign-in state stay in private machine storage; do not copy
