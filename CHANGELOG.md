@@ -18,7 +18,6 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 - Add private Machine account profiles, native subscription/OAuth setup, managed GitHub SSH
   keys and Project bindings with frozen Run/worker/check execution scopes and account verification.
   ([#9](https://github.com/usergood/saurons-eye/pull/9) by @usergood)
-  ([#8](https://github.com/usergood/saurons-eye/pull/8) by @usergood)
 - Research explicit queued-agent model/reasoning/permission presets, subscription usage and
   API-dollar admission rules, and safe automatic resumption after quota reset.
   ([#10](https://github.com/usergood/saurons-eye/pull/10) by @usergood)
@@ -33,6 +32,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 ### Changed
 - Integrate upstream v0.4.8: held-message controls, compressed assets, standalone document
   reader, Markdown, prompt and phone fixes. Preserve fork workflows, privacy and plan controls.
+  ([#14](https://github.com/usergood/saurons-eye/pull/14) by @usergood)
 - Rename the repository to Saurons eye and harden CI: fast automatic checks, explicit full
   validation, immutable Actions, private Herdr test configuration, verified prerequisites,
   short failure-artifact retention and separately controlled publication. ([#12](https://github.com/usergood/saurons-eye/pull/12))

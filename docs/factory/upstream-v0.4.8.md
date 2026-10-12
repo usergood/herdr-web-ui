@@ -10,4 +10,6 @@ Preserve the fork's existing header plan count, optional dependency flow/list di
 
 Apply the new phone Back behavior to the retained plan dialog and clear its open state on pane/Machine changes. Hide pane actions whose canvas owner is unmounted while Inbox is open. A requested hold on an older bridge is refused with its text retained; it cannot silently authorize automatic queue delivery. Update older bridges before using the new hold behavior.
 
+Project GitHub controls use the existing same-origin helper, including HTTPS terminated by the owner's reverse proxy. A public API fixture verifies that proxy requests pass while foreign origins are rejected.
+
 Confirmed validation seams remain the public HTTP/API with owned temporary fixtures, public CLI fixtures and real browser journeys. Validate the complete merged application through full local checks, the retained plan regression, new upstream phone/asset regressions and the existing GitHub account-to-ticket/PR journey. Standards and specification reviews must clear before merging. Actual deployment and Android acceptance are owner work, using the final pinned installation guide.
