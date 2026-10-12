@@ -526,10 +526,10 @@ try {
   };
   const unroutePlanned = await planned(page);
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
-  const planChip = page.getByRole("button", { name: /^Plan: 1 of 4 done/ });
+  const planChip = page.locator(".composer").getByRole("button", { name: /^Plan: 1 of 4 done/ });
   await planChip.waitFor();
   assert.equal((await agentRow(paneA).locator("[data-testid=plan-progress]").textContent())?.trim(), "1/4");
-  assert.equal(await page.locator(".plan-button").count(), 0, "the header carries no plan button");
+  assert.equal(await page.locator(".plan-button").count(), 1, "the fork retains its header plan flow control");
   await planChip.click();
   const planList = page.getByRole("dialog", { name: /^Plan/ });
   await until(async () => await planList.locator(".bg-step").count() === 4, "the plan's steps");
@@ -1815,7 +1815,7 @@ try {
   const unroutePhonePlanned = await planned(phone);
   await phone.goto(`${origin}/?pane=${encodeURIComponent(paneA)}`);
   await phone.locator(".conn-live").waitFor();
-  const phonePlan = phone.getByRole("button", { name: /^Plan: 1 of 4 done/ });
+  const phonePlan = phone.locator(".composer").getByRole("button", { name: /^Plan: 1 of 4 done/ });
   await phonePlan.waitFor();
   const card = (await phone.locator(".composer-surface").first().boundingBox())!;
   const counted = (await phonePlan.boundingBox())!;

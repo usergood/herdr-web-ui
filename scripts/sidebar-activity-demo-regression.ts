@@ -101,7 +101,7 @@ try {
           await chip.waitFor();
           assert.match(await chip.getAttribute("aria-label") ?? "", /^Plan: 1 of \d+ done/, "the chip names the plan's progress");
           assert.match((await chip.locator(".bg-tasks-plan").textContent())?.trim() ?? "", /^1\/\d+$/);
-          assert.equal(await page.locator(".plan-button").count(), 0, "no plan button in the header");
+          assert.equal(await page.locator(".plan-button").count(), 1, "the fork retains its header plan flow control");
           await chip.click();
           const list = page.getByRole("dialog", { name: /^Plan/ });
           await list.locator(".bg-step").first().waitFor();
