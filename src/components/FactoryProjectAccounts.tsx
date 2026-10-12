@@ -1,3 +1,4 @@
+import { NativeAccountImport } from "./NativeAccountImport.tsx";
 import { useEffect, useRef, useState } from "react";
 import type { AccountOverview, AccountProfile, AccountService, AccountSetup, AccountState, ProjectAccountBindings } from "../../shared/accounts.ts";
 import type { FactoryProject } from "../../shared/protocol.ts";
@@ -13,7 +14,7 @@ function bindingLabel(service: AccountService, t: ReturnType<typeof useT>): stri
   switch (service) { case "github": return t("GitHub profile"); case "codex": return t("Codex profile"); case "claude": return t("Claude profile"); case "cf": return t("Cloudflare profile"); case "wrangler": return t("Wrangler profile"); }
 }
 
-export function FactoryProjectAccounts({ project, machineId, busy, perform }: { project: FactoryProject; machineId: string; busy: boolean; perform: (action: () => Promise<void>) => Promise<void> }) {
+export function FactoryProjectAccounts({ project, machineId, busy, perform, checkoutPath }: { project: FactoryProject; machineId: string; checkoutPath?: string; busy: boolean; perform: (action: () => Promise<void>) => Promise<void> }) {
   const t = useT(); const prefix = `/machines/${encodeURIComponent(machineId)}/accounts`;
   const [overview, setOverview] = useState<AccountOverview | null>(null); const [problem, setProblem] = useState<string | null>(null);
   const [name, setName] = useState(""); const [service, setService] = useState<AccountService>("github"); const [login, setLogin] = useState(""); const [accountId, setAccountId] = useState("");
@@ -54,6 +55,7 @@ export function FactoryProjectAccounts({ project, machineId, busy, perform }: { 
   });
   return <section className="factory-section" aria-label={t("Project accounts")}>
     <h3>{t("Project accounts")}</h3><p>{t("Accounts stay on this Machine. Codex and Claude use subscription sign-in.")}</p>
+    <NativeAccountImport machineId={machineId} path={checkoutPath} busy={busy} perform={perform} onImported={() => void reload()} />
     {problem && <p role="alert" className="error-state">{problem}</p>}
     {!overview && !problem && <p role="status">{t("Loading…")}</p>}
     <form className="factory-form" onSubmit={(event) => { event.preventDefault(); void action(async () => { await accountRequest(prefix, { name, service, expected_login: login, ...((service === "cf" || service === "wrangler") ? { expected_account_id: accountId } : {}) }); setName(""); setLogin(""); setAccountId(""); }); }}>

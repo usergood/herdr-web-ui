@@ -1,3 +1,4 @@
+import { discoverProject } from "./project-discovery.ts";
 import { nativeSessionRef } from "../shared/native-pane.ts";
 import { projectWorkflowPrompt } from "./factory-project-policy.ts";
 import { writePrivateFile } from "./factory-files.ts";
@@ -40,10 +41,11 @@ export class FactoryExecutionHost {
   readonly worktrees: FactoryWorktrees;
   constructor(private readonly store: FactoryStore, private readonly sourcePath: () => string | null, native: Partial<FactoryNative> = {}, private readonly accounts?: MachineAccounts) {
     this.native = { ...factoryNative, ...native };
-    this.genuineNative = Object.keys(native).length === 0 && accounts?.native.genuine !== false;
+    this.genuineNative = Object.keys(native).every((key) => key === "paneState") && accounts?.native.genuine !== false;
     this.worktrees = new FactoryWorktrees(store, this.native, () => this.skillPath(), accounts);
     const prepared = this.store.get<{ id: string; path: string }>("host_skills", "default"); this.preparedPath = prepared?.path ?? null;
   }
+  discover(path: string) { return discoverProject(path, this.native, this.accounts?.discoveryHome); }
   skillPath(): string | null { return this.sourcePath() ?? this.preparedPath; }
   async prepareReferences(payload: ProjectReferencePayload & { machine_id: string; checkout: { path: string; repository: string } }): Promise<CodexReferenceContext> {
     if (this.stopped || existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("preparation_disabled", "Reference preparation is disabled on this bridge", 409);
@@ -208,7 +210,7 @@ export class FactoryExecutionHost {
       const workspace = await this.native.createWorkspace({ cwd: worktree, label: `saurons-eye-run-${run.id}`, env: environment });
       run = { ...run, workspace_id: workspace.workspace.workspace_id, pane_id: workspace.root_pane.pane_id }; save();
       const skill = run.action === "setup" ? "setup-matt-pocock-skills" : run.action === "apply-retro" ? "tdd" : run.action;
-      provisionFactoryAgent(worktree, run.provider, skill, skills, run.action === "implement-spec");
+      provisionFactoryAgent(worktree, run.provider, skill, skills, run.action === "implement-spec", (run.manifest as { project?: import("../shared/factory.ts").FactoryProject }).project?.permission_mode);
       recordScaffolding(this.store, run.id, worktree, run.provider, skills);
       if (this.store.get<{ closing?: boolean }>("host_leases", run.id)?.closing) return this.stopRun(run.id);
       let prompt = run.action === "verify-provider"
@@ -217,7 +219,7 @@ export class FactoryExecutionHost {
       prompt += projectWorkflowPrompt((run.manifest as { project?: import("../shared/factory.ts").FactoryProject }).project);
       if (referenceContext) prompt += ` ${referenceContext.prompt}`;
       const coordinator = run.action === "implement-spec";
-      await this.native.startAgent({ name: `saurons-${run.id.replaceAll("-", "").slice(0, 24)}`, kind: run.provider, paneId: run.pane_id!, args: factoryAgentArguments(run.provider, worktree, prompt, coordinator, Boolean((run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot?.profiles.some((entry) => entry.service === run.provider))), timeoutMs: 60_000 });
+      await this.native.startAgent({ name: `saurons-${run.id.replaceAll("-", "").slice(0, 24)}`, kind: run.provider, paneId: run.pane_id!, args: factoryAgentArguments(run.provider, worktree, prompt, coordinator, Boolean((run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot?.profiles.some((entry) => entry.service === run.provider)), (run.manifest as { project?: import("../shared/factory.ts").FactoryProject }).project?.permission_mode), timeoutMs: 60_000 });
       const afterLaunch = this.store.get<{ run: FactoryRun; closing?: boolean }>("host_leases", run.id);
       if (afterLaunch?.closing || afterLaunch && ["cancelled", "completed", "failed"].includes(afterLaunch.run.condition)) return this.stopRun(run.id);
       run = { ...run, condition: "working", waiting_reason: null, updated_at: new Date().toISOString() }; save(); return run;

@@ -1,46 +1,57 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Machine } from "../../shared/machines.ts";
-import { DirectoryBrowser } from "./DirectoryBrowser.tsx";
-import { MachineContext } from "../lib/machineContext.tsx";
-import type { FactoryOverview, FactoryProject, FactoryProvider } from "../../shared/protocol.ts";
+import type { FactoryOverview, FactoryProject, FactoryProvider } from "../../shared/factory.ts";
+import { AGENT_PERMISSION_MODES, type AgentPermissionMode } from "../../shared/agent-permissions.ts";
+import { MATT_PROJECT_WORKFLOW, type ProjectCheckChoice, type ProjectDiscovery } from "../../shared/project-setup.ts";
 import { factoryRequest } from "../lib/factoryApi.ts";
 import { useT } from "../lib/i18n.ts";
+import { ProjectFolderPicker } from "./ProjectFolderPicker.tsx";
+import { ProjectPermissions } from "./ProjectPermissions.tsx";
 
 export function FactoryProjectSettings({ project, overview, machineId, machines, busy, perform, section = "execution" }: { project: FactoryProject; overview: FactoryOverview; section?: "execution" | "checkout"; machineId: string; machines: Machine[]; busy: boolean; perform: (action: () => Promise<void>) => Promise<void> }) {
   const t = useT();
-  const [checks, setChecks] = useState(JSON.stringify(project.checks ?? [], null, 2));
-  const [setup, setSetup] = useState(JSON.stringify(project.setup ?? [], null, 2));
-  const [environment, setEnvironment] = useState(JSON.stringify(project.environment ?? {}, null, 2));
-  const [permissions, setPermissions] = useState(project.permissions ?? "");
   const [provider, setProvider] = useState<FactoryProvider>(project.provider);
-  const [defaultMachine, setDefaultMachine] = useState(project.machine_id);
-  const [shared, setShared] = useState((project.shared_paths ?? []).join("\n"));
-  const [path, setPath] = useState(overview.checkouts.find((entry) => entry.project_id === project.id && entry.machine_id === machineId)?.path ?? "");
-  const [browse, setBrowse] = useState(false);
-  const [workflow, setWorkflow] = useState(project.workflow_instructions ?? "");
-  const [contextTarget, setContextTarget] = useState(project.context_target_tokens ?? 150000);
-  const hosts = machines.filter((machine) => overview.checkouts.some((entry) => entry.project_id === project.id && entry.machine_id === machine.id));
-  const selectedDefault = hosts.some((host) => host.id === defaultMachine) ? defaultMachine : "";
+  const [mode, setMode] = useState<AgentPermissionMode>(project.permission_mode ?? "ask");
+  const [target, setTarget] = useState(project.context_target_tokens ?? 150000);
+  const [host, setHost] = useState(project.machine_id);
+  const [path, setPath] = useState(overview.checkouts.find(c => c.project_id === project.id && c.machine_id === machineId)?.path ?? "");
+  const [data, setData] = useState<ProjectDiscovery | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [checksTouched, setChecksTouched] = useState(false);
+  const modeTouched = useRef(false);
+  const hosts = machines.filter(m => overview.checkouts.some(c => c.project_id === project.id && c.machine_id === m.id));
+  const selectedHost = hosts.some(m => m.id === host) ? host : "";
+  const checkout = overview.checkouts.find(c => c.project_id === project.id && c.machine_id === (section === "execution" ? host : machineId));
+  const choices: ProjectCheckChoice[] = [...(data?.checks ?? []), ...(project.checks ?? []).filter(args => !data?.checks.some(c => JSON.stringify(c.args) === JSON.stringify(args))).map((args, index) => ({ id: `existing:${index}`, name: t("Existing check"), args }))];
+  useEffect(() => {
+    let live = true; setData(null); setProblem(null);
+    if (!checkout) return;
+    void factoryRequest<ProjectDiscovery>("/project-discovery", { machine_id: checkout.machine_id, path: checkout.path }).then(result => {
+      if (!live) return;
+      setData(result);
+      const items = [...result.checks, ...(project.checks ?? []).filter(args => !result.checks.some(c => JSON.stringify(c.args) === JSON.stringify(args))).map((args, index) => ({ id: `existing:${index}`, name: "", args }))];
+      setSelected(project.checks?.length ? items.filter(c => project.checks!.some(args => JSON.stringify(args) === JSON.stringify(c.args))).map(c => c.id) : result.checks.map(c => c.id));
+      if (!project.permission_mode && !modeTouched.current) setMode(provider === "codex" && result.permission_modes.codex.includes("approve_for_me") ? "approve_for_me" : "ask");
+    }, error => { if (live) setProblem(error.message); });
+    return () => { live = false; };
+  }, [checkout?.machine_id, checkout?.path]);
   return <section className="factory-section"><h3>{section === "checkout" ? t("Verify Machine checkout") : t("Project execution settings")}</h3>
-    {section === "execution" && <form className="factory-form" onSubmit={(event) => { event.preventDefault(); if (!selectedDefault) return; void perform(async () => { await factoryRequest(`/projects/${project.id}/configure`, { checks: JSON.parse(checks), setup: JSON.parse(setup), environment: JSON.parse(environment), permissions, provider, machine_id: selectedDefault, workflow_instructions: workflow, context_target_tokens: contextTarget, shared_paths: shared.split("\n").map((entry) => entry.trim()).filter(Boolean) }); }); }}>
-      <label>{t("Provider")}<select className="select factory-input" value={provider} onChange={(event) => setProvider(event.target.value as FactoryProvider)}><option>codex</option><option>claude</option><option>opencode</option></select></label>
-      <label>{t("Machine")}<select className="select factory-input" value={selectedDefault} onChange={(event) => setDefaultMachine(event.target.value)}><option value="" disabled>{t("Select a Machine")}</option>{hosts.map((machine) => <option key={machine.id} value={machine.id}>{machine.name}</option>)}</select></label>
-      <label>{t("Check command arguments")}<textarea className="input factory-input" value={checks} onChange={(event) => setChecks(event.target.value)} /></label>
-      <label>{t("Setup command arguments")}<textarea className="input factory-input" value={setup} onChange={(event) => setSetup(event.target.value)} /></label>
-      <label>{t("Task environment")}<textarea className="input factory-input" value={environment} onChange={(event) => setEnvironment(event.target.value)} /></label>
-      <label>{t("Execution permissions")}<textarea className="input factory-input" required value={permissions} onChange={(event) => setPermissions(event.target.value)} /></label>
-      <label>{t("Shared document paths")}<textarea className="input factory-input" value={shared} onChange={(event) => setShared(event.target.value)} /></label>
-      <label>{t("Project workflow instructions")}<textarea className="input factory-input" maxLength={20000} value={workflow} onChange={(event) => setWorkflow(event.target.value)} /></label>
-      <p className="field-hint">{t("Pinned skills, approved Tickets, checks and independent reviews remain required.")}</p>
-      <label>{t("Context handoff target")}<input className="input" type="number" min={150000} max={200000} step={1000} value={contextTarget} onChange={(event) => setContextTarget(Number(event.target.value))} /></label>
+    {section === "execution" && <form className="factory-form" onSubmit={event => {
+      event.preventDefault(); if (!selectedHost) return;
+      void perform(async () => { await factoryRequest(`/projects/${project.id}/configure`, { provider, machine_id: selectedHost, permission_mode: mode, context_target_tokens: target, ...(data || checksTouched ? { checks: choices.filter(c => selected.includes(c.id)).map(c => c.args) } : {}), ...(!project.workflow_instructions?.trim() ? { workflow_instructions: MATT_PROJECT_WORKFLOW } : {}) }); });
+    }}>
+      <label>{t("CLI agent")}<select className="select" value={provider} onChange={event => { const next = event.target.value as FactoryProvider; setProvider(next); modeTouched.current = true; setMode(next === "codex" && data?.permission_modes.codex.includes("approve_for_me") ? "approve_for_me" : "ask"); }}><option>codex</option><option>claude</option><option>opencode</option></select></label>
+      <label>{t("Machine")}<select className="select" value={selectedHost} onChange={event => setHost(event.target.value)}><option value="" disabled>{t("Select a Machine")}</option>{hosts.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></label>
+      <ProjectPermissions value={mode} modes={data?.permission_modes[provider] ?? AGENT_PERMISSION_MODES[provider]} onChange={next => { modeTouched.current = true; setMode(next); }} />
+      <label>{t("Context handoff target")}<select className="select" value={target} onChange={event => setTarget(Number(event.target.value))}>{![150000, 200000].includes(target) && <option value={target}>{target.toLocaleString()}</option>}<option value={150000}>150,000</option><option value={200000}>200,000</option></select></label>
       <p className="field-hint">{t("A planning target for smaller Ticket workers, not a measured hard token limit.")}</p>
-      <button className="btn factory-button" disabled={busy || !selectedDefault}>{t("Save Project settings")}</button>
+      <h3>{t("Repository checks")}</h3>{choices.map(check => <label key={check.id}><input type="checkbox" aria-label={check.name} checked={selected.includes(check.id)} onChange={event => { setChecksTouched(true); setSelected(current => event.target.checked ? [...current, check.id] : current.filter(id => id !== check.id)); }} />{check.name}<code>{check.args.join(" ")}</code></label>)}
+      {!choices.length && <p role="status">{t("No checks detected. You can save setup; add checks before implementation.")}</p>}{problem && <p role="status">{problem}</p>}
+      <h3>{t("Matt Pocock workflow")}</h3><p>{t("Repository documents provide domain language and coding standards. Existing custom guidance is preserved.")}</p>{data && <ul>{data.guidance.map(file => <li key={file}>{file}</li>)}</ul>}
+      <p className="field-hint">{t("Pinned skills, approved Tickets, checks and independent reviews remain required.")}</p>
+      <button className="btn" disabled={busy || !selectedHost}>{t("Save Project settings")}</button>
     </form>}
-    {section === "checkout" && <form className="factory-form" onSubmit={(event) => { event.preventDefault(); void perform(async () => { await factoryRequest(`/projects/${project.id}/checkouts`, { machine_id: machineId, path }); }); }}>
-      <label>{t("Checkout path")} · {machines.find((m) => m.id === machineId)?.name ?? machineId}<input className="input factory-input" required value={path} onChange={(event) => setPath(event.target.value)} /></label>
-      <button type="button" className="btn" disabled={busy || machines.find((m) => m.id === machineId)?.state !== "connected"} aria-expanded={browse} onClick={() => setBrowse(!browse)}>{t("Browse…")}</button>
-      {browse && <MachineContext.Provider value={machineId}><DirectoryBrowser key={machineId} start={path} absolute onPick={(next) => { setPath(next); setBrowse(false); }} /></MachineContext.Provider>}
-      <button className="btn factory-button" disabled={busy}>{t("Verify Machine checkout")}</button>
-    </form>}
+    {section === "checkout" && <form className="factory-form" onSubmit={event => { event.preventDefault(); void perform(async () => { await factoryRequest(`/projects/${project.id}/checkouts`, { machine_id: machineId, path }); }); }}><ProjectFolderPicker key={machineId} machineId={machineId} value={path} onPick={setPath} disabled={busy || machines.find(m => m.id === machineId)?.state !== "connected"} /><button className="btn" disabled={busy || !path}>{t("Verify Machine checkout")}</button></form>}
   </section>;
 }

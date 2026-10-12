@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import type { AgentPermissionMode } from "../shared/agent-permissions.ts";
 import { promisify } from "node:util";
 import { dirname, join } from "node:path";
 import type { FactoryProvider, HerdrPane } from "../shared/protocol.ts";
@@ -35,8 +36,9 @@ export const factoryNative: FactoryNative = {
 };
 
 /** Keep native permission prompts; child processes must use application reservations. */
-export function factoryAgentArguments(provider: FactoryProvider, cwd: string, prompt: string, readonly = false, subscriptionProfile = false): string[] {
-  if (provider === "codex") return ["-C", cwd, ...(subscriptionProfile ? ["-c", 'cli_auth_credentials_store="file"', "-c", 'forced_login_method="chatgpt"', "-c", 'model_provider="openai"'] : []), "--disable", "multi_agent", "--sandbox", readonly ? "read-only" : "workspace-write", ...(!readonly ? ["notes", "state", "cache", "tmp"].flatMap((name) => ["--add-dir", join(dirname(cwd), name)]) : []), prompt];
-  if (provider === "claude") return ["--tools", "Bash,Edit,Read,Write,Glob,Grep,Skill,AskUserQuestion,TodoWrite", ...(readonly ? ["--permission-mode", "plan"] : []), prompt];
+export function factoryAgentArguments(provider: FactoryProvider, cwd: string, prompt: string, readonly = false, subscriptionProfile = false, permissionMode?: AgentPermissionMode): string[] {
+  readonly ||= permissionMode === "read_only";
+  if (provider === "codex") return ["-C", cwd, ...(subscriptionProfile ? ["-c", 'cli_auth_credentials_store="file"', "-c", 'forced_login_method="chatgpt"', "-c", 'model_provider="openai"'] : []), "--disable", "multi_agent", "--sandbox", readonly ? "read-only" : "workspace-write", ...(permissionMode === "approve_for_me" ? readonly ? ["-a", "on-request", "-c", 'approvals_reviewer="auto_review"'] : ["--approve-for-me"] : permissionMode ? ["-a", "on-request", "-c", 'approvals_reviewer="user"'] : []), ...(!readonly ? ["notes", "state", "cache", "tmp"].flatMap((name) => ["--add-dir", join(dirname(cwd), name)]) : []), prompt];
+  if (provider === "claude") return ["--tools", "Bash,Edit,Read,Write,Glob,Grep,Skill,AskUserQuestion,TodoWrite", ...(readonly ? ["--permission-mode", "plan"] : permissionMode ? ["--permission-mode", permissionMode === "accept_edits" ? "acceptEdits" : permissionMode === "auto" ? "auto" : "default"] : []), prompt];
   return ["--agent", "saurons-eye", "--prompt", prompt];
 }

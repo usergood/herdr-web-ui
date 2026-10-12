@@ -16,6 +16,8 @@ export interface AccountProfile {
   problem: string | null; created_at: string; updated_at: string;
 }
 export interface AccountOverview { protocol: 1; host_id: string; profiles: AccountProfile[] }
+export interface NativeAccountSource { id: string; service: "github"; login: string; active: boolean; available: boolean; existing_profile_id: string | null }
+export interface NativeAccountDiscovery { protocol: 1; sources: NativeAccountSource[]; warnings: string[] }
 export interface AccountSetup {
   session_id: string; profile_id: string;
   phase: "starting" | "authorizing" | "verifying" | "cancelling" | "complete" | "failed" | "cancelled";

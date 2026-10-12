@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { GithubNativeAccounts } from "./github-native-accounts.ts";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -27,7 +28,7 @@ export class MachineAccounts {
   private stopped = false;
   readonly native: NativeAccountTools;
   private readonly setups: AccountSetups;
-  constructor(stateDir: string, tools: AccountTools = {}, private readonly readOnly = false) {
+  constructor(stateDir: string, tools: AccountTools = {}, private readonly readOnly = false, readonly discoveryHome?: string) {
     this.native = new NativeAccountTools(tools);
     this.root = join(stateDir, "accounts");
     if (readOnly && !existsSync(join(this.root, "registry.json"))) throw new FactoryError("account_state_invalid", "The frozen Machine account state is unavailable", 409);
@@ -53,6 +54,22 @@ export class MachineAccounts {
     });
   }
   overview(): AccountOverview { this.registry = this.readRegistry(); return { protocol: 1, host_id: this.registry.host_id, profiles: this.registry.profiles.map((entry) => structuredClone(entry.profile)) }; }
+  discoverNative(path?: string) { return new GithubNativeAccounts(this.native, this.discoveryHome).discover(this.overview().profiles, path); }
+  async importNative(body: Record<string, unknown>): Promise<AccountProfile> {
+    if (this.readOnly || this.stopped || typeof body.source_id !== "string" || body.path !== undefined && typeof body.path !== "string") throw new FactoryError("invalid_account_source", "Select a saved GitHub login on this Machine");
+    const imported = await new GithubNativeAccounts(this.native, this.discoveryHome).token(body.source_id, this.overview().profiles, body.path as string | undefined);
+    let profile = imported.source.existing_profile_id ? this.entry(imported.source.existing_profile_id).profile : this.create({ service: "github", name: imported.source.login, expected_login: imported.source.login });
+    const entry = this.entry(profile.id); this.mutable(entry, { expected_revision: profile.revision });
+    if (this.stopped) throw new FactoryError("stopping", "The bridge stopped during account import", 409);
+    const pending = (async () => {
+      profile = this.update(entry, { ...profile, state: "setting_up", verified_identity: null, updated_at: new Date().toISOString() });
+      const directory = join(entry.directory, "github"); mkdirSync(directory, { recursive: true, mode: 0o700 });
+      writePrivateFile(join(directory, "hosts.yml"), JSON.stringify({ "github.com": { user: imported.source.login, git_protocol: "https", users: { [imported.source.login]: { oauth_token: imported.token } } } }), { mode: 0o600 });
+      return this.verify(profile.id, { expected_revision: profile.revision }, () => !this.stopped);
+    })();
+    this.operations.set(profile.id, pending);
+    try { return await pending; } finally { this.operations.delete(profile.id); }
+  }
   sanitize<T>(value: T): T { return JSON.parse(accountRedactor(this.root)(JSON.stringify(value))) as T; }
   assertPublic(text: string): void { if (accountRedactor(this.root)(text) !== text) throw new FactoryError("account_private_material", "Private Machine account material cannot be retained in factory history or artifacts", 409); }
   usage(check: (id: string) => boolean): void { this.inUse = check; }

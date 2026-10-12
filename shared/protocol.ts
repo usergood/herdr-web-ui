@@ -1071,6 +1071,9 @@ export const DEFAULT_PORT = 7317;
  * sidebar/page polling uses metadata; full instructions remain in frozen Run context.
  * POST /api/factory/implementations (implementation) -> Implementation, 201, initial Chat retained.
  * POST /api/factory/projects (project) -> FactoryProject, 201, checkout verified on selected Machine.
+ * POST /api/factory/project-discovery (project_discovery) -> ProjectDiscovery;
+ * read-only host inspection of repository checks, guidance and native permission choices.
+ * POST /api/factory/projects/:id/guidance (empty) -> Implementation, retained guided setup.
  * POST /api/factory/projects/:id/remove|restore (empty) -> FactoryProject;
  * removal retains history and checkouts, and refuses active Runs or workers.
  * POST /api/factory/implementations/:id/archive|restore (empty) -> Implementation;
@@ -1108,6 +1111,8 @@ export const DEFAULT_PORT = 7317;
  * GET /api/factory/providers?machine_id=&implementation_id= -> FactoryCapabilities;
  * account-bound provider proof is scoped to its frozen profile revision.
  * GET/POST /api/factory/machines/:machine/accounts -> AccountOverview / AccountProfile, 201.
+ * GET .../accounts/discovery?path=... -> NativeAccountDiscovery; no global account switching.
+ * POST .../accounts/import (account_import) -> AccountProfile, selected native login copied privately.
  * POST .../accounts/:id/(key|setup|verify|register-key|configure|disable|recover) -> public profile/setup;
  * mutating account controls additionally require x-herdr-machine: 1.
  * POST .../accounts/:id/setup/(status|input|cancel) -> owner-only ephemeral AccountSetup.
@@ -1140,6 +1145,7 @@ export const DEFAULT_PORT = 7317;
  * GET /api/factory-host/capabilities -> FactoryCapabilities;
  * POST /api/factory-host/capabilities ({account_snapshot}) -> profile-scoped FactoryCapabilities.
  * /api/factory-host/accounts and /:id/... mirror account controls on the execution Machine.
+ * /api/factory-host/project-discovery and /accounts/discovery|import mirror setup inspection/import.
  * POST /api/factory-host/accounts/snapshot ({bindings}) -> AccountBindingSnapshot.
  * POST /api/factory-host/prepare (FactoryHostRequests.prepare) -> FactoryCapabilities;
  * POST .../inspect (inspect) -> Omit<ProjectCheckout, id|created_at|updated_at|project_id|machine_id>;
@@ -1175,7 +1181,9 @@ export interface FactoryRequests {
   implementation: { title: string; description: string; project_id?: string | null };
   configure: { project_id?: string | null; provider?: import("./factory.ts").FactoryProvider | null; machine_id?: string | null };
   project: { name: string; path: string; machine_id: string; provider: import("./factory.ts").FactoryProvider; tracker: import("./factory.ts").FactoryProject["tracker"]; tracker_reference?: string };
-  project_settings: Partial<Pick<import("./factory.ts").FactoryProject, "name" | "checks" | "setup" | "environment" | "permissions" | "shared_paths" | "provider" | "machine_id" | "account_bindings" | "workflow_instructions" | "context_target_tokens">>;
+  project_settings: Partial<Pick<import("./factory.ts").FactoryProject, "name" | "checks" | "setup" | "environment" | "permissions" | "permission_mode" | "shared_paths" | "provider" | "machine_id" | "account_bindings" | "workflow_instructions" | "context_target_tokens">>;
+  project_discovery: { machine_id: string; path: string };
+  account_import: { source_id: string; path?: string };
   checkout: { machine_id: string; path: string };
   settings: Partial<import("./factory.ts").FactorySettings>;
   chat: { title: string };
@@ -1208,6 +1216,8 @@ export interface FactoryRequests {
 }
 export type FactoryRequestBody = FactoryRequests[keyof FactoryRequests];
 /** GET /api/factory/projects/:id/github -> ProjectGitHubOverview.
+ * POST .../github/settings ({account_profile_id}) -> ProjectGitHubSettings;
+ * detected repository, collaborators and branch checks, without enabling automation.
  * POST .../github/configure -> ProjectGitHubPolicy, uses ProjectGitHubConfiguration.
  * POST .../github/sync -> ProjectGitHubOverview; imports owned issue/fix records and applies opted-in policies.
  * GET .../github/pulls/:number/files?head=:sha -> ProjectGitHubFiles, bounded read-only patch inventory.

@@ -1,11 +1,12 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { githubDirectory } from "./project-discovery.ts";
 import type { AccountBindingSnapshot } from "../shared/accounts.ts";
 import type { FactoryChat, FactoryMessage, FactoryProject, Implementation, ProjectCheckout } from "../shared/factory.ts";
 import type { ProjectGitHubConfiguration, ProjectGitHubFiles, ProjectGitHubMutation, ProjectGitHubOverview, ProjectGitHubPolicy, ProjectGitHubPull, ProjectGitHubSource, ProjectPullRequest } from "../shared/github-project.ts";
 import { FactoryStore } from "./factory-store.ts";
-import { FactoryError, hash, git } from "./factory-host.ts";
+import { FactoryError, hash } from "./factory-host.ts";
 import { MachineAccounts } from "./accounts.ts";
 
 const pullFields = `number id title body url state isDraft headRefOid baseRefOid headRefName baseRefName author { login } mergeStateStatus reviewDecision headRepository { nameWithOwner } viewerCanUpdate
@@ -41,6 +42,28 @@ export class ProjectGitHub {
     const project = this.project(id);
     return hash(JSON.stringify({ repository: project.repository, bindings: project.account_bindings ?? {}, checkouts: this.store.list<ProjectCheckout>("checkouts", id).map((entry) => ({ id: entry.id, machine_id: entry.machine_id, path: entry.path, repository: entry.repository })) }));
   }
+  async settings(id: string, accountId: unknown): Promise<import("../shared/github-project.ts").ProjectGitHubSettings> {
+    this.project(id);
+    if (typeof accountId !== "string") throw new FactoryError("account_scope_required", "Select a verified GitHub account", 409);
+    const checkout = this.store.list<ProjectCheckout>("checkouts", id).find(c => c.machine_id === "local");
+    const repository = checkout ? (await githubDirectory(checkout.path, this.accounts.discoveryHome)).repository : this.overview(id).policy?.repository;
+    if (!repository) throw new FactoryError("github_remote_required", "Add a GitHub remote to this checkout before connecting its GitHub workflow", 409);
+    const snapshot = await this.accounts.freeze({ github: accountId });
+    const metadata = await this.accounts.github(snapshot, ["api", `repos/${repository}`]) as { full_name?: string; default_branch?: string };
+    if (metadata.full_name?.toLowerCase() !== repository.toLowerCase()) throw new FactoryError("github_repository_mismatch", "The selected account cannot identify this repository", 409);
+    const branch = typeof metadata.default_branch === "string" ? metadata.default_branch : "main";
+    let reviewers: string[] = []; let checks: string[] = []; let protectedBranch = false;
+    try {
+      const rows = await this.accounts.github(snapshot, ["api", `repos/${repository}/collaborators`]) as { login?: unknown }[];
+      if (Array.isArray(rows)) reviewers = rows.filter(r => typeof r.login === "string").map(r => r.login as string).slice(0, 50);
+    } catch { /* Basic issue import does not require collaborator administration. */ }
+    try {
+      const protection = await this.accounts.github(snapshot, ["api", `repos/${repository}/branches/${encodeURIComponent(branch)}/protection`]) as { required_status_checks?: { contexts?: string[]; strict?: boolean }; enforce_admins?: { enabled?: boolean }; required_pull_request_reviews?: { required_approving_review_count?: number }; required_conversation_resolution?: { enabled?: boolean } };
+      checks = (protection.required_status_checks?.contexts ?? []).filter(c => typeof c === "string").slice(0, 50);
+      protectedBranch = !!protection.enforce_admins?.enabled && !!protection.required_status_checks?.strict && !!protection.required_pull_request_reviews?.required_approving_review_count && !!protection.required_conversation_resolution?.enabled;
+    } catch { /* The workflow retains explicit automation gates when protection is unreadable. */ }
+    return { repository, default_branch: branch, reviewers, required_checks: checks, protected: protectedBranch };
+  }
   private async locked<T>(id: string, run: () => Promise<T>): Promise<T> {
     if (this.busy.has(id)) throw new FactoryError("github_busy", "Wait for this Project's GitHub operation", 409);
     this.busy.add(id); try { return await run(); } finally { this.busy.delete(id); }
@@ -53,9 +76,8 @@ export class ProjectGitHub {
       if (!/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(value.repository ?? "") || typeof value.account_profile_id !== "string" || !Number.isInteger(value.poll_minutes) || value.poll_minutes < 5 || value.poll_minutes > 1440 || typeof value.review_context !== "string" || value.review_context.length > 30_000) throw new FactoryError("invalid_github_policy", "Select a repository, account and bounded polling interval");
       const checkout = this.store.list<ProjectCheckout>("checkouts", id).find((item) => item.machine_id === "local");
       if (checkout) {
-        const origin = (await git(checkout.path, ["remote", "get-url", "origin"])).trim();
-        const canonical = origin.replace(/^git@github\.com:/, "").replace(/^https:\/\/github\.com\//, "").replace(/\.git$/, "");
-        if (canonical.toLowerCase() !== value.repository.toLowerCase()) throw new FactoryError("github_repository_mismatch", "Select this Project's registered GitHub repository", 409);
+        const canonical = (await githubDirectory(checkout.path, this.accounts.discoveryHome)).repository;
+        if (canonical?.toLowerCase() !== value.repository.toLowerCase()) throw new FactoryError("github_repository_mismatch", "Select this Project's registered GitHub repository", 409);
       }
       for (const key of ["sync_enabled", "import_issues", "import_fixes", "auto_update", "auto_merge"] as const) if (typeof value[key] !== "boolean") throw new FactoryError("invalid_github_policy", "Select each GitHub policy explicitly");
       for (const key of ["trusted_reviewers", "required_checks"] as const) if (!Array.isArray(value[key]) || value[key].length > 50 || value[key].some((name) => typeof name !== "string" || !name.trim() || name.length > 200 || /[\r\n\0]/.test(name))) throw new FactoryError("invalid_github_policy", "Select bounded reviewers and GitHub check names");

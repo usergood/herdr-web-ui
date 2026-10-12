@@ -10,7 +10,7 @@ import { createServer } from "../server/index.ts";
 const state = mkdtempSync(join(tmpdir(), "project-references-browser-")); const repo = join(state, "repo"); mkdirSync(repo);
 execFileSync("git", ["init", "-b", "main"], { cwd: repo, stdio: "ignore" }); writeFileSync(join(repo, "README.md"), "# Fictional guide project\n");
 execFileSync("git", ["add", "README.md"], { cwd: repo }); execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "fixture"], { cwd: repo, stdio: "ignore" });
-let app = createServer({ port: 0, stateDir: join(state, "app") });
+let app = createServer({ port: 0, stateDir: join(state, "app"), factory: {accountDiscoveryHome:state} });
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
   const response = await fetch(`http://localhost:${app.port}/api/factory/projects`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify({ name: "Reference demo", path: repo, machine_id: "local", provider: "codex", tracker: "app" }) }); assert.equal(response.status, 201); const project = await response.json();
@@ -55,7 +55,7 @@ try {
   await page.getByRole("button", { name: "Prepare Codex references", exact: true }).click();
   await page.waitForFunction(() => (document.querySelector('textarea[name="codex-reference-prompt"]') as HTMLTextAreaElement)?.value.includes("Always read"));
   assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd: repo, encoding: "utf8" }), "");
-  const hash = new URL(page.url()).hash; app.stop(); app = createServer({ port: 0, stateDir: join(state, "app") }); await page.goto(`http://localhost:${app.port}/${hash}`);
+  const hash = new URL(page.url()).hash; app.stop(); app = createServer({ port: 0, stateDir: join(state, "app"), factory: {accountDiscoveryHome:state} }); await page.goto(`http://localhost:${app.port}/${hash}`);
   await page.getByRole("tab", { name: "Project references", exact: true }).click();
   await page.getByRole("heading", { name: "Refunds · v4", exact: true }).waitFor(); await page.setViewportSize({ width: 390, height: 844 });
   const referenceHeading = page.getByRole("heading", { name: "Project references", exact: true });

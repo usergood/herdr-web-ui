@@ -1,4 +1,6 @@
 import { mkdirSync } from "node:fs";
+import { permissionDescription, validPermissionMode } from "../shared/agent-permissions.ts";
+import { MATT_PROJECT_WORKFLOW } from "../shared/project-setup.ts";
 import { timingSafeEqual } from "node:crypto";
 import { join } from "node:path";
 import type { FactoryArtifact, FactoryChat, FactoryDetail, FactoryMessage, FactoryProject, FactoryProvider, FactoryRun, FactorySettings, Implementation, ProjectCheckout } from "../shared/protocol.ts";
@@ -40,8 +42,8 @@ export class FactoryService {
   private readonly accounts: MachineAccounts;
   private readonly github: ProjectGitHub;
   private stopped = false;
-  constructor(stateDir: string, private readonly skillsPath: string | null = null, native: Partial<FactoryNative> = {}, endpoint: MachineEndpoint = () => undefined, publicUrl: string | null = null, accountTools: AccountTools = {}, private readonly registeredMachine: (id: string) => boolean = (id) => id === "local" || !!endpoint(id)) {
-    this.accounts = new MachineAccounts(stateDir, accountTools);
+  constructor(stateDir: string, private readonly skillsPath: string | null = null, native: Partial<FactoryNative> = {}, endpoint: MachineEndpoint = () => undefined, publicUrl: string | null = null, accountTools: AccountTools = {}, private readonly registeredMachine: (id: string) => boolean = (id) => id === "local" || !!endpoint(id), accountDiscoveryHome?: string) {
+    this.accounts = new MachineAccounts(stateDir, accountTools, false, accountDiscoveryHome);
     this.store = new FactoryStore(stateDir); this.artifacts = new FactoryArtifacts(this.store, (text) => this.accounts.assertPublic(text)); this.workflow = new FactoryWorkflow(this.store); this.backup = new FactoryBackup(this.store, this.artifacts);
     this.accounts.usage((id) => [...this.store.list<FactoryRun>("runs"), ...this.store.list<{ run: FactoryRun; closing?: boolean }>("host_leases").map((lease) => lease.run)].some((run) => ["accepted", "working", "needs_you", "blocked", "disconnected", "interrupted"].includes(run.condition) && (run.manifest as { account_snapshot?: import("../shared/accounts.ts").AccountBindingSnapshot })?.account_snapshot?.profiles.some((profile) => profile.id === id)));
     this.references = new FactoryReferences(this.store, this.artifacts);
@@ -189,17 +191,27 @@ export class FactoryService {
         const record = { ...(previous ?? this.store.record()), id, machine_id: body.machine_id, pane_id: body.pane_id, ...identity, archived_at: body.archived ? new Date().toISOString() : null, updated_at: new Date().toISOString() };
         this.store.put("pane_archives", record); return jsonResponse(record);
       }
-      const github = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/github(?:\/(configure|sync)|\/pulls\/(\d+)\/(merge|update|rerequest|import|files))?$/.exec(url.pathname);
+      const github = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/github(?:\/(configure|sync|settings)|\/pulls\/(\d+)\/(merge|update|rerequest|import|files))?$/.exec(url.pathname);
       if (github) {
         if (request.method === "GET" && github[4] === "files") return jsonResponse(await this.github.files(github[1]!, Number(github[3]), url.searchParams.get("head")));
         if (request.method === "GET" && !github[2] && !github[3]) return jsonResponse(this.github.overview(github[1]!));
         if (request.method !== "POST" || !sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1" || request.headers.get("x-herdr-factory") !== "1") return httpError(403, "invalid_origin", "Use GitHub controls from this app");
         if (github[2] === "configure") return jsonResponse(await this.github.configure(github[1]!, await this.body(request) as unknown as import("../shared/github-project.ts").ProjectGitHubConfiguration));
+        if (github[2] === "settings") { const body = await this.body(request); return jsonResponse(await this.github.settings(github[1]!, body.account_profile_id)); }
         if (github[2] === "sync") return jsonResponse(await this.github.sync(github[1]!));
         if (github[3]) return jsonResponse(await this.github.action(github[1]!, Number(github[3]), github[4]!, await this.body(request)));
         return httpError(404, "not_found", "Unknown Project GitHub operation");
       }
       const accountCollection = /^\/api\/factory\/machines\/([a-zA-Z0-9_-]+)\/accounts$/.exec(url.pathname);
+      const nativeAccounts = /^\/api\/factory\/machines\/([a-zA-Z0-9_-]+)\/accounts\/(discovery|import)$/.exec(url.pathname);
+      const hostNativeAccounts = /^\/api\/factory-host\/accounts\/(discovery|import)$/.exec(url.pathname);
+      if (nativeAccounts || hostNativeAccounts) {
+        const machine = nativeAccounts?.[1] ?? "local"; const action = nativeAccounts?.[2] ?? hostNativeAccounts?.[1];
+        if (!this.registeredMachine(machine)) throw new FactoryError("invalid_machine", "Select a registered Machine");
+        if (action === "discovery" && request.method === "GET") return jsonResponse(await this.runtime.discoverAccounts(machine, url.searchParams.get("path") ?? undefined));
+        if (action === "import" && request.method === "POST") { if (request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Use account controls from this app"); return jsonResponse(await this.runtime.importAccount(machine, await this.body(request)), 201); }
+        return httpError(404, "not_found", "Unknown account import operation");
+      }
       const hostAccountCollection = url.pathname === "/api/factory-host/accounts";
       if (accountCollection || hostAccountCollection) {
         const machine = accountCollection?.[1] ?? "local";
@@ -309,6 +321,17 @@ export class FactoryService {
         return jsonResponse(ticket);
       }
       const projectRoute = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/(configure|checkouts|remove|restore)$/.exec(url.pathname);
+      const guidanceRoute = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/guidance$/.exec(url.pathname);
+      if (guidanceRoute && request.method === "POST") {
+        await this.body(request);
+        const project = this.store.get<FactoryProject>("projects", guidanceRoute[1]!);
+        if (!project || project.removed_at) throw new FactoryError("project_removed", "Select an active Project", 409);
+        const existing = project.guidance_assignment_id ? this.store.get<Implementation>("implementations", project.guidance_assignment_id) : null;
+        if (existing) return jsonResponse(existing);
+        const assignment: Implementation = { ...this.store.record(), title: `Set up ${project.name} guidance`, description: MATT_PROJECT_WORKFLOW + "\n\nInspect existing documents and discuss unresolved domain language and coding standards with the owner. Preserve existing guidance and propose additions in the owned worktree for review.", project_id: project.id, provider: project.provider, machine_id: project.machine_id, stage: "inbox", position: this.store.list<Implementation>("implementations").length, outcome: "none" };
+        this.store.db.transaction(() => { this.store.put("implementations", assignment); const chat: FactoryChat = { ...this.store.record(), implementation_id: assignment.id, title: "Setup" }; this.store.put("chats", chat, assignment.id); this.store.put("projects", { ...project, guidance_assignment_id: assignment.id }); })();
+        return jsonResponse(assignment, 201);
+      }
       if (projectRoute && request.method === "POST") {
         const body = await this.body(request);
         const project = this.store.get<FactoryProject>("projects", projectRoute[1]!);
@@ -341,7 +364,8 @@ export class FactoryService {
           for (const [machine, selection] of Object.entries(body.account_bindings)) {
             if (!this.store.list<ProjectCheckout>("checkouts", project.id).some((checkout) => checkout.machine_id === machine) || !isJsonObject(selection)) throw new FactoryError("checkout_required", "Configure this Machine's Project checkout before selecting accounts", 409);
             const selected = selection as import("../shared/accounts.ts").ProjectAccountBindings;
-            await this.runtime.accountSnapshot(machine, selected); bindings[machine] = selected;
+            if (JSON.stringify(project.account_bindings?.[machine] ?? {}) !== JSON.stringify(selected)) await this.runtime.accountSnapshot(machine, selected);
+            bindings[machine] = selected;
           }
           next.account_bindings = bindings;
         }
@@ -353,7 +377,14 @@ export class FactoryService {
           if (!isJsonObject(body.environment) || Object.entries(body.environment).some(([key, value]) => !/^[A-Z][A-Z0-9_]{0,99}$/.test(key) || /^(HOME|PATH|GIT_|HERDR_|LD_|DYLD_|GH_|GITHUB_|CODEX_|CLAUDE_|OPENAI_|ANTHROPIC_|CLOUDFLARE_|WRANGLER_|DOTENV_KEY$)/.test(key) || typeof value !== "string" || value.length > 4096 || value.includes("\0"))) throw new FactoryError("invalid_environment", "Use task-specific environment names; select credentials through Machine account profiles");
           next.environment = body.environment as Record<string, string>;
         }
-        if (body.permissions !== undefined) { if (typeof body.permissions !== "string" || !body.permissions.trim() || body.permissions.length > 20000) throw new FactoryError("invalid_permissions", "Record the Project's explicit execution permissions"); next.permissions = body.permissions; }
+        const selectedProvider = (body.provider ?? next.provider) as FactoryProvider;
+        if (body.permission_mode !== undefined) {
+          if (!providers.includes(selectedProvider) || !validPermissionMode(selectedProvider, body.permission_mode)) throw new FactoryError("invalid_permissions", "Select a native permission mode for this agent");
+          next.permission_mode = body.permission_mode;
+          if (!next.permissions?.trim()) next.permissions = permissionDescription(body.permission_mode);
+        }
+        if (body.permissions !== undefined && !(body.permission_mode !== undefined && body.permissions === "")) { if (typeof body.permissions !== "string" || !body.permissions.trim() || body.permissions.length > 20000) throw new FactoryError("invalid_permissions", "Record the Project's explicit execution permissions"); next.permissions = body.permissions; }
+        if (body.provider !== undefined && next.permission_mode && !validPermissionMode(selectedProvider, next.permission_mode)) throw new FactoryError("invalid_permissions", "Choose a permission mode for the new agent");
         if (body.shared_paths !== undefined) { if (!Array.isArray(body.shared_paths) || body.shared_paths.some((path: unknown) => typeof path !== "string" || !path || path.startsWith("/") || path.split(/[\\/]/).includes(".."))) throw new FactoryError("invalid_shared_paths", "Select repository-relative shared documents"); next.shared_paths = body.shared_paths as string[]; }
         if (body.provider !== undefined) { if (!providers.includes(body.provider as FactoryProvider)) throw new FactoryError("invalid_provider", "Select a provider"); next.provider = body.provider as FactoryProvider; }
         if (body.machine_id !== undefined) { if (typeof body.machine_id !== "string" || !this.registeredMachine(body.machine_id)) throw new FactoryError("invalid_machine", "Select a registered execution Machine"); if (!this.store.list<ProjectCheckout>("checkouts", project.id).some((entry) => entry.machine_id === body.machine_id)) throw new FactoryError("checkout_required", "Configure this Machine's checkout first"); next.machine_id = body.machine_id; }
@@ -470,14 +501,42 @@ export class FactoryService {
         })();
         return jsonResponse(record, 201);
       }
+      if (url.pathname === "/api/factory/project-discovery" && request.method === "POST") {
+        const body = await this.body(request);
+        if (typeof body.machine_id !== "string" || !this.registeredMachine(body.machine_id) || typeof body.path !== "string") throw new FactoryError("invalid_checkout", "Choose a registered Machine and repository folder");
+        return jsonResponse(await this.runtime.discover(body.machine_id, body.path));
+      }
+      if (url.pathname === "/api/factory-host/project-discovery" && request.method === "POST") { const body = await this.body(request); if (typeof body.path !== "string") throw new FactoryError("invalid_checkout", "Choose a repository folder"); return jsonResponse(await this.executionHost.discover(body.path)); }
       if (url.pathname === "/api/factory/projects" && request.method === "POST") {
         const body = await this.body(request);
         if (typeof body.name !== "string" || !body.name.trim() || body.name.length > 200 || typeof body.path !== "string" || !providers.includes(body.provider as FactoryProvider) || !["app", "github", "gitlab", "local"].includes(String(body.tracker))) return badRequest("invalid_project", "Enter a name, checkout, provider and tracker");
         if (typeof body.machine_id !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(body.machine_id) || !this.registeredMachine(body.machine_id)) throw new FactoryError("invalid_machine", "Select an execution Machine");
         const inspected = await this.runtime.inspect(body.machine_id, body.path);
         const project: FactoryProject = { ...this.store.record(), name: body.name.trim(), repository: inspected.repository, provider: body.provider as FactoryProvider, machine_id: body.machine_id, tracker: body.tracker as FactoryProject["tracker"], tracker_reference: typeof body.tracker_reference === "string" ? body.tracker_reference : "" };
+        let guidance: Implementation | null = null;
+        if (body.guided_setup === true) {
+          const detected = await this.runtime.discover(project.machine_id, inspected.path);
+          if (detected.repository !== inspected.repository || detected.head !== inspected.head) throw new FactoryError("project_changed", "Refresh the selected folder before completing setup", 409);
+          const mode = body.permission_mode ?? (project.provider === "codex" && detected.permission_modes.codex.includes("approve_for_me") ? "approve_for_me" : "ask");
+          if (!validPermissionMode(project.provider, mode) || !detected.permission_modes[project.provider].includes(mode)) throw new FactoryError("invalid_permissions", "Select a supported permission mode for this agent");
+          const ids = body.check_ids ?? detected.checks.map((check) => check.id);
+          if (!Array.isArray(ids) || ids.length > 20 || ids.some((id) => typeof id !== "string" || !detected.checks.some((check) => check.id === id))) throw new FactoryError("invalid_commands", "Choose checks detected in this repository");
+          project.checks = detected.checks.filter((check) => ids.includes(check.id)).map((check) => check.args);
+          project.permission_mode = mode; project.permissions = permissionDescription(mode); project.workflow_instructions = MATT_PROJECT_WORKFLOW;
+          project.context_target_tokens = body.context_target_tokens === undefined ? 150000 : Number(body.context_target_tokens);
+          if (![150000, 200000].includes(project.context_target_tokens)) throw new FactoryError("invalid_context_target", "Choose the 150,000 or 200,000 token handoff target");
+          project.shared_paths = detected.guidance;
+          if (body.github_account_id) {
+            if (request.headers.get("x-herdr-machine") !== "1" || typeof body.github_account_id !== "string") return httpError(403, "invalid_origin", "Select accounts using Project setup");
+            await this.runtime.accountSnapshot(project.machine_id, { github: body.github_account_id }); project.account_bindings = { [project.machine_id]: { github: body.github_account_id } };
+          }
+          if (body.guidance_task === true) {
+            guidance = { ...this.store.record(), title: `Set up ${project.name} guidance`, description: `${MATT_PROJECT_WORKFLOW}\n\nInspect the repository and help the owner establish domain language and coding standards. Reuse existing documents; ask about unresolved terms and rules. Propose additions in the owned worktree for review. Do not invent a resolved glossary, overwrite existing guidance, publish or deploy.`, project_id: project.id, machine_id: project.machine_id, provider: project.provider, stage: "inbox", position: this.store.list<Implementation>("implementations").length, outcome: "none" };
+            project.guidance_assignment_id = guidance.id;
+          }
+        }
         const checkout: ProjectCheckout = { ...this.store.record(), ...inspected, project_id: project.id, machine_id: body.machine_id };
-        this.store.db.transaction(() => { this.store.put("projects", project); this.store.put("checkouts", checkout, project.id); this.store.event(null, "project_registered", { project_id: project.id, checkout_id: checkout.id }); })();
+        this.store.db.transaction(() => { this.store.put("projects", project); this.store.put("checkouts", checkout, project.id); if (guidance) { this.store.put("implementations", guidance); const chat: FactoryChat = { ...this.store.record(), implementation_id: guidance.id, title: "Setup" }; this.store.put("chats", chat, guidance.id); } this.store.event(null, "project_registered", { project_id: project.id, checkout_id: checkout.id }); })();
         return jsonResponse(project, 201);
       }
       const archiveRoute = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/(archive|restore)$/.exec(url.pathname);
