@@ -16,7 +16,7 @@ Historical Run/context snapshots keep referenced versions in backup reachability
 
 Reuse the owner's confirmed public HTTP/API seam with temporary state and owned Git/Herdr fixtures, and the real browser seam. Verify Project isolation, restart/versioning/stale writes, private outside-Git materialization, frozen root/worker context, corrupt or unsafe inputs, retained backup restore, and desktop/mobile template/upload/prepare flows. A genuine installed Codex read check is separate from fixture adapter tests; image understanding remains model-dependent.
 
-Implementation base: `defd5d0` on the documentation branch. Jev remains research only. GitHub Actions stays disabled by the owner's earlier choice; no release or deployment is part of this slice.
+Implementation base: `defd5d0` on the documentation branch. Jev remains research only. Actions was disabled at that baseline; the fork now runs lean CI, while publication workflows remain disabled. See [CI controls](ci-activation.md).
 
 ## Use it
 

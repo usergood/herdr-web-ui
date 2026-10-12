@@ -86,7 +86,8 @@ scope. Use separate OS users or containers when enforced separation is required.
 
 Owned API and Playwright fixtures cover identity/storage separation, managed keys, authorization,
 expiry, cancellation, Project/Run freezing, HTTPS credentials, worker inheritance, remote Machine
-ownership and retention guards. Linux checks are local while GitHub Actions remains disabled.
+ownership and retention guards. Full Linux checks run locally; lean GitHub CI is enabled while
+publication workflows remain disabled. See [CI controls](ci-activation.md).
 The owner still completes actual OAuth/subscription authorization; no personal login is created
 by the automated tests.
 
