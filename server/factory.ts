@@ -20,6 +20,7 @@ import { FactoryReferences } from "./factory-references.ts";
 import { projectReferenceTemplate } from "../shared/project-references.ts";
 import { MachineAccounts } from "./accounts.ts";
 import type { AccountTools } from "./account-tools.ts";
+import { ProjectGitHub } from "./github-project.ts";
 
 const providers: FactoryProvider[] = ["codex", "claude", "opencode"];
 const initialSettings: FactorySettings = { provider: "codex", max_implementations: 2, max_agents: 6, max_builds: 2, max_artifact_bytes: 25 * 1024 * 1024, max_storage_bytes: 2 * 1024 * 1024 * 1024, skills_path: null };
@@ -36,6 +37,7 @@ export class FactoryService {
   private readonly retrospectives: FactoryRetrospectives;
   private readonly references: FactoryReferences;
   private readonly accounts: MachineAccounts;
+  private readonly github: ProjectGitHub;
   private stopped = false;
   constructor(stateDir: string, private readonly skillsPath: string | null = null, native: Partial<FactoryNative> = {}, endpoint: MachineEndpoint = () => undefined, publicUrl: string | null = null, accountTools: AccountTools = {}) {
     this.accounts = new MachineAccounts(stateDir, accountTools);
@@ -46,6 +48,7 @@ export class FactoryService {
     this.runtime = new FactoryRuntime(this.store, this.workflow, () => this.settings(), this.executionHost, endpoint, (record) => this.artifacts.read(record), publicUrl, this.references, this.accounts); this.review = new FactoryReview(this.store, (machine, path, base, mode) => this.runtime.capture(machine, path, base, mode), (machine, path) => this.runtime.inspect(machine, path));
     this.pipeline = new FactoryPipeline(this.store, this.runtime, this.workflow, () => this.settings());
     this.retrospectives = new FactoryRetrospectives(this.store);
+    this.github = new ProjectGitHub(this.store, this.accounts);
   }
   settings(): FactorySettings { return this.store.get<{ id: string; value: FactorySettings }>("settings", "default")?.value ?? { ...initialSettings, skills_path: this.skillsPath }; }
   bindPrompt(prompt: FactoryNative["prompt"]): void { this.executionHost.bindPrompt(prompt); }
@@ -148,6 +151,16 @@ export class FactoryService {
   }
   async handle(request: Request, url: URL): Promise<Response> {
     try {
+      const github = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/github(?:\/(configure|sync)|\/pulls\/(\d+)\/(merge|update|rerequest|import|files))?$/.exec(url.pathname);
+      if (github) {
+        if (request.method === "GET" && github[4] === "files") return jsonResponse(await this.github.files(github[1]!, Number(github[3]), url.searchParams.get("head")));
+        if (request.method === "GET" && !github[2] && !github[3]) return jsonResponse(this.github.overview(github[1]!));
+        if (request.method !== "POST" || request.headers.get("origin") && request.headers.get("origin") !== url.origin || request.headers.get("x-herdr-machine") !== "1" || request.headers.get("x-herdr-factory") !== "1") return httpError(403, "invalid_origin", "Use GitHub controls from this app");
+        if (github[2] === "configure") return jsonResponse(await this.github.configure(github[1]!, await this.body(request) as unknown as import("../shared/github-project.ts").ProjectGitHubConfiguration));
+        if (github[2] === "sync") return jsonResponse(await this.github.sync(github[1]!));
+        if (github[3]) return jsonResponse(await this.github.action(github[1]!, Number(github[3]), github[4]!, await this.body(request)));
+        return httpError(404, "not_found", "Unknown Project GitHub operation");
+      }
       if (request.method !== "GET" && request.headers.get("x-herdr-factory") !== "1") return httpError(403, "invalid_origin", "Use factory controls from this app");
       const accountCollection = /^\/api\/factory\/machines\/([a-zA-Z0-9_-]+)\/accounts$/.exec(url.pathname);
       const hostAccountCollection = url.pathname === "/api/factory-host/accounts";
@@ -452,5 +465,5 @@ export class FactoryService {
       return httpError(404, "not_found", "Unknown factory endpoint");
     } catch (error) { return error instanceof FactoryError ? httpError(error.status, error.code, error.message) : error instanceof SyntaxError ? badRequest("invalid_json", "Enter valid JSON") : errorResponse(error); }
   }
-  stop(): void { if (this.stopped) return; this.stopped = true; this.accounts.stop(); this.runtime.stop(); this.store.close(); }
+  stop(): void { if (this.stopped) return; this.stopped = true; this.github.stop(); this.accounts.stop(); this.runtime.stop(); this.store.close(); }
 }

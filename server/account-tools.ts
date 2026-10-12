@@ -56,12 +56,12 @@ export class NativeAccountTools {
     if (!executable) throw new FactoryError("account_tool_missing", "Install the selected native CLI on this Machine before setting up its account", 409);
     return executable;
   }
-  async json(service: AccountService, args: string[], directory: string): Promise<unknown> {
+  async json(service: AccountService, args: string[], directory: string, maxBuffer = 64 * 1024): Promise<unknown> {
     const tool = this.tool(service);
     try {
       sealCredentialFiles(directory);
       const value = await new Promise((resolve, reject) => {
-        const child = execFile(tool.executable, [...tool.args ?? [], ...args], { cwd: directory, env: this.environment(service, directory), timeout: 10_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024, windowsHide: true }, (error, stdout) => {
+        const child = execFile(tool.executable, [...tool.args ?? [], ...args], { cwd: directory, env: this.environment(service, directory), timeout: 10_000, killSignal: "SIGKILL", maxBuffer, windowsHide: true }, (error, stdout) => {
           this.children.delete(child); if (error) { reject(error); return; } try { resolve(JSON.parse(stdout)); } catch (error) { reject(error); }
         }); this.children.add(child);
       }); sealCredentialFiles(directory); return value;

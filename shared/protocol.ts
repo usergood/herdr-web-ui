@@ -1155,6 +1155,8 @@ export type { ProjectReference, ProjectReferenceLibrary, CodexReferenceContext, 
 
 /** Factory mutation bodies. Runtime validation still treats incoming JSON as untrusted. */
 export interface FactoryRequests {
+  github_configuration: import("./github-project.ts").ProjectGitHubConfiguration;
+  github_action: { head: string; base: string; policy_revision: string };
   implementation: { title: string; description: string };
   configure: { project_id?: string | null; provider?: import("./factory.ts").FactoryProvider | null; machine_id?: string | null };
   project: { name: string; path: string; machine_id: string; provider: import("./factory.ts").FactoryProvider; tracker: import("./factory.ts").FactoryProject["tracker"]; tracker_reference?: string };
@@ -1190,6 +1192,14 @@ export interface FactoryRequests {
   empty: Record<string, never>;
 }
 export type FactoryRequestBody = FactoryRequests[keyof FactoryRequests];
+/** GET /api/factory/projects/:id/github -> ProjectGitHubOverview.
+ * POST .../github/configure -> ProjectGitHubPolicy, uses ProjectGitHubConfiguration.
+ * POST .../github/sync -> ProjectGitHubOverview; imports owned issue/fix records and applies opted-in policies.
+ * GET .../github/pulls/:number/files?head=:sha -> ProjectGitHubFiles, bounded read-only patch inventory.
+ * POST .../github/pulls/:number/(merge|update|rerequest|import) -> ProjectGitHubOverview;
+ * mutations require the displayed head, base and policy_revision, same origin and x-herdr-machine: 1.
+ */
+export type { ProjectGitHubOverview, ProjectGitHubPolicy, ProjectGitHubConfiguration, ProjectGitHubPull, ProjectGitHubSource, ProjectGitHubMutation, ProjectGitHubFiles } from "./github-project.ts";
 export interface FactoryBatchReceipt {
   id: string; created_at: string; updated_at: string; implementation_id: string;
   run_id: string; snapshot_id: string; key: string; signature: string;

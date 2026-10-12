@@ -56,6 +56,13 @@ export class MachineAccounts {
   sanitize<T>(value: T): T { return JSON.parse(accountRedactor(this.root)(JSON.stringify(value))) as T; }
   assertPublic(text: string): void { if (accountRedactor(this.root)(text) !== text) throw new FactoryError("account_private_material", "Private Machine account material cannot be retained in factory history or artifacts", 409); }
   usage(check: (id: string) => boolean): void { this.inUse = check; }
+  async github(snapshot: AccountBindingSnapshot, args: string[], authorize: () => void = () => {}): Promise<unknown> {
+    await this.environment(snapshot);
+    const profile = snapshot.profiles.find((entry) => entry.service === "github");
+    if (!profile) throw new FactoryError("account_scope_required", "Select a verified GitHub profile", 409);
+    authorize();
+    return this.native.json("github", args, join(this.root, profile.id, "github"), 2 * 1024 * 1024);
+  }
   private mutable(entry: PrivateProfile, body: Record<string, unknown>): void {
     if (entry.profile.revision !== body.expected_revision) throw new FactoryError("account_changed", "Refresh the account profile before continuing", 409);
     if (this.inUse(entry.profile.id)) throw new FactoryError("account_in_use", "Stop or finish the Runs using this account before changing its setup", 409);

@@ -2,6 +2,8 @@
 import type { FactoryDetail, FactoryOverview, FactoryProject, FactoryRecord, Implementation, ProjectCheckout, ProjectReference } from "../../shared/factory.ts";
 import { projectReferenceTemplate } from "../../shared/project-references.ts";
 import type { AccountProfile, AccountService } from "../../shared/accounts.ts";
+import type { ProjectGitHubOverview, ProjectGitHubPolicy } from "../../shared/github-project.ts";
+import { fictionalGitHubPull } from "./github-fixtures.ts";
 
 const storageKey = "saurons-eye:demo-factory";
 const details = new Map<string, FactoryDetail>();
@@ -10,6 +12,7 @@ let settings: FactoryOverview["settings"] = { provider: "codex", max_implementat
 const blobs = new Map<string, string>();
 let referenceVersions: ProjectReference[] = []; let referenceHeads: string[] = [];
 const accountProfiles: AccountProfile[] = [];
+const githubViews = new Map<string, ProjectGitHubOverview>();
 function record(): FactoryRecord { const now = new Date().toISOString(); return { id: crypto.randomUUID(), created_at: now, updated_at: now }; }
 function json(body: unknown, status = 200): Response { return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } }); }
 function failure(code: string, message: string, status = 409): Response { return json({ error: { code, message } }, status); }
@@ -28,6 +31,20 @@ if (!details.size) capture("Explore release notes", "A fictional Inbox idea: kee
 
 export async function factoryDemo(url: URL, method: string, body: Record<string, unknown>): Promise<Response> {
   const path = url.pathname;
+  const githubRoute = /^\/api\/factory\/projects\/([^/]+)\/github(?:\/(configure|sync)|\/pulls\/(\d+)\/(merge|update|rerequest|import|files))?$/.exec(path);
+  if (githubRoute) {
+    const id = githubRoute[1]!; if (!projects.some((project) => project.id === id)) return failure("not_found", "Fictional Project not found", 404);
+    const view = githubViews.get(id) ?? { policy: null, pulls: [], sources: [], mutations: [], last_sync: null, problem: null };
+    if (method === "GET" && githubRoute[4] === "files") return json({ head: fictionalGitHubPull.headRefOid, base: fictionalGitHubPull.baseRefOid, files: [{ filename: "README.md", status: "modified", additions: 1, deletions: 0, patch: "@@ -1 +1,2 @@\n # Fictional Project\n+An example improvement." }] });
+    if (method === "GET") return json(view);
+    if (githubRoute[2] === "configure") {
+      if (body.expected_revision !== (view.policy?.revision ?? null)) return failure("github_policy_changed", "Refresh the fictional Project policy");
+      view.policy = { ...record(), ...body, id, project_id: id, revision: crypto.randomUUID() } as ProjectGitHubPolicy; githubViews.set(id, view); return json(view.policy);
+    }
+    if (!view.policy) return failure("github_not_configured", "Configure the fictional GitHub policy");
+    if (githubRoute[2] === "sync") { view.last_sync = new Date().toISOString(); view.pulls = [{ ...record(), project_id: id, pull: structuredClone(fictionalGitHubPull), blockers: ["Requested reviews are still pending"], observed_at: view.last_sync, fix_implementation_id: null }]; githubViews.set(id, view); return json(view); }
+    return failure("github_fixture_only", "The demo never changes a real GitHub PR");
+  }
   const accountCollection = /^\/api\/factory\/machines\/[^/]+\/accounts$/.test(path) || path === "/api/factory-host/accounts";
   if (accountCollection && method === "GET") return json({ protocol: 1, host_id: "fictional-demo-host", profiles: accountProfiles });
   if (accountCollection && method === "POST") {
