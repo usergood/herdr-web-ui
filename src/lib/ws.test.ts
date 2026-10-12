@@ -119,7 +119,7 @@ it("refuses queued delivery on older bridges without writing its text or a fallb
   }
 });
 
-it("holds a message for Send now on bridges that list pending-hold, and queues it on older ones", async () => {
+it("holds a message for Send now on capable bridges and refuses automatic delivery on older ones", async () => {
   for (const [features, delivery] of [[["submit", "pending-input"], "queue"], [["submit", "pending-input", "pending-hold"], "hold"]] as const) {
     const client = new HerdrSocket("ws://test/ws");
     client.connect();
@@ -128,6 +128,12 @@ it("holds a message for Send now on bridges that list pending-hold, and queues i
     socket.receive(snapshot([...features]));
     expect(client.canHoldMessages()).toBe(delivery === "hold");
     const result = client.submit("w1:p1", "later", "later", false, "hold");
+    if (delivery === "queue") {
+      expect(await result).toMatchObject({ ok: false, code: "pending_hold_unsupported" });
+      expect(submissions(socket)).toEqual([]);
+      client.close();
+      continue;
+    }
     for (let turn = 0; turn < 10 && submissions(socket).length === 0; turn++) await Promise.resolve();
     expect(submissions(socket)).toEqual([{ type: "submit", id: 1, pane_id: "w1:p1", text: "later", payload: "later", delivery }]);
     const pending: PendingMessage = { id: "pending-1", request_id: 1, text: "later", state: delivery === "hold" ? "held" : "queued", created_at: "2026-10-06T00:00:00Z" };

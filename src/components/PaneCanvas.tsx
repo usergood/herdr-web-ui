@@ -172,6 +172,10 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
   ];
   const items = target ? itemsFor(target) : [];
   if (actionsRef) actionsRef.current = itemsFor;
+  useEffect(() => {
+    if (actionsRef) actionsRef.current = itemsFor;
+    return () => { if (actionsRef?.current === itemsFor) actionsRef.current = null; };
+  }, [actionsRef, itemsFor]);
 
   // One in-flight ratio at a time; retain only the newest position and always flush release.
   const flush = (current: Drag): void => {

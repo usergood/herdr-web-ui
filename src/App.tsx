@@ -267,6 +267,7 @@ export function App() {
   // the header's More menu: its button, and whether it opened on a phone-width screen
   const [more, setMore] = useState<{ anchor: HTMLElement; phone: boolean } | null>(null);
   const [planOpen, setPlanOpen] = useState(false);
+  useEffect(() => { setPlanOpen(false); }, [selectedMachineId, selectedPaneId]);
   const closeMore = useCallback(() => setMore(null), []);
   // the pane canvas's actions, for the phone's tab menu (TabStrip)
   const paneActionsRef = useRef<((target: HerdrPane) => RowMenuItem[]) | null>(null);
@@ -1217,10 +1218,10 @@ export function App() {
           <TabStrip snapshot={snapshot} workspace={selectedWorkspace} selectedPane={selectedPane} onSelectPane={selectPane} onNewTab={() => actions.openNewTab()}
             paneActions={(paneId) => {
               const target = snapshot.panes.find((item) => item.pane_id === paneId);
-              if (!target || !paneActionsRef.current) return [];
+              if (factoryOpen || !target || !paneActionsRef.current) return [];
               // the strip renders before the canvas, so its items come from the canvas's previous render:
               // an action runs against the canvas's latest one, where a snapshot change has landed
-              return paneActionsRef.current(target).map((item) => ({ ...item, run: () => (paneActionsRef.current?.(target).find((fresh) => fresh.id === item.id) ?? item).run() }));
+              return paneActionsRef.current(target).map((item) => ({ ...item, run: () => { paneActionsRef.current?.(target).find((fresh) => fresh.id === item.id)?.run(); } }));
             }} />
         )}
         {/* the tab strip's panel: its id is what each tab's aria-controls points at. No tabIndex -
