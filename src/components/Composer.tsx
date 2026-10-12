@@ -29,11 +29,13 @@ import {
   composerStatusHint,
   composerStatusWord,
   contextLeftPercent,
+  type DraftRefusal,
   formatTokens,
   imageMention,
   insertMention,
   MAX_COMPOSER_CHARS,
   rankSlashCommands,
+  submitNote,
   terminalOnlyCommand,
 } from "../lib/compose.ts";
 import { paneStatus } from "../lib/status.ts";
@@ -46,6 +48,7 @@ import { AgentMark } from "./AgentMark.tsx";
 import { BackgroundTasks } from "./BackgroundTasks.tsx";
 import { MicButton, VoiceRecordingPill, useDictation } from "./VoiceInput.tsx";
 import { useT } from "../lib/i18n.ts";
+import { modalOpen } from "../lib/focus.ts";
 
 export interface ComposerProps {
   connected: boolean;
@@ -64,10 +67,14 @@ export interface ComposerProps {
   answerHint?: string | null;
   /** what the agent suggests typing next (Claude's grey input text): the placeholder, taken with Tab */
   suggestion?: string | null;
+  /** a cancelled send the agent put back in its input box: the empty box takes it again, for editing and resending */
+  restored?: string | null;
   /** an empty chat's greeting: it stands over the composer's column and takes no row of its own */
   greeting?: ReactNode;
-  /** true: sent, clear the box; a string: keep the text and say why; a promise settles to either */
-  onSend: (text: string) => boolean | string | Promise<boolean | string>;
+  /** true: sent, clear the box; a string: keep the text and say why; a DraftRefusal: the same, and the
+   * note offers to send again with `clearDraft`, which clears that draft from the terminal first; a
+   * promise settles to any of them */
+  onSend: (text: string, clearDraft?: string) => boolean | string | DraftRefusal | Promise<boolean | string | DraftRefusal>;
   onAbort: () => void;
   onUploadImage: (file: File) => Promise<string>;
 }
@@ -221,6 +228,7 @@ export function Composer({
   metadata,
   answerHint = null,
   suggestion = null,
+  restored = null,
   greeting = null,
   onSend,
   onAbort,
@@ -250,7 +258,7 @@ export function Composer({
   // it), as the grid does in the terminal lens: a pane picked from the drawer is typed into
   // and once the user picks the pane App had switched to on its own
   useEffect(() => {
-    if (autoFocus) textareaRef.current?.focus({ preventScroll: true });
+    if (autoFocus && !modalOpen()) textareaRef.current?.focus({ preventScroll: true });
   }, [autoFocus]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentsRef = useRef<Attachment[]>([]);
@@ -263,6 +271,8 @@ export function Composer({
   const [caret, setCaret] = useState(text.length);
   const textRef = useRef(text);
   const caretRef = useRef(caret);
+  /** the restored text the box was filled with: only that fill is ever cleared, never the user's own typing */
+  const filledFrom = useRef<string | null>(null);
   const [commands, setCommands] = useState<SlashCommand[]>([]);
   const [files, setFiles] = useState<string[]>([]);
   const [slashUsage, setSlashUsage] = useState<Record<string, number>>(readSlashUsage);
@@ -270,7 +280,7 @@ export function Composer({
   const [menuDismissed, setMenuDismissed] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [dragging, setDragging] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
+  const [note, setNote] = useState<string | DraftRefusal | null>(null);
   // shown only when chosen in Settings → Quick replies: a button beside the box was one more thing to read
   const quickOpen = settings.showQuickReplies;
   const quickReplies = quickReplyButtons(settings);
@@ -298,6 +308,29 @@ export function Composer({
   const placeholder = !connected
     ? t("Reconnecting… message held here, never queued")
     : answerHint ?? offered ?? t("Message {agent}…", { agent: agentLabel });
+
+  // A cancelled send the agent put back in its input box fills an empty box again — without
+  // focus, which would raise a phone's keyboard. When it is gone, only the untouched fill is
+  // cleared: text the user typed or edited over it is their own and stays.
+  useEffect(() => {
+    if (restored !== null) {
+      if (restored === filledFrom.current || textRef.current.trim() !== "" || sending) return;
+      setText(restored);
+      textRef.current = restored;
+      caretRef.current = restored.length;
+      setCaret(restored.length);
+      filledFrom.current = restored;
+      return;
+    }
+    if (filledFrom.current === null) return;
+    if (textRef.current === filledFrom.current) {
+      setText("");
+      textRef.current = "";
+      caretRef.current = 0;
+      setCaret(0);
+    }
+    filledFrom.current = null;
+  }, [restored]);
 
   useEffect(() => {
     let live = true;
@@ -663,15 +696,16 @@ export function Composer({
     }
   }, []);
 
-  const send = useCallback(() => {
+  /** `clearDraft`: the terminal draft a DraftRefusal named, which the user asked to clear and send over */
+  const send = useCallback((clearDraft?: string) => {
     if (composingRef.current) return;
     if (!connected || uploading || sending || text.trim().length === 0) return;
     const sent = text;
     const sentAttachments = attachments;
-    const settle = (result: boolean | string): void => {
+    const settle = (result: boolean | string | DraftRefusal): void => {
       const acknowledged = result === true ? composerDrafts.settle(draftKey, sent) : null;
       if (!mounted.current) return;
-      if (typeof result === "string") setNote(result);
+      if (typeof result !== "boolean") setNote(result);
       if (acknowledged === null) return;
       // only what was sent leaves the box: text added after it stays exactly as typed. Changed
       // inside while on its way, the whole edit stays, and the note says it was not sent
@@ -687,7 +721,7 @@ export function Composer({
     // a polish landing before the acknowledgement would count as an edit and keep the sent message here
     dictation.forget();
     try {
-      const result = onSend(text);
+      const result = onSend(text, clearDraft);
       if (!(result instanceof Promise)) { settle(result); composerDrafts.end(draftKey); return; }
       void result.then(settle).catch(() => { if (mounted.current) setNote(t("Not confirmed. Check the terminal before sending again.")); }).finally(() => composerDrafts.end(draftKey));
     } catch {
@@ -700,8 +734,9 @@ export function Composer({
   const sendQuick = useCallback((reply: string) => {
     if (!connected || sending) return;
     setNote(null);
-    const settle = (result: boolean | string): void => {
-      if (mounted.current && typeof result === "string") setNote(result);
+    // a quick reply is not the box's text, so its note offers no send over a draft
+    const settle = (result: boolean | string | DraftRefusal): void => {
+      if (mounted.current && typeof result !== "boolean") setNote(typeof result === "string" ? result : submitNote("input_draft", result.note));
     };
     if (!composerDrafts.begin(draftKey)) return;
     try {
@@ -1070,7 +1105,15 @@ export function Composer({
           )}
         </div>
       </div>
-      {note && <div className="composer-note" role="alert">{note}</div>}
+      {typeof note === "string" && <div className="composer-note" role="alert">{note}</div>}
+      {note !== null && typeof note === "object" && (
+        <div className="composer-note composer-note-offer" role="alert">
+          <span>{note.note}</span>
+          {/* the draft named above, never what has replaced it since: the server checks */}
+          <button type="button" className="composer-note-action" disabled={!connected || uploading || sending || text.trim().length === 0}
+            onClick={() => send(note.draft)}>{t("Clear it and send")}</button>
+        </div>
+      )}
       {/* said while typing, before the send: after it the browser is already open and the reader is
           already in the state the words describe. Not a block — the text still goes, and pi runs the
           command in the terminal the way its own palette would */}

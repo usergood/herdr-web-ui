@@ -13,6 +13,13 @@ it("keeps a tab's pane while out of use until this device turns the pause on", (
   expect(sanitizeSettings({ releasePaneAway: "true" }).releasePaneAway).toBe(false);
 });
 
+it("shrinks a narrow split pane's font until this device turns it off", () => {
+  expect(DEFAULT_SETTINGS.narrowPaneFont).toBe(true);
+  expect(sanitizeSettings({}).narrowPaneFont).toBe(true);
+  expect(sanitizeSettings({ narrowPaneFont: false }).narrowPaneFont).toBe(false);
+  expect(sanitizeSettings({ narrowPaneFont: "false" }).narrowPaneFont).toBe(true);
+});
+
 it("keeps the screen wake lock off until this device explicitly enables it", () => {
   expect(DEFAULT_SETTINGS.keepScreenOn).toBe(false);
   expect(sanitizeSettings({}).keepScreenOn).toBe(false);
@@ -27,11 +34,51 @@ it("keeps the screen wake lock off until this device explicitly enables it", () 
   expect(sanitizeSettings({ terminalWheelSpeed: "3" }).terminalWheelSpeed).toBe(1);
 });
 
+it("keeps the terminal cursor at a block that blinks unless a saved shape or blink says otherwise", () => {
+  expect(DEFAULT_SETTINGS.terminalCursorStyle).toBe("block");
+  expect(DEFAULT_SETTINGS.terminalCursorBlink).toBe(true);
+  expect(sanitizeSettings({}).terminalCursorStyle).toBe("block");
+  expect(sanitizeSettings({}).terminalCursorBlink).toBe(true);
+  expect(sanitizeSettings({ terminalCursorStyle: "bar" }).terminalCursorStyle).toBe("bar");
+  expect(sanitizeSettings({ terminalCursorStyle: "underline" }).terminalCursorStyle).toBe("underline");
+  // a value no shape answers for falls back, never breaking the UI on a stale or hand-edited record
+  expect(sanitizeSettings({ terminalCursorStyle: "pipe" }).terminalCursorStyle).toBe("block");
+  expect(sanitizeSettings({ terminalCursorBlink: false }).terminalCursorBlink).toBe(false);
+  expect(sanitizeSettings({ terminalCursorBlink: "false" }).terminalCursorBlink).toBe(true);
+});
+
 it("keeps sidebar rows on two lines unless one line was chosen", () => {
   expect(sanitizeSettings({}).sidebarRows).toBe("two");
   expect(sanitizeSettings({ sidebarRows: "one" }).sidebarRows).toBe("one");
   for (const sidebarRows of [null, true, "three", 2]) {
     expect(sanitizeSettings({ sidebarRows }).sidebarRows).toBe("two");
+  }
+});
+
+it("draws workspace cards in the Agents list only when they were turned on", () => {
+  expect(DEFAULT_SETTINGS.agentCards).toBe(false);
+  expect(sanitizeSettings({}).agentCards).toBe(false);
+  expect(sanitizeSettings({ agentCards: true }).agentCards).toBe(true);
+  for (const agentCards of [null, "true", 1]) {
+    expect(sanitizeSettings({ agentCards }).agentCards).toBe(false);
+  }
+});
+
+it("shows the Agents list's pin stars only when they were turned on", () => {
+  expect(DEFAULT_SETTINGS.agentPins).toBe(false);
+  expect(sanitizeSettings({}).agentPins).toBe(false);
+  expect(sanitizeSettings({ agentPins: true }).agentPins).toBe(true);
+  for (const agentPins of [null, "true", 1]) {
+    expect(sanitizeSettings({ agentPins }).agentPins).toBe(false);
+  }
+});
+
+it("keeps the plan's flow and its header count unless they were turned off", () => {
+  expect([DEFAULT_SETTINGS.planFlow, DEFAULT_SETTINGS.planButton]).toEqual([true, true]);
+  expect(sanitizeSettings({})).toMatchObject({ planFlow: true, planButton: true });
+  expect(sanitizeSettings({ planFlow: false, planButton: false })).toMatchObject({ planFlow: false, planButton: false });
+  for (const value of [null, "false", 0]) {
+    expect(sanitizeSettings({ planFlow: value, planButton: value })).toMatchObject({ planFlow: true, planButton: true });
   }
 });
 
@@ -358,6 +405,10 @@ describe("quick replies row", () => {
     expect(sanitizeSettings({ showUsage: true }).showUsage).toBe(true);
     expect(sanitizeSettings({ showUsage: 1 }).showUsage).toBe(false);
     expect(DEFAULT_SETTINGS.usageCount).toBe("used");
+    // the pace is shown only once chosen
+    expect(DEFAULT_SETTINGS.usagePace).toBe(false);
+    expect(sanitizeSettings({ usagePace: true }).usagePace).toBe(true);
+    expect(sanitizeSettings({ usagePace: "yes" }).usagePace).toBe(false);
     expect(sanitizeSettings({ usageCount: "left" }).usageCount).toBe("left");
     expect(sanitizeSettings({ usageCount: "half" }).usageCount).toBe("used");
     expect(DEFAULT_SETTINGS.usageGlance).toBe("week");
@@ -378,7 +429,15 @@ describe("palette", () => {
     expect(sanitizeSettings({ palette: "charcoal" }).palette).toBe("charcoal");
     expect(sanitizeSettings({ palette: "catppuccin" }).palette).toBe("catppuccin");
     expect(sanitizeSettings({ palette: "lilac" }).palette).toBe("lilac");
+    expect(sanitizeSettings({ palette: "forest" }).palette).toBe("forest");
     expect(sanitizeSettings({ palette: "pink" }).palette).toBe("amber");
+  });
+
+  it("preserves Forest through a saved settings round-trip and unrelated edits", () => {
+    const saved = sanitizeSettings({ palette: "forest", theme: "dark" });
+    const reloaded = sanitizeSettings(JSON.parse(JSON.stringify(saved)));
+    expect(reloaded.palette).toBe("forest");
+    expect(sanitizeSettings({ ...reloaded, theme: "light" }).palette).toBe("forest");
   });
 
   const css = readFileSync(join(import.meta.dir, "..", "styles.css"), "utf8");
@@ -400,6 +459,8 @@ describe("palette", () => {
     { theme: "light", palette: "catppuccin", layers: ['[data-theme="light"][data-palette="catppuccin"]', '[data-theme="light"]', ":root"] },
     { theme: "dark", palette: "lilac", layers: ['[data-theme="dark"][data-palette="lilac"]', ":root"] },
     { theme: "light", palette: "lilac", layers: ['[data-theme="light"][data-palette="lilac"]', '[data-theme="light"]', ":root"] },
+    { theme: "dark", palette: "forest", layers: ['[data-theme="dark"][data-palette="forest"]', ":root"] },
+    { theme: "light", palette: "forest", layers: ['[data-theme="light"][data-palette="forest"]', '[data-theme="light"]', ":root"] },
   ] as const;
   const tokens = (layers: readonly string[]) => (name: string): string =>
     layers.map((selector) => block(selector).match(new RegExp(`--${name}: ([^;]+);`))?.[1]).find((value) => value !== undefined)!;
