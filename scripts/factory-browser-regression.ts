@@ -39,7 +39,9 @@ try {
   await page.locator(".project-navigation").getByRole("button", { name: "Browser Project", exact: true }).waitFor();
   await page.getByRole("dialog", { name: "Project settings", exact: true }).waitFor();
   await shot("project-settings-desktop.png");
+  const registeredProjectHash = new URL(page.url()).hash.replace(/\/settings$/, "");
   await page.getByRole("button", { name: "Close settings", exact: true }).click();
+  await page.waitForFunction((expected) => location.hash === expected, registeredProjectHash);
   await page.locator(".project-navigation").getByRole("button", { name: /Project native chat/ }).waitFor();
   assert.equal(await page.locator(".project-navigation").getByRole("button", { name: /Unmatched native chat/ }).count(), 0);
   await page.locator(".machine-group").getByRole("button", { name: /Unmatched fixture/ }).first().waitFor();
@@ -157,7 +159,47 @@ try {
   const saved = await save; assert.equal(saved.status(), 200); assert.equal((await saved.json()).context_target_tokens, 180000);
   await page.waitForFunction(() => [...document.querySelectorAll<HTMLButtonElement>("button")].some((button) => button.textContent?.trim() === "Save Project settings" && !button.disabled));
   await shot("project-settings-mobile.png");
+  await page.keyboard.press("Control+Shift+,");
+  await page.getByRole("dialog", { name: "Settings", exact: true }).waitFor();
+  await page.keyboard.press("Escape");
+  await page.getByRole("dialog", { name: "Settings", exact: true }).waitFor({ state: "hidden" });
+  assert(await page.getByRole("dialog", { name: "Project settings", exact: true }).isVisible());
+  await page.getByRole("spinbutton", { name: "Context handoff target", exact: true }).waitFor();
+  await page.evaluate(() => history.back());
+  await page.getByRole("tab", { name: "Workflow", exact: true }).waitFor();
+  assert.equal(await page.getByRole("spinbutton", { name: "Context handoff target", exact: true }).count(), 0);
+  await page.getByRole("tab", { name: "Workflow", exact: true }).click();
+  await page.getByRole("button", { name: "Back to settings", exact: true }).click();
+  await page.getByRole("tab", { name: "Workflow", exact: true }).waitFor();
+  await page.evaluate(() => history.back());
+  await page.getByRole("dialog", { name: "Project settings", exact: true }).waitFor({ state: "hidden" });
+  await page.evaluate(() => history.forward());
+  await page.getByRole("tab", { name: "Workflow", exact: true }).waitFor();
+  await page.getByRole("tab", { name: "Workflow", exact: true }).click();
   await page.getByRole("button", { name: "Close settings", exact: true }).click();
+  await page.getByRole("dialog", { name: "Project settings", exact: true }).waitFor({ state: "hidden" });
+  await page.waitForFunction(() => /^#projects\/[^/]+$/.test(location.hash));
+  // Explicit host ownership survives live roster changes; a retained path must never
+  // be submitted to a different Machine with a matching directory.
+  const hostPage = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  hostPage.setDefaultTimeout(10_000);
+  let remotePresent = true;
+  await hostPage.route("**/api/machines/events", (route) => route.abort());
+  await hostPage.route(/\/api\/machines$/, async (route) => {
+    const response = await route.fetch(); const body = await response.json();
+    if (remotePresent) body.machines.push({ ...body.machines[0], id: "owned-remote", name: "Owned remote fixture", kind: "ssh", snapshot: null });
+    await route.fulfill({ response, json: body });
+  });
+  await hostPage.goto(`http://localhost:${app.port}/#projects`);
+  const registration = hostPage.getByRole("dialog", { name: "Projects", exact: true });
+  await registration.getByRole("combobox", { name: "Machine", exact: true }).selectOption("owned-remote");
+  await registration.getByRole("textbox", { name: "Checkout path", exact: true }).fill(repo);
+  remotePresent = false;
+  await hostPage.waitForFunction(() => !document.querySelector('option[value="owned-remote"]'));
+  assert.equal(await registration.getByRole("combobox", { name: "Machine", exact: true }).inputValue(), "");
+  assert.equal(await registration.getByRole("textbox", { name: "Checkout path", exact: true }).inputValue(), "");
+  assert(await registration.getByRole("button", { name: "Register Project", exact: true }).isDisabled());
+  await hostPage.close();
   assert.deepEqual(errors, []);
   console.log("factory browser: Project lifecycle, folder picker, scoped capture, directory grouping, archives, notes, restart and mobile passed");
 } finally { app.stop(); await browser.close(); for (const id of ownedWorkspaces) await workspaceClose(id).catch(() => {}); rmSync(state, { recursive: true, force: true }); }

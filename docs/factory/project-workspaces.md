@@ -35,6 +35,8 @@ GitHub synchronization; restoring the registration resumes its saved policy.
 
 - Global Inbox and Project Inbox are standalone pages without native herdr tabs.
   Project settings use the Settings dialog layout and their own section navigation.
+  On a phone, system Back returns from a section to its list before closing the
+  dialog; closing settings returns to that Project's Assignments page.
 - Create, rename, edit workflow/defaults and verified checkouts, remove and restore
   Projects through a dedicated Projects page. Removal hides the registration but
   retains history, references and checkouts; refuse removal while work is active.

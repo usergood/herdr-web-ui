@@ -54,8 +54,8 @@ try {
   await page.locator(".tab-strip-menu").click();
   await page.getByRole("button", { name: "Rename pane", exact: true }).waitFor();
   await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: "Inbox", exact: true }).click();
-  await page.locator(".tab-strip-menu").click();
+  await page.getByRole("banner").getByRole("button", { name: "Inbox", exact: true }).click();
+  assert.equal(await page.locator(".tab-strip").count(), 0, "Inbox is a standalone page without native tabs");
   assert.equal(await page.getByRole("button", { name: "Rename pane", exact: true }).count(), 0, "Inbox does not expose an unmounted pane dialog");
   await page.keyboard.press("Escape");
   assert.deepEqual(errors, []);

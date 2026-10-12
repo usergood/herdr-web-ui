@@ -58,9 +58,9 @@ The Project workspace update gives Inbox its own page and Project settings the e
   <tr><th>Desktop</th><th>Phone</th></tr>
   <tr>
     <td width="75%" valign="top">
-      <a href="docs/screenshots/fork-features/inbox-desktop.png"><img src="docs/screenshots/fork-features/inbox-desktop.png" width="100%" alt="Desktop Inbox with fictional ideas in Inbox, Specifying and Ready"></a>
+      <a href="docs/screenshots/fork-features/inbox-desktop.png"><img src="docs/screenshots/fork-features/inbox-desktop.png" width="100%" alt="Desktop global Inbox with fictional ideas"></a>
       <br><b>Durable Inbox</b>
-      <br><sub>Capture ideas before choosing a Project, then track their specification and readiness.</sub>
+      <br><sub>Capture ideas globally or in a Project Inbox, then track progress in Assignments.</sub>
     </td>
     <td width="25%" valign="top" align="center"><a href="docs/screenshots/fork-features/inbox-mobile.png"><img src="docs/screenshots/fork-features/inbox-mobile.png" width="180" alt="Phone Inbox capture form and board"></a></td>
   </tr>

@@ -40,7 +40,8 @@ try {
   assert(!frames.some((frame) => frame.type === "attach"), "Inbox presence does not allocate a terminal attachment");
   await page.getByRole("textbox", { name: "Idea title", exact: true }).fill("Scoped account walkthrough"); await page.getByRole("button", { name: "Capture idea", exact: true }).click();
   await page.locator(".factory-detail").getByRole("combobox", { name: "Project", exact: true }).selectOption(project.id);
-  await page.locator("summary").filter({ hasText: /^Project execution settings$/ }).click();
+  await page.getByRole("button", { name: "Project settings for Fictional account Project", exact: true }).click();
+  await page.getByRole("tab", { name: "Accounts", exact: true }).click();
   const accounts = page.getByRole("region", { name: "Project accounts", exact: true });
   await accounts.getByRole("textbox", { name: "Account name", exact: true }).fill("Work account");
   await accounts.getByRole("textbox", { name: "Expected login", exact: true }).fill("fictional-work");
@@ -55,6 +56,7 @@ try {
   await card.getByRole("button", { name: "Register public key with GitHub", exact: true }).click(); await card.getByText("Public key registered", { exact: true }).waitFor();
   await accounts.getByRole("combobox", { name: "GitHub profile", exact: true }).selectOption({ label: "Work account" });
   await accounts.getByRole("button", { name: "Save Project accounts", exact: true }).click(); await accounts.getByText("Project accounts saved", { exact: true }).waitFor();
+  await page.getByRole("tab", { name: "GitHub", exact: true }).click();
   const github = page.getByTestId("project-github"); await github.locator(":scope > summary").click();
   assert(!(await github.getByRole("checkbox", { name: "Import GitHub issues", exact: true }).isChecked()));
   assert(!(await github.getByRole("checkbox", { name: "Import requested changes", exact: true }).isChecked()));
@@ -75,6 +77,7 @@ try {
   assert(imported.implementations.some((idea: { title: string }) => idea.title === "Fictional GitHub ticket"));
   if (process.env["UI_EVIDENCE_DIR"]) { mkdirSync(process.env["UI_EVIDENCE_DIR"], { recursive: true }); await github.screenshot({ path: join(process.env["UI_EVIDENCE_DIR"], "github-project-workflow.png") }); }
   await github.locator(":scope > summary").click();
+  await page.getByRole("tab", { name: "Accounts", exact: true }).click();
   await card.getByRole("button", { name: "Edit account profile", exact: true }).click();
   await card.getByRole("textbox", { name: "Account name", exact: true }).fill("Updated work account");
   await card.getByRole("button", { name: "Save account profile", exact: true }).click();

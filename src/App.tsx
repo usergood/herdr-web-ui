@@ -18,6 +18,7 @@ import { passingFolder, recentDirectories } from "./lib/recent-directories.ts";
 import { TabStrip } from "./components/TabStrip.tsx";
 import { SettingsDialog } from "./components/SettingsDialog.tsx";
 import { loadedOnSettingsEntry, onSettingsHistory, recordSettings, settingsEntry } from "./lib/settingsHistory.ts";
+import { projectSettingsHistory } from "./lib/projectSettingsHistory.ts";
 import { fileFromLink, followMoved, isNavigation, linkSearch, linksSomewhere, NAV_KEY, readLink, resolveLink, slugOf, type AppLink, type CreateDraft, type LinkNote } from "./lib/deepLink.ts";
 import { copyText } from "./lib/clipboard.ts";
 import { CommandPalette } from "./components/CommandPalette.tsx";
@@ -145,7 +146,13 @@ function Brand() {
 
 export function App() {
   const [factoryOpen, setFactoryOpen] = useState(() => location.hash.startsWith("#factory") || location.hash.startsWith("#projects") || location.hash === "#assignments");
-  const [factoryRoute, setFactoryRoute] = useState(() => projectView(location.hash));
+  const [factoryRoute, setFactoryRoute] = useState(() => {
+    const view = projectView(location.hash);
+    if (!projectSettingsHistory.loadedOnSettingsEntry()) return view;
+    return view.kind === "project-settings" ? { kind: "project" as const, id: view.id } : view.kind === "projects" ? { kind: "assignments" as const } : view;
+  });
+  const factoryState = useRef({ open: factoryOpen, route: factoryRoute });
+  factoryState.current = { open: factoryOpen, route: factoryRoute };
   const t = useT();
   const { settings, resolvedTheme, update: updateSettings } = useSettings();
   // this device's alert choices: sent with its push subscription, and applied to tab alerts here
@@ -212,6 +219,21 @@ export function App() {
   const [locked, setLocked] = useState<boolean | null>(null);
   const navigateProject = useCallback((view: ProjectView) => { setFactoryRoute(view); setFactoryOpen(true); setDrawerOpen(false); history.replaceState(history.state, "", projectHash(view)); }, []);
   useEffect(() => { const changed = () => { if (/^#(factory|projects|assignments)/.test(location.hash)) { setFactoryRoute(projectView(location.hash)); setFactoryOpen(true); } }; window.addEventListener("hashchange", changed); return () => window.removeEventListener("hashchange", changed); }, []);
+  useEffect(() => projectSettingsHistory.onSettingsHistory((entry, own) => {
+    // Closing or changing width already chose a destination; the controller only
+    // removes its entries. Preserve that destination on the entry it lands on.
+    if (own) { history.replaceState(history.state, "", factoryState.current.open ? projectHash(factoryState.current.route) : location.pathname + location.search); return; }
+    const view = projectView(location.hash);
+    if (view.kind !== "projects" && view.kind !== "project-settings") return;
+    if (entry === null) {
+      const shown = factoryState.current.route;
+      navigateProject(shown.kind === "project-settings" ? { kind: "project", id: shown.id } : { kind: "assignments" });
+    }
+    else { setFactoryRoute(view); setFactoryOpen(true); }
+  }), [navigateProject]);
+  useEffect(() => {
+    if (!factoryOpen || (factoryRoute.kind !== "projects" && factoryRoute.kind !== "project-settings")) projectSettingsHistory.recordSettings([]);
+  }, [factoryOpen, factoryRoute.kind]);
   const [lockReason, setLockReason] = useState<AccessRefusal | null>(null);
   /** the code a scanned QR brought along (`?pair=CODE`), taken off the address at once */
   const [pairCode] = useState(() => takePairCode());
@@ -827,7 +849,7 @@ export function App() {
   // are its module's (lib/settingsHistory.ts)
   useEffect(() => {
     const onPop = (event: PopStateEvent): void => {
-      if (settingsEntry(event.state) !== null) return;
+      if (settingsEntry(event.state) !== null || projectSettingsHistory.settingsEntry(event.state) !== null) return;
       const link = readLink(window.location.search);
       // before the PCs are in, nothing can say the entry's PC is still set up: it waits as a link
       // opened with the page does, settled against its roster or answered with a note once they are
@@ -1321,8 +1343,8 @@ export function App() {
       {movingPane && movingLivePane && movingOwner?.snapshot && <MachineContext.Provider value={movingPane.machineId}><MovePaneMenu anchor={movingPane.anchor} snapshot={movingOwner.snapshot} pane={movingLivePane}
         paneTitle={displayPaneTitle(movingLivePane)} onMoved={(moved) => actions.paneMoved(movingPane.machineId, moved.previous_pane_id, moved.pane.pane_id)}
         onError={(reason) => setLayoutNotice(t("Move failed: {reason}", { reason }))} onClose={() => setMovingPane(null)} /></MachineContext.Provider>}
-      {factoryOpen && (factoryRoute.kind === "projects" || factoryRoute.kind === "project-settings") && <ProjectSettingsDialog key={"id" in factoryRoute ? factoryRoute.id : "all"} overview={factoryData.overview} machines={machines} projectId={"id" in factoryRoute ? factoryRoute.id : null} refresh={factoryData.refresh} onProject={(id) => navigateProject(id ? { kind: "project-settings", id } : { kind: "projects" })} onClose={() => navigateProject("id" in factoryRoute ? { kind: "project", id: factoryRoute.id } : { kind: "assignments" })} />}
-      <SettingsDialog auth={auth} herdrVersion={health?.herdr?.version ?? null} open={settingsOpen} section={settingsSection} linkPage={settingsLinkPage} linkSection={settingsLinkSection} onPage={onSettingsPage} onClose={closeSettings} actions={actions} updates={updates} onEnableNotifications={enableNotifications} overPreview={viewing !== null} />
+      {factoryOpen && (factoryRoute.kind === "projects" || factoryRoute.kind === "project-settings") && <ProjectSettingsDialog key={"id" in factoryRoute ? factoryRoute.id : "all"} keyboardActive={!settingsOpen} overview={factoryData.overview} machines={machines} projectId={"id" in factoryRoute ? factoryRoute.id : null} refresh={factoryData.refresh} onProject={(id) => navigateProject(id ? { kind: "project-settings", id } : { kind: "projects" })} onClose={() => navigateProject("id" in factoryRoute ? { kind: "project", id: factoryRoute.id } : { kind: "assignments" })} />}
+      <SettingsDialog auth={auth} herdrVersion={health?.herdr?.version ?? null} open={settingsOpen} section={settingsSection} linkPage={settingsLinkPage} linkSection={settingsLinkSection} onPage={onSettingsPage} onClose={closeSettings} actions={actions} updates={updates} onEnableNotifications={enableNotifications} overPreview={viewing !== null || (factoryOpen && (factoryRoute.kind === "projects" || factoryRoute.kind === "project-settings"))} />
       {filesOpen && selectedPane && (
         <FilesDialog start={selectedPane.foreground_cwd ?? selectedPane.cwd ?? ""} viewing={viewing !== null} onOpenFile={viewFile} onClose={() => setFilesOpen(false)} />
       )}
