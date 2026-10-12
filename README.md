@@ -180,6 +180,10 @@ A browser and phone client for [herdr](https://github.com/herdrdev/herdr). Read 
 
 ## install
 
+Already running herdr behind Docker, Traefik or Cloudflare Tunnel? Follow the
+[existing-herdr installation guide](docs/install-with-existing-herdr.md) to install Saurons eye
+alongside the original plugin, switch the proxy, pair Android and keep a rollback path.
+
 ```bash
 HERDR_WEB_UI_REF=<reviewed-ref> sh ./install.sh
 ```
