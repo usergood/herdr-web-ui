@@ -1,4 +1,6 @@
 import { nativeSessionRef } from "../../shared/native-pane.ts";
+import { AGENT_PERMISSION_MODES, permissionDescription } from "../../shared/agent-permissions.ts";
+import { MATT_PROJECT_WORKFLOW } from "../../shared/project-setup.ts";
 /** Fictional browser-owned records. No server or filesystem imports. */
 import type { FactoryDetail, FactoryOverview, FactoryProject, FactoryRecord, Implementation, ProjectCheckout, ProjectReference } from "../../shared/factory.ts";
 import { projectReferenceTemplate } from "../../shared/project-references.ts";
@@ -34,6 +36,12 @@ if (!details.size) capture("Explore release notes", "A fictional Inbox idea: kee
 
 export async function factoryDemo(url: URL, method: string, body: Record<string, unknown>, machines: Machine[] = []): Promise<Response> {
   const path = url.pathname;
+  if (path === "/api/factory/project-discovery" || path === "/api/factory-host/project-discovery") return json({ protocol: 1, path: String(body.path), name: String(body.path).split("/").filter(Boolean).at(-1) ?? "Demo Project", repository: "fictional-demo-repository", head: "0000000000000000000000000000000000000000", checks: [{ id: "script:test", name: "test", args: ["bun", "run", "test"] }], guidance: ["AGENTS.md"], providers: ["codex", "claude", "opencode"].map(provider=>({provider,installed:true,version:"0.162.1"})), permission_modes: AGENT_PERMISSION_MODES, github: { repository: "fictional/project", account_hint: null, directory_scoped: false }, warnings: [] });
+  if (/\/accounts\/discovery$/.test(path)) return json({ protocol: 1, sources: [{ id: "fictional-source", service: "github", login: "fictional-work", active: true, available: true, existing_profile_id: accountProfiles.find(p=>p.expected_login==="fictional-work")?.id??null }], warnings: [] });
+  if (/\/accounts\/import$/.test(path)) { const profile: AccountProfile={id:crypto.randomUUID(),revision:crypto.randomUUID(),name:"fictional-work",service:"github",expected_login:"fictional-work",expected_account_id:null,state:"ready",verified_identity:{login:"fictional-work",account_id:null,auth_method:"oauth"},public_key:null,fingerprint:null,problem:null,created_at:new Date().toISOString(),updated_at:new Date().toISOString()};accountProfiles.push(profile);return json(profile,201); }
+  if (/\/github\/settings$/.test(path)) return json({ repository: "fictional/project", default_branch: "main", reviewers: ["fictional-reviewer"], required_checks: ["Fast checks"], protected: false });
+  const guidance = /^\/api\/factory\/projects\/([^/]+)\/guidance$/.exec(path);
+  if (guidance) { const project=projects.find(p=>p.id===guidance[1]);if(!project)return failure("not_found","Project not found",404);if(project.guidance_assignment_id)return json(details.get(project.guidance_assignment_id)?.implementation);const idea=capture(`Set up ${project.name} guidance`,MATT_PROJECT_WORKFLOW);idea.project_id=project.id;project.guidance_assignment_id=idea.id;save();return json(idea,201); }
   if (path === "/api/factory-host/pane-state") return failure("demo_only", "Native state is unavailable in the fictional demo", 409);
   if (path === "/api/factory/pane-archives" && method === "POST") {
     const previous = paneArchives.find((a) => a.machine_id === body.machine_id && a.pane_id === body.pane_id);
@@ -104,6 +112,7 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
   if (path === "/api/factory/implementations" && method === "POST") { if (typeof body.title !== "string" || !body.title.trim()) return failure("invalid_implementation", "Enter an idea title", 400); const project = projects.find((p) => p.id === body.project_id && !p.removed_at); if (body.project_id != null && !project) return failure("invalid_project", "Select a registered Project", 400); const idea = capture(body.title, typeof body.description === "string" ? body.description : ""); idea.project_id = project?.id ?? null; save(); return json(idea, 201); }
   if (path === "/api/factory/projects" && method === "POST") {
     const project: FactoryProject = { ...record(), name: String(body.name), repository: "fictional-demo-repository", provider: body.provider as FactoryProject["provider"], machine_id: String(body.machine_id ?? "local"), tracker: "app", tracker_reference: "demo" };
+    if (body.guided_setup) { project.permission_mode = body.permission_mode as FactoryProject["permission_mode"]; project.permissions = permissionDescription(project.permission_mode ?? "ask"); project.checks = [["bun", "run", "test"]]; project.workflow_instructions = MATT_PROJECT_WORKFLOW; project.context_target_tokens = Number(body.context_target_tokens ?? 150000); if(body.guidance_task){const idea=capture(`Set up ${project.name} guidance`,MATT_PROJECT_WORKFLOW);idea.project_id=project.id;project.guidance_assignment_id=idea.id;} }
     projects.push(project); checkouts.push({ ...record(), project_id: project.id, machine_id: project.machine_id, path: String(body.path), repository: project.repository, head: "0000000000000000000000000000000000000000", branch: "demo", instructions: [] }); save(); return json(project, 201);
   }
   const projectRoute = /^\/api\/factory\/projects\/([^/]+)\/(configure|checkouts|retrospectives|remove|restore)$/.exec(path);
