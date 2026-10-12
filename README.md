@@ -28,6 +28,7 @@ Install the bundled **Saurons eye** app from normal Android Chrome over HTTPS. A
 Inbox → Specifying → Ready → Running → Review → Done
 ```
 
+- **Project workspaces.** Manage Projects outside Inbox, browse verified folders on registered hosts, and group native chats and child workers in the sidebar. Capture ideas from each Project’s Inbox chat, archive finished work, and restore retained history. Set Project workflow instructions and a 150–200k context handoff target. [Guide →](docs/factory/project-workspaces.md)
 - **Durable ideas and Projects.** Capture an Implementation with chats, notes and attachments before choosing a repository. Link it to a Project later while keeping its identity and history.
 - **Specifications and explicit approvals.** Record questions and answers, version specifications, agree testing seams, and approve a dependency graph of Tickets before factory work starts. A new specification requires a new graph approval.
 - **Owned native execution.** Run agents in isolated Git worktrees with frozen context, provider settings and permissions. Manual starts and global limits control workers and builds; Stop retains branches, artifacts and history.

@@ -34,6 +34,7 @@ export class ProjectGitHub {
   private project(id: string): FactoryProject {
     const project = this.store.get<FactoryProject>("projects", id);
     if (!project) throw new FactoryError("not_found", "Project not found", 404);
+    if (project.removed_at) throw new FactoryError("project_removed", "Restore this Project before using its GitHub workflow", 409);
     return project;
   }
   private projectScope(id: string): string {
@@ -280,6 +281,7 @@ export class ProjectGitHub {
     if (this.stopped) return;
     for (const policy of this.store.list<ProjectGitHubPolicy>("github_policies")) {
       if (this.stopped) break;
+      if (this.store.get<FactoryProject>("projects", policy.id)?.removed_at) continue;
       if (policy.sync_enabled && !this.busy.has(policy.id) && (this.store.get<SyncState>("github_sync", policy.id)?.next_sync ?? 0) <= Date.now()) {
         try { await this.sync(policy.id); } catch { /* Durable problem and backoff are visible through the owner API. */ }
       }

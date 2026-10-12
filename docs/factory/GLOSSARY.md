@@ -4,6 +4,7 @@ Vocabulary proposed by the owner for review before API contracts are committed. 
 
 | Term | Meaning |
 | --- | --- |
+| Assignment | An Implementation shown as a Project's durable work item, with its child tasks. |
 | Implementation | A durable assignment being explored, specified, built and reviewed. It may begin as an idea, todo or research effort without a Project. |
 | Ticket | A bounded child unit of an Implementation's specification, with acceptance criteria and dependencies on other Tickets. |
 | Run | One attempt to perform one workflow action using a selected CLI provider and execution Machine. |
@@ -21,7 +22,7 @@ Vocabulary proposed by the owner for review before API contracts are committed. 
 | Workflow stage | The phase an Implementation is in, such as specifying, implementing or reviewing. |
 | Run condition | The execution condition of an attempt, such as working, waiting for an answer, interrupted or disconnected. |
 | Delivery outcome | What was delivered, such as implementation complete, PR open, merged or released. |
-| Inbox | Unassigned ideas, todos, research efforts and chats retained before Project selection. |
+| Inbox | Manual or externally captured ideas, todos and research efforts. A Project Inbox chat shortcut captures an idea already assigned to that Project. |
 | Backlog | The owner's ordered list of planned work. Order does not authorize execution. |
 | Integration worktree | The dedicated checkout that gathers one active Implementation's Ticket results. |
 | Worker worktree | A dedicated checkout owned by one Ticket implementer. |

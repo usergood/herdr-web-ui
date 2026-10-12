@@ -1,0 +1,49 @@
+# Project workflow gates and bounded agent contexts
+
+Research date: 2026-10-12. This note investigates the proposed [no-mistakes](https://github.com/kunchenguid/no-mistakes) final gate and a 150–200k context target. Public source was read in a disposable checkout; no tool was installed or activated, and no live configuration, credentials, publication or paid model requests were changed. The inspected no-mistakes revision was [`7294d76c291daca7609d4eb37e8ece76ce701c71`](https://github.com/kunchenguid/no-mistakes/tree/7294d76c291daca7609d4eb37e8ece76ce701c71).
+
+## Recommended Project controls
+
+Keep workflow configuration on the Project, separately from the Inbox. Project guidance should describe required skills, coding standards, tests and review expectations. Capture that guidance and a context target in the immutable Run manifest, then carry them into every managed Ticket and review worker. Editing Project settings should affect subsequent Runs; an accepted Run keeps its captured scope.
+
+Use **150,000 tokens as a planning target**, with an optional 200,000-token target for work that needs more context. These are owner preferences, not provider-independent enforced ceilings. Tell workers to finish one bounded Ticket, retain concise evidence and produce a handoff when the scope becomes too large. The Project interface should say whether a setting is guidance, observed usage or a verified native compaction control.
+
+Retain the existing application gates: verified pinned Matt Pocock skill loading, approved Specification/testing seams/Ticket graph, owned worktrees, configured checks, and independent Standards and Spec reviews. Project text adds requirements; it cannot replace those gates or authorize publication. The current implementation already creates Ticket workers in separate worktrees and reserves native contexts against `max_agents`; the Codex adapter disables unmanaged native `multi_agent`. [Factory skill contract](skills-and-providers.md), [Run admission](../../server/factory-runtime.ts), [worker allocation and checks](../../server/factory-pipeline.ts), [worker contexts](../../server/factory-worktrees.ts), [native arguments](../../server/factory-native.ts)
+
+## What no-mistakes would add
+
+No-mistakes is a second workflow orchestrator. Its fixed sequence is Intent → Rebase → Review → Test → Document → Lint → Push → PR → CI, with optional extra gates before publication. It can modify code and documentation, commit fixes, push branches, create/update PRs, monitor checks and repair CI failures. Consequently, running the default command as a Project “check” would also introduce publication and branch ownership beyond a validator. [Pinned pipeline documentation](https://github.com/kunchenguid/no-mistakes/blob/7294d76c291daca7609d4eb37e8ece76ce701c71/docs/src/content/docs/concepts/pipeline.md)
+
+Its noninteractive `axi` interface provides status, logs and parked decisions. A new `axi run` requires committed non-default-branch work and explicit intent. `--skip push,pr,ci` can suppress the delivery steps for a run, but the remaining pipeline can still rebase and apply edits. `--yes` authorizes fixes even for findings marked `ask-user`; it is unsuitable as an automatic mapping of the application's approvals. `init` creates a proxy remote/bare repository, hooks and daemon state, and installs user-level skills. These operations require a deliberate integration design rather than a hidden validation command. [Pinned CLI reference](https://github.com/kunchenguid/no-mistakes/blob/7294d76c291daca7609d4eb37e8ece76ce701c71/docs/src/content/docs/reference/cli.md)
+
+The inspected Codex adapter adds `--dangerously-bypass-approvals-and-sandbox` unless execution-mode flags are explicitly supplied; the Claude adapter similarly defaults to `--dangerously-skip-permissions` unless overridden. An application integration must explicitly preserve the selected native controls on initial and resumed launches. A disposable worktree alone does not establish filesystem or credential confinement. [Codex adapter source](https://github.com/kunchenguid/no-mistakes/blob/7294d76c291daca7609d4eb37e8ece76ce701c71/internal/agent/codex.go), [Claude adapter source](https://github.com/kunchenguid/no-mistakes/blob/7294d76c291daca7609d4eb37e8ece76ce701c71/internal/agent/claude.go)
+
+There are useful safeguards to learn from: executable commands and agent selection default to trusted default-branch configuration; fork-supplied changes cannot enable that override themselves. Machine-local forge profiles can pin separate GitHub/GitLab configuration directories and expected logins using remote host aliases. These do not automatically inherit Saurons eye's frozen account bindings or managed worker capacity. [Pinned repository configuration](https://github.com/kunchenguid/no-mistakes/blob/7294d76c291daca7609d4eb37e8ece76ce701c71/docs/src/content/docs/reference/repo-config.md), [pinned global configuration](https://github.com/kunchenguid/no-mistakes/blob/7294d76c291daca7609d4eb37e8ece76ce701c71/docs/src/content/docs/reference/global-config.md)
+
+**Recommendation:** keep no-mistakes as an optional candidate, disabled until a disposable pilot verifies account isolation, native controls, resource reservations, exact-head evidence and retained findings. First use the app's existing checks and two review axes. A later adapter should decide explicitly whether no-mistakes owns publication or only contributes a final verdict; two independent publishers/CI repair loops should not operate on the same branch. A no-mistakes success must never manufacture an owner approval or replace missing application evidence.
+
+## Context controls available from providers
+
+| Provider | Documented control | What it establishes |
+| --- | --- | --- |
+| Codex | `model_auto_compact_token_limit`; newer configuration also documents `model_auto_compact_token_limit_scope` | A native history-compaction threshold. `model_context_window` describes model capacity; changing that value is not a verified task-stop policy. [Official OpenAI configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference) |
+| Claude Code | `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, bounded between 100k and 1M and capped by model capacity; `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | Native compaction behavior. The status line's used percentage still measures the full model window, so it cannot be compared directly with a custom compaction window. [Official environment-variable reference](https://code.claude.com/docs/en/env-vars) |
+| OpenCode | `compaction.auto`, `compaction.prune`, `compaction.reserved` | Automatic compaction, removal of old tool outputs, and a compaction buffer. These documented settings do not establish one portable absolute Ticket context ceiling. [Official configuration reference](https://docs.opencode.ai/docs/config/#compaction) |
+
+These controls need discovery and acceptance against the installed CLI version and chosen model before the app promises enforcement. Compaction continues a conversation; it does not create a fresh independent worker. A token target also differs from account quota, cumulative session tokens and billed cost.
+
+The bridge already exposes optional `ConversationMetadata.context` with the latest reported request usage and an optional model window. Missing usage must stay unknown; an observed last request cannot prevent a larger next request. [Public conversation contract](../../shared/protocol.ts)
+
+Smaller workers can keep exploration and large tool outputs out of the coordinator's context. Claude's documented subagents illustrate this isolation, but each worker still makes requests against the same account allowance. Extra agents can duplicate inputs, review and setup, so reduced coordinator context does not prove lower total token usage or cost. Measure completed work, tokens, latency and rework on representative tasks. [Official Claude subagent documentation](https://code.claude.com/docs/en/sub-agents)
+
+## Handoff contract for smaller assignments
+
+The following is a proposed implementation contract:
+
+1. Plan Tickets around a verifiable outcome and bounded acceptance criteria. A Ticket owns explicit paths/dependencies and uses the already approved testing seams. Split work before launch when the plan needs unrelated areas or several independent outcomes.
+2. Give a fresh worker its Ticket, relevant Specification sections, applicable standards, confirmed answers and dependency evidence. Reference large retained documents instead of copying the whole historical chat into every worker.
+3. At completion, retain the exact commit, changed paths, check evidence, decisions and unresolved questions. The coordinator reads the concise result, while the full transcript remains accessible beneath the parent Assignment.
+4. When a worker needs more scope or approaches its target, retain a handoff and request a bounded continuation. Never treat a prompt to “stay under 150k” as proof that usage was capped, and never silently terminate a worker with uncommitted work.
+5. Allocate continuations and reviewers through the application's existing reservations. Keep Standards and Spec contexts independent. A fresh reviewer reads the accepted scope and exact diff instead of inheriting the implementer's full conversation.
+
+A later automatic context rollover requires provider usage observations, durable continuation identity, captured handoff bytes, worktree custody and idempotent launch/recovery. It should stop admitting the next worker when evidence is unavailable, while preserving the current owned work. The present Project target should be described as guidance until that adapter contract is implemented and tested.

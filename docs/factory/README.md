@@ -30,3 +30,10 @@ The [provider admission research](provider-admission-research.md) adds immutable
 ## Planning provenance
 
 The original [handoff](handoff.md), [baseline](baseline.md), [dependency plan](implementation-plan.md), [glossary](GLOSSARY.md), [skills/provider research](skills-and-providers.md) and [server kickoff](server-kickoff.md) preserve the earlier decisions and source investigation. Their historical planning statements do not revoke the later implementation request or confirmed testing seams. There is no Conteo work in this repository.
+
+## Project navigation and workflow
+
+[Project workspaces](project-workspaces.md) describes independent Project management,
+host-scoped folder selection, sidebar assignments and native chats, archive/restore,
+and frozen workflow/context targets. The [review gate and context research](project-workflow-and-context-research.md)
+explains why no-mistakes is not enabled and why provider compaction does not prove a hard token cap.

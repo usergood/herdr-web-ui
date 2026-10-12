@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { dirname, join } from "node:path";
-import type { FactoryProvider } from "../shared/protocol.ts";
+import type { FactoryProvider, HerdrPane } from "../shared/protocol.ts";
 import { agentManifests, agentPrompt, agentStart, HerdrError, sessionSnapshot, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 
 export interface FactoryNative {
@@ -9,6 +9,8 @@ export interface FactoryNative {
   createWorkspace: typeof workspaceCreate;
   startAgent: typeof agentStart;
   snapshot: typeof sessionSnapshot;
+  /** Archive metadata reads the bridge's existing background-task decoration. */
+  paneState?: (paneId: string) => Promise<HerdrPane | null>;
   closeWorkspace: typeof workspaceClose;
   prompt: typeof agentPrompt;
 }

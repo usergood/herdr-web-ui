@@ -8,6 +8,8 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 ## [Unreleased]
 
 ### Added
+- Add independent Project management, host folder browsing, Project sidebar chats and child
+  workers, scoped idea capture, retained archive/restore, and per-Project workflow/context targets.
 - Add opt-in Project GitHub issue imports, centralized PR review context and patches,
   requested-change factory work, guarded behind-branch updates, re-review and approved merges.
   ([#13](https://github.com/usergood/saurons-eye/pull/13) by @usergood)

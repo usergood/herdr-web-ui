@@ -41,6 +41,61 @@ afterAll(() => {
 const base = () => `http://localhost:${server.port}`;
 
 describe("factory records", () => {
+  it("archives an idle native chat durably, refuses working chats, and restores without closing a pane", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-pane-archive-"));
+    const workspace = await workspaceCreate({ label: "herdr-web-ui-test-project-archive" });
+    const paneId = workspace.root_pane.pane_id;
+    let app = createServer({ port: 0, stateDir: state, machines: false });
+    const request = (body?: unknown) => fetch(`http://localhost:${app.port}/api/factory${body ? "/pane-archives" : ""}`, body ? { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) } : {});
+    try {
+      await herdrRpc("pane.report_agent", { pane_id: paneId, source: "manual", agent: "codex", state: "working" });
+      const busy = await request({ machine_id: "local", pane_id: paneId, archived: true }); expect(await busy.json()).toMatchObject({ error: { code: "pane_busy" } }); expect(busy.status).toBe(409);
+      await herdrRpc("pane.report_agent", { pane_id: paneId, source: "manual", agent: "codex", state: "idle" });
+      expect((await request({ machine_id: "local", pane_id: paneId, archived: true })).status).toBe(200);
+      app.stop(); app = createServer({ port: 0, stateDir: state, machines: false });
+      const retained = await request().then((r) => r.json()); expect(retained.pane_archives[0]).toMatchObject({ machine_id: "local", pane_id: paneId, archived_at: expect.any(String) });
+      expect((await sessionSnapshot()).panes.some((p) => p.pane_id === paneId)).toBe(true);
+      expect((await request({ machine_id: "local", pane_id: paneId, archived: false })).status).toBe(200);
+      expect((await request().then((r) => r.json())).pane_archives[0].archived_at).toBeNull();
+    } finally { app.stop(); await workspaceClose(workspace.workspace.workspace_id); rmSync(state, { recursive: true, force: true }); }
+  });
+  it("retains Project workflow targets and refuses archiving unfinished Assignments", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-project-workflow-")); const repo = join(state, "repo");
+    mkdirSync(repo); writeFileSync(join(repo, "README.md"), "Owned workflow fixture\n");
+    for (const args of [["init", "-b", "main"], ["add", "."], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "initial"]]) expect(Bun.spawnSync(["git", ...args], { cwd: repo }).exitCode).toBe(0);
+    const app = createServer({ port: 0, stateDir: state, machines: false });
+    const request = (path: string, body?: unknown) => fetch(`http://localhost:${app.port}/api/factory${path}`, body === undefined ? {} : { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    try {
+      const project = await request("/projects", { name: "Workflow", path: repo, machine_id: "local", provider: "codex", tracker: "app" }).then((r) => r.json());
+      const saved = await request(`/projects/${project.id}/configure`, { workflow_instructions: "Use TDD and independent review", context_target_tokens: 150000 }); expect(saved.status).toBe(200);
+      expect((await saved.json()).context_target_tokens).toBe(150000);
+      expect((await request(`/projects/${project.id}/configure`, { context_target_tokens: 250000 })).status).toBe(400);
+      const retained = (await request("").then((r) => r.json())).projects[0]; expect(retained.workflow_instructions).toBe("Use TDD and independent review"); expect(retained.context_target_tokens).toBe(150000);
+      const idea = await request("/implementations", { title: "Not finished", description: "", project_id: project.id }).then((r) => r.json());
+      const archive = await request(`/implementations/${idea.id}/archive`, {}); expect(archive.status).toBe(409); expect((await archive.json()).error.code).toBe("assignment_unfinished");
+      expect((await request(`/implementations/${idea.id}`).then((r) => r.json())).implementation.archived_at).toBeUndefined();
+    } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+  it("edits and removes a Project registration while retaining its assigned ideas and history", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-project-lifecycle-")); const repo = join(state, "repo");
+    mkdirSync(repo); writeFileSync(join(repo, "README.md"), "Owned lifecycle fixture\n");
+    for (const args of [["init", "-b", "main"], ["add", "."], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "initial"]]) expect(Bun.spawnSync(["git", ...args], { cwd: repo }).exitCode).toBe(0);
+    const app = createServer({ port: 0, stateDir: state, machines: false });
+    const request = (path: string, body?: unknown) => fetch(`http://localhost:${app.port}/api/factory${path}`, body === undefined ? {} : { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    try {
+      const project = await request("/projects", { name: "Original", path: repo, machine_id: "local", provider: "codex", tracker: "app" }).then((r) => r.json());
+      const edited = await request(`/projects/${project.id}/configure`, { name: "Renamed" });
+      expect(edited.status).toBe(200); expect((await edited.json()).name).toBe("Renamed");
+      const ideaResponse = await request("/implementations", { title: "Owned idea", description: "Preserve these notes", project_id: project.id });
+      expect(ideaResponse.status).toBe(201); const idea = await ideaResponse.json(); expect(idea.project_id).toBe(project.id);
+      expect((await request(`/projects/${project.id}/remove`, {})).status).toBe(200);
+      const overview = await request("").then((r) => r.json()); expect(overview.projects[0].removed_at).toEqual(expect.any(String));
+      const retained = await request(`/implementations/${idea.id}`).then((r) => r.json()); expect(retained.messages[0].content).toBe("Preserve these notes");
+      const rejected = await request("/implementations", { title: "Another", description: "", project_id: project.id }); expect(rejected.status).toBe(400);
+      expect((await request(`/projects/${project.id}/restore`, {})).status).toBe(200);
+      expect((await request("").then((r) => r.json())).projects[0].removed_at).toBeNull();
+    } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
   it("recovers an allocated child's identity after a missing native creation receipt", async () => {
     const state = mkdtempSync(join(tmpdir(), "saurons-eye-child-recovery-")); const repo = join(state, "repo");
     const { mkdirSync } = await import("node:fs"); mkdirSync(repo); writeFileSync(join(repo, "notes.txt"), "base\n");
@@ -52,11 +107,18 @@ describe("factory records", () => {
       const project = await request("projects", { name: "Receipt recovery", path: repo, machine_id: "local", provider: "codex", tracker: "app" }).then((response) => response.json());
       const idea = await request("implementations", { title: "Observe accepted child", description: "" }).then((response) => response.json());
       await request(`implementations/${idea.id}/configure`, { project_id: project.id });
+      await request(`projects/${project.id}/configure`, { workflow_instructions: "Use bounded child contexts", context_target_tokens: 150000 });
       const run = await request(`implementations/${idea.id}/runs`, { action: "grill-with-docs", idempotency_key: "recover-parent" }).then((response) => response.json());
       const worker = await request(`runs/${run.id}/workers`, { role: "standards", idempotency_key: "uncertain-child" }).then((response) => response.json());
       expect(worker.condition).toBe("interrupted"); expect(worker.workspace_id).toBeNull();
       const recovered = await request(`runs/${run.id}/workers/${worker.id}/reconcile`, {}).then((response) => response.json());
       expect(recovered.workspace_id).toBe(workspaces[1]); expect(recovered.pane_id).not.toBeNull(); expect(recovered.condition).toBe("interrupted"); expect(starts).toBe(1);
+      const navigation = await fetch(`http://localhost:${app.port}/api/factory`).then((response) => response.json());
+      expect(navigation.pane_links).toContainEqual(expect.objectContaining({ implementation_id: idea.id, run_id: run.id, worker_id: worker.id, pane_id: recovered.pane_id, provider: "codex", title: "standards" }));
+      await request(`projects/${project.id}/configure`, { context_target_tokens: 200000 });
+      const frozen = await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then((response) => response.json());
+      expect(frozen.runs[0].manifest.project.context_target_tokens).toBe(150000);
+      expect((await request(`projects/${project.id}/remove`, {})).status).toBe(409);
       expect((await request(`runs/${run.id}/workers/${worker.id}/stop`, {})).status).toBe(200);
       expect((await sessionSnapshot()).workspaces.some((entry) => entry.workspace_id === workspaces[1])).toBe(false);
     } finally { for (const id of workspaces) await workspaceClose(id).catch(() => {}); app.stop(); rmSync(state, { recursive: true, force: true }); }

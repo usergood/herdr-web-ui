@@ -21,6 +21,11 @@ import { fileFromLink, followMoved, isNavigation, linkSearch, linksSomewhere, NA
 import { copyText } from "./lib/clipboard.ts";
 import { CommandPalette } from "./components/CommandPalette.tsx";
 import { MachineContext } from "./lib/machineContext.tsx";
+import { ProjectSidebar } from "./components/ProjectSidebar.tsx";
+import { ProjectsPanel } from "./components/ProjectsPanel.tsx";
+import { projectView, projectHash, projectPanes, type ProjectView } from "./lib/projectNavigation.ts";
+import { useFactoryOverview } from "./lib/useFactoryOverview.ts";
+import { ProjectChatArchive } from "./components/ProjectChatArchive.tsx";
 import { MachineActionBanner, MachineSidebar } from "./components/MachineSidebar.tsx";
 import { SidebarResizer } from "./components/SidebarResizer.tsx";
 import { storedSidebarWidth } from "./lib/sidebarWidth.ts";
@@ -138,7 +143,8 @@ function Brand() {
 }
 
 export function App() {
-  const [factoryOpen, setFactoryOpen] = useState(() => location.hash.startsWith("#factory"));
+  const [factoryOpen, setFactoryOpen] = useState(() => location.hash.startsWith("#factory") || location.hash.startsWith("#projects"));
+  const [factoryRoute, setFactoryRoute] = useState(() => projectView(location.hash));
   const t = useT();
   const { settings, resolvedTheme, update: updateSettings } = useSettings();
   // this device's alert choices: sent with its push subscription, and applied to tab alerts here
@@ -203,6 +209,9 @@ export function App() {
   // null until the server has said whether it wants a token: the shell, and with it
   // the WebSocket, never mounts before that is known
   const [locked, setLocked] = useState<boolean | null>(null);
+  const factoryData = useFactoryOverview(locked === false);
+  const navigateProject = useCallback((view: ProjectView) => { setFactoryRoute(view); setFactoryOpen(true); setDrawerOpen(false); history.replaceState(history.state, "", projectHash(view)); }, []);
+  useEffect(() => { const changed = () => { if (/^#(factory|projects)/.test(location.hash)) { setFactoryRoute(projectView(location.hash)); setFactoryOpen(true); } }; window.addEventListener("hashchange", changed); return () => window.removeEventListener("hashchange", changed); }, []);
   const [lockReason, setLockReason] = useState<AccessRefusal | null>(null);
   /** the code a scanned QR brought along (`?pair=CODE`), taken off the address at once */
   const [pairCode] = useState(() => takePairCode());
@@ -605,7 +614,7 @@ export function App() {
   selectedMachineRef.current = selectedMachineId;
   const selectTarget = useCallback((machineId: string, paneId: string | null, view?: PaneView) => {
     setFactoryOpen(false);
-    if (location.hash.startsWith("#factory")) history.replaceState(history.state, "", location.pathname + location.search);
+    if (/^#(factory|projects)/.test(location.hash)) history.replaceState(history.state, "", location.pathname + location.search);
     // Only another PC mounts a new terminal (and socket), which reports its own state. A pane
     // on the same PC keeps the connected socket, which never reports again: resetting here
     // left the header on "reconnecting" after every pane switch.
@@ -708,6 +717,10 @@ export function App() {
 
 
   const selectedPane = snapshot?.panes.find((pane) => pane.pane_id === selectedPaneId) ?? null;
+  const projectRows = factoryData.overview ? projectPanes(factoryData.overview, machines) : [];
+  const archivedPaneKeys = new Set((factoryData.overview?.pane_archives ?? []).filter((a) => a.archived_at).map((a) => paneStorageId(a.machine_id, a.pane_id)));
+  const selectedArchived = !!selectedPaneId && archivedPaneKeys.has(paneStorageId(selectedMachineId, selectedPaneId));
+  const excludedProjectPanes = auth?.role === "watch" ? undefined : new Set([...projectRows.map((row) => paneStorageId(row.machine.id, row.pane.pane_id)), ...archivedPaneKeys]);
   useScreenWakeLock(settings.keepScreenOn && locked === false && selectedPane !== null);
   const selectedWorkspace = selectedPane
     ? (snapshot?.workspaces.find((workspace) => workspace.workspace_id === selectedPane.workspace_id) ?? null)
@@ -1144,8 +1157,9 @@ export function App() {
           </div>
         )}
         <div className="header-meta">
+          {!factoryOpen && auth?.role !== "watch" && selectedPane && factoryData.overview && (["idle", "done"].includes(selectedPane.agent_status) || selectedArchived) && <ProjectChatArchive key={paneStorageId(selectedMachineId, selectedPane.pane_id)} machineId={selectedMachineId} paneId={selectedPane.pane_id} archived={selectedArchived} onArchived={() => navigateProject({ kind: "inbox" })} />}
           {!factoryOpen && settings.planButton && selectedPane && selectedMachine?.state === "connected" && (selectedPane as HerdrPane).plan && <PlanButton plan={(selectedPane as HerdrPane).plan!} onOpen={() => setPlanOpen(true)} />}
-          {auth?.role !== "watch" && <button type="button" className="btn header-inbox" aria-label={t("Inbox")} title={t("Inbox")} aria-pressed={factoryOpen} onClick={() => { setDrawerOpen(false); setFactoryOpen((open) => !open); if (!factoryOpen) history.replaceState(history.state, "", "#factory"); else history.replaceState(history.state, "", location.pathname + location.search); }}><Inbox aria-hidden="true" /><span className="header-desktop-only">{t("Inbox")}</span></button>}
+          {auth?.role !== "watch" && <button type="button" className="btn header-inbox" aria-label={t("Inbox")} title={t("Inbox")} aria-pressed={factoryOpen} onClick={() => navigateProject({ kind: "inbox" })}><Inbox aria-hidden="true" /><span className="header-desktop-only">{t("Inbox")}</span></button>}
           {/* speaks only while the bridge is not live; live, it stays in the document for a screen
               reader (and the browser scripts that wait on it), drawn by nothing (styles.css) */}
           <span
@@ -1200,7 +1214,7 @@ export function App() {
       <div className="app-body">
         <aside id="workspace-drawer" className={`sidebar${drawerOpen ? " is-open" : ""}`}>
           {error && <div className="error-state" role="alert"><p>{error}</p><button className="btn" onClick={() => void load()}>{t("Retry")}</button></div>}
-          <MachineSidebar machines={machines} selectedMachineId={selectedMachineId} selectedPaneId={selectedPaneId} actions={actions} onSelect={selectTarget} onSetup={(machine, update = false) => { setUpdateRemote(update); setMachineDialog(machine); }} onNew={(id) => { setNewSessionMachineId(id); setNewTab(null); setNewSessionOpen(true); setDrawerOpen(false); }} />
+          <MachineSidebar projectNavigation={auth?.role !== "watch" ? <ProjectSidebar overview={factoryData.overview} error={factoryData.error} machines={machines} selectedMachineId={selectedMachineId} selectedPaneId={selectedPaneId} onNavigate={navigateProject} onOpenPane={selectTarget} /> : undefined} excludedPanes={excludedProjectPanes} machines={machines} selectedMachineId={selectedMachineId} selectedPaneId={selectedPaneId} actions={actions} onSelect={selectTarget} onSetup={(machine, update = false) => { setUpdateRemote(update); setMachineDialog(machine); }} onNew={(id) => { setNewSessionMachineId(id); setNewTab(null); setNewSessionOpen(true); setDrawerOpen(false); }} />
           <SidebarResizer width={sidebarWidth} onResize={setSidebarWidth} />
         </aside>
 
@@ -1227,7 +1241,8 @@ export function App() {
         {/* the tab strip's panel: its id is what each tab's aria-controls points at. No tabIndex -
             the terminal (PaneTerminal) and the composer are the focusable things inside it. */}
         <main className="terminal-host">
-          {factoryOpen && <FactoryPanel machines={machines} onOpenPane={(machineId, paneId) => { setFactoryOpen(false); selectTarget(machineId, paneId); }} />}
+          {factoryOpen && (factoryRoute.kind === "projects" || factoryRoute.kind === "project") && <ProjectsPanel overview={factoryData.overview} machines={machines} projectId={factoryRoute.kind === "project" ? factoryRoute.id : null} refresh={factoryData.refresh} onProject={(id) => navigateProject(id ? { kind: "project", id } : { kind: "projects" })} />}
+          {factoryOpen && factoryRoute.kind !== "projects" && factoryRoute.kind !== "project" && <FactoryPanel key={projectHash(factoryRoute)} machines={machines} selectedId={factoryRoute.kind === "assignment" ? factoryRoute.id : null} projectId={factoryRoute.kind === "project-inbox" ? factoryRoute.id : null} onChoose={(id) => navigateProject(id ? { kind: "assignment", id } : factoryRoute.kind === "project-inbox" ? factoryRoute : { kind: "inbox" })} onOpenPane={selectTarget} />}
           {/* the panel sits inside main, so the page keeps its main landmark; it draws no box */}
           {!factoryOpen && <div id={PANE_TABPANEL_ID} className="terminal-tabpanel" role={tabPanelLabel === null ? undefined : "tabpanel"} aria-label={tabPanelLabel ?? undefined}>
           <PaneCanvas key={selectedMachineId} snapshot={snapshot} pane={selectedPane} selectedPaneId={selectedPaneId} onSelect={selectPane} onChanged={actions.refresh} actionsRef={paneActionsRef}

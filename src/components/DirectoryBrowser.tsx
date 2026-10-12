@@ -12,6 +12,8 @@ import { useT } from "../lib/i18n.ts";
 export interface DirectoryBrowserProps {
   /** where to open: the path typed so far (absolute, `~` or `~/…`); empty or unreadable opens home */
   start: string;
+  /** Project registrations need the host's absolute path, even inside its home. */
+  absolute?: boolean;
   /** the folder chosen, in the dialog's own syntax (`~/…` inside home); without it there is no "Use this folder" */
   onPick?: (path: string) => void;
   /** lists files too, and opens the one clicked (its absolute path) */
@@ -32,7 +34,7 @@ function childPath(parent: string, name: string): string {
  * A folder browser for the new-session dialog: one directory at a time, fetched from the
  * PC the session starts on. Nothing is kept but the folder shown now.
  */
-export function DirectoryBrowser({ start, onPick, onOpenFile }: DirectoryBrowserProps) {
+export function DirectoryBrowser({ start, absolute = false, onPick, onOpenFile }: DirectoryBrowserProps) {
   const t = useT();
   const { fetchDirectories } = useMachineApi();
   const [listing, setListing] = useState<DirectoryListing | null>(null);
@@ -139,7 +141,7 @@ export function DirectoryBrowser({ start, onPick, onOpenFile }: DirectoryBrowser
           <input type="checkbox" checked={hidden} disabled={loading && listing === null} onChange={(event) => { setHidden(event.target.checked); if (listing) void open(listing.path, event.target.checked, false); }} />
           {t("Show hidden")}
         </label>
-        {onPick && <button type="button" className="btn btn-primary" disabled={listing === null || loading} onClick={() => listing && onPick(homeRelative(listing.path, listing.home))}>
+        {onPick && <button type="button" className="btn btn-primary" disabled={listing === null || loading} onClick={() => listing && onPick(absolute ? listing.path : homeRelative(listing.path, listing.home))}>
           {t("Use this folder")}
         </button>}
       </div>

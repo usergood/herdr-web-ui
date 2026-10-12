@@ -1,14 +1,16 @@
 /** Public browser seam: owned state and Herdr only. Build before running. */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { chromium } from "playwright-core";
 import { createServer } from "../server/index.ts";
+import { workspaceCreate, workspaceClose, paneRename, herdrRpc } from "../server/herdr/client.ts";
 
 const state = mkdtempSync(join(tmpdir(), "saurons-eye-browser-"));
 let app = createServer({ port: 0, stateDir: state });
+const ownedWorkspaces: string[] = [];
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
@@ -16,7 +18,64 @@ try {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(`http://localhost:${app.port}`);
-  await page.getByRole("button", { name: "Inbox", exact: true }).click();
+  const repo = join(state, "project"); mkdirSync(repo); writeFileSync(join(repo, "README.md"), "Owned browser Project\n");
+  for (const args of [["init", "-b", "main"], ["add", "."], ["-c", "user.name=Browser fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "initial"]]) assert.equal(Bun.spawnSync(["git", ...args], { cwd: repo }).exitCode, 0);
+  const inside = await workspaceCreate({ label: "Project fixture", cwd: repo }); ownedWorkspaces.push(inside.workspace.workspace_id); await paneRename(inside.root_pane.pane_id, "Project native chat");
+  await herdrRpc("pane.report_agent", { pane_id: inside.root_pane.pane_id, source: "manual", agent: "codex", state: "idle" });
+  const siblingPath = `${repo}-other`; mkdirSync(siblingPath);
+  const sibling = await workspaceCreate({ label: "Unmatched fixture", cwd: siblingPath }); ownedWorkspaces.push(sibling.workspace.workspace_id); await paneRename(sibling.root_pane.pane_id, "Unmatched native chat");
+  await page.locator(".project-navigation").getByRole("button", { name: "Projects", exact: true }).click();
+  await page.getByRole("textbox", { name: "Project name", exact: true }).fill("Browser Project");
+  const hosts = await page.getByRole("combobox", { name: "Machine", exact: true }).locator("option").allTextContents();
+  assert(hosts.length > 0); assert(!hosts.includes("This PC"));
+  await page.getByRole("textbox", { name: "Checkout path", exact: true }).fill(repo);
+  await page.getByRole("button", { name: "Browse…", exact: true }).click();
+  await page.getByRole("button", { name: "Use this folder", exact: true }).click();
+  assert.equal(await page.getByRole("textbox", { name: "Checkout path", exact: true }).inputValue(), repo);
+  await page.locator(".factory-panel").getByRole("button", { name: "Register Project", exact: true }).click();
+  await page.locator(".project-navigation").getByRole("button", { name: "Browser Project", exact: true }).waitFor();
+  await page.locator(".project-navigation").getByRole("button", { name: /Project native chat/ }).waitFor();
+  assert.equal(await page.locator(".project-navigation").getByRole("button", { name: /Unmatched native chat/ }).count(), 0);
+  await page.locator(".machine-group").getByRole("button", { name: /Unmatched fixture/ }).first().waitFor();
+  await page.locator(".project-navigation").getByRole("button", { name: "Inbox chat", exact: true }).click();
+  await page.getByRole("textbox", { name: "Idea title", exact: true }).fill("Project scoped idea");
+  await page.getByRole("button", { name: "Capture idea", exact: true }).click();
+  await page.getByRole("heading", { name: "Project scoped idea", exact: true }).waitFor();
+  assert.equal(await page.getByRole("combobox", { name: "Project", exact: true }).locator("option:checked").textContent(), "Browser Project");
+  const assignmentId = new URL(page.url()).hash.slice("#factory/".length);
+  // The browser seam may use owned public-response fixtures for a child relationship;
+  // the API contract separately proves that real worker records project these links.
+  const overviewUrl = `http://localhost:${app.port}/api/factory`;
+  await page.route(overviewUrl, async (route) => {
+    const response = await route.fetch(); const overview = await response.json();
+    overview.pane_links = [{ implementation_id: assignmentId, run_id: "owned-run", worker_id: "owned-worker", machine_id: "local", pane_id: inside.root_pane.pane_id, provider: "codex", title: "Independent review child", condition: "completed" }];
+    await route.fulfill({ response, json: overview });
+  });
+  await page.evaluate(() => window.dispatchEvent(new Event("factory-changed")));
+  const assignment = page.locator(".project-assignment").filter({ has: page.getByRole("button", { name: /Project scoped idea/ }) });
+  await assignment.getByRole("button", { name: /Independent review child/ }).waitFor();
+  assert.equal(await assignment.getByRole("button", { name: /Independent review child/ }).getByRole("img", { name: "codex", exact: true }).count(), 1);
+  await page.unroute(overviewUrl); await page.evaluate(() => window.dispatchEvent(new Event("factory-changed")));
+  await herdrRpc("pane.report_agent", { pane_id: inside.root_pane.pane_id, source: "manual", agent: "codex", state: "idle" });
+  await page.locator(".project-navigation").getByRole("button", { name: /Project native chat/ }).click();
+  await page.getByRole("button", { name: "Archive chat", exact: true }).click();
+  await page.getByRole("heading", { name: "Inbox", exact: true, level: 1 }).waitFor();
+  await page.locator(".project-navigation").getByRole("button", { name: /Project native chat/ }).waitFor({ state: "hidden" });
+  await page.locator(".project-navigation").getByRole("button", { name: "Projects", exact: true }).click();
+  await page.locator("summary").filter({ hasText: /^Archived chats$/ }).click();
+  await page.getByRole("button", { name: "Restore chat", exact: true }).click();
+  await page.locator(".project-navigation").getByRole("button", { name: /Project native chat/ }).waitFor();
+  await page.locator(".project-navigation").getByRole("button", { name: "Browser Project", exact: true }).click();
+  await page.getByRole("textbox", { name: "Project name", exact: true }).fill("Renamed Project");
+  await page.getByRole("button", { name: "Rename", exact: true }).click();
+  await page.locator(".project-navigation").getByRole("button", { name: "Renamed Project", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Remove Project", exact: true }).click();
+  await page.getByRole("button", { name: "Confirm remove Project", exact: true }).click();
+  await page.getByText("Project registration removed. History and native sessions are retained.", { exact: true }).waitFor();
+  await page.locator(".project-navigation").getByRole("button", { name: "Renamed Project", exact: true }).waitFor({ state: "hidden" });
+  await page.getByRole("button", { name: "Restore", exact: true }).click();
+  await page.locator(".project-navigation").getByRole("button", { name: "Renamed Project", exact: true }).waitFor();
+  await page.locator(".project-navigation").getByRole("button", { name: "Inbox", exact: true }).click();
   await page.getByRole("textbox", { name: "Idea title", exact: true }).fill("Retained browser research");
   await page.getByRole("textbox", { name: "Idea notes", exact: true }).fill("Original context");
   await page.getByRole("button", { name: "Capture idea", exact: true }).click();
@@ -46,5 +105,5 @@ try {
     await page.screenshot({ path: join(process.env["UI_EVIDENCE_DIR"], "factory-desktop.png"), fullPage: true });
   }
   assert.deepEqual(errors, []);
-  console.log("factory browser: capture, notes, restart and mobile passed");
-} finally { app.stop(); await browser.close(); rmSync(state, { recursive: true, force: true }); }
+  console.log("factory browser: Project lifecycle, folder picker, scoped capture, directory grouping, archives, notes, restart and mobile passed");
+} finally { app.stop(); await browser.close(); for (const id of ownedWorkspaces) await workspaceClose(id).catch(() => {}); rmSync(state, { recursive: true, force: true }); }
