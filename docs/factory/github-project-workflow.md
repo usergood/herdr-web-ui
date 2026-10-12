@@ -15,3 +15,13 @@ The owner can explicitly request re-review for a changed head; automatic polling
 ## Manual production acceptance
 
 Use a disposable GitHub repository first. Verify read-only sync, local note preservation, requested changes, a fix implementation, new-head re-review, behind-base update, failing checks, unresolved conversations and approval. Enable automatic merge only after branch protection is configured. The installation guide covers enabling the feature; it does not enable policies on existing Projects.
+
+## Configuration
+
+Open an Implementation assigned to the Project, expand **Project execution settings → Project GitHub workflow**, and select its `owner/repository` and a verified connection-server GitHub profile. A local checkout's origin must match; for a remote-only Project the selected repository is explicitly verified through that profile. Enter trusted reviewer logins and exact required GitHub check names, one per line. Put Project-specific review instructions or skill references in **Review rules**. Save the settings, then independently enable issue imports, requested-change imports and automatic synchronization as needed. **Sync GitHub** performs the same bounded operation immediately.
+
+Open **Source** on a PR to read its file patches inside the application. The head is checked before and after loading. Binary or GitHub-omitted patches display their file status; a missing patch is never evidence that a file has no changes. **Import PR review** creates factory work with the frozen PR revision and Project review context. Imports do not bypass specification, testing-seam, Ticket graph or provider admission requirements.
+
+Enable **Update behind branches** only for PRs owned by the selected account. Enable **Merge approved PRs** only with GitHub branch protection that enforces reviews, strict required checks and conversation resolution for administrators too. The policy also requires trusted approval on the current head and no pending reviewer requests. Missing protection, ruleset-only protection that this adapter cannot prove, failed/ambiguous mutations and inventories exceeding the bounded complete-snapshot budget stay blocked. Nested reviews, requests, threads, thread comments and checks are bounded at 100 each; top-level issues/PRs and file lists paginate. Incomplete snapshots cannot authorize mutations or fix imports.
+
+Changing Project account bindings or checkout scope invalidates active operations and requires saving GitHub settings again. Polling is at least five minutes and backs off to at least fifteen minutes on failures. Mutation receipts remain visible across restarts and policy edits. After an ambiguous request inspect the retained receipt and GitHub state; the application does not blindly replay it.
