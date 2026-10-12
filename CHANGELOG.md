@@ -23,7 +23,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   ([#10](https://github.com/usergood/saurons-eye/pull/10) by @usergood)
 - Add an existing-herdr installation guide for the separate Saurons eye plugin, private
   configuration, Docker/Traefik/Cloudflare relay cutover, Android pairing and rollback.
-  ([#7](https://github.com/usergood/herdr-web-ui/pull/7) by @usergood)
+  ([#7](https://github.com/usergood/saurons-eye/pull/7) by @usergood)
 - Codex Project references share versioned guides and pictures outside Git, with an editable
   documentation template, pinned Run/worker context and prepared prompts for manual sessions.
   ([#3](https://github.com/usergood/saurons-eye/pull/3) by @usergood)

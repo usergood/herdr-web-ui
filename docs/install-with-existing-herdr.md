@@ -66,7 +66,7 @@ configuration. The initial setup below deliberately refuses existing settings.
 This exact merged application commit includes the PWA fix and bundled eye artwork:
 
 ```bash
-herdr plugin install usergood/herdr-web-ui \
+herdr plugin install usergood/saurons-eye \
   --ref 03c366ff04d6f21ddb74ecbc6f00a7b57bf85582 --yes
 herdr plugin list --plugin usergood.saurons-eye --json
 ```
@@ -283,6 +283,30 @@ must pass verification on that Machine; installation of the web app does not ena
 unverified provider. [Factory setup](factory/runtime.md),
 [shared documents and template](factory/codex-project-references.md)
 
+Use **Project execution settings → Project accounts** to create and verify separate GitHub,
+Codex/Claude subscription and Cloudflare profiles. Bind the intended profiles for each Machine
+before running agents. Keys and native sign-in state stay in private machine storage; do not copy
+them into repository files or the shared reference library. [Account setup](factory/account-setup.md)
+
+For GitHub work, open **Project execution settings → Project GitHub workflow**. Select the
+repository and a verified GitHub profile on the connection server, enter review rules, trusted
+reviewer logins and exact GitHub check names, then save. Enable issue import and use **Sync GitHub**
+first. The PR view includes feedback, unresolved conversations and **Source** patches. Requested
+changes can be imported into factory Inbox work without overwriting existing notes or bypassing
+execution approvals. Enable each automatic policy separately after checking a disposable repository.
+Automatic merges require strict GitHub branch protection, including administrators, fresh trusted
+approval, passing checks and resolved conversations. [GitHub workflow setup](factory/github-project-workflow.md)
+
+Local Whisper setup, batch scheduling, explicit queued model/reasoning/permission presets and
+provider quota/API-spend admission rules are researched proposals. This version does not install
+a local speech model or activate those provider rules. Existing factory concurrency limits remain
+available. [Local dictation and queues](factory/local-transcription-and-queue-research.md),
+[provider settings and quota reset research](factory/provider-admission-research.md)
+
+The repository runs lean Linux CI automatically. Full integration/browser and native platform
+validation are explicit requests; Release, Website, Remote PC bundles and Windows install workflows
+remain disabled. Installation here uses a reviewed commit and publishes no release or website.
+
 Back up the private plugin configuration and app state separately from your repositories.
 Use the app's verified factory backup flow for records and retained blobs, and keep the
 credentials, push keys and transport configuration in your private machine backup.
@@ -320,7 +344,7 @@ and checked, save drafts, back up its state and configuration, and stop **only S
 as above. After confirming stop completion, reinstall with the new full reviewed commit:
 
 ```bash
-herdr plugin install usergood/herdr-web-ui --ref <new-reviewed-commit> --yes
+herdr plugin install usergood/saurons-eye --ref <new-reviewed-commit> --yes
 herdr plugin action invoke usergood.saurons-eye.start
 ```
 
