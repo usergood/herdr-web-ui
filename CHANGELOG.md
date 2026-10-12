@@ -15,10 +15,10 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 - Add private Machine account profiles, native subscription/OAuth setup, managed GitHub SSH
   keys and Project bindings with frozen Run/worker/check execution scopes and account verification.
   ([#9](https://github.com/usergood/saurons-eye/pull/9) by @usergood)
-  ([#8](https://github.com/usergood/herdr-web-ui/pull/8) by @usergood)
+  ([#8](https://github.com/usergood/saurons-eye/pull/8) by @usergood)
 - Research explicit queued-agent model/reasoning/permission presets, subscription usage and
   API-dollar admission rules, and safe automatic resumption after quota reset.
-  ([#10](https://github.com/usergood/herdr-web-ui/pull/10) by @usergood)
+  ([#10](https://github.com/usergood/saurons-eye/pull/10) by @usergood)
 - Codex Project references share versioned guides and pictures outside Git, with an editable
   documentation template, pinned Run/worker context and prepared prompts for manual sessions.
   ([#3](https://github.com/usergood/saurons-eye/pull/3) by @usergood)
@@ -37,7 +37,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   ([#11](https://github.com/usergood/saurons-eye/pull/11) by @usergood)
 - Document local Whisper feasibility with a measured CPU benchmark and a proposed bounded
   queue for factory Implementations, including transcription budgets and recovery semantics.
-  ([#10](https://github.com/usergood/herdr-web-ui/pull/10) by @usergood)
+  ([#10](https://github.com/usergood/saurons-eye/pull/10) by @usergood)
 - Use bundled Saurons eye app, maskable, touch, favicon and notification artwork, with matching
   installed-app/browser names and fresh asset/service-worker cache versions.
   ([#5](https://github.com/usergood/saurons-eye/pull/5) by @usergood)
