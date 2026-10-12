@@ -14,7 +14,7 @@
         "A split pane under 80 columns shrinks its font so programs like btop still fit.",
         "Chat follows the agent's transcript as it is written, not on a timer.",
         "Terminal: pick the cursor shape, pinch to resize the font, hold an arrow to repeat it.",
-        "Saurons eye preserves private Machine account setup and keeps install/update telemetry removed.",
+        "Saurons eye keeps private Machine accounts and sends no install/update telemetry.",
         "Usage meters can show each limit's pace and when it runs out (turn it on in Settings)."
       ],
       "fixed": [
@@ -114,7 +114,7 @@
         "80 sütundan dar bölünmüş panel yazı tipini küçültür; btop gibi programlar sığar.",
         "Sohbet, belirli aralıklarla yeniden okumak yerine ajanın kaydı yazıldıkça güncellenir.",
         "Terminal: imleç şeklini seçin, yazıyı iki parmakla boyutlandırın, ok tuşunu basılı tutun.",
-        "Saurons eye özel Makine hesap ayarlarını korur; kurulum ve güncelleme telemetrisi göndermez.",
+        "Saurons eye özel Makine hesaplarını korur; kurulum/güncelleme telemetrisi göndermez.",
         "Kullanım göstergeleri her limitin hızını ve bitiş zamanını gösterebilir (Ayarlar'da açın)."
       ],
       "fixed": [
