@@ -26,9 +26,13 @@ chats and worker panes. Herdr owns all native panes and processes.
    herdr tabs are shown only when you open a native pane. Removal and archiving retain
    records; native panes keep their herdr ownership.
 
+On a narrow phone screen, a native chat keeps Archive in its top-right controls.
+Use **More → Inbox** to reach the global Inbox when the header shortcut is hidden.
+
 The context field is handoff guidance for fresh, bounded Ticket workers. It does not
-measure usage or forcibly stop a CLI at the selected token count. No-mistakes remains
-a researched candidate rather than an enabled gate. Removing a Project pauses its
+measure usage or forcibly stop a CLI at the selected token count. The research recommends
+keeping no-mistakes out of the factory workflow and retaining the existing checks and
+independent reviews. Removing a Project pauses its
 GitHub synchronization; restoring the registration resumes its saved policy.
 
 ## Acceptance criteria

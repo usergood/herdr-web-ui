@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { createServer } from "../server/index.ts";
 import { herdrRpc, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
+import { runMoreItem } from "./header-more.ts";
 
 const state = mkdtempSync(join(tmpdir(), "saurons-plan-browser-"));
 const owned = await workspaceCreate({ cwd: state, label: "herdr-web-ui-test-plan-browser", focus: false });
@@ -54,7 +55,9 @@ try {
   await page.locator(".tab-strip-menu").click();
   await page.getByRole("button", { name: "Rename pane", exact: true }).waitFor();
   await page.keyboard.press("Escape");
-  await page.getByRole("banner").getByRole("button", { name: "Inbox", exact: true }).click();
+  await page.getByRole("button", { name: "Archive chat", exact: true }).waitFor();
+  assert(await page.locator(".header-inbox").isHidden(), "Archive keeps title space and Inbox stays in More on a phone");
+  await runMoreItem(page, "Inbox");
   assert.equal(await page.locator(".tab-strip").count(), 0, "Inbox is a standalone page without native tabs");
   assert.equal(await page.getByRole("button", { name: "Rename pane", exact: true }).count(), 0, "Inbox does not expose an unmounted pane dialog");
   await page.keyboard.press("Escape");

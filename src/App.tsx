@@ -1064,6 +1064,7 @@ export function App() {
   const closeNewSession = useCallback(() => { setNewSessionOpen(false); setNewPrefill(null); setNewFields(null); }, []);
 
   const moreItems: RowMenuItem[] = [
+    ...(auth?.role !== "watch" ? [{ id: "inbox", label: t("Inbox"), icon: Inbox, run: () => navigateProject({ kind: "inbox" }) }] : []),
     ...(selectedPane && !selectedPane.restore_error ? [{ id: "find", label: t("Find in terminal"), icon: Search, run: actions.openFind }] : []),
     ...(selectedPane && selectedWorkspace
       ? [{ id: "new-tab", label: t("New tab"), title: t("New tab in {workspace}", { workspace: selectedWorkspace.label }), icon: Plus, run: () => actions.openNewTab() }]
