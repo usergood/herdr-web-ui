@@ -12,6 +12,7 @@ import type { CodexReferenceContext } from "../shared/protocol.ts";
 import type { AccountBindingSnapshot, ProjectAccountBindings } from "../shared/accounts.ts";
 import type { AccountOverview, AccountProfile, AccountSetup } from "../shared/accounts.ts";
 import type { MachineAccounts } from "./accounts.ts";
+import { validPermissionMode } from "../shared/agent-permissions.ts";
 
 export type MachineEndpoint = (machineId: string) => { url: string; token: string } | undefined;
 type HostCapabilities = Awaited<ReturnType<FactoryExecutionHost["capabilities"]>>;
@@ -117,6 +118,8 @@ export class FactoryRuntime {
     const priorRuns = new Set(this.store.list<FactoryRun>("runs", id).map((run) => run.id));
     if (this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers").some((worker) => priorRuns.has(worker.run_id) && activeConditions.has(worker.condition))) throw new FactoryError("implementation_owned", "An accepted or uncertain child still owns this Implementation; reconcile or stop it before starting another", 409);
     const provider = implementation.provider ?? project?.provider ?? this.settings().provider;
+    if (project?.permission_mode && !validPermissionMode(provider, project.permission_mode)) throw new FactoryError("permission_provider_mismatch", "The selected CLI does not support this Project's permission mode. Choose a compatible CLI or update Project execution settings before starting", 409);
+    if (action === "implement-spec" && project?.permission_mode === "read_only") throw new FactoryError("project_read_only", "Choose an editing permission mode in Project settings before implementation", 409);
     if (body.expected !== undefined) {
       if (!body.expected || typeof body.expected !== "object" || Array.isArray(body.expected)) throw new FactoryError("invalid_scope", "Confirm the displayed execution context");
       const expected = body.expected as Record<string, unknown>;

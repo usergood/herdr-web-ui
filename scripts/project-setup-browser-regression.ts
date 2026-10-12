@@ -16,6 +16,8 @@ const cli = join(root, "gh.mjs");writeFileSync(cli,'const a=process.argv.slice(2
 const app=createServer({port:0,stateDir:join(root,"state"),factory:{accountDiscoveryHome:root,native:{version:async(provider)=>provider==="codex"?"codex-cli 0.162.1":null},accountTools:{github:{executable:process.execPath,args:[cli]}}}});
 const workspace=await workspaceCreate({cwd:repo,label:"Owned setup native chat",focus:false}); await herdrRpc("pane.report_agent",{pane_id:workspace.root_pane.pane_id,source:"manual",agent:"codex",state:"working"});
 const browser=await chromium.launch({executablePath:process.env["CHROME_PATH"]||chromium.executablePath(),headless:true,args:["--no-sandbox"]});
+const evidence=process.env["UI_EVIDENCE_DIR"];
+if(evidence)mkdirSync(evidence,{recursive:true});
 try {
   const page=await browser.newPage({viewport:{width:1440,height:1000}});page.setDefaultTimeout(10000);const errors:string[]=[];page.on("pageerror",error=>errors.push(error.message));
   await page.route("**/api/workspace/directories?**",route=>route.fulfill({json:{path:repo,parent:root,home:root,directories:[],truncated:false}}));
@@ -27,13 +29,37 @@ try {
   await dialog.getByRole("button",{name:"Next",exact:true}).click();
   assert.equal(await dialog.getByRole("combobox",{name:"Execution permissions",exact:true}).inputValue(),"approve_for_me");
   assert.equal(await dialog.locator("textarea").count(),0); await dialog.getByRole("checkbox",{name:"typecheck",exact:true}).waitFor();
+  await dialog.getByRole("combobox",{name:"CLI agent",exact:true}).selectOption("claude");
+  await dialog.getByRole("button",{name:"Back",exact:true}).click();
+  await dialog.getByRole("button",{name:"Checkout path",exact:true}).click();await dialog.getByRole("button",{name:"Use this folder",exact:true}).click();
+  await dialog.getByRole("button",{name:"Next",exact:true}).click();
+  assert.equal(await dialog.getByRole("combobox",{name:"Execution permissions",exact:true}).inputValue(),"ask");
+  await dialog.getByRole("combobox",{name:"CLI agent",exact:true}).selectOption("codex");
+  if(evidence){
+    await page.screenshot({path:join(evidence,"project-setup-desktop.png"),animations:"disabled"});
+    const phone=await browser.newPage({viewport:{width:390,height:844},isMobile:true,hasTouch:true});phone.setDefaultTimeout(10000);
+    await phone.route("**/api/workspace/directories?**",route=>route.fulfill({json:{path:repo,parent:root,home:root,directories:[],truncated:false}}));
+    await phone.goto(`http://localhost:${app.port}/#projects`);await phone.getByRole("tab",{name:"Projects",exact:true}).click();
+    await phone.getByRole("button",{name:"Checkout path",exact:true}).click();await phone.getByRole("button",{name:"Use this folder",exact:true}).click();await phone.getByRole("button",{name:"Next",exact:true}).click();
+    await phone.screenshot({path:join(evidence,"project-setup-mobile.png"),animations:"disabled"});await phone.close();
+  }
   await dialog.getByRole("button",{name:"Next",exact:true}).click();await dialog.getByRole("button",{name:"Import fictional-work",exact:true}).click();await dialog.getByText("Ready",{exact:true}).first().waitFor();
   await dialog.getByRole("button",{name:"Next",exact:true}).click();await dialog.getByText("AGENTS.md",{exact:true}).waitFor();
   await dialog.getByRole("button",{name:"Create Project",exact:true}).click();await page.getByRole("dialog",{name:"Project settings",exact:true}).waitFor();
   await page.getByRole("tab",{name:"Workflow",exact:true}).click();assert.equal(await page.getByRole("textbox",{name:"Execution permissions",exact:true}).count(),0);
-  await page.getByRole("button",{name:"Save Project settings",exact:true}).click();await page.getByRole("alert").waitFor({state:"hidden"});
+  const projectId=/projects\/([^/]+)\/settings/.exec(new URL(page.url()).hash)![1]!;
+  const post=(path:string,body:unknown)=>page.request.post(`http://localhost:${app.port}/api/factory${path}`,{headers:{"x-herdr-factory":"1","x-herdr-machine":"1"},data:body});
+  assert.equal((await post(`/projects/${projectId}/configure`,{checks:[["echo","custom A"],["echo","custom B"]]})).status(),200);
+  await page.reload();await page.getByRole("button",{name:"Project settings for storefront",exact:true}).click();await page.getByRole("tab",{name:"Workflow",exact:true}).click();
+  const customA=page.locator("label").filter({has:page.locator("code",{hasText:"echo custom A"})});const customB=page.locator("label").filter({has:page.locator("code",{hasText:"echo custom B"})});
+  await customA.getByRole("checkbox").uncheck();
+  async function saveSettings(){const response=page.waitForResponse(r=>r.url().endsWith(`/projects/${projectId}/configure`)&&r.request().method()==="POST");await page.getByRole("button",{name:"Save Project settings",exact:true}).click();assert.equal((await response).status(),200);await page.getByRole("button",{name:"Save Project settings",exact:true}).waitFor({state:"visible"});}
+  await saveSettings();await customA.waitFor({state:"hidden"});assert.equal(await customB.getByRole("checkbox").isChecked(),true);
+  await page.getByRole("combobox",{name:"Context handoff target",exact:true}).selectOption("200000");await saveSettings();
+  const saved=await page.request.get(`http://localhost:${app.port}/api/factory?navigation=1`).then(r=>r.json());assert.deepEqual(saved.projects.find((p:any)=>p.id===projectId).checks,[["echo","custom B"]]);
   await page.getByRole("button",{name:"Close settings",exact:true}).click();
   const group=page.locator(".project-navigation-group").filter({has:page.locator("summary").filter({hasText:"storefront"})});await group.locator('summary [data-status="working"]').waitFor();
   await group.locator("summary").click();await herdrRpc("pane.report_agent",{pane_id:workspace.root_pane.pane_id,source:"manual",agent:"codex",state:"blocked"});await group.locator('summary [data-status="blocked"]').waitFor();assert.equal(await group.getAttribute("open"),null);
+  if(evidence)await page.screenshot({path:join(evidence,"project-status-desktop.png"),animations:"disabled"});
   assert.deepEqual(errors,[]);console.log("Project setup browser: folder-only picker, defaults, account import, save and folded native statuses passed");
 } finally {await browser.close();app.stop();await workspaceClose(workspace.workspace.workspace_id);rmSync(root,{recursive:true,force:true});}

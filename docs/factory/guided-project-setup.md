@@ -52,3 +52,8 @@ explicit selection. Existing SSH files and global configuration remain untouched
 Repository metadata supplies available reviewers and branch check names for the
 advanced automation choices. Issue import works with basic settings; automatic
 merge and branch updates keep the existing strict policy and fresh-evidence gates.
+
+Changing an Assignment's CLI requires a permission choice supported by that CLI.
+An incompatible Project mode blocks admission with a setup explanation; it cannot
+silently become another CLI's defaults. Read-only Projects cannot start implementation.
+Retained custom checks keep their identity across repeated saves.

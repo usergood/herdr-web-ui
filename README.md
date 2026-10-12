@@ -46,6 +46,15 @@ Factory admission requires genuine native skill and question/answer verification
 
 Desktop and phone views of the fork's features, captured with fictional data in an isolated test session. Click an image to open it at full size.
 
+Guided setup detects checks and offers native CLI permission choices. Folded Projects keep
+Herdr's status indicator visible.
+
+| Guided Project setup | Phone setup |
+| --- | --- |
+| [![Native permissions and detected checks](docs/screenshots/project-setup/project-setup-desktop.png)](docs/screenshots/project-setup/project-setup-desktop.png) | [![Phone Project setup](docs/screenshots/project-setup/project-setup-mobile.png)](docs/screenshots/project-setup/project-setup-mobile.png) |
+
+[Folded Project awaiting input](docs/screenshots/project-setup/project-status-desktop.png)
+
 The Project workspace update gives Inbox its own page and Project settings the existing Settings layout.
 
 | Project settings | Project Inbox on a phone |
@@ -125,7 +134,7 @@ The Project workspace update gives Inbox its own page and Project settings the e
 
 [Full gallery, capture coverage and regeneration instructions →](docs/fork-feature-gallery.md)
 
-To get started, open **Inbox**, capture an idea, configure a Project's checkout and checks, and prepare the execution Machine. See the [factory runtime guide](docs/factory/runtime.md) for setup, approvals, execution, review and recovery, or the [full specification](docs/factory/specification.md) for the product contract.
+To get started, open **Projects** for guided repository setup, then capture an idea in its Inbox or the global **Inbox**. Prepare the execution Machine before starting work. See the [factory runtime guide](docs/factory/runtime.md) for approvals, execution, review and recovery, or the [full specification](docs/factory/specification.md) for the product contract.
 
 ## Browser and phone features
 

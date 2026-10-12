@@ -23,7 +23,7 @@ export class ProjectGitHub {
   private readonly busy = new Set<string>();
   private stopped = false;
   private readonly timer: ReturnType<typeof setInterval>;
-  constructor(private readonly store: FactoryStore, private readonly accounts: MachineAccounts) {
+  constructor(private readonly store: FactoryStore, private readonly accounts: MachineAccounts, private readonly discover?: (machineId: string, path: string) => Promise<import("../shared/project-setup.ts").ProjectDiscovery>) {
     this.timer = setInterval(() => { void this.poll(); }, 10_000); this.timer.unref();
   }
   stop(): void { this.stopped = true; clearInterval(this.timer); }
@@ -42,11 +42,22 @@ export class ProjectGitHub {
     const project = this.project(id);
     return hash(JSON.stringify({ repository: project.repository, bindings: project.account_bindings ?? {}, checkouts: this.store.list<ProjectCheckout>("checkouts", id).map((entry) => ({ id: entry.id, machine_id: entry.machine_id, path: entry.path, repository: entry.repository })) }));
   }
+  private async repository(id: string): Promise<string | null> {
+    const project = this.project(id);
+    const checkouts = this.store.list<ProjectCheckout>("checkouts", id);
+    const checkout = checkouts.find(c => c.machine_id === "local") ?? checkouts.find(c => c.machine_id === project.machine_id) ?? checkouts[0];
+    if (!checkout) return this.overview(id).policy?.repository ?? null;
+    if (checkout.machine_id === "local") return (await githubDirectory(checkout.path, this.accounts.discoveryHome)).repository;
+    if (!this.discover) return this.overview(id).policy?.repository ?? null;
+    const discovered = await this.discover(checkout.machine_id, checkout.path);
+    if (discovered.repository !== checkout.repository) throw new FactoryError("wrong_checkout", "The Machine checkout changed", 409);
+    return discovered.github.repository;
+  }
   async settings(id: string, accountId: unknown): Promise<import("../shared/github-project.ts").ProjectGitHubSettings> {
     this.project(id);
+    const scope = this.projectScope(id);
     if (typeof accountId !== "string") throw new FactoryError("account_scope_required", "Select a verified GitHub account", 409);
-    const checkout = this.store.list<ProjectCheckout>("checkouts", id).find(c => c.machine_id === "local");
-    const repository = checkout ? (await githubDirectory(checkout.path, this.accounts.discoveryHome)).repository : this.overview(id).policy?.repository;
+    const repository = await this.repository(id);
     if (!repository) throw new FactoryError("github_remote_required", "Add a GitHub remote to this checkout before connecting its GitHub workflow", 409);
     const snapshot = await this.accounts.freeze({ github: accountId });
     const metadata = await this.accounts.github(snapshot, ["api", `repos/${repository}`]) as { full_name?: string; default_branch?: string };
@@ -62,6 +73,7 @@ export class ProjectGitHub {
       checks = (protection.required_status_checks?.contexts ?? []).filter(c => typeof c === "string").slice(0, 50);
       protectedBranch = !!protection.enforce_admins?.enabled && !!protection.required_status_checks?.strict && !!protection.required_pull_request_reviews?.required_approving_review_count && !!protection.required_conversation_resolution?.enabled;
     } catch { /* The workflow retains explicit automation gates when protection is unreadable. */ }
+    if (this.projectScope(id) !== scope) throw new FactoryError("account_scope_changed", "The Project changed during GitHub discovery", 409);
     return { repository, default_branch: branch, reviewers, required_checks: checks, protected: protectedBranch };
   }
   private async locked<T>(id: string, run: () => Promise<T>): Promise<T> {
@@ -75,8 +87,8 @@ export class ProjectGitHub {
       if (value.expected_revision !== (prior?.revision ?? null)) throw new FactoryError("github_policy_changed", "Refresh the Project GitHub settings", 409);
       if (!/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(value.repository ?? "") || typeof value.account_profile_id !== "string" || !Number.isInteger(value.poll_minutes) || value.poll_minutes < 5 || value.poll_minutes > 1440 || typeof value.review_context !== "string" || value.review_context.length > 30_000) throw new FactoryError("invalid_github_policy", "Select a repository, account and bounded polling interval");
       const checkout = this.store.list<ProjectCheckout>("checkouts", id).find((item) => item.machine_id === "local");
-      if (checkout) {
-        const canonical = (await githubDirectory(checkout.path, this.accounts.discoveryHome)).repository;
+      if (checkout || this.discover) {
+        const canonical = await this.repository(id);
         if (canonical?.toLowerCase() !== value.repository.toLowerCase()) throw new FactoryError("github_repository_mismatch", "Select this Project's registered GitHub repository", 409);
       }
       for (const key of ["sync_enabled", "import_issues", "import_fixes", "auto_update", "auto_merge"] as const) if (typeof value[key] !== "boolean") throw new FactoryError("invalid_github_policy", "Select each GitHub policy explicitly");

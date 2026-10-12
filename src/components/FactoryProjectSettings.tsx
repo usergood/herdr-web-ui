@@ -7,6 +7,9 @@ import { factoryRequest } from "../lib/factoryApi.ts";
 import { useT } from "../lib/i18n.ts";
 import { ProjectFolderPicker } from "./ProjectFolderPicker.tsx";
 import { ProjectPermissions } from "./ProjectPermissions.tsx";
+import { ProjectChecks } from "./ProjectChecks.tsx";
+
+const existingCheckId = (args: string[]) => `existing:${JSON.stringify(args)}`;
 
 export function FactoryProjectSettings({ project, overview, machineId, machines, busy, perform, section = "execution" }: { project: FactoryProject; overview: FactoryOverview; section?: "execution" | "checkout"; machineId: string; machines: Machine[]; busy: boolean; perform: (action: () => Promise<void>) => Promise<void> }) {
   const t = useT();
@@ -17,20 +20,20 @@ export function FactoryProjectSettings({ project, overview, machineId, machines,
   const [path, setPath] = useState(overview.checkouts.find(c => c.project_id === project.id && c.machine_id === machineId)?.path ?? "");
   const [data, setData] = useState<ProjectDiscovery | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
-  const [selected, setSelected] = useState<string[]>([]);
+  const [selected, setSelected] = useState<string[]>((project.checks ?? []).map(existingCheckId));
   const [checksTouched, setChecksTouched] = useState(false);
   const modeTouched = useRef(false);
   const hosts = machines.filter(m => overview.checkouts.some(c => c.project_id === project.id && c.machine_id === m.id));
   const selectedHost = hosts.some(m => m.id === host) ? host : "";
   const checkout = overview.checkouts.find(c => c.project_id === project.id && c.machine_id === (section === "execution" ? host : machineId));
-  const choices: ProjectCheckChoice[] = [...(data?.checks ?? []), ...(project.checks ?? []).filter(args => !data?.checks.some(c => JSON.stringify(c.args) === JSON.stringify(args))).map((args, index) => ({ id: `existing:${index}`, name: t("Existing check"), args }))];
+  const choices: ProjectCheckChoice[] = [...(data?.checks ?? []), ...(project.checks ?? []).filter(args => !data?.checks.some(c => JSON.stringify(c.args) === JSON.stringify(args))).map(args => ({ id: existingCheckId(args), name: t("Existing check"), args }))];
   useEffect(() => {
     let live = true; setData(null); setProblem(null);
     if (!checkout) return;
     void factoryRequest<ProjectDiscovery>("/project-discovery", { machine_id: checkout.machine_id, path: checkout.path }).then(result => {
       if (!live) return;
       setData(result);
-      const items = [...result.checks, ...(project.checks ?? []).filter(args => !result.checks.some(c => JSON.stringify(c.args) === JSON.stringify(args))).map((args, index) => ({ id: `existing:${index}`, name: "", args }))];
+      const items = [...result.checks, ...(project.checks ?? []).filter(args => !result.checks.some(c => JSON.stringify(c.args) === JSON.stringify(args))).map(args => ({ id: existingCheckId(args), name: "", args }))];
       setSelected(project.checks?.length ? items.filter(c => project.checks!.some(args => JSON.stringify(args) === JSON.stringify(c.args))).map(c => c.id) : result.checks.map(c => c.id));
       if (!project.permission_mode && !modeTouched.current) setMode(provider === "codex" && result.permission_modes.codex.includes("approve_for_me") ? "approve_for_me" : "ask");
     }, error => { if (live) setProblem(error.message); });
@@ -46,8 +49,7 @@ export function FactoryProjectSettings({ project, overview, machineId, machines,
       <ProjectPermissions value={mode} modes={data?.permission_modes[provider] ?? AGENT_PERMISSION_MODES[provider]} onChange={next => { modeTouched.current = true; setMode(next); }} />
       <label>{t("Context handoff target")}<select className="select" value={target} onChange={event => setTarget(Number(event.target.value))}>{![150000, 200000].includes(target) && <option value={target}>{target.toLocaleString()}</option>}<option value={150000}>150,000</option><option value={200000}>200,000</option></select></label>
       <p className="field-hint">{t("A planning target for smaller Ticket workers, not a measured hard token limit.")}</p>
-      <h3>{t("Repository checks")}</h3>{choices.map(check => <label key={check.id}><input type="checkbox" aria-label={check.name} checked={selected.includes(check.id)} onChange={event => { setChecksTouched(true); setSelected(current => event.target.checked ? [...current, check.id] : current.filter(id => id !== check.id)); }} />{check.name}<code>{check.args.join(" ")}</code></label>)}
-      {!choices.length && <p role="status">{t("No checks detected. You can save setup; add checks before implementation.")}</p>}{problem && <p role="status">{problem}</p>}
+      <ProjectChecks choices={choices} selected={selected} onChange={ids => {setChecksTouched(true);setSelected(ids);}} />{problem && <p role="status">{problem}</p>}
       <h3>{t("Matt Pocock workflow")}</h3><p>{t("Repository documents provide domain language and coding standards. Existing custom guidance is preserved.")}</p>{data && <ul>{data.guidance.map(file => <li key={file}>{file}</li>)}</ul>}
       <p className="field-hint">{t("Pinned skills, approved Tickets, checks and independent reviews remain required.")}</p>
       <button className="btn" disabled={busy || !selectedHost}>{t("Save Project settings")}</button>

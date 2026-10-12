@@ -67,9 +67,29 @@ describe("guided Project setup through the public API", () => {
       expect(saved.status).toBe(200);
       const value = await saved.json(); expect(value.permission_mode).toBe("approve_for_me");
       expect(value.permissions).toContain("automatic review");
+      const idea = await post("/implementations", {title:"Provider override",description:"Owned permission fixture",project_id:project.id}).then(r=>r.json());
+      await post(`/implementations/${idea.id}/configure`, {provider:"claude",machine_id:"local"});
+      const start = await post(`/implementations/${idea.id}/runs`, {action:"setup",idempotency_key:"permission-fixture"});
+      expect(start.status).toBe(409); expect((await start.json()).error.code).toBe("permission_provider_mismatch");
       const guide=await post(`/projects/${project.id}/guidance`,{});expect(guide.status).toBe(201);const assignment=await guide.json();
       expect(assignment.description).toContain("writing-for-agents");expect(assignment.project_id).toBe(project.id);
       const duplicate=await post(`/projects/${project.id}/guidance`,{}).then(r=>r.json());expect(duplicate.id).toBe(assignment.id);
     } finally { app.stop(); rmSync(root, { recursive: true, force: true }); }
+  });
+  it("discovers a remote-only Project's GitHub repository using its owning host", async () => {
+    const root=mkdtempSync(join(tmpdir(),"saurons-remote-github-"));const repo=join(root,"repo");mkdirSync(repo);
+    writeFileSync(join(repo,"README.md"),"Owned remote fixture\n");execFileSync("git",["init","-b","main"],{cwd:repo,stdio:"ignore"});execFileSync("git",["add","."],{cwd:repo});execFileSync("git",["-c","user.name=Fixture","-c","user.email=fixture@example.invalid","commit","-m","initial"],{cwd:repo,stdio:"ignore"});execFileSync("git",["remote","add","origin","git@github.com:fictional/storefront.git"],{cwd:repo});
+    const cli=join(root,"gh.mjs");writeFileSync(cli,'const a=process.argv.slice(2);if(a[0]==="auth"&&a[1]==="status")console.log(JSON.stringify({hosts:{"github.com":[{login:"fictional-work",active:true,state:"success"}]}}));else if(a[0]==="auth"&&a[1]==="token")console.log("gho_owned_remote_fixture_not_a_credential");else if(a[1]==="user")console.log(JSON.stringify({login:"fictional-work"}));else if(a[1]==="repos/fictional/storefront")console.log(JSON.stringify({full_name:"fictional/storefront",default_branch:"main"}));else console.log("[]");');
+    const host=createServer({port:0,stateDir:join(root,"host-state"),token:"owned-remote-github",machines:false,factory:{accountDiscoveryHome:root}});
+    const app=createServer({port:0,stateDir:join(root,"connection-state"),machines:false,factory:{accountDiscoveryHome:root,accountTools:{github:{executable:process.execPath,args:[cli]}},machineEndpoint:id=>id==="fixture-host"?{url:`http://localhost:${host.port}`,token:"owned-remote-github"}:undefined}});
+    const post=(path:string,body:unknown)=>fetch(`http://localhost:${app.port}/api/factory${path}`,{method:"POST",headers:{"content-type":"application/json","x-herdr-factory":"1","x-herdr-machine":"1"},body:JSON.stringify(body)});
+    try {
+      const inventory=await fetch(`http://localhost:${app.port}/api/factory/machines/local/accounts/discovery`).then(r=>r.json());
+      const profile=await post("/machines/local/accounts/import",{source_id:inventory.sources[0].id}).then(r=>r.json());
+      const project=await post("/projects",{name:"Remote Project",path:repo,machine_id:"fixture-host",provider:"codex",tracker:"app"}).then(r=>r.json());
+      const response=await post(`/projects/${project.id}/github/settings`,{account_profile_id:profile.id});expect(response.status).toBe(200);expect((await response.json()).repository).toBe("fictional/storefront");
+      const configured=await post(`/projects/${project.id}/github/configure`,{expected_revision:null,repository:"fictional/storefront",account_profile_id:profile.id,sync_enabled:false,import_issues:true,import_fixes:false,auto_update:false,auto_merge:false,trusted_reviewers:[],required_checks:[],review_context:"Owned standards",poll_minutes:5});expect(configured.status).toBe(200);
+      const overview=await fetch(`http://localhost:${app.port}/api/factory?navigation=1`).then(r=>r.json());expect(overview.checkouts.filter((c:any)=>c.project_id===project.id).map((c:any)=>c.machine_id)).toEqual(["fixture-host"]);expect(overview.projects.find((p:any)=>p.id===project.id).account_bindings?.local).toBeUndefined();
+    } finally {app.stop();host.stop();rmSync(root,{recursive:true,force:true});}
   });
 });

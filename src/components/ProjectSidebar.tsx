@@ -36,14 +36,15 @@ function ProjectPaneRow({ row, selected, onOpenPane }: { row: ProjectPane; selec
   const t = useT(); const [expanded, setExpanded] = useState(false);
   return <div className="project-pane-row"><button className={`project-navigation-row${selected ? " is-selected" : ""}`} aria-current={selected ? "true" : undefined} title={`${row.machine.name} · ${row.pane.cwd ?? ""}`} onClick={() => onOpenPane(row.machine.id, row.pane.pane_id)}>
     {row.pane.agent || row.link?.provider ? <AgentMark agent={row.pane.agent ?? row.link!.provider} /> : <SquareTerminal />}<span>{row.link?.title ?? displayPaneTitle(row.pane)}</span><StatusBadge compact showIdle status={row.machine.state==="connected"?paneStatus(row.pane):undefined}/>
-  </button>{(!!row.pane.background_tasks || ["claude", "omo"].includes(row.pane.agent ?? row.link?.provider ?? "")) && <><button className="project-navigation-row" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{t("Child tasks")}{!!row.pane.background_tasks && ` · ${row.pane.background_tasks}`}</button>{expanded && <MachineContext.Provider value={row.machine.id}><NativeChildren paneId={row.pane.pane_id} provider={row.pane.agent ?? ""} onOpen={() => onOpenPane(row.machine.id, row.pane.pane_id)} /></MachineContext.Provider>}</>}</div>;
+  </button>{(!!row.pane.background_tasks || ["claude", "omo"].includes(row.pane.agent ?? row.link?.provider ?? "")) && <><button className="project-navigation-row" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{t("Child tasks")}{!!row.pane.background_tasks && ` · ${row.pane.background_tasks}`}</button>{expanded && <MachineContext.Provider value={row.machine.id}><NativeChildren paneId={row.pane.pane_id} provider={row.pane.agent ?? ""} connected={row.machine.state === "connected"} onOpen={() => onOpenPane(row.machine.id, row.pane.pane_id)} /></MachineContext.Provider>}</>}</div>;
 }
-function NativeChildren({ paneId, provider, onOpen }: { paneId: string; provider: string; onOpen: () => void }) {
+function NativeChildren({ paneId, provider, connected, onOpen }: { paneId: string; provider: string; connected: boolean; onOpen: () => void }) {
   const { fetchPaneOmoActivity } = useMachineApi(); const [tasks, setTasks] = useState<OmoTask[]>([]); const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let live = true; let timer: ReturnType<typeof setTimeout>;
+    if (!connected) return;
     const read = async () => { try { if (document.visibilityState === "visible") { const next = await fetchPaneOmoActivity(paneId); if (live) { setTasks(next.tasks); setError(null); } } } catch (e) { if (live) setError(e instanceof Error ? e.message : String(e)); } finally { if (live) timer = setTimeout(() => void read(), 10000); } };
     void read(); return () => { live = false; clearTimeout(timer); };
-  }, [paneId, fetchPaneOmoActivity]);
-  return <div className="project-navigation-children">{error && <p role="alert">{error}</p>}{tasks.map((task) => <button className="project-navigation-row" key={task.id} onClick={onOpen} title={task.model ?? undefined}><AgentMark agent={provider} /><span>{task.title}</span><StatusBadge compact showIdle status={task.status==="running"?"working":task.status==="completed"?"done":task.status==="failed"?"blocked":undefined}/></button>)}</div>;
+  }, [paneId, fetchPaneOmoActivity, connected]);
+  return <div className="project-navigation-children">{connected && error && <p role="alert">{error}</p>}{tasks.map((task) => <button className="project-navigation-row" key={task.id} onClick={onOpen} title={task.model ?? undefined}><AgentMark agent={provider} /><span>{task.title}</span><StatusBadge compact showIdle status={!connected ? undefined : task.status==="running"?"working":task.status==="completed"?"done":task.status==="failed"?"blocked":undefined}/></button>)}</div>;
 }

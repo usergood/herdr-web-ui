@@ -9,7 +9,7 @@ import { factoryRequest } from "../lib/factoryApi.ts";
 import { NativeAccountImport } from "./NativeAccountImport.tsx";
 import "./FactoryProjectGitHub.css";
 
-export function FactoryProjectGitHub({ project, busy, perform, checkoutPath, machineName }: { project: FactoryProject; busy: boolean; perform: (action: () => Promise<void>) => Promise<void>; checkoutPath?: string; machineName?: string }) {
+export function FactoryProjectGitHub({ project, busy, perform, checkoutPath, checkout, machineName }: { project: FactoryProject; busy: boolean; perform: (action: () => Promise<void>) => Promise<void>; checkoutPath?: string; checkout?: { machine_id: string; path: string }; machineName?: string }) {
   const t = useT(); const route = `/projects/${project.id}/github`;
   const [view, setView] = useState<ProjectGitHubOverview | null>(null);
   const [accounts, setAccounts] = useState<AccountOverview | null>(null);
@@ -18,11 +18,12 @@ export function FactoryProjectGitHub({ project, busy, perform, checkoutPath, mac
   const [diffs, setDiffs] = useState<Record<number, ProjectGitHubFiles>>({});
   const epoch = useRef(0);
   const [form, setForm] = useState<ProjectGitHubConfiguration>({ expected_revision: null, repository: "", account_profile_id: "", sync_enabled: false, import_issues: false, import_fixes: false, auto_update: false, auto_merge: false, trusted_reviewers: [], required_checks: [], review_context: "Review against the repository's coding standards, domain language and accepted scope.", poll_minutes: 5 });
-  async function refresh() { const next = await factoryRequest<ProjectGitHubOverview>(route); setView(next); return next; }
-  async function reloadAccounts() { const next = await accountRequest<AccountOverview>("/machines/local/accounts"); setAccounts(next); return next; }
+  async function refresh() { const id = epoch.current; const next = await factoryRequest<ProjectGitHubOverview>(route); if (id === epoch.current) setView(next); return next; }
+  async function reloadAccounts() { const id = epoch.current; const next = await accountRequest<AccountOverview>("/machines/local/accounts"); if (id === epoch.current) setAccounts(next); return next; }
   useEffect(() => {
     const id = ++epoch.current;
-    void Promise.all([factoryRequest<ProjectGitHubOverview>(route), accountRequest<AccountOverview>("/machines/local/accounts"), checkoutPath ? factoryRequest<ProjectDiscovery>("/project-discovery", { machine_id: "local", path: checkoutPath }) : Promise.resolve(null)]).then(([next, profiles, repository]) => {
+    setDefaults(null); setProblem("");
+    void Promise.all([factoryRequest<ProjectGitHubOverview>(route), accountRequest<AccountOverview>("/machines/local/accounts"), checkout ? factoryRequest<ProjectDiscovery>("/project-discovery", { machine_id: checkout.machine_id, path: checkout.path }) : Promise.resolve(null)]).then(([next, profiles, repository]) => {
       if (id !== epoch.current) return;
       setView(next); setAccounts(profiles);
       if (next.policy) { const policy = next.policy; setForm({ repository: policy.repository, account_profile_id: policy.account_profile_id, sync_enabled: policy.sync_enabled, import_issues: policy.import_issues, import_fixes: policy.import_fixes, auto_update: policy.auto_update, auto_merge: policy.auto_merge, trusted_reviewers: policy.trusted_reviewers, required_checks: policy.required_checks, review_context: policy.review_context, poll_minutes: policy.poll_minutes, expected_revision: policy.revision }); }
@@ -33,20 +34,21 @@ export function FactoryProjectGitHub({ project, busy, perform, checkoutPath, mac
       }
     }).catch(error => { if (id === epoch.current) setProblem(error.message); });
     return () => { epoch.current++; };
-  }, [route, checkoutPath]);
+  }, [route, checkout?.machine_id, checkout?.path]);
   useEffect(() => {
     if (!form.account_profile_id || accounts?.profiles.find(p => p.id === form.account_profile_id)?.state !== "ready") return;
     let live = true;
     void accountRequest<ProjectGitHubSettings>(route + "/settings", { account_profile_id: form.account_profile_id }).then(value => { if (live) { setDefaults(value); setForm(current => ({ ...current, repository: value.repository, required_checks: current.required_checks.length ? current.required_checks : value.required_checks })); } }, error => { if (live) setProblem(error.message); });
     return () => { live = false; };
-  }, [form.account_profile_id, accounts?.profiles]);
+  }, [route, form.account_profile_id, accounts?.profiles]);
   const ready = accounts?.profiles.find(p => p.id === form.account_profile_id)?.state === "ready";
   return <section className="factory-section" data-testid="project-github"><h3>{t("Project GitHub workflow")}</h3>
     <p className="field-hint">{t("GitHub uses a verified account on the connection server: {name}", { name: machineName ?? t("Machine") })}</p>
     {problem && <p role="alert">{problem}</p>}
     <form className="factory-form" onSubmit={event => { event.preventDefault(); void perform(async () => {
-      await accountRequest(`/projects/${project.id}/configure`, { account_bindings: { ...project.account_bindings, local: { ...project.account_bindings?.local, github: form.account_profile_id } } });
-      const policy = await accountRequest<{ revision: string }>(route + "/configure", form); setForm(current => ({ ...current, expected_revision: policy.revision })); await refresh();
+      const id = epoch.current;
+      if (checkoutPath) await accountRequest(`/projects/${project.id}/configure`, { account_bindings: { ...project.account_bindings, local: { ...project.account_bindings?.local, github: form.account_profile_id } } });
+      const policy = await accountRequest<{ revision: string }>(route + "/configure", form); if (id !== epoch.current) return; setForm(current => ({ ...current, expected_revision: policy.revision })); await refresh();
     }); }}>
       <label>{t("Repository (owner/name)")}<input className="input" readOnly value={form.repository} /></label>
       {!form.repository && <p role="status">{t("No GitHub remote detected for this checkout.")}</p>}
@@ -65,7 +67,7 @@ export function FactoryProjectGitHub({ project, busy, perform, checkoutPath, mac
       </details>
       <button className="btn" disabled={busy || !ready || !form.repository}>{t("Save Project settings")}</button>
     </form>
-    <NativeAccountImport machineId="local" path={checkoutPath} busy={busy} perform={perform} onImported={profile => { setForm(current => ({ ...current, account_profile_id: profile.id })); void reloadAccounts(); }} />
+    <NativeAccountImport machineId="local" path={checkoutPath} busy={busy} perform={perform} onImported={profile => { const id = epoch.current; setForm(current => ({ ...current, account_profile_id: profile.id })); void reloadAccounts().catch(error => { if (id === epoch.current) setProblem(error.message); }); }} />
     <button type="button" className="btn" disabled={busy || !view?.policy} onClick={() => void perform(async () => { setView(await accountRequest<ProjectGitHubOverview>(route + "/sync", {})); })}>{t("Sync GitHub")}</button>
     {view?.problem && <p role="alert">{view.problem}</p>}
     {view?.last_sync && <p>{new Date(view.last_sync).toLocaleString()}</p>}
