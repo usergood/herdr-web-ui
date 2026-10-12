@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping. Bugs and ideas go in an [issue](https://github.com/usergood/herdr-web-ui/issues/new/choose);
+Thanks for helping. Bugs and ideas go in an [issue](https://github.com/usergood/saurons-eye/issues/new/choose);
 security problems never do: see [SECURITY.md](SECURITY.md). For a larger change, open an issue first so
 the approach can be agreed before you build it. Small fixes can go straight to a PR.
 
@@ -80,9 +80,10 @@ running terminals: see [development](docs/development.md#checks).
   `i18n.zh.ts` and `i18n.tr.ts`, with the same placeholders. `bun run test:unit` fails on a missing, unused or
   untranslated entry.
 - **UI:** component CSS uses the tokens in `src/styles.css` (see [DESIGN.md](DESIGN.md)).
-- **The browser demo:** the [demo](https://herdrweb.dev/demo/) redeploys on every
-  merge to `main`. A feature meant to show there needs an answer in `site/demo/transport.ts`; anything
-  else gets its 404.
+- **The browser demo:** Saurons eye's Website workflow stays disabled pending its redesign;
+  the [original project's demo](https://herdrweb.dev/demo/) belongs to upstream.
+  Local demo checks still need an answer in `site/demo/transport.ts` for changed contracts;
+  anything else gets its 404. Website publication requires explicit owner dispatch.
 - **Changelog:** a change users notice gets a line under `## [Unreleased]` in
   [CHANGELOG.md](CHANGELOG.md) (`### Added`, `### Changed` or `### Fixed`). Do not bump versions.
   The link to your PR and your name are added by a maintainer at release, so you can leave them out.

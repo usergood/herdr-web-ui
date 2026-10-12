@@ -5,6 +5,8 @@
   },
   "files": [
     "scripts/check.ts",
+    "scripts/ci-policy.ts",
+    "scripts/herdr-test-config.ts",
     "scripts/build-site.ts",
     "scripts/ci-lanes.ts",
     "scripts/ci-tests.ts",

@@ -6,7 +6,7 @@ Read-only inventory performed during implementation. No service, socket, credent
 | --- | --- |
 | Development checkout | `/home/kurri/Personal/herdr-web-ui` |
 | Branch/base | `main`, starting at `afe3fb96948a7a31f4527f1d9ef652cebdfe8cdd` |
-| Fork origin | `usergood/herdr-web-ui` |
+| Fork origin | `usergood/saurons-eye` |
 | Bun / Node | 1.4.2 / 22.22.1 |
 | Herdr | 0.9.3 |
 | Codex | 0.162.1; native CLI reports signed in with ChatGPT |

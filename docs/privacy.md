@@ -12,7 +12,7 @@ Saurons eye has no install/update telemetry or analytics receiver. The owner req
 - The upstream public-site/search-verification defaults and optional CodeRabbit configuration. Source, license and historical attribution references are retained.
 - The remote runtime fallback to upstream release bundles. Use a locally built manifest or explicitly configure `HERDR_WEB_BUNDLE_MANIFEST`; missing configuration fails before a download.
 
-The plugin identity is `usergood.saurons-eye`, its display name is Saurons eye, and its repository is `usergood/herdr-web-ui`. Default host config/state lives under Saurons eye directories so the fork does not inherit upstream service settings. Remote runtime/socket namespaces still require reconciliation before deployment. No installed plugin or service has been changed by this source cleanup.
+The plugin identity is `usergood.saurons-eye`, its display name is Saurons eye, and its repository is `usergood/saurons-eye`. Default host config/state lives under Saurons eye directories so the fork does not inherit upstream service settings. Remote runtime/socket namespaces still require reconciliation before deployment. No installed plugin or service has been changed by this source cleanup.
 
 ## Owner-enabled connections that remain
 

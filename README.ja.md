@@ -107,7 +107,7 @@ Windows x64 では PowerShell で:
 必要なソフトウェアがすでにそろっている場合は、プラグインだけをインストールできます。
 
 ```bash
-herdr plugin install usergood/herdr-web-ui --ref <reviewed-ref>
+herdr plugin install usergood/saurons-eye --ref <reviewed-ref>
 ```
 
 herdr が起動した状態で **[localhost:7317](http://localhost:7317)** を開きます。ペインを選ぶか、**New workspace（新規ワークスペース）** からエージェントを起動してください。スマートフォンで使う場合は、インストーラーの QR コードを読み取り、アプリをホーム画面に追加します。[クイックスタート →](docs/guide.md#quick-start)
@@ -179,8 +179,8 @@ Factory の添付ファイルと保持したネイティブ会話履歴は、接
 ## 開発
 
 ```bash
-git clone https://github.com/usergood/herdr-web-ui.git
-cd herdr-web-ui
+git clone https://github.com/usergood/saurons-eye.git
+cd saurons-eye
 bun install
 
 bun run server      # API + WebSocket on :7317

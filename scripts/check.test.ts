@@ -81,7 +81,7 @@ describe("isolate", () => {
     expect(() => isolate({ HERDR_TEST_LIVE: "1" }, scratch())).toThrow("HERDR_TEST_LIVE");
     // as a shell inside one of the user's panes has them
     const { env } = isolate({ HERDR_SOCKET: "/live.sock", HERDR_SOCKET_PATH: "/live.sock", HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1", HERDR_TAB_ID: "w1:t1", HERDR_WORKSPACE_ID: "w1", HERDR_WEB_HERDR_BIN: "/bin/herdr" }, scratch());
-    expect(Object.keys(env).filter((name) => name.startsWith("HERDR_")).sort()).toEqual(["HERDR_TEST_DISPOSABLE_CONFIG", "HERDR_TEST_SESSION", "HERDR_TEST_SHARDS", "HERDR_WEB_HERDR_BIN", "HERDR_WEB_STATE_DIR"]);
+    expect(Object.keys(env).filter((name) => name.startsWith("HERDR_")).sort()).toEqual(["HERDR_CONFIG_PATH", "HERDR_TEST_DISPOSABLE_CONFIG", "HERDR_TEST_SESSION", "HERDR_TEST_SHARDS", "HERDR_WEB_HERDR_BIN", "HERDR_WEB_STATE_DIR"]);
   });
 });
 

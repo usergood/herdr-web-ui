@@ -721,9 +721,9 @@ function AboutPage({ updates, herdrVersion, bridgesFollow }: { updates: UpdatesM
         <div className="settings-row">
           <div className="settings-row-text">
             <span className="settings-label">Saurons eye</span>
-            <a className="settings-link" href="https://github.com/usergood/herdr-web-ui" target="_blank" rel="noreferrer">usergood/herdr-web-ui</a>
+            <a className="settings-link" href="https://github.com/usergood/saurons-eye" target="_blank" rel="noreferrer">usergood/saurons-eye</a>
           </div>
-          <a className="btn" href="https://github.com/usergood/herdr-web-ui" target="_blank" rel="noreferrer"><Star aria-hidden="true" />{t("Star on GitHub")}</a>
+          <a className="btn" href="https://github.com/usergood/saurons-eye" target="_blank" rel="noreferrer"><Star aria-hidden="true" />{t("Star on GitHub")}</a>
         </div>
       </SettingsGroup>
     </>

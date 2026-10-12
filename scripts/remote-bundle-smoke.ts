@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { writeTestHerdrConfig } from "./herdr-test-config.ts";
 const windows = process.platform === "win32";
 // macOS's per-user TMPDIR is long enough to push herdr's socket names past the 104-byte sun_path limit
 const root = realpathSync(mkdtempSync(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "herdr-bundle-smoke-")));
@@ -12,6 +13,7 @@ const home = join(root, "home");
 // installer left (the stable alias under %LOCALAPPDATA%), or HERDR_WEB_HERDR_BIN.
 const xdg = join(home, "xdg");
 mkdirSync(bundle); mkdirSync(home);
+const config = writeTestHerdrConfig(join(xdg, "herdr"));
 const bun = join(bundle, windows ? "bin/bun.exe" : "bin/bun");
 const herdr = windows ? process.env["HERDR_WEB_HERDR_BIN"] || join(process.env["LOCALAPPDATA"] ?? "", "Programs/Herdr/bin/herdr.exe") : join(bundle, "bin/herdr");
 if (windows) assert.ok(existsSync(herdr), `herdr is not installed at ${herdr}`);
@@ -21,7 +23,7 @@ if (windows) assert.ok(existsSync(herdr), `herdr is not installed at ${herdr}`);
 const delimiter = windows ? ";" : ":";
 const path = (process.env["PATH"] ?? "").split(delimiter).filter((dir) => dir && !existsSync(join(dir, windows ? "node.exe" : "node"))).join(delimiter);
 // the pane's shell is a plain one: a login shell with an empty HOME may stop to ask how it should be set up
-const env = { ...process.env, ...(windows ? {} : { SHELL: "/bin/sh" }), PATH: path, HOME: home, USERPROFILE: home, APPDATA: xdg, XDG_CONFIG_HOME: xdg, HERDR_REMOTE_SESSION: "smoke", HERDR_WEB_HERDR_BIN: herdr };
+const env = { ...process.env, ...(windows ? {} : { SHELL: "/bin/sh" }), PATH: path, HOME: home, USERPROFILE: home, APPDATA: xdg, XDG_CONFIG_HOME: xdg, HERDR_CONFIG_PATH: config, HERDR_REMOTE_SESSION: "smoke", HERDR_WEB_HERDR_BIN: herdr };
 if (!windows) assert.equal(Bun.which("node", { PATH: path }), null, "the smoke runs with no Node on PATH");
 let child: ReturnType<typeof Bun.spawn> | undefined;
 try {

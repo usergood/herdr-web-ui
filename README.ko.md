@@ -107,7 +107,7 @@ PowerShell에서 Windows x64용으로 설치하려면:
 필요한 도구가 이미 있다면 플러그인만 설치해도 됩니다.
 
 ```bash
-herdr plugin install usergood/herdr-web-ui --ref <reviewed-ref>
+herdr plugin install usergood/saurons-eye --ref <reviewed-ref>
 ```
 
 herdr가 실행 중인 상태에서 **[localhost:7317](http://localhost:7317)**을 여세요. pane을 고르거나 **New workspace**로 에이전트를 시작합니다. 폰에서 쓰려면 설치 스크립트가 보여 준 QR 코드를 찍고 앱을 홈 화면에 추가하세요. [빠른 시작 →](docs/guide.md#quick-start)
@@ -181,8 +181,8 @@ Factory 첨부 파일과 보존한 네이티브 대화 기록은 연결 서버�
 ## 개발
 
 ```bash
-git clone https://github.com/usergood/herdr-web-ui.git
-cd herdr-web-ui
+git clone https://github.com/usergood/saurons-eye.git
+cd saurons-eye
 bun install
 
 bun run server      # API + WebSocket, :7317

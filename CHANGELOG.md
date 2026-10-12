@@ -11,49 +11,52 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 - Add a repeatable Playwright walkthrough with desktop/phone screenshots in the README and
   gallery for the fork's Inbox, notes, attachments, Project references, specifications, Tickets,
   review and recovery.
-  ([#8](https://github.com/usergood/herdr-web-ui/pull/8) by @usergood)
+  ([#8](https://github.com/usergood/saurons-eye/pull/8) by @usergood)
 - Add private Machine account profiles, native subscription/OAuth setup, managed GitHub SSH
   keys and Project bindings with frozen Run/worker/check execution scopes and account verification.
-  ([#9](https://github.com/usergood/herdr-web-ui/pull/9) by @usergood)
+  ([#9](https://github.com/usergood/saurons-eye/pull/9) by @usergood)
 - Codex Project references share versioned guides and pictures outside Git, with an editable
   documentation template, pinned Run/worker context and prepared prompts for manual sessions.
-  ([#3](https://github.com/usergood/herdr-web-ui/pull/3) by @usergood)
+  ([#3](https://github.com/usergood/saurons-eye/pull/3) by @usergood)
 - Saurons eye adds a durable Inbox, Projects, chats and artifacts, version-scoped specification
   and Ticket approvals, isolated native worktrees, retained checks and review findings,
   authenticated machine preparation, scoped retrospectives and verified backup copies.
-  ([#2](https://github.com/usergood/herdr-web-ui/pull/2) by @usergood)
+  ([#2](https://github.com/usergood/saurons-eye/pull/2) by @usergood)
 
 ### Changed
+- Rename the repository to Saurons eye and harden CI: fast automatic checks, explicit full
+  validation, immutable Actions, private Herdr test configuration, verified prerequisites,
+  short failure-artifact retention and separately controlled publication.
 - Integrate upstream v0.4.7: deep links, plan views, Markdown/Mermaid, mobile/terminal
   improvements, native readers, usage pacing and push/input fixes. Preserve Saurons eye factory,
   reference/account workflows and owner-configured services; keep telemetry removed.
-  ([#11](https://github.com/usergood/herdr-web-ui/pull/11) by @usergood)
+  ([#11](https://github.com/usergood/saurons-eye/pull/11) by @usergood)
 - Use bundled Saurons eye app, maskable, touch, favicon and notification artwork, with matching
   installed-app/browser names and fresh asset/service-worker cache versions.
-  ([#5](https://github.com/usergood/herdr-web-ui/pull/5) by @usergood)
+  ([#5](https://github.com/usergood/saurons-eye/pull/5) by @usergood)
 - Integrate upstream v0.4.6: native split-pane layouts, terminal-history search and scrollbar,
   tab reordering and pane moves, cross-PC palette search, plugin actions, agent integrations,
   compressed responses and the upstream input/security fixes. Preserve Saurons eye branding,
   factory workflows, Project references and owner-configured service/update sources.
-  ([#4](https://github.com/usergood/herdr-web-ui/pull/4) by @usergood)
+  ([#4](https://github.com/usergood/saurons-eye/pull/4) by @usergood)
 - Integrate upstream v0.4.4 and v0.4.5, including read-only pane watching, Claude background-task
   fixes, preserved chat code selections, source-bound verification reports and the dependency fix.
-  ([#2](https://github.com/usergood/herdr-web-ui/pull/2) by @usergood)
+  ([#2](https://github.com/usergood/saurons-eye/pull/2) by @usergood)
 - Name the repository Saurons eye in all four READMEs, credit the herdr-web-ui fork origin and
   document the added factory features, setup and native-provider requirements.
-  ([#2](https://github.com/usergood/herdr-web-ui/pull/2) by @usergood)
+  ([#2](https://github.com/usergood/saurons-eye/pull/2) by @usergood)
 - Saurons eye removes upstream install/update telemetry, automatic external fonts/media/statistics,
   and installer account queries. External services require owner enablement/configuration;
   remote runtimes require an explicit/local manifest and installers require a reviewed ref.
-  ([#1](https://github.com/usergood/herdr-web-ui/pull/1) by @usergood)
+  ([#1](https://github.com/usergood/saurons-eye/pull/1) by @usergood)
 
 ### Fixed
 - Keep the phone Inbox control within the header beside upstream's plan button, preventing
   viewport expansion and offset Settings taps on narrow phones.
-  ([#11](https://github.com/usergood/herdr-web-ui/pull/11) by @usergood)
+  ([#11](https://github.com/usergood/saurons-eye/pull/11) by @usergood)
 - Let Chrome fetch the installation manifest through authenticated reverse proxies by carrying
   the page's login credentials; preserve authentication for the application and its APIs.
-  ([#5](https://github.com/usergood/herdr-web-ui/pull/5) by @usergood)
+  ([#5](https://github.com/usergood/saurons-eye/pull/5) by @usergood)
 
 ## [0.4.7] - 2026-10-12
 

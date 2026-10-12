@@ -62,7 +62,7 @@ It starts the plugin when herdr runs. Phone access stays optional: use the **Pho
 ## 3A. Install as a herdr plugin
 
 ```bash
-herdr plugin install usergood/herdr-web-ui --ref <reviewed-ref> --yes
+herdr plugin install usergood/saurons-eye --ref <reviewed-ref> --yes
 ```
 
 herdr clones the repository, runs `bun install` and `bun run build`, then registers the plugin. This
@@ -112,8 +112,8 @@ herdr plugin action invoke usergood.saurons-eye.start
 ## 3B. Install from source
 
 ```bash
-git clone https://github.com/usergood/herdr-web-ui.git
-cd herdr-web-ui
+git clone https://github.com/usergood/saurons-eye.git
+cd saurons-eye
 bun install
 bun run start
 ```
@@ -202,7 +202,7 @@ The [user guide](docs/guide.md#configuration) lists the rest.
 - Settings → **About** → **Update and restart** when a new release (`vX.Y.Z`) is out. It works for
   both install methods. The new
   version is built separately and the app restarts only if the build and health check pass.
-- Plugin alternative: `herdr plugin install usergood/herdr-web-ui --ref <reviewed-ref> --yes` again. It replaces the
+- Plugin alternative: `herdr plugin install usergood/saurons-eye --ref <reviewed-ref> --yes` again. It replaces the
   checkout; restart the plugin afterwards.
 - Source alternative: `git pull` on `main`, then restart `bun run start`. The in-app updater only
   offers published releases (`vX.Y.Z` tags); `main` can be ahead of the latest release.

@@ -7,7 +7,7 @@ The first bounded slice reconciles the actual installed deployment and produces 
 ## Settled for this planning pass
 
 - The plugin display name is **Saurons eye** and its slug is `saurons-eye`, as chosen by the owner.
-- The fork is `usergood/herdr-web-ui`, checked out under `/home/kurri/Personal/herdr-web-ui`.
+- The fork is `usergood/saurons-eye`, checked out under `/home/kurri/Personal/herdr-web-ui`.
 - The local source baseline is `b87d9d50019cdb87422415f7650ad29285a832cc`, package `0.4.3`; it is not asserted to be the installed server version.
 - Codex is primary; Claude Code, OpenCode and extensible provider adapters remain requested scope.
 - Skill sources use `v1.3.1` / `24fe0ef7737efae15c87225755e9f6f5965e4888`, with support files and agent metadata pinned together.
@@ -46,7 +46,7 @@ Slice 0 is not complete in this local pass: installed-deployment discovery, loca
 | Decision | Proposed default or choices | When it must be settled |
 | --- | --- | --- |
 | Target deployment/access | Owner identifies the server, installed checkout/service/state and domain, or confirms this host; discover facts read-only after that | Before P01 can reconcile the live installation |
-| Fork Project tracker | GitHub Issues in `usergood/herdr-web-ui`; alternatively owner-selected local/Other convention | Owner-invoked setup, before specification/Ticket publication |
+| Fork Project tracker | GitHub Issues in `usergood/saurons-eye`; alternatively owner-selected local/Other convention | Owner-invoked setup, before specification/Ticket publication |
 | New app-only Project tracker | App-native Other tracker with a real stable-ID CLI/API; reuse existing tracker per Project | Before tracker-dependent factory enablement |
 | Domain vocabulary/layout | Confirm Implementation/Ticket/Run definitions; single-context root glossary for this fork | Before committing API vocabulary or writing setup pointers |
 | Specification acceptance and Done | Explicit spec acceptance; Done means accepted implementation-complete by default, with PR/merge/release outcome shown separately; stricter Project rules take precedence | Before admission and board completion contracts |

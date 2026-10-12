@@ -34,6 +34,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, createWriteStream, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { writeTestHerdrConfig } from "./herdr-test-config.ts";
 import { connect, createServer } from "node:net";
 import { availableParallelism, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -157,6 +158,7 @@ export function isolate(base: Record<string, string | undefined>, kept: string |
   for (const [name, value] of Object.entries(base)) if (value !== undefined && !LIVE_HERDR.includes(name)) env[name] = value;
   Object.assign(env, {
     XDG_CONFIG_HOME: config,
+    HERDR_CONFIG_PATH: writeTestHerdrConfig(join(config, "herdr")),
     [DISPOSABLE_CONFIG_ENV]: config,
     XDG_STATE_HOME: join(dir, "state"),
     HERDR_WEB_STATE_DIR: join(dir, "web-state"),

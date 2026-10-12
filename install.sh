@@ -3,8 +3,8 @@
 #
 #   HERDR_WEB_UI_REF=<reviewed commit or tag> sh ./install.sh
 #
-# 1. Installs what is missing, for this user only and without sudo: herdr (its own installer, into
-#    ~/.local/bin), Bun (its own installer, into ~/.bun) and Node 22 (the official build, checked
+# 1. Installs what is missing, for this user only and without sudo: checksum-pinned herdr into
+#    ~/.local/bin, Bun into ~/.bun and Node 22 (the official build, checked
 #    against its published SHA-256, into ~/.local/share/saurons-eye/node).
 # 2. Installs herdr web ui as a herdr plugin, so it starts with herdr and Settings → Updates keeps it
 #    current, and starts it now when herdr is running.
@@ -14,7 +14,7 @@
 #   HERDR_WEB_UI_REF=<branch or tag>   required reviewed commit or tag to install
 set -eu
 
-REPO="usergood/herdr-web-ui"
+REPO="usergood/saurons-eye"
 PLUGIN="usergood.saurons-eye"
 BIN_DIR="$HOME/.local/bin"
 NODE_DIR="$HOME/.local/share/saurons-eye/node"
@@ -33,6 +33,49 @@ at_least() {
     for (i = 1; i <= 3; i++) { if (h[i] + 0 > w[i] + 0) exit 0; if (h[i] + 0 < w[i] + 0) exit 1 } exit 0 }'
 }
 sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | awk '{ print $1 }'; }
+
+fetch_pinned() {
+  curl -fsSL --retry 3 --connect-timeout 10 --max-time 120 "$1" -o "$3"
+  [ "$(sha256 "$3")" = "$2" ] || fail "prerequisite checksum mismatch; nothing from this download was executed"
+}
+
+install_herdr() {
+  case "$platform" in
+    linux-x64) herdr_asset=herdr-linux-x86_64; herdr_sha=18a8dc65f1c2fa485884344356dea1cfd911c6f06cf46fa78e193f4087f4dba7 ;;
+    linux-arm64) herdr_asset=herdr-linux-aarch64; herdr_sha=4de7aa3e25678812e92960de64f7c2aaa1bca1f0f80a3c5e559837e231e1f5c0 ;;
+    darwin-x64) herdr_asset=herdr-macos-x86_64; herdr_sha=db62d548ff3e832b087a96b1894a08d26be3905f1830309cd556783f215d4054 ;;
+    darwin-arm64) herdr_asset=herdr-macos-aarch64; herdr_sha=5173a3e0ae42d5d1ab7ebfa5d5e6329f7c3d23f8e1a3677c7ce3231da2884157 ;;
+    *) fail "unsupported prerequisite platform" ;;
+  esac
+  herdr_scratch=$(mktemp -d)
+  trap 'rm -rf "$herdr_scratch"' EXIT INT TERM
+  fetch_pinned "https://github.com/herdrdev/herdr/releases/download/v0.9.3/$herdr_asset" "$herdr_sha" "$herdr_scratch/herdr"
+  chmod 755 "$herdr_scratch/herdr"
+  mkdir -p "$BIN_DIR"
+  mv "$herdr_scratch/herdr" "$BIN_DIR/herdr"
+  rm -rf "$herdr_scratch"
+}
+
+install_bun() {
+  need unzip
+  case "$platform" in
+    linux-x64) bun_asset=bun-linux-x64-baseline; bun_sha=c678040f14fe0440eb839d37cbd0ce4c051a32da72806ac97de6a6aab6bf728f ;;
+    linux-arm64) bun_asset=bun-linux-aarch64; bun_sha=54328bbc2d9c8e0c9f892c544d66c57a83b84139e34909e5ee81758f1ac8fda7 ;;
+    darwin-x64) bun_asset=bun-darwin-x64-baseline; bun_sha=bad5bbd6cf14d0980d115f5954c9ff904df619d5e994d2da1ffccd3f316300b0 ;;
+    darwin-arm64) bun_asset=bun-darwin-aarch64; bun_sha=90987a3a16d7db556d886ac3d551e7b6d3edf0a1cf43acaed622e8676be1d12f ;;
+    *) fail "unsupported prerequisite platform" ;;
+  esac
+  bun_scratch=$(mktemp -d)
+  trap 'rm -rf "$bun_scratch"' EXIT INT TERM
+  fetch_pinned "https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/$bun_asset.zip" "$bun_sha" "$bun_scratch/bun.zip"
+  unzip -q "$bun_scratch/bun.zip" -d "$bun_scratch"
+  chmod 755 "$bun_scratch/$bun_asset/bun"
+  mkdir -p "$HOME/.bun/bin" "$BIN_DIR"
+  mv "$bun_scratch/$bun_asset/bun" "$HOME/.bun/bin/bun"
+  [ -e "$BIN_DIR/bun" ] || ln -s "$HOME/.bun/bin/bun" "$BIN_DIR/bun"
+  PATH="$HOME/.bun/bin:$PATH"; export PATH
+  rm -rf "$bun_scratch"
+}
 
 install_node() {
   case "$platform" in
@@ -107,7 +150,7 @@ main() {
 
   if ! command -v herdr >/dev/null 2>&1; then
     say "installing herdr (https://herdr.dev) into $BIN_DIR"
-    curl -fsSL https://herdr.dev/install.sh | sh
+    install_herdr
     command -v herdr >/dev/null 2>&1 || fail "herdr did not install; see https://herdr.dev/docs/install/"
     installed_here="$installed_here herdr"
   fi
@@ -118,13 +161,13 @@ main() {
   if command -v bun >/dev/null 2>&1; then
     bun_version=$(bun --version)
     if ! at_least 1.4.0 "$bun_version"; then
-      say "updating Bun $bun_version to the latest"
-      bun upgrade </dev/null || fail "could not update Bun $bun_version; update it to 1.4 or newer and run this again"
+      say "updating Bun $bun_version to pinned 1.4.2"
+      install_bun
     fi
   else
     need unzip
     say "installing Bun (https://bun.sh) into ~/.bun"
-    curl -fsSL https://bun.sh/install | bash
+    install_bun
     command -v bun >/dev/null 2>&1 || fail "Bun did not install; see https://bun.sh"
     # Bun's installer adds ~/.bun/bin to a shell's rc file only when it can tell which shell, and
     # herdr runs the app with the PATH it was started with: next to herdr, it is found either way

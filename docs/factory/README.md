@@ -1,6 +1,6 @@
 # Saurons eye
 
-**Saurons eye** (`saurons-eye`) extends the `usergood/herdr-web-ui` fork with durable ideas, Projects, Implementations and a manual specification-to-delivery workflow. The owner requested the complete implementation and confirmed the public HTTP/API and real browser testing seams. The earlier planning-only boundary is historical.
+**Saurons eye** (`saurons-eye`) extends the `usergood/saurons-eye` fork with durable ideas, Projects, Implementations and a manual specification-to-delivery workflow. The owner requested the complete implementation and confirmed the public HTTP/API and real browser testing seams. The earlier planning-only boundary is historical.
 
 Start with [runtime.md](runtime.md) for configuration, execution, review, remote-machine onboarding and recovery. The [specification](specification.md) remains the complete product contract. Production service changes, external publication and deployment retain their separate owner scope.
 

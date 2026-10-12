@@ -34,7 +34,7 @@ try {
   // Docker's official ECR mirror avoids Docker Hub's shared-runner anonymous pull limit.
   await docker(["run", "--rm", "-d", "--name", name, "-p", "127.0.0.1::22", "public.ecr.aws/docker/library/debian:bookworm-slim", "sleep", "infinity"]);
   console.log("Preparing a disposable SSH PC (OpenSSH + Python, no Bun/Node/build tools)…");
-  await docker(["exec", name, "sh", "-c", "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server python3 >/dev/null && useradd -m -s /bin/sh testpc && mkdir -p /run/sshd"]);
+  await docker(["exec", name, "sh", "-c", "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server python3 >/dev/null && useradd -m -s /bin/sh testpc && mkdir -p /run/sshd /home/testpc/.config/herdr && printf '[update]\\nversion_check = false\\nmanifest_check = false\\n' > /home/testpc/.config/herdr/config.toml && chmod 600 /home/testpc/.config/herdr/config.toml && chmod 700 /home/testpc/.config /home/testpc/.config/herdr && chown -R testpc:testpc /home/testpc/.config"]);
   await docker(["exec", "-i", name, "chpasswd"], `testpc:${password}\n`);
   await docker(["exec", "-d", name, "/usr/sbin/sshd", "-D", "-e", "-o", "UsePAM=no"]);
   const mapping = await docker(["port", name, "22/tcp"]);
