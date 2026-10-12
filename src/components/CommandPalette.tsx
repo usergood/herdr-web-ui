@@ -22,6 +22,7 @@ import { tabLabel } from "../lib/tabName.ts";
 import { useT } from "../lib/i18n.ts";
 import { useFocusTrap } from "../lib/useFocusTrap.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
+import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { useWorktreeBranches } from "../lib/useWorktreeBranches.ts";
 import { worktreeLabel } from "../lib/worktreeName.ts";
@@ -145,6 +146,7 @@ export function CommandPalette({ open, onClose, machines, onSelect, snapshot, on
   const surface = useFocusTrap<HTMLElement>(open, { initialFocus: inputRef, shouldRestore: () => !navigated.current });
   // a plugin action under way keeps the palette open for its answer: no drag closes it meanwhile
   useSheetSwipe(surface, running !== null ? null : onClose);
+  usePhoneSheetBack(() => { if (running !== null) return false; onClose(); }, open);
   const resultsRef = useRef<HTMLDivElement>(null);
   // a filter letter pressed over the list keeps the keyboard in the list: the first row takes the
   // focus once the filter is drawn, also when the letter named the filter already shown

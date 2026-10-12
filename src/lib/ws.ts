@@ -5,6 +5,8 @@ type Handler = (message: ServerMessage) => void;
 
 /** A submit was delivered, accepted into the bridge's pending queue, or refused. */
 /** `draft`: an input_draft refusal's one-row Claude draft, which a send with clearDraft may clear */
+/** immediate: typed now; queue: waits for the next turn; hold: waits for the user's Send now */
+export type SubmitDelivery = "immediate" | "queue" | "hold";
 export type SubmitResult = { ok: true; pending?: PendingMessage } | { ok: false; code: string; message: string; draft?: string };
 
 /** Right after a reconnect the snapshot that says what the server supports may still be on its way. */
@@ -61,6 +63,12 @@ export class HerdrSocket {
   private retries = 0;
   private reconnectTimer: number | null = null;
   private disposed = false;
+  private wakeListening = false;
+  /** a page shown again or a network back: a reconnect waiting out its backoff runs now */
+  private readonly onWake = (): void => {
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+    this.wake();
+  };
   private mode: ClientRole = "interact";
   /** whether the page is in use (`presence`), as last told; null until the page says */
   private presence: boolean | null = null;
@@ -86,6 +94,7 @@ export class HerdrSocket {
 
   connect(): void {
     if (this.disposed) return;
+    this.listenForWake();
     if (this.socket && (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING)) {
       return;
     }
@@ -191,6 +200,27 @@ export class HerdrSocket {
     socket.addEventListener("error", () => {
       socket.close();
     });
+  }
+
+  private listenForWake(): void {
+    if (this.wakeListening || typeof window.addEventListener !== "function") return;
+    this.wakeListening = true;
+    window.addEventListener("online", this.onWake);
+    window.addEventListener("pageshow", this.onWake);
+    if (typeof document !== "undefined") document.addEventListener("visibilitychange", this.onWake);
+  }
+
+  /**
+   * A phone that slept or went to the background comes back with its socket closed and a
+   * reconnect timer that may have backed off to its 5s cap. Waking skips that wait and starts
+   * again from the shortest delay. A stopped output stays stopped: only an attach resumes it.
+   */
+  wake(): void {
+    if (this.disposed || this.outputStopped || this.reconnectTimer === null) return;
+    window.clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    this.retries = 0;
+    this.connect();
   }
 
   private scheduleReconnect(): void {
@@ -349,6 +379,11 @@ export class HerdrSocket {
     return this.connected && this.mode === "interact" && this.features.has("submit") && this.features.has("pending-input");
   }
 
+  /** Whether the bridge can keep a pending message for Send now alone (`delivery: "hold"`). */
+  canHoldMessages(): boolean {
+    return this.canQueueMessages() && this.features.has("pending-hold");
+  }
+
   sendInput(paneId: string, text: string): boolean {
     if (!this.canInput(paneId)) return false;
     try { this.rawSend({ type: "input", pane_id: paneId, text }); return true; } catch { return false; }
@@ -365,13 +400,15 @@ export class HerdrSocket {
    */
   /** `typed`: from the terminal's input line, typed into the pane like the keyboard (see ClientMessage).
    * `clearDraft`: an immediate send over the draft an input_draft refusal named (ClientMessage `clear_draft`) */
-  submit(paneId: string, text: string, payload: string, typed = false, delivery: "immediate" | "queue" = "immediate", clearDraft?: string): Promise<SubmitResult> | null {
+  submit(paneId: string, text: string, payload: string, typed = false, delivery: SubmitDelivery = "immediate", clearDraft?: string): Promise<SubmitResult> | null {
     const socket = this.socket;
     if (!this.connected || socket === null || this.mode === "observe") return null;
     return (async (): Promise<SubmitResult> => {
       await Promise.race([this.snapshotSeen, new Promise((resolve) => window.setTimeout(resolve, SNAPSHOT_WAIT_MS))]);
       if (!this.connected || this.socket !== socket) return DISCONNECTED;
       if (this.mode === "observe") return { ok: false, code: "read_only", message: "Observe connections cannot submit messages." };
+      // A hold never authorizes automatic delivery on an older bridge.
+      if (delivery === "hold" && !this.canHoldMessages()) return { ok: false, code: "pending_hold_unsupported", message: "Update this PC to hold messages. Nothing was sent." };
       if (delivery === "queue" && !this.canQueueMessages()) return { ok: false, code: "pending_input_unsupported", message: "Update this PC to queue messages." };
       if (!this.features.has("submit")) {
         if (clearDraft !== undefined) return { ok: false, code: "unsupported", message: "Update this PC to clear a terminal draft before sending. Nothing was sent." };
@@ -379,7 +416,7 @@ export class HerdrSocket {
         return { ok: true };
       }
       const id = this.nextSubmit++;
-      return this.submitRequest({ type: "submit", id, pane_id: paneId, text, payload, ...(typed ? { typed: true } : {}), ...(delivery === "queue" ? { delivery: "queue" as const } : {}),
+      return this.submitRequest({ type: "submit", id, pane_id: paneId, text, payload, ...(typed ? { typed: true } : {}), ...(delivery !== "immediate" ? { delivery } : {}),
         ...(clearDraft !== undefined ? { clear_draft: clearDraft } : {}) });
     })();
   }
@@ -400,7 +437,7 @@ export class HerdrSocket {
   /** Only an acknowledgement callback is retained, never a frame to resend. */
   private submitRequest(message: Extract<ClientMessage, { type: "submit" | "pending-action" }>): Promise<SubmitResult> {
     const id = message.id;
-    this.requests.set(id, { type: message.type, paneId: message.pane_id, ...(message.type === "submit" ? { queued: message.delivery === "queue" } : { pendingId: message.pending_id }) });
+    this.requests.set(id, { type: message.type, paneId: message.pane_id, ...(message.type === "submit" ? { queued: message.delivery === "queue" || message.delivery === "hold" } : { pendingId: message.pending_id }) });
     const result = new Promise<SubmitResult>((resolve) => {
       this.submits.set(id, resolve);
       window.setTimeout(() => {
@@ -473,6 +510,12 @@ export class HerdrSocket {
     this.disposed = true;
     if (this.reconnectTimer !== null) window.clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+    if (this.wakeListening) {
+      window.removeEventListener("online", this.onWake);
+      window.removeEventListener("pageshow", this.onWake);
+      if (typeof document !== "undefined") document.removeEventListener("visibilitychange", this.onWake);
+      this.wakeListening = false;
+    }
     this.socket?.close();
     this.socket = null;
     this.settleSubmits(DISCONNECTED);

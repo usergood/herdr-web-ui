@@ -212,7 +212,7 @@ const RESTORED_CLEAR_GAP_MS = 200;
 const RESTORED_CLEAR_SETTLE_MS = 300;
 /** what a send must still have of its deadline before the copy is cleared: the clear, the box read again, then the send */
 const RESTORED_CLEAR_RESERVE_MS = 2_000;
-const SERVER_FEATURES: ServerFeature[] = ["submit", "pending-input", "secret-input", "input-ready", "take-over", "watch", "conversation-watch"];
+const SERVER_FEATURES: ServerFeature[] = ["submit", "pending-input", "pending-hold", "secret-input", "input-ready", "take-over", "watch", "conversation-watch"];
 
 /** Bind addresses only this machine can reach, so an unset token is nobody else's business. */
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "::1"]);
@@ -2595,7 +2595,7 @@ export function createServer(
       }
 
       // static client - public even when the API is gated, so the login UI can load
-      return serveStatic(pathname);
+      return serveStatic(pathname, request.headers.get("accept-encoding"));
       })());
     },
 
@@ -3071,13 +3071,14 @@ export function createServer(
                 send(client, { type: "error", code: "invalid_submit", message: "id must be an integer, pane_id, text and payload strings" });
                 break;
               }
-              if ((message.delivery !== undefined && message.delivery !== "immediate" && message.delivery !== "queue")
-                || (message.delivery === "queue" && message.typed !== undefined && message.typed !== false)) {
-                result(false, "invalid_delivery", "Use immediate delivery, or queue a chat message");
+              const waits = message.delivery === "queue" || message.delivery === "hold";
+              if ((message.delivery !== undefined && message.delivery !== "immediate" && !waits)
+                || (waits && message.typed !== undefined && message.typed !== false)) {
+                result(false, "invalid_delivery", "Use immediate delivery, or queue or hold a chat message");
                 break;
               }
               if (message.clear_draft !== undefined && (typeof message.clear_draft !== "string" || !message.clear_draft
-                || message.delivery === "queue" || (message.typed !== undefined && message.typed !== false))) {
+                || waits || (message.typed !== undefined && message.typed !== false))) {
                 result(false, "invalid_delivery", "Clear a terminal draft only for a chat message sent at once");
                 break;
               }
@@ -3092,11 +3093,11 @@ export function createServer(
               }
               const arrivedAt = Date.now();
               try {
-                if (message.delivery === "queue") {
+                if (waits) {
                   let book = pendingRequests.get(client);
                   if (!book) { book = new PendingRequestBook((reply: SubmitReply) => reply.pending !== undefined && pending.retains(client, reply.pending.id)); pendingRequests.set(client, book); }
                   // a digest, so a receipt kept for replay never holds a large request's bytes
-                  const fingerprint = new Bun.CryptoHasher("sha256").update(JSON.stringify([message.pane_id, message.text, message.payload])).digest("hex");
+                  const fingerprint = new Bun.CryptoHasher("sha256").update(JSON.stringify([message.pane_id, message.text, message.payload, message.delivery])).digest("hex");
                   const previous = book.get(message.id, fingerprint);
                   const lease = previous ? null : pendingLease(client, message.pane_id);
                   const reply = previous ?? book.run(message.id, fingerprint, () => serialize(message.pane_id, async (): Promise<SubmitReply> => {
@@ -3110,10 +3111,12 @@ export function createServer(
                       // A request that raced the turn's finish still needs cancellable
                       // paste + Enter; agent.prompt commits its key inside herdr. With a message
                       // already waiting its turn here, this one takes its place behind it instead.
-                      if (!pending.waiting(message.pane_id)) return dispatchPendingText(client, message.pane_id, text, lease!, context.identity, false, arrivedAt);
+                      // A held message is never typed by arriving after the turn: it waits for Send now.
+                      if (message.delivery === "queue" && !pending.waiting(message.pane_id)) return dispatchPendingText(client, message.pane_id, text, lease!, context.identity, false, arrivedAt);
                     }
                     pending.observe(message.pane_id, context.pane.agent_status, mark);
-                    const item = pending.enqueue(client, message.pane_id, message.id, text, lease!, context.identity);
+                    // hold: kept for the owner's Send now, never sent by the turn's end
+                    const item = pending.enqueue(client, message.pane_id, message.id, text, lease!, context.identity, message.delivery === "hold");
                     return { ok: true, pending: item.message };
                   }).catch((error): SubmitReply => ({ ok: false, ...pendingFault(error) })));
                   const answer = await reply;

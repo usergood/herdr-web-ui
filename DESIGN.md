@@ -873,26 +873,19 @@ One set for both themes: the card is island black wherever it shows.
 - An OmO or omp `task` row opens to the tasks it starts (`.chat-task-calls`): each summary in
   `--text`, the agent as a hairline mono pill, the prompt in the bounded mono input box.
 
-### Plan (`.plan-button`, `.plan-dialog`, `.plan-count`)
-- The header's plan button sits after the view switch, in both lenses: the list-checks glyph
-  (`--status-working`, `--status-done` once every step is done) and `done/total` in tabular
-  figures, on the `--bg-elevated` hairline chip the switch uses. The sidebar's agent row repeats the
-  count beside the background count, in its quiet mono figures and with no box (`.plan-count`).
-  Appearance's **Plan count in the header** (on by default) takes the header's button away when off;
-  the sidebar's count stays.
-- The plan opens as a modal (a bottom sheet under 641px): title, the pane's name (hidden on a
-  phone), a Flow / Steps switch and a close button. Under them `N of M done` and, in
-  `--status-working`, what the running step does now.
-- Flow (`lib/plan.ts`): waves top to bottom, a wave's boxes side by side and centred, a curve
-  with an arrowhead from each step waited on. A box is a step's name (two lines at most, a status
-  glyph before it) over a dim meta line (state · time · teammate). Done: solid `--status-done`
-  edge on its tint; running: a 2px `--status-working` edge on its tint; waiting: a dashed hairline
-  and dim text. A curve out of a done step is solid `--status-done`; one still waiting is a dim
-  dashed line. A wave wider than the sheet scrolls sideways inside it, never the page.
-- Appearance's **Plan flow** is on by default. Off, the plan opens as Steps alone and the
-  Flow / Steps switch is not drawn.
-- Steps: the same steps in wave order, a status glyph, the name, what a running step does now and
-  the meta line.
+### Plan (`.bg-tasks-plan`, `.bg-step`, `.plan-count`)
+- A pane's plan has no control of its own: it shares the composer's background-task chip
+  (`.bg-tasks-toggle`, beside the add button in the input card's last row). With a plan the chip
+  starts with the list-checks glyph, the word **Plan** and `done/total` in tabular figures; running
+  background tasks follow after a hairline as their glyph and number. The chip keeps the working
+  tint while a step or a task is left, and goes quiet once every step is done and nothing runs. A
+  narrow card drops the words and keeps the glyphs and numbers. The chip shows only in the chat
+  lens, and not for an offline PC's cached plan. The sidebar's agent row repeats the count beside
+  the background count, in its quiet mono figures and with no box (`.plan-count`).
+- The chip opens one list above the card: a **Plan** heading with `N of M done`, the steps in wave
+  order (a status glyph, the name, what a running step does now, then a dim state · time · teammate
+  line; a waiting step's name is dim), then a **Background tasks** heading over the tasks list when
+  the pane has tasks to show. The steps are read again every few seconds while the list is open.
 
 ### Background tasks ended (`.chat-task-results`)
 - Where OmO reports background tasks that ended, or a Claude Code subagent ends (its
@@ -1326,6 +1319,8 @@ One set for both themes: the card is island black wherever it shows.
   a state change, not a dialog, so the snap rule above does not apply to it.
 - `prefers-reduced-motion: reduce` removes pulses, drawer/control transitions, sheet rise and drop,
   smooth chat scrolling and settings toggle motion; a drag still follows the finger. State remains legible without animation.
+  One exception: the sidebar's RUN arc stops turning and takes the stepped opacity `pulse` instead,
+  since a held-still arc is how BG reads; nothing moves.
 - Under reduced motion the voice pill swaps its bars for one level bar updated at 4 Hz and drops
   the ring and the morph; the **Recording** label and the timer stay.
 

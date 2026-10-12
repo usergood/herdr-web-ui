@@ -7,11 +7,12 @@ import type { AgentKind } from "../../shared/protocol.ts";
 import { ApiError } from "../lib/api.ts";
 import { AgentPicker, rememberAgent, rememberedAgent } from "./AgentPicker.tsx";
 import { DirectoryBrowser } from "./DirectoryBrowser.tsx";
+import { RecentFolderChips } from "./RecentFolderChips.tsx";
 import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { useT } from "../lib/i18n.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
-import { recentDirectories } from "../lib/recent-directories.ts";
+import { passingFolder, recentDirectories } from "../lib/recent-directories.ts";
 
 /** The dialog as New tab: the workspace the tab joins, whose folder it uses, and the number herdr will give it. */
 export interface NewTabTarget {
@@ -34,6 +35,8 @@ export interface NewSessionDialogProps {
   prefill?: DialogFields | null;
   /** what the fields say, a moment after they change, for the address */
   onDraft?: (fields: DialogFields) => void;
+  /** the PC's open linked worktree checkouts: no project to offer among the recent folders */
+  worktrees?: readonly string[];
 }
 
 export interface DialogFields {
@@ -45,15 +48,15 @@ export interface DialogFields {
 
 /** how long the fields rest before the address follows them: Safari refuses a burst of history writes */
 const DRAFT_MS = 400;
-/** as many recent folders as one row holds on a phone */
-const RECENT_FOLDERS_SHOWN = 3;
+/** recent folders offered: one row a phone swipes sideways; a wider screen fits what one row holds and lists the rest under "+N" */
+const RECENT_FOLDERS_SHOWN = 8;
 
 function directoryBasename(value: string): string {
   const trimmed = value.replace(/\\/g, "/").replace(/\/+$/, "");
   return trimmed.split("/").pop() || value;
 }
 
-export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCreated, machineName, prefill = null, onDraft }: NewSessionDialogProps) {
+export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCreated, machineName, prefill = null, onDraft, worktrees = [] }: NewSessionDialogProps) {
   const t = useT();
   const machineId = useMachineId();
   const { createTab, createWorkspace, fetchAgentKinds } = useMachineApi();
@@ -66,6 +69,8 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
   const [createdPaneId, setCreatedPaneId] = useState<string | null>(null);
   const [browsing, setBrowsing] = useState(false);
   const [recentFolders, setRecentFolders] = useState(() => recentDirectories.read(machineId));
+  // folders kept before worktrees and temporary folders were left out are left out here too
+  const shownFolders = recentFolders.filter((path) => !passingFolder(path, worktrees)).slice(0, RECENT_FOLDERS_SHOWN);
   const firstFieldRef = useRef<HTMLButtonElement>(null);
   const surface = useFocusTrap<HTMLFormElement>(open, { initialFocus: firstFieldRef });
   useSheetSwipe(surface, pending ? null : onClose);
@@ -200,15 +205,10 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
               <span className="field-hint">{t("absolute path or ~/…")}</span>
             </div>
           )}
-          {!tab && recentFolders.length > 0 && <div className="field new-session-recents">
+          {!tab && shownFolders.length > 0 && <div className="field new-session-recents">
             <span className="field-label" id="new-session-recents">{t("Recent folders")}</span>
-            <div className="new-session-folder-chips" role="group" aria-labelledby="new-session-recents">
-              {recentFolders.slice(0, RECENT_FOLDERS_SHOWN).map((path) => <button type="button" className="btn new-session-folder-chip" key={path}
-                disabled={fieldsDisabled} title={path} aria-label={t("Use folder {path}", { path })}
-                onClick={() => { setCwd(path); setBrowsing(false); }}>
-                <FolderOpen aria-hidden="true" /><span>{directoryBasename(path)}</span>
-              </button>)}
-            </div>
+            <RecentFolderChips folders={shownFolders} disabled={fieldsDisabled} labelledBy="new-session-recents" basename={directoryBasename}
+              onPick={(path) => { setCwd(path); setBrowsing(false); }} />
           </div>}
           <label className="field">
             <span className="field-label">{t("Name")}</span>

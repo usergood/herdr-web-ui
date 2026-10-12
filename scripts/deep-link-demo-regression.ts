@@ -472,6 +472,96 @@ try {
         }
       });
       console.log("PASS a pane Back selects under an open modal does not take the keyboard out of it");
+
+      // a phone's ⋯ sheet is an entry of its own: Back closes it and stays on the pane; a sheet
+      // closed by Cancel or by an item leaves no entry behind, so the next Back goes to the pane before
+      const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" });
+      try {
+        await phone.addInitScript(() => localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en" })));
+        const page = await phone.newPage();
+        const errors: string[] = [];
+        page.on("pageerror", (error) => errors.push(error.message));
+        await page.goto(`${url}?ws=${wsOf(INFRA)}&pane=${encodeURIComponent(INFRA)}`);
+        await page.locator(".conn-live").waitFor({ state: "attached" });
+        await waitSelected(page, INFRA);
+        // the sidebar is a closed drawer on a phone: a click on its row in the page is enough here
+        await page.locator(`.agents-sidebar .agent-item[data-pane="${DOCS}"] .agent-select`).evaluate((node) => (node as HTMLElement).click());
+        await waitQuery(page, "pane", DOCS);
+        const length = await page.evaluate(() => history.length);
+        const more = page.locator(".header-more-button");
+        const sheet = page.getByRole("dialog", { name: "More", exact: true });
+        await more.tap();
+        await sheet.waitFor();
+        assert.equal(await page.evaluate(() => history.length), length + 1, "an open sheet is an entry");
+        await page.goBack();
+        await sheet.waitFor({ state: "detached" });
+        assert.equal(await selected(page), DOCS, "Back closed the sheet and left the pane alone");
+        assert.equal((await query(page))["pane"], DOCS);
+        await more.tap();
+        await sheet.waitFor();
+        await sheet.getByRole("button", { name: "Cancel", exact: true }).tap();
+        await sheet.waitFor({ state: "detached" });
+        await page.waitForFunction(() => !Object.keys(history.state ?? {}).includes("herdr-web-ui:sheet"));
+        await page.goBack();
+        await waitSelected(page, INFRA);
+        await page.goForward();
+        await waitSelected(page, DOCS);
+        // an item that opens a dialog on the sheet's address keeps the sheet's entry: the New tab
+        // dialog stays up once the sheet's closing has settled, and Back closes the dialog alone
+        await more.tap();
+        await sheet.waitFor();
+        await sheet.getByRole("button", { name: "New tab", exact: true }).tap();
+        const creation = page.locator(".new-session-modal");
+        await creation.waitFor();
+        await page.waitForTimeout(150);
+        assert.equal(await creation.isVisible(), true, "the New tab dialog stays up after the sheet's entry settles");
+        assert.equal(await page.evaluate(() => history.length), length + 1, "the dialog took the sheet's entry");
+        await page.goBack();
+        await creation.waitFor({ state: "detached" });
+        assert.equal(await selected(page), DOCS, "Back closed the dialog and left the pane alone");
+        // a sheet opened from a sheet (More → Move pane to…) reuses the entry: one Back closes it
+        await more.tap();
+        await sheet.waitFor();
+        await sheet.getByRole("button", { name: "Move pane to…", exact: true }).tap();
+        const move = page.getByRole("dialog", { name: /^Move / });
+        await move.waitFor();
+        await page.waitForTimeout(150);
+        assert.equal(await page.evaluate(() => history.length), length + 1, "the second sheet took the first's entry");
+        await page.goBack();
+        await move.waitFor({ state: "detached" });
+        assert.equal(await selected(page), DOCS, "Back closed the second sheet and left the pane alone");
+        // every other dialog is a sheet on a phone too: the plan and the palette close on Back
+        const API = panes.api;
+        await page.locator(`.agents-sidebar .agent-item[data-pane="${API}"] .agent-select`).evaluate((node) => (node as HTMLElement).click());
+        await waitQuery(page, "pane", API);
+        const atApi = await page.evaluate(() => history.length);
+        // the plan lives in the composer's background-task chip now (#846): its list is a phone dialog too
+        await page.locator(".composer .bg-tasks-toggle").tap();
+        const plan = page.locator(".bg-tasks-menu");
+        await plan.waitFor();
+        assert.equal(await page.evaluate(() => history.length), atApi + 1, "the plan is an entry");
+        await page.goBack();
+        await plan.waitFor({ state: "detached" });
+        assert.equal(await selected(page), API, "Back closed the plan and left the pane alone");
+        await more.tap();
+        await sheet.waitFor();
+        await sheet.getByRole("button", { name: "Command palette", exact: true }).tap();
+        const palette = page.getByRole("dialog", { name: "Command palette" });
+        await palette.waitFor();
+        await page.waitForTimeout(150);
+        assert.equal(await page.evaluate(() => history.length), atApi + 1, "the palette took the More sheet's entry");
+        await page.goBack();
+        await palette.waitFor({ state: "detached" });
+        assert.equal(await selected(page), API, "Back closed the palette and left the pane alone");
+        await page.goBack();
+        await waitSelected(page, DOCS);
+        await page.goBack();
+        await waitSelected(page, INFRA);
+        assert.deepEqual(errors, []);
+      } finally {
+        await phone.close();
+      }
+      console.log("PASS a phone's sheet, plan and palette close on Back without leaving their pane; Cancel, New tab and a second sheet leave no Back step behind");
     } finally {
       await browser.close();
     }

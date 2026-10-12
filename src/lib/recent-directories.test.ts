@@ -1,5 +1,5 @@
-import { expect, it } from "bun:test";
-import { RecentDirectoryStore } from "./recent-directories.ts";
+import { describe, expect, it } from "bun:test";
+import { passingFolder, RecentDirectoryStore } from "./recent-directories.ts";
 
 function fixture() {
   const data = new Map<string, string>();
@@ -86,4 +86,22 @@ it("does not replace unsaved folders with an older value after a quota failure",
   }));
   store.remember("local", ["/new"]);
   expect(store.read("local")).toEqual(["/old", "/new"]);
+});
+
+describe("passingFolder", () => {
+  it("compares a Windows linked root with backslashes to a candidate below it", () => {
+    expect(passingFolder("C:\\work\\app-wt\\src", ["C:\\work\\app-wt"])).toBe(true);
+    expect(passingFolder("C:/work/app-wt", ["C:\\work\\app-wt\\"])).toBe(true);
+    expect(passingFolder("C:/work/app-wt-2", ["C:\\work\\app-wt"])).toBe(false);
+  });
+
+  it("leaves out herdr's worktrees, temporary folders and the PC's linked worktrees", () => {
+    for (const path of ["/home/me/.herdr/worktrees/app/feat-x", "/home/me/.herdr/worktrees", "/tmp", "/tmp/scratch", "/private/tmp/a",
+      "/var/tmp/b", "/var/folders/xy/T/c", "/private/var/folders/xy/T", "C:\\Users\\me\\AppData\\Local\\Temp\\d", "/work/app-wt/src"]) {
+      expect(passingFolder(path, ["/work/app-wt"])).toBe(true);
+    }
+    for (const path of ["/home/me/app", "/home/me/tmpwork", "/srv/tmp-site", "/work/app-wt2", "C:/Users/me/projects/app", "/home/me/.herdr"]) {
+      expect(passingFolder(path, ["/work/app-wt"])).toBe(false);
+    }
+  });
 });

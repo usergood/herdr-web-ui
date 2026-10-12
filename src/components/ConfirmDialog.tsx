@@ -15,6 +15,7 @@ import { ApiError } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
+import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 
 interface Props {
   title: string;
@@ -37,6 +38,7 @@ export function ConfirmDialog({ title, body, confirmLabel, onConfirm, escalation
   const surface = useFocusTrap<HTMLDivElement>(true, { initialFocus: cancel, shouldRestore: () => !done.current });
   const [pending, setPending] = useState(false);
   useSheetSwipe(surface, pending ? null : onClose);
+  usePhoneSheetBack(() => { if (pending) return false; onClose(); });
   const [error, setError] = useState<string | null>(null);
   const [escalated, setEscalated] = useState(false);
 

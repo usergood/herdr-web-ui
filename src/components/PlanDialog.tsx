@@ -9,6 +9,7 @@ import { FLOW, flowLayout, planWaves } from "../lib/plan.ts";
 import { useT } from "../lib/i18n.ts";
 import { useSettings } from "../lib/settings.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
+import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import type { PlanStep, PlanSummary } from "../../shared/protocol.ts";
 
@@ -50,6 +51,7 @@ export function PlanDialog({ paneId, title, onClose }: { paneId: string; title: 
   const closeRef = useRef<HTMLButtonElement>(null);
   const surface = useRef<HTMLElement>(null);
   useSheetSwipe(surface, onClose);
+  usePhoneSheetBack(onClose);
 
   useEffect(() => {
     let alive = true;

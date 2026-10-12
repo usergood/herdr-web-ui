@@ -21,6 +21,7 @@ import { projectReferenceTemplate } from "../shared/project-references.ts";
 import { MachineAccounts } from "./accounts.ts";
 import type { AccountTools } from "./account-tools.ts";
 import { ProjectGitHub } from "./github-project.ts";
+import { sameOrigin } from "./machine-security.ts";
 
 const providers: FactoryProvider[] = ["codex", "claude", "opencode"];
 const initialSettings: FactorySettings = { provider: "codex", max_implementations: 2, max_agents: 6, max_builds: 2, max_artifact_bytes: 25 * 1024 * 1024, max_storage_bytes: 2 * 1024 * 1024 * 1024, skills_path: null };
@@ -155,7 +156,7 @@ export class FactoryService {
       if (github) {
         if (request.method === "GET" && github[4] === "files") return jsonResponse(await this.github.files(github[1]!, Number(github[3]), url.searchParams.get("head")));
         if (request.method === "GET" && !github[2] && !github[3]) return jsonResponse(this.github.overview(github[1]!));
-        if (request.method !== "POST" || request.headers.get("origin") && request.headers.get("origin") !== url.origin || request.headers.get("x-herdr-machine") !== "1" || request.headers.get("x-herdr-factory") !== "1") return httpError(403, "invalid_origin", "Use GitHub controls from this app");
+        if (request.method !== "POST" || !sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1" || request.headers.get("x-herdr-factory") !== "1") return httpError(403, "invalid_origin", "Use GitHub controls from this app");
         if (github[2] === "configure") return jsonResponse(await this.github.configure(github[1]!, await this.body(request) as unknown as import("../shared/github-project.ts").ProjectGitHubConfiguration));
         if (github[2] === "sync") return jsonResponse(await this.github.sync(github[1]!));
         if (github[3]) return jsonResponse(await this.github.action(github[1]!, Number(github[3]), github[4]!, await this.body(request)));

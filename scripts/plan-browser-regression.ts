@@ -25,7 +25,7 @@ try {
   });
   await page.route(`**/api/pane/plan?pane_id=${encodeURIComponent(paneId)}`, (route) => route.fulfill({ json: { plan: { steps }, server_time: new Date().toISOString() } }));
   await page.goto(`http://localhost:${app.port}/?pane=${encodeURIComponent(paneId)}`);
-  await page.getByRole("button", { name: "Plan: 0 of 5 done", exact: true }).click();
+  await page.getByRole("banner").getByRole("button", { name: "Plan: 0 of 5 done", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: /^Plan/ });
   await dialog.locator(".plan-node").nth(4).waitFor();
   const third = dialog.locator(".plan-node").nth(2);
@@ -45,6 +45,19 @@ try {
   for (let step = 1; step <= 8; step++) await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y + distance * step / 8, id: 1 }] });
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
   await dialog.waitFor({ state: "detached" });
+  const paneAddress = page.url();
+  await page.getByRole("banner").getByRole("button", { name: "Plan: 0 of 5 done", exact: true }).click();
+  await dialog.waitFor();
+  await page.goBack();
+  await dialog.waitFor({ state: "detached" });
+  assert.equal(page.url(), paneAddress, "Android Back closes the plan without changing the pane");
+  await page.locator(".tab-strip-menu").click();
+  await page.getByRole("button", { name: "Rename pane", exact: true }).waitFor();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Inbox", exact: true }).click();
+  await page.locator(".tab-strip-menu").click();
+  assert.equal(await page.getByRole("button", { name: "Rename pane", exact: true }).count(), 0, "Inbox does not expose an unmounted pane dialog");
+  await page.keyboard.press("Escape");
   assert.deepEqual(errors, []);
   console.log("Plan browser: open-plan viewport changes and phone swipe dismissal passed");
 } finally { await browser.close(); app.stop(); await workspaceClose(owned.workspace.workspace_id); rmSync(state, { recursive: true, force: true }); }

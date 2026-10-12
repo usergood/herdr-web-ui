@@ -18,7 +18,7 @@
 
 **Saurons eye** is a fork of [herdr-web-ui](https://github.com/devswha/herdr-web-ui), the browser and phone client for [herdr](https://github.com/herdrdev/herdr). It keeps upstream's native chats and live terminals and adds a durable workflow for taking ideas through specifications, implementation, review and owner acceptance.
 
-This fork includes upstream releases **v0.4.4–v0.4.7**. The original browser client and its recordings below come from herdr-web-ui and its contributors.
+This fork includes upstream releases **v0.4.4–v0.4.8**. The original browser client and its recordings below come from herdr-web-ui and its contributors.
 
 Install the bundled **Saurons eye** app from normal Android Chrome over HTTPS. Authenticated reverse proxies are supported; the manifest carries the browser login. See [Android installation and notification setup](docs/pwa-installation.md).
 

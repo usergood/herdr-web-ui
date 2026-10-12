@@ -273,6 +273,11 @@
   height: auto;
 }
 
+/* a README's centered logo and badges (lib/markdownHtml.ts) */
+.markdown .markdown-center {
+  text-align: center;
+}
+
 .markdown-mermaid-frame {
   position: relative;
   margin-bottom: var(--space-3);

@@ -1,17 +1,23 @@
 /** Owned workspace lifecycle; agent readiness is controlled, so no paid agent process starts. */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { chromium, devices } from "playwright-core";
 import type { Machine } from "../shared/machines.ts";
 import type { WorkspaceCreated } from "../shared/protocol.ts";
 import { sessionSnapshot, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
+import { passingFolder } from "../src/lib/recent-directories.ts";
 
 await import("./test-herdr.ts");
 const { createServer } = await import("../server/index.ts");
 const { UsageService } = await import("../server/usage.ts");
-const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-recent-folders-")));
+// not under a folder recent folders leave out: the temporary directory, or this checkout when it
+// is one of herdr's worktrees (`passingFolder`), so the fixtures live under the home's cache
+const cache = join(homedir(), ".cache", "herdr-web-ui-tests");
+mkdirSync(cache, { recursive: true });
+const root = realpathSync(mkdtempSync(join(cache, "herdr-recent-folders-")));
+if (passingFolder(root)) throw new Error(`the fixtures' folder ${root} is one recent folders leave out`);
 const owned = new Set<string>();
 const server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state"), usage: new UsageService(undefined, []) });
 try {
@@ -116,14 +122,38 @@ try {
           await openNew();
           const dialog = page.getByRole("dialog");
           const chip = dialog.getByRole("button", { name: `${project} 폴더 사용`, exact: true });
-          const betaChip = dialog.getByRole("button", { name: `${other} 폴더 사용`, exact: true });
           await chip.waitFor();
           await dialog.locator(".agent-picker-trigger", { hasText: "Codex" }).waitFor();
-          const chips = dialog.locator(".new-session-folder-chip");
+          const chips = dialog.locator('[role="group"] .new-session-folder-chip:not(.new-session-folder-more)');
+          const more = dialog.locator('[role="group"] .new-session-folder-more');
+          const titles = (from: typeof chips) => from.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("title")));
+          // what the dialog offers: its chips, then on a wider screen what "+N" lists, in order
+          const offered = async (): Promise<(string | null)[]> => {
+            const shown = await titles(chips);
+            if (await more.count() === 0) return shown;
+            assert.notEqual(width, 390, "a phone swipes its row and has no +N");
+            await more.click();
+            const menu = page.getByRole("menu", { name: "최근 폴더", exact: true });
+            await menu.waitFor();
+            const rest = await titles(menu.getByRole("menuitem"));
+            assert.equal(await more.innerText(), `+${rest.length}`);
+            await page.keyboard.press("Escape");
+            await menu.waitFor({ state: "detached" });
+            assert.equal(await dialog.isVisible(), true, "Escape closes the list, not the dialog");
+            return [...shown, ...rest];
+          };
+          const pickFolder = async (path: string): Promise<void> => {
+            const button = dialog.getByRole("button", { name: `${path} 폴더 사용`, exact: true });
+            if (await button.count() > 0) { await button.click(); return; }
+            await more.click();
+            await page.getByRole("menu", { name: "최근 폴더", exact: true }).getByRole("menuitem").and(page.locator(`[title="${path}"]`)).click();
+          };
           const submit = dialog.locator('button[type="submit"]');
-          assert.deepEqual(await chips.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("title"))), ["/older/one", other, project], "folders only seen in panes come behind the one kept");
+          assert.deepEqual(await offered(), ["/older/one", other, project], "folders only seen in panes come behind the one kept");
           assert.equal(new Set(await chips.evaluateAll((nodes) => nodes.map((node) => node.getBoundingClientRect().top))).size, 1, "recent folders stay on one row");
-          assert.equal(await dialog.locator(".new-session-folder-chips").evaluate((node) => node.scrollWidth > node.clientWidth), false);
+          // a phone swipes the row sideways; a wider screen has room for it
+          if (width === 390) assert.equal(await dialog.locator(".new-session-folder-chips").evaluate((node) => getComputedStyle(node).overflowX), "auto");
+          else assert.equal(await dialog.locator(".new-session-folder-chips").evaluate((node) => node.scrollWidth > node.clientWidth), false);
           assert.equal(await dialog.getByRole("button", { name: /remote-only/ }).count(), 0);
           assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
           await dialog.getByRole("button", { name: "창 닫기", exact: true }).focus();
@@ -139,7 +169,7 @@ try {
           await submit.click();
           assert.deepEqual((await request).postDataJSON(), { cwd: project, label: null, agent: { kind: "codex" } });
           assert.equal(await chip.isDisabled(), true);
-          assert.equal(await dialog.locator(".new-session-folder-chip:not(:disabled)").count(), 0);
+          assert.equal(await dialog.locator('[role="group"] .new-session-folder-chip:not(:disabled)').count(), 0);
           await page.keyboard.press("Escape");
           assert.equal(await dialog.isVisible(), true);
           gate.resolve();
@@ -151,40 +181,44 @@ try {
 
           await workspaceClose(created.workspace_id);
           owned.delete(created.workspace_id);
-          // a fourth folder, one more than the dialog shows
+          // a fourth folder, and kept from before, a herdr worktree and a temporary folder
           await page.evaluate(() => {
             const key = "herdr-web-ui:recent-directories:local";
-            localStorage.setItem(key, JSON.stringify([...JSON.parse(localStorage.getItem(key)!) as string[], "/older/two"]));
+            localStorage.setItem(key, JSON.stringify([...JSON.parse(localStorage.getItem(key)!) as string[], "/home/me/.herdr/worktrees/app/feat", "/tmp/scratch", "/older/two"]));
           });
           await page.reload();
           await betaRow.waitFor({ state: "attached" });
           await openNew();
           await chip.waitFor();
-          // the folder a workspace was started in is first now; the fourth is not shown
-          assert.deepEqual(await chips.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("title"))), [project, "/older/one", other]);
-          assert.equal(await dialog.getByRole("button", { name: /older\/two/ }).count(), 0, "the fourth folder is not shown");
+          // the folder a workspace was started in is first now; a worktree and a temporary folder are left out
+          assert.deepEqual(await offered(), [project, "/older/one", other, "/older/two"]);
+          if (width !== 390) assert.equal(new Set(await chips.evaluateAll((nodes) => nodes.map((node) => node.getBoundingClientRect().top))).size, 1, "a wider screen keeps one row too, the rest under +N");
+          if (width !== 390) assert.equal(await more.count(), 1, "four folders with a long name are more than the row holds: +N lists the rest");
+          // the measuring row behind the chips adds no width the dialog could scroll to
+          assert.equal(await dialog.locator(".modal-body").evaluate((node) => node.scrollWidth <= node.clientWidth), true, "the dialog never scrolls sideways");
+          if (width === 390) assert.equal(new Set(await chips.evaluateAll((nodes) => nodes.map((node) => node.getBoundingClientRect().top))).size, 1, "a phone keeps them on one row");
           failCreate = true;
-          await betaChip.click();
+          await pickFolder(other);
           await submit.click();
           await dialog.getByRole("alert").filter({ hasText: "폴더를 찾을 수 없습니다" }).waitFor();
-          assert.equal(await betaChip.isEnabled(), true);
-          assert.equal(await dialog.locator(".new-session-folder-chip").first().getAttribute("title"), project);
-          assert.equal(await chips.count(), 3);
+          assert.equal(await chips.first().isEnabled(), true);
+          assert.equal(await chips.first().getAttribute("title"), project);
+          assert.equal((await offered()).length, 4);
           failCreate = false;
           partialFailure = true;
           const partialResponse = page.waitForResponse((response) => response.url().endsWith("/api/workspace/create"));
           await submit.click();
           const partial: WorkspaceCreated = await (await partialResponse).json();
           await dialog.getByRole("alert").filter({ hasText: "Controlled agent failure" }).waitFor();
-          assert.equal(await dialog.locator(".new-session-folder-chip:not(:disabled)").count(), 0);
-          assert.equal(await dialog.locator(".new-session-folder-chip").first().getAttribute("title"), project);
+          assert.equal(await dialog.locator('[role="group"] .new-session-folder-chip:not(:disabled)').count(), 0);
+          assert.equal(await chips.first().getAttribute("title"), project);
           const beforeOpen = requests;
           await submit.click();
           await dialog.waitFor({ state: "detached" });
           await page.locator(`.workspace-select[data-pane="${partial.pane_id}"][aria-current="true"]`).waitFor({ state: "attached" });
           assert.equal(requests, beforeOpen, "Open after partial failure never creates another workspace");
           assert.deepEqual(errors, []);
-          console.log(`PASS recent folders ${width} ${theme}: snapshot seed behind kept folders, closed workspace, reload, PC isolation, three chips on one row, chip fills Directory, a start moves its folder first, pending, focus trap, failed-start order`);
+          console.log(`PASS recent folders ${width} ${theme}: snapshot seed behind kept folders, closed workspace, reload, PC isolation, worktrees and temporary folders left out, one swiped row on a phone, one row and +N on a wider screen, chip fills Directory, a start moves its folder first, pending, focus trap, failed-start order`);
         } finally {
           gate.resolve();
           await context.close();

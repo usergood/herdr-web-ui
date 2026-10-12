@@ -10,6 +10,7 @@ import { Minus, Plus, Scan, X } from "lucide-react";
 import "./MermaidLightbox.css";
 
 import { useT } from "../lib/i18n.ts";
+import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 
 const MIN_ZOOM = 0.5;
@@ -34,6 +35,7 @@ export function MermaidLightbox({ svg, onClose }: { svg: string; onClose: () => 
   const t = useT();
   const close = useRef<HTMLButtonElement>(null);
   const surface = useFocusTrap<HTMLDivElement>(true, { initialFocus: close });
+  usePhoneSheetBack(onClose);
   const stage = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View>(FIT);
   const [dragging, setDragging] = useState(false);

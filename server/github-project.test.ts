@@ -188,3 +188,9 @@ test("the owner can read a foreign PR patch centrally, bound to the displayed he
   const stale = await fetch(f.origin + "/api/factory" + route + "/pulls/27/files?head=" + "c".repeat(40), { headers: f.headers }); expect(stale.status).toBe(409);
   expect(readFileSync(f.log, "utf8")).not.toContain('"PUT"');
 });
+test("GitHub settings work behind the owner's HTTPS proxy and reject a foreign origin", async () => {
+  const f = await fixture(); const url = f.origin + `/api/factory/projects/${f.project.id}/github/configure`;
+  const proxy = { ...f.headers, origin: f.origin.replace("http:", "https:"), "x-forwarded-proto": "https" };
+  const accepted = await fetch(url, { method: "POST", headers: proxy, body: JSON.stringify(f.policy) }); expect(accepted.status).toBe(200);
+  const refused = await fetch(url, { method: "POST", headers: { ...proxy, origin: "https://unrelated.invalid" }, body: JSON.stringify(f.policy) }); expect(refused.status).toBe(403);
+});

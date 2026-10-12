@@ -43,7 +43,13 @@ try {
     }
   }
   await page.waitForFunction(async () => (await navigator.serviceWorker.getRegistration())?.active?.state === "activated");
-  const installability = await cdp.send("Page.getInstallabilityErrors");
+  // Chrome's browser-process icon validation can finish after renderer image decoding.
+  const iconDeadline = Date.now() + 10_000;
+  let installability = await cdp.send("Page.getInstallabilityErrors");
+  while (installability.installabilityErrors.length && Date.now() < iconDeadline) {
+    await Bun.sleep(100);
+    installability = await cdp.send("Page.getInstallabilityErrors");
+  }
   assert.deepEqual(installability.installabilityErrors, [], "Chrome reports no installability errors behind BasicAuth");
   assert(manifestRequests.length && manifestRequests.every((request) => request.authorized), "The manifest carries the login credentials");
   const badge = await page.evaluate(async () => {

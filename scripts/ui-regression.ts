@@ -34,7 +34,7 @@ import { checkComposerReconnect } from "./composer-reconnect-regression.ts";
 import { checkDroplet } from "./droplet-regression.ts";
 import { checkTakeOver } from "./take-over-regression.ts";
 import { checkAlertSound } from "./alert-sound-regression.ts";
-import { checkBackgroundTabKeepsTerminalSize, checkChatKeepsTerminalSize, checkPaneSwitchKeepsTerminalSize } from "./chat-size-regression.ts";
+import { checkBackgroundTabKeepsTerminalSize, checkChatKeepsTerminalSize, checkFocusedWindowReclaimsTerminalSize, checkPaneSwitchKeepsTerminalSize } from "./chat-size-regression.ts";
 import { checkCommandBackspace } from "./terminal-command-backspace-regression.ts";
 import { checkCtrlEnter } from "./terminal-ctrl-enter-regression.ts";
 import { checkCommandArrows } from "./terminal-command-arrows-regression.ts";
@@ -421,9 +421,9 @@ try {
     await offlineAgent.dispatchEvent("click");
     assert.equal(await offlinePage.evaluate(() => sessionStorage.getItem("herdr-web-ui:selection")), selectionBefore,
       "offline Agent clicks leave the current selection unchanged");
-    // the linked pane is shown from the cache, and its header offers no plan it could not read
+    // the linked pane is shown from the cache, and offers no plan it could not read
     await offlinePage.locator(".view-switch").waitFor();
-    assert.equal(await offlinePage.locator(".plan-button").count(), 0, "an offline PC's cached plan offers no plan button");
+    assert.equal(await offlinePage.locator(".bg-tasks-plan").count(), 0, "an offline PC's cached plan offers no plan chip");
   } catch (error) {
     await offlineEvidence?.captureFailure(error);
     throw error;
@@ -505,9 +505,9 @@ try {
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await waitingBadge.waitFor({ state: "detached" });
   console.log("PASS a pane whose turn ended on its background work reads BG in the sidebar and the composer, and its status again once it does not");
-  // A pane's plan: the header's count opens it in the chat and the terminal alike, as a flow of
-  // boxes (a step below the steps it waits on) or as a list, and the sidebar row carries the same
-  // count. Reading it is the server's (server/session-plan.ts): its summary and steps are given here.
+  // A pane's plan: the composer's chip (the one the background tasks have) says how far it got and
+  // opens its steps in order, the running one with what it does now; the sidebar row carries the
+  // same count. Reading it is the server's (server/session-plan.ts): its summary and steps are given here.
   const planSteps = [
     { id: "1", label: "Read the code", active: null, status: "completed", blocked_by: [], owner: null, started_at: "2026-10-07T00:00:00.000Z", ended_at: "2026-10-07T00:04:00.000Z" },
     { id: "2", label: "Write the parser", active: "Writing the parser", status: "in_progress", blocked_by: ["1"], owner: null, started_at: "2026-10-07T00:04:00.000Z", ended_at: null },
@@ -526,37 +526,30 @@ try {
   };
   const unroutePlanned = await planned(page);
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
-  const planButton = page.getByRole("button", { name: "Plan: 1 of 4 done", exact: true });
-  await planButton.waitFor();
+  const planChip = page.locator(".composer").getByRole("button", { name: /^Plan: 1 of 4 done/ });
+  await planChip.waitFor();
   assert.equal((await agentRow(paneA).locator("[data-testid=plan-progress]").textContent())?.trim(), "1/4");
-  await planButton.click();
-  const planDialog = page.getByRole("dialog", { name: /^Plan/ });
-  await until(async () => await planDialog.locator(".plan-node").count() === 4, "the plan's boxes");
-  assert.equal(await planDialog.locator(".plan-edge").count(), 4, "one curve per wait");
-  assert.equal(await planDialog.locator(".plan-edge.is-done").count(), 2, "the ways out of a done step are open");
-  const box = async (label: string) => (await planDialog.locator(".plan-node-label", { hasText: label }).boundingBox())!;
-  const [read, parser, panel, ship] = [await box("Read the code"), await box("Write the parser"), await box("Write the panel"), await box("Ship it")];
-  assert.ok(read.y < parser.y && Math.abs(parser.y - panel.y) < 1 && panel.y < ship.y && parser.x < panel.x, "waves top to bottom, a wave side by side");
-  assert.equal(await planDialog.locator(".plan-node.is-in_progress").textContent().then((text) => text?.includes("Write the parser")), true);
-  assert.equal(await planDialog.locator(".plan-node.is-pending .sr-only").last().textContent(), "after Write the parser, Write the panel", "the waits are told in words");
-  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Close plan", "the focus comes into the dialog");
-  assert.match(await planDialog.locator(".plan-summary").textContent() ?? "", /1 of 4 done\s*Writing the parser/);
-  if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "plan-flow.png") });
-  await planDialog.getByRole("button", { name: "Steps", exact: true }).click();
-  assert.deepEqual(await planDialog.locator(".plan-step-label").allTextContents(), ["Read the code", "Write the parser", "Write the panel", "Ship it"]);
+  assert.equal(await page.locator(".plan-button").count(), 1, "the fork retains its header plan flow control");
+  await planChip.click();
+  const planList = page.getByRole("dialog", { name: /^Plan/ });
+  await until(async () => await planList.locator(".bg-step").count() === 4, "the plan's steps");
+  assert.deepEqual(await planList.locator(".bg-step .bg-task-title").allTextContents(), ["Read the code", "Write the parser", "Write the panel", "Ship it"]);
+  assert.equal(await planList.locator(".bg-step.is-in_progress .bg-step-active").textContent(), "Writing the parser");
+  assert.match(await planList.locator(".menu-heading").first().textContent() ?? "", /1 of 4 done/);
+  if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "plan-list.png") });
   await page.keyboard.press("Escape");
-  await planDialog.waitFor({ state: "detached" });
-  await page.getByTitle("Live terminal (⌘⇧J)", { exact: true }).click();
-  await planButton.click();
-  await until(async () => await planDialog.locator(".plan-node").count() === 4, "the plan over the terminal");
-  // Escape is the dialog's even over the terminal, and the focus goes back to the button that opened it
-  await page.keyboard.press("Escape");
-  await planDialog.waitFor({ state: "detached" });
-  assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("plan-button")), true, "the focus goes back on close");
-  await page.getByTitle("Chat transcript (⌘⇧J)", { exact: true }).click();
+  await planList.waitFor({ state: "detached" });
+  assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("bg-tasks-toggle")), true, "the focus goes back to the chip");
+  // the plan is done with and emptied (Claude Code clears its task list) while the list is open:
+  // nothing is left to list, so the list closes and the chip goes instead of standing empty
+  await planChip.click();
+  await until(async () => await planList.locator(".bg-step").count() === 4, "the plan's steps again");
   await unroutePlanned();
   await page.unroute(`**/api/pane/plan?pane_id=${encodeURIComponent(paneA)}`);
-  console.log("PASS a pane's plan opens from the header in the chat and the terminal, as a flow and a list");
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await planList.waitFor({ state: "detached" });
+  await planChip.waitFor({ state: "detached" });
+  console.log("PASS a pane's plan opens from the composer's chip as a list of its steps");
 
   // Use a real browser paste: keydown must not send Ctrl+V (0x16) to the agent,
   // where it can trigger image paste against the server's unrelated clipboard.
@@ -866,6 +859,7 @@ try {
   await checkChatKeepsTerminalSize(browser, origin);
   await checkPaneSwitchKeepsTerminalSize(browser, origin);
   await checkBackgroundTabKeepsTerminalSize(browser, origin);
+  await checkFocusedWindowReclaimsTerminalSize(browser, origin);
   await checkUpdateNotice(browser, origin);
 
   // The pending protocol has a real foreground agent and an owned byte recorder: merely
@@ -1541,7 +1535,9 @@ try {
   await phoneStrip.getByRole("button", { name: "Actions for build", exact: true }).tap();
   const tabSheet = tabPhonePage.getByRole("dialog", { name: "build", exact: true });
   await tabSheet.waitFor();
-  assert.deepEqual(await tabSheet.locator(".row-sheet-item").allTextContents(), ["Move tab left", "Move tab right", "New tab", "Rename tab", "Close tab"], "a tab between siblings offers both adjacent moves on touch");
+  const touchTabItems = await tabSheet.locator(".row-sheet-item").allTextContents();
+  assert.deepEqual(touchTabItems.slice(-5), ["Move tab left", "Move tab right", "New tab", "Rename tab", "Close tab"], "a tab between siblings offers both adjacent moves on touch");
+  assert.ok(touchTabItems.includes("Rename pane") && touchTabItems.includes("Close pane"), "the touch menu carries the open pane's actions");
   await tabSheet.getByRole("button", { name: "Cancel", exact: true }).tap();
   await tabSheet.waitFor({ state: "detached" });
   await runMoreItem(tabPhonePage, "Move pane to…");
@@ -1810,29 +1806,32 @@ try {
   assertCspClean(csp, "the chat, the composer and the phone views load with no CSP violation");
   console.log("PASS mobile composer with unavailable storage and no horizontal overflow");
 
-  // a phone: the plan's count fits the header, and the plan opens as a sheet the page does not scroll past
+  // a phone: the composer's chip shows the plan's count on the status line's one row, and its steps
+  // open above the card without making the page scroll sideways
   const planPhone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  await planPhone.addInitScript(() => localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en", defaultView: "chat" })));
   const phone = await planPhone.newPage();
   phone.on("pageerror", (error) => errors.push(error.message));
   const unroutePhonePlanned = await planned(phone);
   await phone.goto(`${origin}/?pane=${encodeURIComponent(paneA)}`);
   await phone.locator(".conn-live").waitFor();
-  const phonePlan = phone.getByRole("button", { name: "Plan: 1 of 4 done", exact: true });
+  const phonePlan = phone.locator(".composer").getByRole("button", { name: /^Plan: 1 of 4 done/ });
   await phonePlan.waitFor();
-  const header = (await phone.locator(".app-header").boundingBox())!;
+  const card = (await phone.locator(".composer-surface").first().boundingBox())!;
   const counted = (await phonePlan.boundingBox())!;
-  assert.ok(counted.x >= 0 && counted.x + counted.width <= header.width, "the plan's count fits a phone's header");
+  assert.ok(counted.x >= card.x && counted.x + counted.width <= card.x + card.width, "the plan's chip fits a phone's card");
+  assert.equal((await phonePlan.locator(".bg-tasks-plan").textContent())?.trim(), "1/4", "a phone keeps the count");
   await phonePlan.tap();
-  const phoneDialog = phone.getByRole("dialog", { name: /^Plan/ });
-  await until(async () => await phoneDialog.locator(".plan-node").count() === 4, "the plan on a phone");
+  const phoneList = phone.getByRole("dialog", { name: /^Plan/ });
+  await until(async () => await phoneList.locator(".bg-step").count() === 4, "the plan on a phone");
   assert.equal(await phone.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   if (process.env.UI_EVIDENCE_DIR) await phone.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "plan-phone.png") });
-  await phoneDialog.getByRole("button", { name: "Close plan", exact: true }).tap();
-  await phoneDialog.waitFor({ state: "detached" });
+  await phonePlan.tap();
+  await phoneList.waitFor({ state: "detached" });
   await unroutePhonePlanned();
   await planPhone.close();
   assert.deepEqual(errors, []);
-  console.log("PASS a phone opens the plan from a header it fits in");
+  console.log("PASS a phone opens the plan from the composer's chip, which keeps its count on the card");
 
   // a phone reads a pane before it answers: a pane picked from the drawer raises no keyboard,
   // and a tap on the message box does

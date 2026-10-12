@@ -91,33 +91,27 @@ try {
       });
       console.log("PASS by default the Agents list is flat, in herdr's order, with no pin stars");
 
-      // a pane's plan: the header's count and the flow stand unless Settings turns them off
-      const planned = async (page: Page): Promise<void> => {
-        await page.goto(`${url}?pane=${encodeURIComponent(panes.api)}`);
-        await page.locator(".conn-live").waitFor({ state: "attached" });
-        await agents(page).first().waitFor({ state: "attached" });
-      };
+      // a pane's plan: the composer's chip shows how far it got and opens its steps, as the background
+      // tasks do; the header carries no plan of its own
       for (const mobile of [false, true]) {
         await withPage(browser, {}, async (page) => {
-          await planned(page);
-          await page.locator(".plan-button").click();
-          const plan = page.getByRole("dialog", { name: /^Plan/ });
-          await plan.locator(".plan-node").first().waitFor();
-          assert.equal(await plan.locator(".plan-view-switch").count(), 1, "by default the plan opens as a flow, with its switch to the list");
-        }, undefined, mobile);
-        await withPage(browser, { planFlow: false }, async (page) => {
-          await planned(page);
-          await page.locator(".plan-button").click();
-          const plan = page.getByRole("dialog", { name: /^Plan/ });
-          await plan.locator(".plan-step").first().waitFor();
-          assert.equal(await plan.locator(".plan-view-switch, .plan-node").count(), 0, "Plan flow off: the list alone, with no switch");
-        }, undefined, mobile);
-        await withPage(browser, { planButton: false }, async (page) => {
-          await planned(page);
-          assert.equal(await page.locator(".plan-button").count(), 0, "Plan count in the header off: no plan button");
+          await page.goto(`${url}?pane=${encodeURIComponent(panes.api)}`);
+          await page.locator(".conn-live").waitFor({ state: "attached" });
+          const chip = page.locator(".composer .bg-tasks-toggle");
+          await chip.waitFor();
+          assert.match(await chip.getAttribute("aria-label") ?? "", /^Plan: 1 of \d+ done/, "the chip names the plan's progress");
+          assert.match((await chip.locator(".bg-tasks-plan").textContent())?.trim() ?? "", /^1\/\d+$/);
+          assert.equal(await page.locator(".plan-button").count(), 1, "the fork retains its header plan flow control");
+          await chip.click();
+          const list = page.getByRole("dialog", { name: /^Plan/ });
+          await list.locator(".bg-step").first().waitFor();
+          assert.equal(await list.locator(".bg-step.is-in_progress").count(), 1, "the running step is marked");
+          assert.equal(await list.locator(".plan-node, .plan-view-switch").count(), 0, "no flow of boxes");
+          await page.keyboard.press("Escape");
+          await list.waitFor({ state: "detached" });
         }, undefined, mobile);
       }
-      console.log("PASS the plan's flow and its header count stand by default, on a desktop and a phone, and each goes with its setting");
+      console.log("PASS a pane's plan opens from the composer's chip, as a list of steps, on a desktop and a phone");
 
       await withPage(browser, {}, async (page) => {
         await runMoreItem(page, "Move pane to…");
@@ -168,7 +162,7 @@ try {
         await page.keyboard.press("Escape");
         const agentRow = agent(page, API);
         const agentSelect = agentRow.locator(".agent-select");
-        // pin an agent that is not first: it must stand above the workspace cards, outside every card
+        // pin an agent that is not first: it stays in its workspace's card, and that card leads the list
         const pinnedRow = agent(page, INFRA);
         const pin = pinnedRow.getByRole("button", { name: `Pin agent: ${INFRA} · infra`, exact: true });
         assert.equal(await pin.count(), 1, "each agent has a pin control named for it and its workspace");
@@ -178,24 +172,27 @@ try {
         await page.keyboard.press("Space");
         await page.waitForFunction((key) => JSON.parse(localStorage.getItem("herdr-web-ui:sidebar-agent-pins") ?? "[]").includes(key), `local:${panes.infra}`);
         assert.equal(await pin.getAttribute("aria-pressed"), "true", "keyboard pin persists the agent and keeps the control's name");
-        assert.equal(await pinFocused(), true, "the star keeps the keyboard focus as it moves above the cards");
+        assert.equal(await pinFocused(), true, "the star keeps the keyboard focus as its card moves up");
         assert.deepEqual(await agentTitles(page), [INFRA, ...AGENTS_HERDR_ORDER.filter((title) => title !== INFRA)], "a pinned agent moves to the top, the rest keep herdr's order");
         const pinnedLayout = () => page.evaluate((title) => {
-          const list = document.querySelector(".agents-sidebar .agent-list")!;
-          const first = list.firstElementChild;
-          return { inCard: [...document.querySelectorAll(".agents-sidebar .agent-group .agent-title")].some((node) => node.textContent === title), firstIsPinnedRow: first?.classList.contains("agent-item") === true && first.querySelector(".agent-title")?.textContent === title };
+          const first = document.querySelector(".agents-sidebar .agent-list")!.firstElementChild;
+          return {
+            inCard: [...document.querySelectorAll(".agents-sidebar .agent-group .agent-title")].some((node) => node.textContent === title),
+            firstCard: first?.classList.contains("agent-group") === true ? first.querySelector(".agent-group-name")?.textContent : null,
+            firstInCard: first?.querySelector(".agent-group-rows .agent-title")?.textContent ?? null,
+          };
         }, INFRA);
-        assert.deepEqual(await pinnedLayout(), { inCard: false, firstIsPinnedRow: true }, "the pinned agent leads the list above the cards, not inside one");
+        assert.deepEqual(await pinnedLayout(), { inCard: true, firstCard: "infra", firstInCard: INFRA }, "the pinned agent stays in its card, first there, and its card leads the list");
         await page.reload();
         await page.locator(".conn-live").waitFor({ state: "attached" });
         await agents(page).first().waitFor({ state: "attached" });
-        assert.deepEqual(await pinnedLayout(), { inCard: false, firstIsPinnedRow: true }, "the pin survives a reload");
+        assert.deepEqual(await pinnedLayout(), { inCard: true, firstCard: "infra", firstInCard: INFRA }, "the pin survives a reload");
         await pin.focus();
         await page.keyboard.press("Enter");
         await page.waitForFunction(() => JSON.parse(localStorage.getItem("herdr-web-ui:sidebar-agent-pins") ?? "[]").length === 0);
-        assert.equal(await pinFocused(), true, "the star keeps the keyboard focus as it moves back into its card");
+        assert.equal(await pinFocused(), true, "the star keeps the keyboard focus as its card moves back");
         assert.deepEqual(await agentTitles(page), AGENTS_HERDR_ORDER, "unpin restores the source order");
-        assert.equal((await pinnedLayout()).inCard, true, "unpinned, the agent returns to its card");
+        assert.equal((await pinnedLayout()).firstCard, "checkout-api", "unpinned, its card returns to herdr's order");
         const refreshedAgentRow = agent(page, API);
         await agentRow.hover();
         assert.equal(await refreshedAgentRow.getByRole("button").count(), 2, "hover keeps selection and pin controls");
