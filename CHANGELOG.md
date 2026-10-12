@@ -48,6 +48,9 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   ([#1](https://github.com/usergood/herdr-web-ui/pull/1) by @usergood)
 
 ### Fixed
+- Keep the phone Inbox control within the header beside upstream's plan button, preventing
+  viewport expansion and offset Settings taps on narrow phones.
+  ([#11](https://github.com/usergood/herdr-web-ui/pull/11) by @usergood)
 - Let Chrome fetch the installation manifest through authenticated reverse proxies by carrying
   the page's login credentials; preserve authentication for the application and its APIs.
   ([#5](https://github.com/usergood/herdr-web-ui/pull/5) by @usergood)

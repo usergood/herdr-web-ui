@@ -34,7 +34,7 @@ try {
   assert(frames.some((frame) => frame.type === "presence" && frame.active), "A fresh Inbox announces focused presence without opening a terminal");
   assert(!frames.some((frame) => frame.type === "attach"), "Inbox presence does not allocate a terminal attachment");
   await page.getByRole("textbox", { name: "Idea title", exact: true }).fill("Scoped account walkthrough"); await page.getByRole("button", { name: "Capture idea", exact: true }).click();
-  await page.getByRole("combobox", { name: "Project", exact: true }).selectOption(project.id);
+  await page.locator(".factory-detail").getByRole("combobox", { name: "Project", exact: true }).selectOption(project.id);
   await page.locator("summary").filter({ hasText: /^Project execution settings$/ }).click();
   const accounts = page.getByRole("region", { name: "Project accounts", exact: true });
   await accounts.getByRole("textbox", { name: "Account name", exact: true }).fill("Work account");

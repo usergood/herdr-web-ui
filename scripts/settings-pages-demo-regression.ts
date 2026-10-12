@@ -93,6 +93,7 @@ try {
           assert.equal(await terminal.getAttribute("role"), null, "chat exposes no empty terminal landmark");
           assert.equal(await terminal.getAttribute("aria-label"), null);
           await openSettings(page);
+          assert.equal(await page.evaluate(() => window.innerWidth), width, `Settings keeps the ${width}px phone viewport (${language})`);
           for (const name of PAGES) {
             await openSettingsPage(page, label(name), label("Back to settings"));
             // what a page asks the server for (devices, the phone address, the accounts) has arrived

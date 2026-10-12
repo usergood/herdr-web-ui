@@ -21,7 +21,8 @@ const user = (text: string) => event({ sessionUpdate: "user_message_chunk", cont
 const output = (text: string) => event({ sessionUpdate: "tool_call_update", toolCallId: "fictional-call", content: [{ type: "content", content: { type: "text", text } }], status: "completed" });
 writeFileSync(path, user("Show a fictional Grok conversation.") + event({ sessionUpdate: "tool_call", toolCallId: "fictional-call", _meta: { "x.ai/tool": { name: "read_file" } }, title: "Read fictional file", rawInput: { path: "fiction.txt" } }) + output("FIRST ".repeat(900) + "FIRST_END") + event({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Fictional Grok answer." } }));
 const executable = join(root, "grok");
-copyFileSync("/bin/sleep", join(root, "grok-1.0.50-linux-x86_64")); symlinkSync("grok-1.0.50-linux-x86_64", executable); chmodSync(executable, 0o755);
+// Use the test runtime: a renamed uutils sleep would reject Grok's executable name.
+copyFileSync(process.execPath, join(root, "grok-1.0.50-linux-x86_64")); symlinkSync("grok-1.0.50-linux-x86_64", executable); chmodSync(executable, 0o755);
 let workspace: string | undefined;
 let server: ReturnType<typeof createServer> | undefined;
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
@@ -29,7 +30,7 @@ try {
   const created = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-grok-browser" });
   workspace = created.workspace.workspace_id;
   const pane = created.root_pane.pane_id;
-  await herdrRpc("pane.send_text", { pane_id: pane, text: `${executable} 600 3<${events}\n` });
+  await herdrRpc("pane.send_text", { pane_id: pane, text: `${executable} -e 'await Bun.sleep(600_000)' 3<${events}\n` });
   for (const deadline = Date.now() + 10_000;;) {
     if ((await sessionSnapshot()).panes.find((p) => p.pane_id === pane)?.agent === "grok") break;
     if (Date.now() > deadline) throw new Error("fictional Grok process did not start");

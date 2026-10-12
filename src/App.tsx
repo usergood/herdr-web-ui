@@ -1,5 +1,5 @@
 import { type CSSProperties, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Bell, Ellipsis, FolderInput, FolderOpen, Link, Lock, Menu, MessageSquare, PanelLeft, Plus, Search, SquareTerminal, X } from "lucide-react";
+import { Bell, Ellipsis, FolderInput, FolderOpen, Inbox, Link, Lock, Menu, MessageSquare, PanelLeft, Plus, Search, SquareTerminal, X } from "lucide-react";
 
 import type { AgentStatus, ServerMessage, AccessRefusal, HealthAuth, HerdrPane } from "../shared/protocol.ts";
 import { ApiError, authenticate, fetchHealth, fetchBridgeHealth, fetchMachines, fetchSession, pairDevice, routeMissing, sendTestPush, signOut, splitPane, zoomPane, type HealthInfo } from "./lib/api.ts";
@@ -1138,7 +1138,7 @@ export function App() {
         {/* the selected pane's plan, in the chat and the terminal alike; an offline PC's cached plan cannot be read */}
         {settings.planButton && selectedPane && selectedMachine?.state === "connected" && (selectedPane as HerdrPane).plan && <PlanButton plan={(selectedPane as HerdrPane).plan!} onOpen={() => setPlanOpen(true)} />}
         <div className="header-meta">
-          {auth?.role !== "watch" && <button type="button" className="btn" aria-pressed={factoryOpen} onClick={() => { setDrawerOpen(false); setFactoryOpen((open) => !open); if (!factoryOpen) history.replaceState(history.state, "", "#factory"); else history.replaceState(history.state, "", location.pathname + location.search); }}>{t("Inbox")}</button>}
+          {auth?.role !== "watch" && <button type="button" className="btn header-inbox" aria-label={t("Inbox")} title={t("Inbox")} aria-pressed={factoryOpen} onClick={() => { setDrawerOpen(false); setFactoryOpen((open) => !open); if (!factoryOpen) history.replaceState(history.state, "", "#factory"); else history.replaceState(history.state, "", location.pathname + location.search); }}><Inbox aria-hidden="true" /><span className="header-desktop-only">{t("Inbox")}</span></button>}
           {/* speaks only while the bridge is not live; live, it stays in the document for a screen
               reader (and the browser scripts that wait on it), drawn by nothing (styles.css) */}
           <span

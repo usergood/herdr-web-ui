@@ -27,7 +27,8 @@ const add = (type: string, content = "", extra = {}) => {
   appendFileSync(path, JSON.stringify({ step_index, type, content, status: "DONE", ...extra }) + "\n");
 };
 const executable = join(root, "agy");
-copyFileSync("/bin/sleep", executable); chmodSync(executable, 0o755);
+// Use the test runtime: a renamed uutils sleep would reject Agy's executable name.
+copyFileSync(process.execPath, executable); chmodSync(executable, 0o755);
 let workspace: string | undefined;
 let server: ReturnType<typeof createServer> | undefined;
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
@@ -35,7 +36,7 @@ try {
   const created = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-agy-activity", focus: false });
   workspace = created.workspace.workspace_id;
   const pane = created.root_pane.pane_id;
-  await herdrRpc("pane.send_text", { pane_id: pane, text: `${executable} 600 3<${lock}\n` });
+  await herdrRpc("pane.send_text", { pane_id: pane, text: `${executable} -e 'await Bun.sleep(600_000)' 3<${lock}\n` });
   for (const deadline = Date.now() + 10_000;;) {
     if ((await sessionSnapshot()).panes.find((p) => p.pane_id === pane)?.agent === "agy") break;
     if (Date.now() > deadline) throw new Error("fictional Agy process did not start");

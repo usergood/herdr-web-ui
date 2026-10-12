@@ -1732,6 +1732,11 @@ button {
    too - the mark keeps the identity. The palette's button gives its room to the pane's title:
    the palette is the More menu's first item there. */
 @media (max-width: 480px) {
+  .header-inbox {
+    width: var(--touch-target);
+    padding: 0;
+  }
+
   .conn {
     padding: 0 var(--space-1);
     background: transparent;

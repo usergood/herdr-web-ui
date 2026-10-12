@@ -358,7 +358,8 @@ it.skipIf(process.platform !== "linux" && process.platform !== "darwin")("select
   ]);
   hermesStore(fallback, [{ id: fallbackSession, answer: "Answer from the bridge default" }]);
   const executable = join(root, "hermes");
-  copyFileSync("/bin/sleep", executable);
+  // A renamed uutils sleep dispatches on its new name and exits; the test runtime does not.
+  copyFileSync(process.execPath, executable);
   chmodSync(executable, 0o755);
   const workspaces: string[] = [];
   const servers: RunningServer[] = [];
@@ -369,7 +370,7 @@ it.skipIf(process.platform !== "linux" && process.platform !== "darwin")("select
     const target = created.root_pane.pane_id;
     const quotedHome = home.replaceAll("'", "'\\''");
     const quotedExecutable = executable.replaceAll("'", "'\\''");
-    await herdrRpc("pane.send_text", { pane_id: target, text: `HERMES_HOME='${quotedHome}' '${quotedExecutable}' 60\n` });
+    await herdrRpc("pane.send_text", { pane_id: target, text: `HERMES_HOME='${quotedHome}' '${quotedExecutable}' -e 'await Bun.sleep(60_000)'\n` });
     // A real herdr process table has no completion signal; poll its observable process list to a deadline.
     for (let attempt = 0; attempt < 100; attempt++) {
       const info = await herdrRpc<{

@@ -665,14 +665,14 @@ describe("Grok conversation API", () => {
     writeFileSync(path, user + call + output("x".repeat(5000)));
     const events = join(directory, "events.jsonl");
     writeFileSync(events, "");
-    // A native stand-in owns the fd evidence and only sleeps; no model or user's store.
+    // The test runtime is a native stand-in that only sleeps and holds the fd; renamed uutils sleep cannot run.
     const executable = join(root, "grok");
-    copyFileSync("/bin/sleep", join(root, "grok-1.0.50-linux-x86_64")); symlinkSync("grok-1.0.50-linux-x86_64", executable); chmodSync(executable, 0o755);
+    copyFileSync(process.execPath, join(root, "grok-1.0.50-linux-x86_64")); symlinkSync("grok-1.0.50-linux-x86_64", executable); chmodSync(executable, 0o755);
     const created = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-grok-api" });
     let app: ReturnType<typeof createServer> | undefined;
     try {
       const paneId = created.root_pane.pane_id;
-      await herdrRpc("pane.send_text", { pane_id: paneId, text: `${executable} 600 3<${events}\n` });
+      await herdrRpc("pane.send_text", { pane_id: paneId, text: `${executable} -e 'await Bun.sleep(600_000)' 3<${events}\n` });
       for (const deadline = Date.now() + 10_000;;) {
         if ((await sessionSnapshot()).panes.find((pane) => pane.pane_id === paneId)?.agent === "grok") break;
         if (Date.now() > deadline) throw new Error("fixture Grok process did not start");
@@ -739,13 +739,14 @@ describe("Agy conversation API", () => {
     // Another unheld lock in the same store must never select a conversation.
     writeFileSync(join(root, "presence", "00000000-0000-4000-8000-000000000032.lock"), "");
     const executable = join(root, "agy");
-    copyFileSync("/bin/sleep", executable); chmodSync(executable, 0o755);
+    // Bun preserves this native process name without a system sleep binary's multicall dispatch.
+    copyFileSync(process.execPath, executable); chmodSync(executable, 0o755);
     const created = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-agy-api" });
     let app: ReturnType<typeof createServer> | undefined, db: Database | undefined;
     let monitor: ConversationMonitor | undefined;
     try {
       const paneId = created.root_pane.pane_id;
-      await herdrRpc("pane.send_text", { pane_id: paneId, text: `${executable} 600 3<${lock}\n` });
+      await herdrRpc("pane.send_text", { pane_id: paneId, text: `${executable} -e 'await Bun.sleep(600_000)' 3<${lock}\n` });
       for (const deadline = Date.now() + 10_000;;) {
         if ((await sessionSnapshot()).panes.find((pane) => pane.pane_id === paneId)?.agent === "agy") break;
         if (Date.now() > deadline) throw new Error("fixture Agy process did not start");
