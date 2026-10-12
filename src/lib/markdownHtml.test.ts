@@ -18,11 +18,11 @@ describe("HTML blocks in a markdown file", () => {
     const logo = blocks.find((block) => block.type === "paragraph" && block.lines.flat().some((node) => node.type === "image"));
     expect(logo).toMatchObject({ type: "paragraph", align: "center" });
     const image = logo?.type === "paragraph" ? logo.lines.flat().find((node) => node.type === "image") : undefined;
-    expect(image).toMatchObject({ type: "image", src: "public/icons/icon-192.png", alt: "herdr web ui", width: 100 });
+    expect(image).toMatchObject({ type: "image", src: "public/icons/icon-192.png", alt: "Saurons eye", width: 100 });
     const languages = blocks.find((block) => block.type === "paragraph" && text(block.lines.flat()).includes("English"));
     expect(languages?.type === "paragraph" && languages.lines.flat().some((node) => node.type === "file" && node.path === "README.ko.md")).toBe(true);
-    const site = blocks.find((block) => block.type === "paragraph" && text(block.lines.flat()).includes("website"));
-    expect(site?.type === "paragraph" && site.lines.flat().some((node) => node.type === "link" && node.href === "https://herdrweb.dev/")).toBe(true);
+    const credit = blocks.find((block) => block.type === "paragraph" && text(block.lines.flat()).includes("is a fork of"));
+    expect(credit?.type === "paragraph" && credit.lines.flat().some((node) => node.type === "link" && node.href === "https://github.com/devswha/herdr-web-ui")).toBe(true);
   });
 
   it("keeps text, drops comments and unknown tags, and reads headings, breaks, emphasis and entities", () => {
