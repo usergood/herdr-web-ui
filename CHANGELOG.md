@@ -26,7 +26,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 ### Changed
 - Rename the repository to Saurons eye and harden CI: fast automatic checks, explicit full
   validation, immutable Actions, private Herdr test configuration, verified prerequisites,
-  short failure-artifact retention and separately controlled publication.
+  short failure-artifact retention and separately controlled publication. ([#12](https://github.com/usergood/saurons-eye/pull/12))
 - Integrate upstream v0.4.7: deep links, plan views, Markdown/Mermaid, mobile/terminal
   improvements, native readers, usage pacing and push/input fixes. Preserve Saurons eye factory,
   reference/account workflows and owner-configured services; keep telemetry removed.

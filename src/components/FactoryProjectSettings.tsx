@@ -3,6 +3,7 @@ import type { FactoryOverview, FactoryProject, FactoryProvider } from "../../sha
 import { factoryRequest } from "../lib/factoryApi.ts";
 import { useT } from "../lib/i18n.ts";
 import { FactoryProjectAccounts } from "./FactoryProjectAccounts.tsx";
+import { FactoryProjectGitHub } from "./FactoryProjectGitHub.tsx";
 
 export function FactoryProjectSettings({ project, overview, machineId, busy, perform }: { project: FactoryProject; overview: FactoryOverview; machineId: string; busy: boolean; perform: (action: () => Promise<void>) => Promise<void> }) {
   const t = useT();
@@ -30,5 +31,6 @@ export function FactoryProjectSettings({ project, overview, machineId, busy, per
       <button className="btn factory-button" disabled={busy}>{t("Verify Machine checkout")}</button>
     </form>
     <FactoryProjectAccounts key={`${project.id}:${machineId}`} project={project} machineId={machineId} busy={busy} perform={perform} />
+    <FactoryProjectGitHub key={project.id} project={project} busy={busy} perform={perform} />
   </details>;
 }

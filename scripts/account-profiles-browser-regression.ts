@@ -6,16 +6,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { createServer } from "../server/index.ts";
+import { fictionalGitHubIssue, fictionalGitHubPull } from "../site/demo/github-fixtures.ts";
 
 const state = mkdtempSync(join(tmpdir(), "saurons-account-browser-"));
 const repo = join(state, "repo"); mkdirSync(repo);
 execFileSync("git", ["init", "-b", "main"], { cwd: repo, stdio: "ignore" });
 writeFileSync(join(repo, "README.md"), "# Fictional account Project\n");
 execFileSync("git", ["add", "."], { cwd: repo }); execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "fixture"], { cwd: repo, stdio: "ignore" });
+execFileSync("git", ["remote", "add", "origin", "https://github.com/fictional/project.git"], { cwd: repo });
 const fixture = join(state, "github-cli.mjs");
 writeFileSync(fixture, `if (process.argv.includes("login")) {
   process.stdout.write("First copy your one-time code: DEMO-1234\\nOpen https://github.com/login/device\\n"); process.stdin.once("data", () => process.exit(0));
 } else if (process.argv.includes("user/keys")) process.stdout.write(JSON.stringify(process.argv.includes("POST") ? { id: 1042, key: process.argv.find((arg) => arg.startsWith("key=")).slice(4) } : []));
+else if (process.argv[2] === "api" && process.argv[3]?.includes("/issues?")) process.stdout.write(JSON.stringify([${JSON.stringify(fictionalGitHubIssue)}]));
+else if (process.argv[2] === "api" && process.argv[3]?.includes("/files?")) process.stdout.write(JSON.stringify([{ filename: "README.md", status: "modified", additions: 1, deletions: 0, patch: "@@ -1 +1,2 @@\\n # Fictional Project\\n+An example improvement." }]));
+else if (process.argv[2] === "api" && process.argv[3] === "graphql") process.stdout.write(JSON.stringify({ data: { repository: { pullRequests: { nodes: [${JSON.stringify(fictionalGitHubPull)}], pageInfo: { hasNextPage: false, endCursor: null } } } } }));
 else process.stdout.write(JSON.stringify({ login: "fictional-work", id: 1042 }));\n`);
 const app = createServer({ port: 0, stateDir: join(state, "app"), factory: { accountTools: { github: { executable: process.execPath, args: [fixture] } } } });
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
@@ -50,6 +55,26 @@ try {
   await card.getByRole("button", { name: "Register public key with GitHub", exact: true }).click(); await card.getByText("Public key registered", { exact: true }).waitFor();
   await accounts.getByRole("combobox", { name: "GitHub profile", exact: true }).selectOption({ label: "Work account" });
   await accounts.getByRole("button", { name: "Save Project accounts", exact: true }).click(); await accounts.getByText("Project accounts saved", { exact: true }).waitFor();
+  const github = page.getByTestId("project-github"); await github.locator("summary").click();
+  assert(!(await github.getByRole("checkbox", { name: "Import GitHub issues", exact: true }).isChecked()));
+  assert(!(await github.getByRole("checkbox", { name: "Import requested changes", exact: true }).isChecked()));
+  await github.getByRole("textbox", { name: "Repository (owner/name)", exact: true }).fill("fictional/project");
+  await github.getByRole("combobox", { name: "GitHub account", exact: true }).selectOption({ label: "Work account · fictional-work" });
+  await github.getByRole("textbox", { name: "Review rules", exact: true }).fill("Review against the Project standards and specification.");
+  await github.getByRole("textbox", { name: "Trusted reviewers", exact: true }).fill("fictional-reviewer");
+  await github.getByRole("textbox", { name: "Required GitHub checks", exact: true }).fill("Fast checks");
+  await github.getByRole("checkbox", { name: "Import GitHub issues", exact: true }).check();
+  await github.getByRole("button", { name: "Save Project settings", exact: true }).click();
+  await github.getByRole("button", { name: "Sync GitHub", exact: true }).click();
+  await github.getByRole("link", { name: "#27 · Fictional pending review", exact: true }).waitFor();
+  assert(await github.getByRole("button", { name: "Merge PR", exact: true }).isDisabled());
+  await github.getByRole("button", { name: "Source", exact: true }).click();
+  await github.locator("summary").filter({ hasText: /^README.md/ }).click();
+  await github.getByText("+An example improvement.", { exact: false }).waitFor();
+  const imported = await (await fetch(origin + "/api/factory")).json();
+  assert(imported.implementations.some((idea: { title: string }) => idea.title === "Fictional GitHub ticket"));
+  if (process.env["UI_EVIDENCE_DIR"]) { mkdirSync(process.env["UI_EVIDENCE_DIR"], { recursive: true }); await github.screenshot({ path: join(process.env["UI_EVIDENCE_DIR"], "github-project-workflow.png") }); }
+  await github.locator("summary").click();
   await card.getByRole("button", { name: "Edit account profile", exact: true }).click();
   await card.getByRole("textbox", { name: "Account name", exact: true }).fill("Updated work account");
   await card.getByRole("button", { name: "Save account profile", exact: true }).click();
