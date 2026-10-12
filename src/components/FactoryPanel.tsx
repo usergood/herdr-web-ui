@@ -12,6 +12,7 @@ import { FactoryArtifactPreview } from "./FactoryArtifactPreview.tsx";
 import { FactoryReviewPanel } from "./FactoryReviewPanel.tsx";
 import { FactoryExecutionPanel } from "./FactoryExecutionPanel.tsx";
 import { FactoryRetrospectivePanel } from "./FactoryRetrospectivePanel.tsx";
+import { AssignmentActions } from "./AssignmentActions.tsx";
 import "./FactoryPanel.css";
 
 const stages: FactoryStage[] = ["inbox", "specifying", "ready", "running", "review", "done"];
@@ -72,7 +73,7 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
     if (busy) return;
     setBusy(true); setError(null);
     try { await action(); await refresh(); }
-    catch (failure) { setError(failure instanceof Error ? failure.message : String(failure)); await refresh().catch(() => {}); }
+    catch (failure) { setError(failure instanceof Error ? ("detail" in failure ? String(failure.detail) : failure.message) : String(failure)); await refresh().catch(() => {}); }
     finally { setBusy(false); }
   }
   const prefix = selected ? `/implementations/${selected}` : "";
@@ -125,13 +126,18 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
     </>}
     {selected && detail && overview && <div className="factory-detail">
       <section className="factory-section"><div className="project-assignment-heading"><h2>{detail.implementation.title}</h2>{(detail.implementation.stage === "done" || detail.implementation.archived_at) && <button className="btn" disabled={busy} onClick={() => void perform(async () => { await factoryRequest(`${prefix}/${detail.implementation.archived_at ? "restore" : "archive"}`, {}); })}><Archive />{detail.implementation.archived_at ? t("Restore") : t("Archive task")}</button>}</div><p>{stageLabel(detail.implementation.stage, t)}</p>
+        {detail.implementation.description && <Markdown>{detail.implementation.description}</Markdown>}
         <div className="factory-filters">
           <label>{t("Project")}<select className="select factory-input" value={detail.implementation.project_id ?? ""} disabled={busy} onChange={(event) => void perform(async () => { await factoryRequest(`${prefix}/configure`, { project_id: event.target.value || null }); })}><option value="">{t("Unassigned")}</option>{overview.projects.filter((p) => !p.removed_at).map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
-          <label>{t("Provider")}<select className="select factory-input" value={detail.implementation.provider ?? ""} disabled={busy} onChange={(event) => void perform(async () => { await factoryRequest(`${prefix}/configure`, { provider: (event.target.value || null) as FactoryProvider | null }); })}><option value="">{t("Project default")}</option><option>codex</option><option>claude</option><option>opencode</option></select></label>
-          <label>{t("Machine")}<select className="select factory-input" value={detail.implementation.machine_id ?? ""} disabled={busy} onChange={(event) => void perform(async () => { await factoryRequest(`${prefix}/configure`, { machine_id: event.target.value || null }); })}><option value="" disabled={!selectedProject}>{selectedProject ? t("Project default") : t("Select a Machine")}</option>{machines.map((machine) => <option key={machine.id} value={machine.id}>{machine.name}</option>)}</select></label>
         </div><p className="factory-context">{effectiveProvider} · {machines.find((machine) => machine.id === effectiveMachine)?.name ?? effectiveMachine} · {checkout?.path ?? t("No verified checkout")}</p>
       </section>
-      <FactoryWorkflowPanel detail={detail} machineId={effectiveMachine} provider={effectiveProvider ?? "codex"} busy={busy} perform={perform} accountScope={JSON.stringify(selectedProject?.account_bindings?.[effectiveMachine] ?? {})} />
+      <AssignmentActions key={detail.implementation.id} detail={detail} project={selectedProject} machineId={effectiveMachine} machineName={machines.find(m=>m.id===effectiveMachine)?.name??effectiveMachine} provider={effectiveProvider??"codex"} busy={busy} perform={perform} onOpenPane={onOpenPane} />
+      <details className="factory-section"><summary>{t("Advanced controls")}</summary>
+        <div className="factory-filters">
+          <label>{t("Provider")}<select className="select factory-input" value={detail.implementation.provider ?? ""} disabled={busy} onChange={(event) => void perform(async () => { await factoryRequest(`${prefix}/configure`, { provider: (event.target.value || null) as FactoryProvider | null }); })}><option value="">{t("Project default")}</option><option>codex</option><option>claude</option><option>opencode</option></select></label>
+          <label>{t("Machine")}<select className="select factory-input" value={detail.implementation.machine_id ?? ""} disabled={busy} onChange={(event) => void perform(async () => { await factoryRequest(`${prefix}/configure`, { machine_id: event.target.value || null }); })}><option value="" disabled={!selectedProject}>{selectedProject ? t("Project default") : t("Select a Machine")}</option>{machines.map((machine) => <option key={machine.id} value={machine.id}>{machine.name}</option>)}</select></label>
+        </div>
+      <FactoryWorkflowPanel detail={detail} machineId={effectiveMachine} provider={effectiveProvider ?? "codex"} busy={busy} perform={perform} showQuestions={false} accountScope={JSON.stringify(selectedProject?.account_bindings?.[effectiveMachine] ?? {})} />
       <FactoryExecutionPanel detail={detail} project={selectedProject} busy={busy} perform={perform} onOpenPane={onOpenPane} />
       <section className="factory-section"><h3>{t("Notes")}</h3><label>{t("Chat")}<select className="select factory-input" value={chatId} onChange={(event) => setSelectedChat(event.target.value)}>{detail.chats.map((chat) => <option key={chat.id} value={chat.id}>{chat.title}</option>)}</select></label><form className="factory-form" onSubmit={(event) => { event.preventDefault(); void perform(async () => { const chat = await factoryRequest<{ id: string }>(`${prefix}/chats`, { title: chatTitle }); setSelectedChat(chat.id); setChatTitle(""); }); }}><label>{t("Chat title")}<input className="input factory-input" required maxLength={200} value={chatTitle} onChange={(event) => setChatTitle(event.target.value)} /></label><button className="btn factory-button" disabled={busy}>{t("New chat")}</button></form>{detail.messages.filter((message) => message.chat_id === chatId).map((message) => <article className="factory-message" key={message.id}><small>{message.role} · {new Date(message.created_at).toLocaleString()}</small><Markdown>{message.content}</Markdown></article>)}
         <form className="factory-form" onSubmit={(event) => { event.preventDefault(); void perform(async () => { await factoryRequest(`${prefix}/messages`, { chat_id: chatId, role: "owner", content: note }); setNote(""); }); }}><label>{t("New note")}<textarea className="input factory-input" value={note} onChange={(event) => setNote(event.target.value)} required maxLength={100_000} /></label><button className="btn factory-button" disabled={busy}>{t("Save note")}</button></form>
@@ -155,6 +161,7 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
       <FactoryReviewPanel detail={detail} busy={busy} perform={perform} /><FactoryRetrospectivePanel detail={detail} busy={busy} perform={perform} />
       <section className="factory-section"><h3>{t("Retained native conversations")}</h3>{detail.native_snapshots.map((snapshot) => <details key={snapshot.id}><summary>{snapshot.run_id} · {snapshot.sequence} · {new Date(snapshot.created_at).toLocaleString()}</summary>{snapshot.turns.map((turn, index) => <article className="factory-message" key={index}><small>{turn.role} · {turn.ts}</small>{turn.parts.map((part, index) => part.kind === "text" ? <Markdown key={index}>{part.text}</Markdown> : part.kind === "skill" ? <small key={index}>{part.skill.name} · {part.skill.status}</small> : part.kind === "tool" ? <details key={index}><summary>{part.name} · {part.summary}</summary><pre>{part.output}</pre></details> : null)}</article>)}{snapshot.cursor && <button className="btn factory-button" disabled={busy} onClick={() => void perform(async () => { await factoryRequest(`/runs/${snapshot.run_id}/import-conversation`, { before: snapshot.cursor ?? undefined }); })}>{t("Retain older native history")}</button>}</details>)}</section>
       <section className="factory-section"><h3>{t("History")}</h3>{detail.events.map((event) => <p key={event.id}><time>{new Date(event.created_at).toLocaleString()}</time> · {event.kind}</p>)}</section>
+      </details>
     </div>}
   </section></OpenFileContext.Provider>;
 }

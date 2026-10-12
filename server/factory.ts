@@ -539,6 +539,22 @@ export class FactoryService {
         this.store.db.transaction(() => { this.store.put("projects", project); this.store.put("checkouts", checkout, project.id); if (guidance) { this.store.put("implementations", guidance); const chat: FactoryChat = { ...this.store.record(), implementation_id: guidance.id, title: "Setup" }; this.store.put("chats", chat, guidance.id); } this.store.event(null, "project_registered", { project_id: project.id, checkout_id: checkout.id }); })();
         return jsonResponse(project, 201);
       }
+      const completeWork = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/complete-work$/.exec(url.pathname);
+      if (completeWork && request.method === "POST") {
+        const body = await this.body(request); const id = completeWork[1]!;
+        const idea = this.store.get<Implementation>("implementations", id);
+        const run = this.store.list<FactoryRun>("runs", id).at(-1);
+        if (!idea || !run || run.id !== body.run_id || run.action !== "work" || !run.workspace_id || !run.pane_id) throw new FactoryError("direct_work_required", "Select this Assignment's latest direct work session before marking it done", 409);
+        if (idea.stage === "done" && !this.activeWork(id)) return jsonResponse(idea);
+        const scope = hash(JSON.stringify({project_id:idea.project_id,provider:idea.provider,machine_id:idea.machine_id,archived_at:idea.archived_at}));
+        await this.runtime.stopRun(run.id, {summary:"Owner marked direct work done; its worktree is retained"});
+        return jsonResponse(this.store.db.transaction(() => {
+          const current = this.store.get<Implementation>("implementations", id)!;
+          if (this.store.list<FactoryRun>("runs", id).at(-1)?.id !== run.id || this.activeWork(id) || hash(JSON.stringify({project_id:current.project_id,provider:current.provider,machine_id:current.machine_id,archived_at:current.archived_at})) !== scope) throw new FactoryError("scope_changed", "The Assignment changed during completion; refresh it before continuing", 409);
+          const next: Implementation = {...current,stage:"done",outcome:"implementation_complete",updated_at:new Date().toISOString()};
+          this.store.put("implementations",next);this.store.event(id,"direct_work_completed",{run_id:run.id,owner_accepted:true});return next;
+        })());
+      }
       const archiveRoute = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/(archive|restore)$/.exec(url.pathname);
       if (archiveRoute && request.method === "POST") {
         await this.body(request);

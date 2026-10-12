@@ -17,7 +17,7 @@ import { validPermissionMode } from "../shared/agent-permissions.ts";
 export type MachineEndpoint = (machineId: string) => { url: string; token: string } | undefined;
 type HostCapabilities = Awaited<ReturnType<FactoryExecutionHost["capabilities"]>>;
 const activeConditions = new Set(["accepted", "working", "needs_you", "blocked", "disconnected", "interrupted"]);
-const actions: FactoryAction[] = ["setup", "grill-me", "grill-with-docs", "to-spec", "to-tickets", "implement-spec", "retro", "apply-retro", "verify-provider"];
+const actions: FactoryAction[] = ["work", "setup", "grill-me", "grill-with-docs", "to-spec", "to-tickets", "implement-spec", "retro", "apply-retro", "verify-provider"];
 export class FactoryRuntime {
   private readonly dispatches = new Map<string, Promise<FactoryRun>>();
   private stopped = false;
@@ -108,7 +108,7 @@ export class FactoryRuntime {
     const project = implementation.project_id ? this.store.get<FactoryProject>("projects", implementation.project_id) : null;
     if (implementation.archived_at || project?.removed_at) throw new FactoryError("inactive_assignment", "Restore this Assignment and Project before starting work", 409);
     const action = body.action as FactoryAction;
-    if (["implement-spec", "grill-with-docs", "to-tickets", "retro", "apply-retro"].includes(action) && !project) throw new FactoryError("project_required", "Select a Project before starting this action", 409);
+    if (["work", "implement-spec", "grill-with-docs", "to-tickets", "retro", "apply-retro"].includes(action) && !project) throw new FactoryError("project_required", "Select a Project before starting this action", 409);
     const retrospective = ["retro", "apply-retro"].includes(action) ? this.store.get<import("../shared/protocol.ts").FactoryRetrospective>("retrospectives", String(body.retrospective_id)) : null;
     if (["retro", "apply-retro"].includes(action) && (!retrospective || retrospective.project_id !== project?.id || action === "apply-retro" && !retrospective.approved)) throw new FactoryError("retrospective_scope_required", "Select retained Project evidence and separately approve improvements before applying them", 409);
     if (action === "to-spec" && this.store.list<{ answer: string | null }>("questions", id).length && (!this.workflow.approved(id, "shared_understanding", this.workflow.questionRevision(id)) || this.store.list<{ answer: string | null }>("questions", id).some((question) => question.answer === null))) throw new FactoryError("understanding_unconfirmed", "Answer pending questions and confirm their shared understanding before specification", 409);
@@ -137,7 +137,7 @@ export class FactoryRuntime {
       if (!checkout) throw new FactoryError("checkout_required", "Configure a verified checkout on the selected Machine", 409);
       inspected = await this.inspect(machineId, checkout.path);
       if (inspected.repository !== checkout.repository) throw new FactoryError("wrong_checkout", "The selected checkout belongs to a different repository", 409);
-      if (machineId === "local" && (await git(inspected.path, ["status", "--porcelain", "--untracked-files=all"])).trim()) throw new FactoryError("dirty_checkout", "Preserve the checkout's existing changes before starting repository work", 409);
+      if (action === "implement-spec" && machineId === "local" && (await git(inspected.path, ["status", "--porcelain", "--untracked-files=all"])).trim()) throw new FactoryError("dirty_checkout", "Save the Project checkout's existing changes before starting automated implementation. Planning and direct work can start in their own workspaces", 409);
     }
     if (action === "implement-spec" && project?.tracker !== "app") throw new FactoryError("tracker_setup_required", "Select the app-native Other tracker explicitly; external tracker publication remains a separately configured action", 409);
     const specification = this.workflow.specification(id); const graphHash = this.workflow.graphHash(id);
@@ -197,7 +197,7 @@ export class FactoryRuntime {
       if (current && ["cancelled", "completed", "failed"].includes(current.condition)) { run = current; return; }
       this.store.put("runs", run, run.implementation_id);
       this.store.event(run.implementation_id, run.condition === "working" ? "native_launch_confirmed" : "dispatch_uncertain", { run_id: run.id, machine_id: run.machine_id, pane_id: run.pane_id, reason: run.waiting_reason });
-      if (run.condition === "working") { const idea = this.store.get<Implementation>("implementations", run.implementation_id)!; this.store.put("implementations", { ...idea, stage: run.action === "implement-spec" ? "running" : "specifying" }); }
+      if (run.condition === "working") { const idea = this.store.get<Implementation>("implementations", run.implementation_id)!; this.store.put("implementations", { ...idea, stage: ["work", "implement-spec"].includes(run.action) ? "running" : "specifying" }); }
     })();
     return run;
   }

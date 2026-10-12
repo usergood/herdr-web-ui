@@ -30,5 +30,6 @@ Vocabulary proposed by the owner for review before API contracts are committed. 
 | Project setup | Guided selection of a Project's repository, Machine, agent, checks, accounts and repository guidance. |
 | Machine account | A verified login retained privately on one Machine and selectable by its Projects. |
 | Saved login | A login already configured in a native CLI, which the owner can explicitly import as a Machine account. |
+| Direct work | An owner-started native agent workspace for an idea, using Project defaults without a factory Ticket graph. |
 
 Herdr's existing **workspace**, **pane** and native **session** terms keep their upstream meanings. A pane is not an Implementation, and closing it does not complete or delete the assignment. In engineering-skill prose, lower-case “implementation” can mean a module's code; use capitalized **Implementation** for the product record.

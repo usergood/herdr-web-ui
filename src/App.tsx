@@ -1273,7 +1273,7 @@ export function App() {
               return navigateProject(projectId && factoryData.overview?.projects.some((project) => project.id === projectId && !project.removed_at) ? { kind: "project", id: projectId } : { kind: "assignments" });
             }
             navigateProject(["project", "project-inbox", "inbox", "assignments"].includes(factoryRoute.kind) ? factoryRoute : { kind: "assignments" });
-          }} onOpenPane={selectTarget} />}
+          }} onOpenPane={(machineId, paneId) => selectTarget(machineId, paneId, "chat")} />}
           {/* the panel sits inside main, so the page keeps its main landmark; it draws no box */}
           {!factoryOpen && <div id={PANE_TABPANEL_ID} className="terminal-tabpanel" role={tabPanelLabel === null ? undefined : "tabpanel"} aria-label={tabPanelLabel ?? undefined}>
           <PaneCanvas key={selectedMachineId} snapshot={snapshot} pane={selectedPane} selectedPaneId={selectedPaneId} onSelect={selectPane} onChanged={actions.refresh} actionsRef={paneActionsRef}
