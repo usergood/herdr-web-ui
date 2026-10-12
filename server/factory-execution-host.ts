@@ -1,3 +1,5 @@
+import { nativeSessionRef } from "../shared/native-pane.ts";
+import { projectWorkflowPrompt } from "./factory-project-policy.ts";
 import { writePrivateFile } from "./factory-files.ts";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
@@ -53,6 +55,12 @@ export class FactoryExecutionHost {
     return { project_id: payload.library.project_id, machine_id: payload.machine_id, revision: payload.library.revision, ...context };
   }
   bindPrompt(prompt: FactoryNative["prompt"]): void { this.native.prompt = prompt; this.promptBound = true; }
+  async paneState(paneId: string) {
+    const pane = this.native.paneState ? await this.native.paneState(paneId) : (await this.native.snapshot()).panes.find((entry) => entry.pane_id === paneId);
+    if (!pane) throw new FactoryError("pane_not_found", "This native pane is no longer available", 404);
+    const decorated = pane as import("../shared/protocol.ts").HerdrPane;
+    return { pane_id: decorated.pane_id, terminal_id: decorated.terminal_id, session_ref: nativeSessionRef(decorated), title: decorated.label?.trim() || decorated.terminal_title_stripped?.trim() || decorated.title?.trim() || decorated.pane_id, agent_status: decorated.agent_status, background_tasks: decorated.background_tasks, background_wait: decorated.background_wait };
+  }
   async operation(id: string, action: string, body: Record<string, unknown>): Promise<unknown> {
     const run = this.store.get<{ run: FactoryRun }>("host_leases", id)?.run;
     const controlOnly = ["cleanup", "check-reconcile", "reconcile-worker", "stop-worker", "head", "transcript"].includes(action);
@@ -206,6 +214,7 @@ export class FactoryExecutionHost {
       let prompt = run.action === "verify-provider"
         ? `${skills.skills.map((entry) => `${run.provider === "codex" ? "$" : run.provider === "opencode" ? "@" : "/"}${entry.name}`).join(" ")} This is an explicitly requested native skill-loading probe. Load each of these pinned skills through your supported skill mechanism and read the project-local SKILL.md and referenced support files: ${skills.skills.map((entry) => entry.name).join(", ")}. Inspect instructions only; do not execute their workflows, publish, spawn children or change global settings. Describe question and permission differences. Use bun .saurons-eye-tracker.mjs question unused '{"question":"Confirm this read-only native verification round?"}' to record one owner question, then wait for the actual answer. When explicitly resumed, read contract and use consume with its question revision. Read .saurons-eye-context.json for this disposable scope.`
         : `${run.provider === "codex" ? "$" : run.provider === "opencode" ? "@" : "/"}${skill} Read .saurons-eye-context.json for the frozen owner scope. Follow this action's confirmation gates and await actual owner answers.`;
+      prompt += projectWorkflowPrompt((run.manifest as { project?: import("../shared/factory.ts").FactoryProject }).project);
       if (referenceContext) prompt += ` ${referenceContext.prompt}`;
       const coordinator = run.action === "implement-spec";
       await this.native.startAgent({ name: `saurons-${run.id.replaceAll("-", "").slice(0, 24)}`, kind: run.provider, paneId: run.pane_id!, args: factoryAgentArguments(run.provider, worktree, prompt, coordinator, Boolean((run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot?.profiles.some((entry) => entry.service === run.provider))), timeoutMs: 60_000 });

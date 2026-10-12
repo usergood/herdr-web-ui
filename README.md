@@ -28,6 +28,7 @@ Install the bundled **Saurons eye** app from normal Android Chrome over HTTPS. A
 Inbox → Specifying → Ready → Running → Review → Done
 ```
 
+- **Project workspaces.** Manage Projects outside Inbox, browse verified folders on registered hosts, and group native chats and child workers in the sidebar. Capture ideas from each Project’s Inbox chat, archive finished work, and restore retained history. Set Project workflow instructions and a 150–200k context handoff target. [Guide →](docs/factory/project-workspaces.md)
 - **Durable ideas and Projects.** Capture an Implementation with chats, notes and attachments before choosing a repository. Link it to a Project later while keeping its identity and history.
 - **Specifications and explicit approvals.** Record questions and answers, version specifications, agree testing seams, and approve a dependency graph of Tickets before factory work starts. A new specification requires a new graph approval.
 - **Owned native execution.** Run agents in isolated Git worktrees with frozen context, provider settings and permissions. Manual starts and global limits control workers and builds; Stop retains branches, artifacts and history.
@@ -44,13 +45,22 @@ Factory admission requires genuine native skill and question/answer verification
 
 Desktop and phone views of the fork's features, captured with fictional data in an isolated test session. Click an image to open it at full size.
 
+The Project workspace update gives Inbox its own page and Project settings the existing Settings layout.
+
+| Project settings | Project Inbox on a phone |
+| --- | --- |
+| [![Project settings](docs/screenshots/project-workspaces/project-settings-desktop.png)](docs/screenshots/project-workspaces/project-settings-desktop.png) | [![Project Inbox](docs/screenshots/project-workspaces/project-inbox-mobile.png)](docs/screenshots/project-workspaces/project-inbox-mobile.png) |
+
+[Project assignments and child workers](docs/screenshots/project-workspaces/project-assignments-desktop.png) · [Global Inbox](docs/screenshots/project-workspaces/global-inbox-desktop.png) · [Phone workflow settings](docs/screenshots/project-workspaces/project-settings-mobile.png)
+
+
 <table>
   <tr><th>Desktop</th><th>Phone</th></tr>
   <tr>
     <td width="75%" valign="top">
-      <a href="docs/screenshots/fork-features/inbox-desktop.png"><img src="docs/screenshots/fork-features/inbox-desktop.png" width="100%" alt="Desktop Inbox with fictional ideas in Inbox, Specifying and Ready"></a>
+      <a href="docs/screenshots/fork-features/inbox-desktop.png"><img src="docs/screenshots/fork-features/inbox-desktop.png" width="100%" alt="Desktop global Inbox with fictional ideas"></a>
       <br><b>Durable Inbox</b>
-      <br><sub>Capture ideas before choosing a Project, then track their specification and readiness.</sub>
+      <br><sub>Capture ideas globally or in a Project Inbox, then track progress in Assignments.</sub>
     </td>
     <td width="25%" valign="top" align="center"><a href="docs/screenshots/fork-features/inbox-mobile.png"><img src="docs/screenshots/fork-features/inbox-mobile.png" width="180" alt="Phone Inbox capture form and board"></a></td>
   </tr>

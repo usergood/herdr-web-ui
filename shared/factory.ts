@@ -10,6 +10,7 @@ export interface Implementation extends FactoryRecord {
   title: string; description: string; project_id: string | null; provider: FactoryProvider | null;
   machine_id: string | null; stage: FactoryStage; position: number;
   outcome: "none" | "implementation_complete" | "pr_open" | "merged" | "released";
+  archived_at?: string | null;
 }
 export interface FactoryProject extends FactoryRecord {
   name: string; repository: string; provider: FactoryProvider; machine_id: string;
@@ -17,6 +18,9 @@ export interface FactoryProject extends FactoryRecord {
   checks?: string[][]; setup?: string[][]; environment?: Record<string, string>;
   permissions?: string; shared_paths?: string[];
   account_bindings?: Record<string, ProjectAccountBindings>;
+  removed_at?: string | null;
+  workflow_instructions?: string;
+  context_target_tokens?: number;
 }
 export interface ProjectCheckout extends FactoryRecord {
   project_id: string; machine_id: string; path: string; repository: string; head: string;
@@ -82,7 +86,16 @@ export interface FactoryDetail {
   retrospectives: FactoryRetrospective[];
   native_snapshots: NativeConversationSnapshot[];
 }
-export interface FactoryOverview { implementations: Implementation[]; projects: FactoryProject[]; checkouts: ProjectCheckout[]; settings: FactorySettings; activity: { implementation_id: string; run_id: string; condition: RunCondition; action: FactoryAction; waiting_reason: string | null; completed_tickets: number; total_tickets: number }[] }
+export interface FactoryOverview { implementations: Implementation[]; projects: FactoryProject[]; checkouts: (Omit<ProjectCheckout, "instructions"> & { instructions?: ProjectCheckout["instructions"] })[]; settings: FactorySettings; activity: { implementation_id: string; run_id: string; condition: RunCondition; action: FactoryAction; waiting_reason: string | null; completed_tickets: number; total_tickets: number }[] }
+export interface FactoryPaneLink {
+  project_id?: string | null;
+  worktree: string | null; workspace_id: string | null;
+  implementation_id: string; run_id: string; worker_id: string | null;
+  machine_id: string; pane_id: string; provider: FactoryProvider;
+  title: string; condition: RunCondition;
+}
+export interface FactoryPaneArchive extends FactoryRecord { machine_id: string; pane_id: string; terminal_id?: string; session_ref?: string | null; title?: string; archived_at: string | null }
+export interface FactoryOverview { pane_links?: FactoryPaneLink[]; pane_archives?: FactoryPaneArchive[] }
 export interface FactoryProviderCapability { provider: FactoryProvider; version: string | null; installed: boolean; skills_verified: boolean; factory_ready: boolean; reasons: string[] }
 export interface FactoryCapabilities { providers: FactoryProviderCapability[]; skill_manifest: { commit: string; hash: string; file_count: number } | null; factory_host_protocol: 1; project_reference_protocol?: 1; account_profile_protocol?: 1 }
 export interface FactoryOutput { name: string; media_type: string; hash: string; size: number }

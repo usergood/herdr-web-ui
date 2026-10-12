@@ -52,13 +52,8 @@ async function capture(feature: string, hash: string, prepare: (page: Page) => P
       await page.goto(`http://localhost:${app!.port}/`);
       await page.locator(".conn-live").waitFor({ state: "attached" });
       if (!view.touch) await page.locator(".sidebar-toggle").click();
-      await page.getByRole("button", { name: "Inbox", exact: true }).click();
-      await page.getByRole("heading", { name: "Saurons eye", exact: true }).waitFor();
-      if (hash !== "#factory") {
-        const selected = await api<FactoryDetail>(`/implementations/${hash.slice("#factory/".length)}`);
-        await page.getByRole("button", { name: selected.implementation.title, exact: true }).click();
-        await page.getByRole("heading", { name: selected.implementation.title, exact: true }).waitFor();
-      }
+      await page.goto(`http://localhost:${app!.port}/${hash}`);
+      await page.locator(".factory-panel").first().waitFor();
       const anchor = await prepare(page);
       if (anchor) await anchor.evaluate((element) => element.scrollIntoView({ block: "start", inline: "nearest" }));
       else await page.locator(".factory-panel").evaluate((element) => { element.scrollTop = 0; });
@@ -113,10 +108,11 @@ try {
   await api(`/implementations/${drafting.id}/specifications`, { content: "## Export customer receipts\n\nKeep the export format versioned and review it before execution." });
 
   const hash = `#factory/${idea.id}`;
-  await capture("inbox", "#factory", async (page) => { await page.getByRole("button", { name: idea.title, exact: true }).waitFor(); return null; });
+  await capture("inbox", "#factory", async (page) => { await page.getByRole("button", { name: "Improve the mobile receipt", exact: true }).waitFor(); return null; });
   await capture("notes", hash, async (page) => { await page.getByRole("heading", { name: "Decision notes", exact: true }).waitFor(); return section(page, "Notes"); });
   await capture("attachments", hash, async (page) => { await page.frameLocator('iframe[title="refund-receipt.html"]').getByRole("heading", { name: "Refund receipt", exact: true }).waitFor(); return section(page, "Attachments"); });
-  await capture("references", hash, async (page) => {
+  await capture("references", `#projects/${project.id}/settings`, async (page) => {
+    await page.getByRole("tab", { name: "Project references", exact: true }).click();
     const references = page.getByRole("region", { name: "Project references", exact: true });
     await references.getByRole("heading", { name: "Refund policy · v1", exact: true }).waitFor();
     await references.getByRole("article").filter({ has: page.getByRole("heading", { name: "App icon reference · v1", exact: true }) }).getByRole("button", { name: "Read reference", exact: true }).click();
@@ -139,7 +135,8 @@ try {
     assert(await review.getByRole("button", { name: "Request changes", exact: true }).isDisabled(), "No native Run is invented for the screenshot");
     return review;
   });
-  await capture("recovery", "#factory", async (page) => {
+  await capture("recovery", "#projects", async (page) => {
+    await page.getByRole("tab", { name: "Factory", exact: true }).click();
     const recovery = page.locator("details").filter({ has: page.locator("summary").filter({ hasText: /^Factory settings and recovery$/ }) }).first();
     await recovery.locator("summary").click();
     await recovery.getByRole("button", { name: "Create verified backup", exact: true }).click();

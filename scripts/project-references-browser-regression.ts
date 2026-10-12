@@ -10,14 +10,13 @@ import { createServer } from "../server/index.ts";
 const state = mkdtempSync(join(tmpdir(), "project-references-browser-")); const repo = join(state, "repo"); mkdirSync(repo);
 execFileSync("git", ["init", "-b", "main"], { cwd: repo, stdio: "ignore" }); writeFileSync(join(repo, "README.md"), "# Fictional guide project\n");
 execFileSync("git", ["add", "README.md"], { cwd: repo }); execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "fixture"], { cwd: repo, stdio: "ignore" });
-let app = createServer({ port: 0, stateDir: join(state, "app"), machines: false });
+let app = createServer({ port: 0, stateDir: join(state, "app") });
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
   const response = await fetch(`http://localhost:${app.port}/api/factory/projects`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify({ name: "Reference demo", path: repo, machine_id: "local", provider: "codex", tracker: "app" }) }); assert.equal(response.status, 201); const project = await response.json();
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }); page.setDefaultTimeout(5000); const errors: string[] = []; page.on("pageerror", (error) => errors.push(error.message));
-  await page.goto(`http://localhost:${app.port}`); await page.getByRole("button", { name: "Inbox", exact: true }).click();
-  await page.getByRole("textbox", { name: "Idea title", exact: true }).fill("Codex project guidance"); await page.getByRole("button", { name: "Capture idea", exact: true }).click();
-  await page.getByRole("heading", { name: "Codex project guidance", exact: true }).waitFor(); await page.getByRole("combobox", { name: "Project", exact: true }).selectOption(project.id);
+  await page.goto(`http://localhost:${app.port}/#projects/${project.id}/settings`);
+  await page.getByRole("tab", { name: "Project references", exact: true }).click();
   await page.getByRole("heading", { name: "Project references", exact: true }).waitFor();
   await page.getByRole("button", { name: "Use guide template", exact: true }).click();
   await page.waitForFunction(() => (document.querySelector('textarea[name="reference-content"]') as HTMLTextAreaElement)?.value.includes("## Purpose"));
@@ -34,6 +33,7 @@ try {
   await page.getByRole("button", { name: "Edit reference", exact: true }).click();
   await page.getByRole("textbox", { name: "Reference text", exact: true }).fill("# Refund guidance\n\nAn older draft to retain.");
   const secondTab = await browser.newPage(); await secondTab.goto(page.url());
+  await secondTab.getByRole("tab", { name: "Project references", exact: true }).click();
   await secondTab.getByRole("button", { name: "Edit reference", exact: true }).click();
   await secondTab.getByRole("textbox", { name: "Reference text", exact: true }).fill("# Refund guidance\n\nNewer owner guidance from another tab.");
   await secondTab.getByRole("button", { name: "Save Project reference", exact: true }).click(); await secondTab.getByRole("heading", { name: "Refunds · v3", exact: true }).waitFor(); await secondTab.close();
@@ -55,7 +55,8 @@ try {
   await page.getByRole("button", { name: "Prepare Codex references", exact: true }).click();
   await page.waitForFunction(() => (document.querySelector('textarea[name="codex-reference-prompt"]') as HTMLTextAreaElement)?.value.includes("Always read"));
   assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd: repo, encoding: "utf8" }), "");
-  const hash = new URL(page.url()).hash; app.stop(); app = createServer({ port: 0, stateDir: join(state, "app"), machines: false }); await page.goto(`http://localhost:${app.port}/${hash}`);
+  const hash = new URL(page.url()).hash; app.stop(); app = createServer({ port: 0, stateDir: join(state, "app") }); await page.goto(`http://localhost:${app.port}/${hash}`);
+  await page.getByRole("tab", { name: "Project references", exact: true }).click();
   await page.getByRole("heading", { name: "Refunds · v4", exact: true }).waitFor(); await page.setViewportSize({ width: 390, height: 844 });
   const referenceHeading = page.getByRole("heading", { name: "Project references", exact: true });
   await referenceHeading.scrollIntoViewIfNeeded();
@@ -65,6 +66,7 @@ try {
   assert(await page.getByRole("button", { name: "Prepare Codex references", exact: true }).isVisible());
   const phone = await browser.newPage({ viewport: { width: 390, height: 844 } }); phone.setDefaultTimeout(5000); phone.on("pageerror", (error) => errors.push(error.message));
   await phone.goto(page.url());
+  await phone.getByRole("tab", { name: "Project references", exact: true }).click();
   const phoneReferences = phone.getByRole("region", { name: "Project references", exact: true });
   await phoneReferences.getByRole("heading", { name: "Refunds · v4", exact: true }).waitFor();
   await phoneReferences.getByRole("heading", { name: "Project references", exact: true }).evaluate((heading) => heading.scrollIntoView({ block: "start", inline: "nearest" }));

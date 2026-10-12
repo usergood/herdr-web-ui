@@ -85,6 +85,9 @@ export class FactoryRuntime {
   async inspect(machineId: string, path: string): Promise<Awaited<ReturnType<typeof inspectCheckout>>> {
     return machineId === "local" ? inspectCheckout(path) : this.remote(machineId, "/inspect", { path });
   }
+  async paneState(machineId: string, paneId: string): Promise<Awaited<ReturnType<FactoryExecutionHost["paneState"]>>> {
+    return machineId === "local" ? this.host.paneState(paneId) : this.remote(machineId, "/pane-state", { pane_id: paneId });
+  }
   async capture(machineId: string, path: string, base: string, mode: "branch" | "workspace"): Promise<{ repository: string; head: string; files: import("../shared/protocol.ts").ReviewSnapshot["files"] }> {
     return this.remote(machineId, "/review", { path, base, mode });
   }
@@ -99,6 +102,7 @@ export class FactoryRuntime {
     }
     if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Execution is disabled on a restored copy until separately scoped promotion", 409);
     const project = implementation.project_id ? this.store.get<FactoryProject>("projects", implementation.project_id) : null;
+    if (implementation.archived_at || project?.removed_at) throw new FactoryError("inactive_assignment", "Restore this Assignment and Project before starting work", 409);
     const action = body.action as FactoryAction;
     if (["implement-spec", "grill-with-docs", "to-tickets", "retro", "apply-retro"].includes(action) && !project) throw new FactoryError("project_required", "Select a Project before starting this action", 409);
     const retrospective = ["retro", "apply-retro"].includes(action) ? this.store.get<import("../shared/protocol.ts").FactoryRetrospective>("retrospectives", String(body.retrospective_id)) : null;

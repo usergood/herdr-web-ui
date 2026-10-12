@@ -38,3 +38,7 @@
   .factory-lane { min-height: 0; }
   .factory-button { min-height: var(--touch-target); }
 }
+
+.factory-inbox-board { grid-template-columns: 1fr; max-width: var(--content-w); }
+.project-assignment-heading { display: flex; gap: var(--space-3); align-items: center; }
+.project-assignment-heading h2 { margin-right: auto; }

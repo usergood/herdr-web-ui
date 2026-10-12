@@ -1067,8 +1067,19 @@ export const DEFAULT_PORT = 7317;
  * keys below; all JSON errors are ApiError. Mutations require same-origin and
  * x-herdr-factory: 1; reads and writes require owner access.
  * GET /api/factory -> FactoryOverview; GET /api/factory/implementations/:id -> FactoryDetail.
+ * GET /api/factory?navigation=1 -> FactoryOverview without checkout instruction contents;
+ * sidebar/page polling uses metadata; full instructions remain in frozen Run context.
  * POST /api/factory/implementations (implementation) -> Implementation, 201, initial Chat retained.
  * POST /api/factory/projects (project) -> FactoryProject, 201, checkout verified on selected Machine.
+ * POST /api/factory/projects/:id/remove|restore (empty) -> FactoryProject;
+ * removal retains history and checkouts, and refuses active Runs or workers.
+ * POST /api/factory/implementations/:id/archive|restore (empty) -> Implementation;
+ * only completed Assignments with no active work can be archived.
+ * POST /api/factory/pane-archives (pane_archive) -> FactoryPaneArchive;
+ * archive requires matching terminal/session identity, native idle/done state and no active
+ * children; restore retains the pane. Reused pane IDs cannot hide unrelated native chats.
+ * POST /api/factory-host/pane-state ({pane_id}) -> native status/background counts;
+ * read-only state for authenticated Machine bridge archive validation.
  * POST /api/factory/implementations/:id/configure (configure) -> Implementation; future defaults only.
  * POST .../chats (chat) -> FactoryChat, 201; POST .../messages (message) -> FactoryMessage, 201.
  * Native messages use source_id/sequence for idempotency; conflicting imports fail 409.
@@ -1153,16 +1164,18 @@ export const DEFAULT_PORT = 7317;
 export type { FactoryOverview, FactoryDetail, Implementation, FactoryProject, ProjectCheckout, FactoryChat, FactoryMessage, FactoryEvent, SpecificationVersion, FactoryTicket, FactoryApproval, FactoryQuestion, FactoryArtifact, FactoryRun, ReviewSnapshot, ReviewComment, FactorySettings, FactoryProvider, FactoryStage, FactoryAction, RunCondition, FactoryCapabilities, FactoryProviderCapability, FactoryOutput } from "./factory.ts";
 export type { FactoryWorker, FactoryCheck, FactoryReviewEvidence, FactoryRetrospective } from "./factory.ts";
 export type { NativeConversationSnapshot } from "./factory.ts";
+export type { FactoryPaneLink, FactoryPaneArchive } from "./factory.ts";
 export type { ProjectReference, ProjectReferenceLibrary, CodexReferenceContext, ProjectReferencePayload } from "./factory.ts";
 
 /** Factory mutation bodies. Runtime validation still treats incoming JSON as untrusted. */
 export interface FactoryRequests {
+  pane_archive: { machine_id: string; pane_id: string; archived: boolean; terminal_id?: string; session_ref?: string | null };
   github_configuration: import("./github-project.ts").ProjectGitHubConfiguration;
   github_action: { head: string; base: string; policy_revision: string };
-  implementation: { title: string; description: string };
+  implementation: { title: string; description: string; project_id?: string | null };
   configure: { project_id?: string | null; provider?: import("./factory.ts").FactoryProvider | null; machine_id?: string | null };
   project: { name: string; path: string; machine_id: string; provider: import("./factory.ts").FactoryProvider; tracker: import("./factory.ts").FactoryProject["tracker"]; tracker_reference?: string };
-  project_settings: Partial<Pick<import("./factory.ts").FactoryProject, "checks" | "setup" | "environment" | "permissions" | "shared_paths" | "provider" | "machine_id" | "account_bindings">>;
+  project_settings: Partial<Pick<import("./factory.ts").FactoryProject, "name" | "checks" | "setup" | "environment" | "permissions" | "shared_paths" | "provider" | "machine_id" | "account_bindings" | "workflow_instructions" | "context_target_tokens">>;
   checkout: { machine_id: string; path: string };
   settings: Partial<import("./factory.ts").FactorySettings>;
   chat: { title: string };
@@ -1235,6 +1248,7 @@ export interface FactoryAgentRequests {
   proposal: { proposal: string };
 }
 export interface FactoryHostRequests {
+  pane_state: { pane_id: string };
   references: import("./factory.ts").ProjectReferencePayload & { machine_id: string; checkout: { path: string; repository: string } };
   prepare: { files: { path: string; content_base64: string }[] };
   inspect: { path: string };

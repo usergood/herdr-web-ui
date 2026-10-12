@@ -7,7 +7,8 @@ export async function factoryRequest<T>(path = "", body?: FactoryRequestBody, me
   const response = await fetch(url, { method, headers: body === undefined ? {} : { "content-type": "application/json", "x-herdr-factory": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const result = await response.json();
   if (!response.ok) throw new ApiError(url, response.status, result.error?.message ?? response.statusText, result.error?.code ?? null);
+  if (method !== "GET") window.dispatchEvent(new Event("factory-changed"));
   return result as T;
 }
-export function factoryOverview(): Promise<FactoryOverview> { return factoryRequest(); }
+export function factoryOverview(): Promise<FactoryOverview> { return factoryRequest("?navigation=1"); }
 export function factoryDetail(id: string): Promise<FactoryDetail> { return factoryRequest(`/implementations/${encodeURIComponent(id)}`); }

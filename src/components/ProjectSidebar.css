@@ -1,0 +1,11 @@
+.project-navigation { padding: var(--space-2) var(--space-3); border-bottom: var(--hairline) solid var(--border); }
+.project-navigation-heading { display: flex; align-items: center; justify-content: space-between; }
+.project-navigation-heading > button:first-child, .project-navigation-row { display: flex; align-items: center; gap: var(--space-2); min-height: var(--touch-target); text-align: left; color: var(--text); border: 0; background: transparent; cursor: pointer; }
+.project-navigation-heading svg, .project-navigation-row > svg { width: var(--icon-size); height: var(--icon-size); flex-shrink: 0; }
+.project-navigation-row { width: 100%; padding: var(--space-1) var(--space-2); border-radius: var(--radius-md); }
+.project-navigation-row:hover, .project-navigation-row.is-selected { background: var(--bg-elevated); }
+.project-navigation-row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-navigation-row small { margin-left: auto; font-size: var(--fs-xs); color: var(--text-dim); }
+.project-navigation-group > summary { cursor: pointer; color: var(--text-strong); padding: var(--space-2); overflow-wrap: anywhere; }
+.project-navigation-children { margin-left: var(--space-3); border-left: var(--hairline) solid var(--border); padding-left: var(--space-1); }
+.project-navigation-label { display: block; font-size: var(--fs-xs); color: var(--text-dim); padding: var(--space-2); }

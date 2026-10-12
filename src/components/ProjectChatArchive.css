@@ -1,0 +1,4 @@
+/* Archive stays in the chat header; Inbox remains available through More. */
+@media (max-width: 480px) {
+  .header-meta:has(.project-chat-archive) .header-inbox { display: none; }
+}
