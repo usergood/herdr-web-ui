@@ -9,3 +9,5 @@
 .project-navigation-group > summary { cursor: pointer; color: var(--text-strong); padding: var(--space-2); overflow-wrap: anywhere; }
 .project-navigation-children { margin-left: var(--space-3); border-left: var(--hairline) solid var(--border); padding-left: var(--space-1); }
 .project-navigation-label { display: block; font-size: var(--fs-xs); color: var(--text-dim); padding: var(--space-2); }
+.project-navigation-row .sidebar-status { margin-left: auto; flex-shrink: 0; }
+.project-navigation-group > summary .sidebar-status { float: right; }

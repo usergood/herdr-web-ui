@@ -85,7 +85,7 @@ export function provisionSkills(worktree: string, provider: FactoryProvider, man
 }
 
 /** OpenCode ignores Claude's invocation metadata, so project-local permissions preserve the gate. */
-export function provisionFactoryAgent(worktree: string, provider: FactoryProvider, selected: string, manifest: SkillManifest, readonly = false): void {
+export function provisionFactoryAgent(worktree: string, provider: FactoryProvider, selected: string, manifest: SkillManifest, readonly = false, permissionMode?: import("../shared/agent-permissions.ts").AgentPermissionMode): void {
   if (provider !== "opencode") return;
   const folder = join(worktree, ".opencode", "agents"); mkdirSync(folder, { recursive: true, mode: 0o700 });
   const path = join(folder, "saurons-eye.md");
@@ -99,6 +99,7 @@ export function provisionFactoryAgent(worktree: string, provider: FactoryProvide
     for (const call of source.matchAll(/Skill tool[^\n]*?["`]([a-z][a-z-]+)["`]/g)) add(call[1]!);
   };
   if (selected === "verify-provider") for (const skill of manifest.skills) add(skill.name); else add(selected);
-  const permissions = { task: "deny", ...(readonly ? { edit: "deny" } : {}), skill: { "*": "deny", ...Object.fromEntries([...allowed].map((name) => [name, "allow"])) } };
+  readonly ||= permissionMode === "read_only";
+  const permissions = { task: "deny", ...(permissionMode ? { bash: permissionMode === "allow" && !readonly ? "allow" : "ask", edit: readonly ? "deny" : permissionMode === "allow" ? "allow" : "ask" } : readonly ? { edit: "deny" } : {}), skill: { "*": "deny", ...Object.fromEntries([...allowed].map((name) => [name, "allow"])) } };
   writePrivateFile(path, `---\nname: saurons-eye\ndescription: Application-owned factory context\nmode: primary\npermission: ${JSON.stringify(permissions)}\n---\nUse only the explicitly selected action and its pinned dependencies. Never start unmanaged children. Read .saurons-eye-context.json and use the scoped tracker for questions, versioned answers, task worktrees and checks. Publication and acceptance belong to the owner.\n`, { flag: "wx", mode: 0o600 });
 }

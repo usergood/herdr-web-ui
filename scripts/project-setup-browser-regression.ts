@@ -1,0 +1,73 @@
+import "./test-herdr.ts";
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { chromium } from "playwright-core";
+import { createServer } from "../server/index.ts";
+import { herdrRpc, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
+
+const root = mkdtempSync(join(tmpdir(), "saurons-setup-browser-")); const repo = join(root, "storefront"); mkdirSync(repo);
+writeFileSync(join(repo, "package.json"), JSON.stringify({ scripts: { typecheck: "echo fixture", "test:unit": "echo fixture" } }));
+writeFileSync(join(repo, "bun.lock"), "Owned picker fixture\n"); writeFileSync(join(repo, "AGENTS.md"), "Keep the existing standards.\n");
+execFileSync("git", ["init", "-b", "main"], { cwd: repo, stdio: "ignore" }); execFileSync("git", ["add", "."], { cwd: repo }); execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "initial"], { cwd: repo, stdio: "ignore" }); execFileSync("git", ["remote", "add", "origin", "git@github.com:fictional/storefront.git"], { cwd: repo });
+const cli = join(root, "gh.mjs");writeFileSync(cli,'const a=process.argv.slice(2); if(a[0]==="auth"&&a[1]==="status") console.log(JSON.stringify({hosts:{"github.com":[{login:"fictional-work",active:true,state:"success"}]}})); else if(a[0]==="auth"&&a[1]==="token") console.log("gho_owned_browser_fixture_not_a_credential"); else console.log(JSON.stringify({login:"fictional-work",id:1042}));');
+const app=createServer({port:0,stateDir:join(root,"state"),factory:{accountDiscoveryHome:root,native:{version:async(provider)=>provider==="codex"?"codex-cli 0.162.1":null},accountTools:{github:{executable:process.execPath,args:[cli]}}}});
+const workspace=await workspaceCreate({cwd:repo,label:"Owned setup native chat",focus:false}); await herdrRpc("pane.report_agent",{pane_id:workspace.root_pane.pane_id,source:"manual",agent:"codex",state:"working"});
+const browser=await chromium.launch({executablePath:process.env["CHROME_PATH"]||chromium.executablePath(),headless:true,args:["--no-sandbox"]});
+const evidence=process.env["UI_EVIDENCE_DIR"];
+if(evidence)mkdirSync(evidence,{recursive:true});
+try {
+  const page=await browser.newPage({viewport:{width:1440,height:1000}});page.setDefaultTimeout(10000);const errors:string[]=[];page.on("pageerror",error=>errors.push(error.message));
+  await page.route("**/api/workspace/directories?**",route=>route.fulfill({json:{path:repo,parent:root,home:root,directories:[],truncated:false}}));
+  await page.goto(`http://localhost:${app.port}/#projects`);
+  const dialog=page.getByRole("dialog",{name:"Projects",exact:true});
+  assert.equal(await dialog.getByRole("textbox",{name:"Checkout path",exact:true}).count(),0);
+  await dialog.getByRole("button",{name:"Checkout path",exact:true}).click(); await dialog.getByRole("button",{name:"Use this folder",exact:true}).click();
+  await page.waitForFunction(()=>(document.querySelector('input[maxlength="200"]') as HTMLInputElement)?.value==="storefront");assert.equal(await dialog.getByRole("textbox",{name:"Project name",exact:true}).inputValue(),"storefront");
+  await dialog.getByRole("button",{name:"Next",exact:true}).click();
+  assert.equal(await dialog.getByRole("combobox",{name:"Execution permissions",exact:true}).inputValue(),"approve_for_me");
+  assert.equal(await dialog.locator("textarea").count(),0); await dialog.getByRole("checkbox",{name:"typecheck",exact:true}).waitFor();
+  await dialog.getByRole("combobox",{name:"CLI agent",exact:true}).selectOption("claude");
+  await dialog.getByRole("button",{name:"Back",exact:true}).click();
+  await dialog.getByRole("button",{name:"Checkout path",exact:true}).click();await dialog.getByRole("button",{name:"Use this folder",exact:true}).click();
+  await dialog.getByRole("button",{name:"Next",exact:true}).click();
+  assert.equal(await dialog.getByRole("combobox",{name:"Execution permissions",exact:true}).inputValue(),"ask");
+  await dialog.getByRole("combobox",{name:"CLI agent",exact:true}).selectOption("codex");
+  if(evidence){
+    await page.screenshot({path:join(evidence,"project-setup-desktop.png"),animations:"disabled"});
+    const phone=await browser.newPage({viewport:{width:390,height:844},isMobile:true,hasTouch:true});phone.setDefaultTimeout(10000);
+    await phone.route("**/api/workspace/directories?**",route=>route.fulfill({json:{path:repo,parent:root,home:root,directories:[],truncated:false}}));
+    await phone.goto(`http://localhost:${app.port}/#projects`);await phone.getByRole("tab",{name:"Projects",exact:true}).click();
+    await phone.getByRole("button",{name:"Checkout path",exact:true}).click();await phone.getByRole("button",{name:"Use this folder",exact:true}).click();await phone.getByRole("button",{name:"Next",exact:true}).click();
+    await phone.screenshot({path:join(evidence,"project-setup-mobile.png"),animations:"disabled"});await phone.close();
+  }
+  await dialog.getByRole("button",{name:"Next",exact:true}).click();await dialog.getByRole("button",{name:"Import fictional-work",exact:true}).click();await dialog.getByText("Ready",{exact:true}).first().waitFor();
+  await dialog.getByRole("button",{name:"Next",exact:true}).click();await dialog.getByText("AGENTS.md",{exact:true}).waitFor();
+  await dialog.getByRole("button",{name:"Create Project",exact:true}).click();await page.getByRole("dialog",{name:"Project settings",exact:true}).waitFor();
+  await page.getByRole("tab",{name:"Workflow",exact:true}).click();assert.equal(await page.getByRole("textbox",{name:"Execution permissions",exact:true}).count(),0);
+  const projectId=/projects\/([^/]+)\/settings/.exec(new URL(page.url()).hash)![1]!;
+  const post=(path:string,body:unknown)=>page.request.post(`http://localhost:${app.port}/api/factory${path}`,{headers:{"x-herdr-factory":"1","x-herdr-machine":"1"},data:body});
+  assert.equal((await post(`/projects/${projectId}/configure`,{checks:[["echo","custom A"],["echo","custom B"]]})).status(),200);
+  await page.reload();await page.getByRole("button",{name:"Project settings for storefront",exact:true}).click();await page.getByRole("tab",{name:"Workflow",exact:true}).click();
+  const customA=page.locator("label").filter({has:page.locator("code",{hasText:"echo custom A"})});const customB=page.locator("label").filter({has:page.locator("code",{hasText:"echo custom B"})});
+  await customA.getByRole("checkbox").uncheck();
+  async function saveSettings(){const response=page.waitForResponse(r=>r.url().endsWith(`/projects/${projectId}/configure`)&&r.request().method()==="POST");await page.getByRole("button",{name:"Save Project settings",exact:true}).click();assert.equal((await response).status(),200);await page.getByRole("button",{name:"Save Project settings",exact:true}).waitFor({state:"visible"});}
+  await saveSettings();await customA.waitFor({state:"hidden"});assert.equal(await customB.getByRole("checkbox").isChecked(),true);
+  await page.getByRole("combobox",{name:"Context handoff target",exact:true}).selectOption("200000");await saveSettings();
+  const saved=await page.request.get(`http://localhost:${app.port}/api/factory?navigation=1`).then(r=>r.json());assert.deepEqual(saved.projects.find((p:any)=>p.id===projectId).checks,[["echo","custom B"]]);
+  const accountId=saved.projects.find((p:any)=>p.id===projectId).account_bindings.local.github;
+  assert.equal((await post(`/projects/${projectId}/github/configure`,{expected_revision:null,repository:"fictional/storefront",account_profile_id:accountId,sync_enabled:false,import_issues:true,import_fixes:false,auto_update:false,auto_merge:false,trusted_reviewers:[],required_checks:[],review_context:"Owned review fixture",poll_minutes:5})).status(),200);
+  await page.route("**/api/factory/project-discovery",route=>route.fulfill({status:409,json:{error:{code:"machine_offline",message:"Owned execution host is offline"}}}));
+  await page.getByRole("tab",{name:"GitHub",exact:true}).click();
+  await page.waitForFunction(()=>document.querySelector('[data-testid="project-github"] input[readonly]')?.getAttribute("value")==="fictional/storefront");
+  assert.equal(await page.getByRole("button",{name:"Sync GitHub",exact:true}).isEnabled(),true);
+  assert.equal(await page.getByRole("combobox",{name:"GitHub account",exact:true}).inputValue(),accountId);
+  await page.unroute("**/api/factory/project-discovery");
+  await page.getByRole("button",{name:"Close settings",exact:true}).click();
+  const group=page.locator(".project-navigation-group").filter({has:page.locator("summary").filter({hasText:"storefront"})});await group.locator('summary [data-status="working"]').waitFor();
+  await group.locator("summary").click();await herdrRpc("pane.report_agent",{pane_id:workspace.root_pane.pane_id,source:"manual",agent:"codex",state:"blocked"});await group.locator('summary [data-status="blocked"]').waitFor();assert.equal(await group.getAttribute("open"),null);
+  if(evidence)await page.screenshot({path:join(evidence,"project-status-desktop.png"),animations:"disabled"});
+  assert.deepEqual(errors,[]);console.log("Project setup browser: folder-only picker, defaults, account import, save and folded native statuses passed");
+} finally {await browser.close();app.stop();await workspaceClose(workspace.workspace.workspace_id);rmSync(root,{recursive:true,force:true});}

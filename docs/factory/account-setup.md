@@ -1,8 +1,15 @@
 # Set up accounts for a Project
 
-Open an Implementation, select its Project and execution Machine, then expand **Project
-execution settings → Project accounts**. A Machine must already have a verified Project
+Open **Projects**, select the Project's settings icon, then choose **Accounts** and its
+execution Machine. New Projects offer account selection during [guided setup](guided-project-setup.md).
+A Machine must already have a verified Project
 checkout. Remote profiles and keys are created by that Machine's bridge.
+
+**Saved GitHub logins** lists native `gh` accounts for that Machine and checkout's detected
+configuration. Choose **Import** to copy only the selected login into private profile storage
+and verify its identity. This preserves the native active login and SSH configuration. Imported
+SSH accounts still need the managed-key steps below; HTTPS uses the imported credential.
+Profiles awaiting sign-in remain visible with **Needs sign-in** in Project selectors.
 
 1. Create an account profile with a descriptive name, service and expected login. GitHub expects
    a GitHub username; Codex, Claude and Cloudflare expect the subscription/OAuth email. For

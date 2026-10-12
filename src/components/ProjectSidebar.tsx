@@ -8,7 +8,8 @@ import { projectPanes, type ProjectPane, type ProjectView } from "../lib/project
 import type { Machine } from "../../shared/machines.ts";
 import { useT } from "../lib/i18n.ts";
 import { AgentMark } from "./AgentMark.tsx";
-import { displayPaneTitle } from "./Sidebar.tsx";
+import { displayPaneTitle, StatusBadge } from "./Sidebar.tsx";
+import { paneStatus, rollupStatus } from "../lib/status.ts";
 import "./ProjectSidebar.css";
 
 export function ProjectSidebar({ overview, machines, error, onNavigate, onOpenPane, selectedMachineId, selectedPaneId }: { overview: FactoryOverview | null; machines: Machine[]; error: string | null; onNavigate: (view: ProjectView) => void; onOpenPane: (machineId: string, paneId: string) => void; selectedMachineId: string; selectedPaneId: string | null }) {
@@ -19,7 +20,7 @@ export function ProjectSidebar({ overview, machines, error, onNavigate, onOpenPa
     <button className="project-navigation-row" onClick={() => onNavigate({ kind: "assignments" })}><SquareTerminal />{t("Assignments")}</button>
     {error && <p className="tree-state" role="alert">{error}</p>}
     {overview?.projects.filter((p) => !p.removed_at).map((project) => <details className="project-navigation-group" key={project.id} open>
-      <summary><span>{project.name}</span></summary><div className="project-navigation-children">
+      <summary><span>{project.name}</span><StatusBadge compact showIdle status={rollupStatus(rows.filter(row=>row.projectId===project.id&&!row.archived).map(row=>row.machine.state==="connected"?paneStatus(row.pane):undefined))}/></summary><div className="project-navigation-children">
       <div className="project-navigation-heading"><button className="project-navigation-row" onClick={() => onNavigate({ kind: "project", id: project.id })}><Folder />{project.name}</button><button className="icon-button" aria-label={t("Project settings for {name}", { name: project.name })} title={t("Project settings")} onClick={() => onNavigate({ kind: "project-settings", id: project.id })}><Settings /></button></div>
       <button className="project-navigation-row" onClick={() => onNavigate({ kind: "project-inbox", id: project.id })}><MessageSquare />{t("Inbox chat")}</button>
       <span className="project-navigation-label">{t("Assignments")}</span>
@@ -34,15 +35,16 @@ export function ProjectSidebar({ overview, machines, error, onNavigate, onOpenPa
 function ProjectPaneRow({ row, selected, onOpenPane }: { row: ProjectPane; selected: boolean; onOpenPane: (machineId: string, paneId: string) => void }) {
   const t = useT(); const [expanded, setExpanded] = useState(false);
   return <div className="project-pane-row"><button className={`project-navigation-row${selected ? " is-selected" : ""}`} aria-current={selected ? "true" : undefined} title={`${row.machine.name} · ${row.pane.cwd ?? ""}`} onClick={() => onOpenPane(row.machine.id, row.pane.pane_id)}>
-    {row.pane.agent || row.link?.provider ? <AgentMark agent={row.pane.agent ?? row.link!.provider} /> : <SquareTerminal />}<span>{row.link?.title ?? displayPaneTitle(row.pane)}</span><small role="status">{row.pane.agent_status}</small>
-  </button>{(!!row.pane.background_tasks || ["claude", "omo"].includes(row.pane.agent ?? row.link?.provider ?? "")) && <><button className="project-navigation-row" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{t("Child tasks")}{!!row.pane.background_tasks && ` · ${row.pane.background_tasks}`}</button>{expanded && <MachineContext.Provider value={row.machine.id}><NativeChildren paneId={row.pane.pane_id} provider={row.pane.agent ?? ""} onOpen={() => onOpenPane(row.machine.id, row.pane.pane_id)} /></MachineContext.Provider>}</>}</div>;
+    {row.pane.agent || row.link?.provider ? <AgentMark agent={row.pane.agent ?? row.link!.provider} /> : <SquareTerminal />}<span>{row.link?.title ?? displayPaneTitle(row.pane)}</span><StatusBadge compact showIdle status={row.machine.state==="connected"?paneStatus(row.pane):undefined}/>
+  </button>{(!!row.pane.background_tasks || ["claude", "omo"].includes(row.pane.agent ?? row.link?.provider ?? "")) && <><button className="project-navigation-row" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{t("Child tasks")}{!!row.pane.background_tasks && ` · ${row.pane.background_tasks}`}</button>{expanded && <MachineContext.Provider value={row.machine.id}><NativeChildren paneId={row.pane.pane_id} provider={row.pane.agent ?? ""} connected={row.machine.state === "connected"} onOpen={() => onOpenPane(row.machine.id, row.pane.pane_id)} /></MachineContext.Provider>}</>}</div>;
 }
-function NativeChildren({ paneId, provider, onOpen }: { paneId: string; provider: string; onOpen: () => void }) {
+function NativeChildren({ paneId, provider, connected, onOpen }: { paneId: string; provider: string; connected: boolean; onOpen: () => void }) {
   const { fetchPaneOmoActivity } = useMachineApi(); const [tasks, setTasks] = useState<OmoTask[]>([]); const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let live = true; let timer: ReturnType<typeof setTimeout>;
+    if (!connected) return;
     const read = async () => { try { if (document.visibilityState === "visible") { const next = await fetchPaneOmoActivity(paneId); if (live) { setTasks(next.tasks); setError(null); } } } catch (e) { if (live) setError(e instanceof Error ? e.message : String(e)); } finally { if (live) timer = setTimeout(() => void read(), 10000); } };
     void read(); return () => { live = false; clearTimeout(timer); };
-  }, [paneId, fetchPaneOmoActivity]);
-  return <div className="project-navigation-children">{error && <p role="alert">{error}</p>}{tasks.map((task) => <button className="project-navigation-row" key={task.id} onClick={onOpen} title={task.model ?? undefined}><AgentMark agent={provider} /><span>{task.title}</span><small role="status">{task.status}</small></button>)}</div>;
+  }, [paneId, fetchPaneOmoActivity, connected]);
+  return <div className="project-navigation-children">{connected && error && <p role="alert">{error}</p>}{tasks.map((task) => <button className="project-navigation-row" key={task.id} onClick={onOpen} title={task.model ?? undefined}><AgentMark agent={provider} /><span>{task.title}</span><StatusBadge compact showIdle status={!connected ? undefined : task.status==="running"?"working":task.status==="completed"?"done":task.status==="failed"?"blocked":undefined}/></button>)}</div>;
 }

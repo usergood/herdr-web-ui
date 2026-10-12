@@ -1,0 +1,4 @@
+.project-folder-field { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+.project-folder-control { display: flex; align-items: center; gap: var(--space-3); width: 100%; text-align: left; cursor: pointer; min-height: var(--touch-target); }
+.project-folder-control span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-folder-control svg { flex: none; width: var(--icon-size); height: var(--icon-size); color: var(--text-dim); }

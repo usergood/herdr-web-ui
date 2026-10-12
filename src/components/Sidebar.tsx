@@ -1,6 +1,6 @@
 import { paneStorageId } from "../../shared/machines.ts";
 import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
-import { ChevronDown, ChevronRight, Ellipsis, Folder, FolderOpen, GitBranch, Layers, ListChecks, LoaderCircle, Pencil, Plus, Terminal, Trash2, TriangleAlert, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Circle, Ellipsis, Folder, FolderOpen, GitBranch, Layers, ListChecks, LoaderCircle, Pencil, Plus, Terminal, Trash2, TriangleAlert, X } from "lucide-react";
 
 import "./Sidebar.css";
 
@@ -68,7 +68,7 @@ export function RestoreErrorBadge({ reason }: { reason: string }) {
   );
 }
 
-export function StatusBadge({ status, compact = false }: { status?: AgentStatus; compact?: boolean }) {
+export function StatusBadge({ status, compact = false, showIdle = false }: { status?: AgentStatus; compact?: boolean; showIdle?: boolean }) {
   const t = useT();
   const value = knownStatus(status);
   const label = t(STATUS_WORD[value]);
@@ -87,6 +87,7 @@ export function StatusBadge({ status, compact = false }: { status?: AgentStatus;
       title={description}
     >
       {compact && Icon && <Icon aria-hidden="true" />}
+      {compact && showIdle && value === "idle" && <Circle aria-hidden="true" />}
       {compact && value === "blocked" && <span className="sidebar-status-mark" aria-hidden="true">?</span>}
       {compact && value === "done" && <span className="sidebar-status-dot" aria-hidden="true" />}
       <span className={compact ? "visually-hidden" : undefined}>{label}</span>

@@ -27,5 +27,8 @@ Vocabulary proposed by the owner for review before API contracts are committed. 
 | Integration worktree | The dedicated checkout that gathers one active Implementation's Ticket results. |
 | Worker worktree | A dedicated checkout owned by one Ticket implementer. |
 | Needs you | A visible unresolved question or owner decision, without replacing the Implementation's workflow stage. |
+| Project setup | Guided selection of a Project's repository, Machine, agent, checks, accounts and repository guidance. |
+| Machine account | A verified login retained privately on one Machine and selectable by its Projects. |
+| Saved login | A login already configured in a native CLI, which the owner can explicitly import as a Machine account. |
 
 Herdr's existing **workspace**, **pane** and native **session** terms keep their upstream meanings. A pane is not an Implementation, and closing it does not complete or delete the assignment. In engineering-skill prose, lower-case “implementation” can mean a module's code; use capitalized **Implementation** for the product record.

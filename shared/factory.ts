@@ -17,6 +17,8 @@ export interface FactoryProject extends FactoryRecord {
   tracker: "app" | "github" | "gitlab" | "local"; tracker_reference: string;
   checks?: string[][]; setup?: string[][]; environment?: Record<string, string>;
   permissions?: string; shared_paths?: string[];
+  permission_mode?: import("./agent-permissions.ts").AgentPermissionMode;
+  guidance_assignment_id?: string;
   account_bindings?: Record<string, ProjectAccountBindings>;
   removed_at?: string | null;
   workflow_instructions?: string;
