@@ -39,6 +39,13 @@ export const factoryNative: FactoryNative = {
   },
 };
 
+/** A decorated resting state belongs to the same native identity, with no background work. */
+export async function factoryPaneResting(native: FactoryNative, pane: Pick<HerdrPane, "pane_id" | "workspace_id" | "terminal_id" | "agent" | "agent_status">, provider: FactoryProvider): Promise<boolean> {
+  const state = native.paneState ? await native.paneState(pane.pane_id) : pane;
+  return !!state && state.pane_id === pane.pane_id && state.workspace_id === pane.workspace_id && state.terminal_id === pane.terminal_id && state.agent === provider
+    && ["idle", "done"].includes(state.agent_status) && !("background_wait" in state && state.background_wait) && !("background_tasks" in state && state.background_tasks);
+}
+
 /** Keep native permission prompts; child processes must use application reservations. */
 export function factoryAgentArguments(provider: FactoryProvider, cwd: string, prompt: string, readonly = false, subscriptionProfile = false, permissionMode?: AgentPermissionMode, directWork = false, preset?: AgentExecutionPreset): string[] {
   readonly ||= permissionMode === "read_only";

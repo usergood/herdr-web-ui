@@ -10,6 +10,7 @@
  * Placeholders in braces keep their English names.
  */
 export const ZH: Record<string, string> = {
+  "Finished chats release capacity. Waiting for input or disconnected work still counts.": "已结束的聊天会释放名额。等待输入或连接断开的工作仍占用名额。",
   "Launch model": "启动模型",
   "Launch reasoning": "启动推理级别",
   "Agent model settings": "智能体模型设置",

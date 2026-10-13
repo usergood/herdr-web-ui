@@ -27,7 +27,7 @@ import { sameOrigin } from "./machine-security.ts";
 import { parseModelSelection, resolveModelSelection } from "./agent-model-selection.ts";
 
 const providers: FactoryProvider[] = ["codex", "claude", "opencode"];
-const initialSettings: FactorySettings = { provider: "codex", max_implementations: 2, max_agents: 6, max_builds: 2, max_artifact_bytes: 25 * 1024 * 1024, max_storage_bytes: 2 * 1024 * 1024 * 1024, skills_path: null };
+const initialSettings: FactorySettings = { provider: "codex", max_implementations: 6, max_agents: 6, max_builds: 2, max_artifact_bytes: 25 * 1024 * 1024, max_storage_bytes: 2 * 1024 * 1024 * 1024, skills_path: null };
 
 export class FactoryService {
   readonly store: FactoryStore;
@@ -46,7 +46,7 @@ export class FactoryService {
   constructor(stateDir: string, private readonly skillsPath: string | null = null, native: Partial<FactoryNative> = {}, endpoint: MachineEndpoint = () => undefined, publicUrl: string | null = null, accountTools: AccountTools = {}, private readonly registeredMachine: (id: string) => boolean = (id) => id === "local" || !!endpoint(id), accountDiscoveryHome?: string) {
     this.accounts = new MachineAccounts(stateDir, accountTools, false, accountDiscoveryHome);
     this.store = new FactoryStore(stateDir); this.artifacts = new FactoryArtifacts(this.store, (text) => this.accounts.assertPublic(text)); this.workflow = new FactoryWorkflow(this.store); this.backup = new FactoryBackup(this.store, this.artifacts);
-    this.accounts.usage((id) => [...this.store.list<FactoryRun>("runs"), ...this.store.list<{ run: FactoryRun; closing?: boolean }>("host_leases").map((lease) => lease.run)].some((run) => ["accepted", "working", "needs_you", "blocked", "disconnected", "interrupted"].includes(run.condition) && (run.manifest as { account_snapshot?: import("../shared/accounts.ts").AccountBindingSnapshot })?.account_snapshot?.profiles.some((profile) => profile.id === id)));
+    this.accounts.usage((id) => [...this.store.list<FactoryRun>("runs"), ...this.store.list<{ run: FactoryRun; closing?: boolean }>("host_leases").map((lease) => lease.run)].some((run) => ["accepted", "working", "ready", "needs_you", "blocked", "disconnected", "interrupted"].includes(run.condition) && (run.manifest as { account_snapshot?: import("../shared/accounts.ts").AccountBindingSnapshot })?.account_snapshot?.profiles.some((profile) => profile.id === id)));
     this.references = new FactoryReferences(this.store, this.artifacts);
     this.executionHost = new FactoryExecutionHost(this.store, () => this.settings().skills_path, native, this.accounts);
     this.runtime = new FactoryRuntime(this.store, this.workflow, () => this.settings(), this.executionHost, endpoint, (record) => this.artifacts.read(record), publicUrl, this.references, this.accounts); this.review = new FactoryReview(this.store, (machine, path, base, mode) => this.runtime.capture(machine, path, base, mode), (machine, path) => this.runtime.inspect(machine, path));
@@ -184,21 +184,21 @@ export class FactoryService {
     if (["setup", "grill-me", "grill-with-docs", "to-spec", "to-tickets"].includes(run.action)) this.store.put("planning_captures", { id: run.id, artifact_ids: imported.filter(artifact => /^planning-(?:[a-f0-9]{16}-|index-)/.test(artifact.name)).map(artifact => artifact.id) });
     return imported;
   }
-  observe(paneId: string, status: string, agent: string | null, ended = false): void {
+  observe(paneId: string, status: string, agent: string | null, ended = false, backgroundWorking = false): void {
     if (this.stopped) return;
-    const nextCondition = ended ? "interrupted" : status === "blocked" ? "needs_you" : "working";
+    const nextCondition = ended ? "interrupted" : status === "blocked" ? "needs_you" : ["idle", "done"].includes(status) && !backgroundWorking ? "ready" : "working";
     const reason = ended ? "The native pane ended without an accepted outcome; retained work needs reconciliation" : status === "blocked" ? "The native agent is waiting for an owner answer" : null;
-    for (const run of this.store.list<FactoryRun>("runs")) if (run.machine_id === "local" && run.pane_id === paneId && ["working", "needs_you", "blocked"].includes(run.condition)) {
+    for (const run of this.store.list<FactoryRun>("runs")) if (run.machine_id === "local" && run.pane_id === paneId && ["working", "ready", "needs_you", "blocked"].includes(run.condition)) {
       if (!ended && agent !== run.provider) continue;
       const pending = this.store.list<import("../shared/protocol.ts").FactoryQuestion>("questions", run.implementation_id).find((question) => question.run_id === run.id && question.answer === null);
       const condition = pending && !ended ? "needs_you" : nextCondition;
       const waiting = pending && !ended ? pending.question : reason;
       if (run.condition !== condition || run.waiting_reason !== waiting) { this.store.put("runs", { ...run, condition, waiting_reason: waiting, updated_at: new Date().toISOString() }, run.implementation_id); this.store.event(run.implementation_id, "native_condition_changed", { run_id: run.id, condition }); }
     }
-    for (const worker of this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers")) if (worker.pane_id === paneId && ["working", "needs_you", "blocked"].includes(worker.condition)) {
+    for (const worker of this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers")) if (worker.pane_id === paneId && ["working", "ready", "needs_you", "blocked"].includes(worker.condition)) {
       const run = this.store.get<FactoryRun>("runs", worker.run_id);
-      if (run?.machine_id !== "local") continue;
-      const condition = ended ? "interrupted" : ["blocked", "idle", "done"].includes(status) ? "needs_you" : "working";
+      if (run?.machine_id !== "local" || !ended && agent !== run.provider) continue;
+      const condition = ended ? "interrupted" : status === "blocked" ? "needs_you" : ["idle", "done"].includes(status) && !backgroundWorking ? "ready" : "working";
       const waiting = !ended && ["idle", "done"].includes(status) ? "Native worker is ready; reconcile its candidate and explicitly refresh, check and integrate it" : reason;
       if (worker.condition !== condition || worker.waiting_reason !== waiting) { this.store.put("workers", { ...worker, condition, waiting_reason: waiting, updated_at: new Date().toISOString() }, worker.run_id); this.store.event(run.implementation_id, "worker_condition_changed", { worker_id: worker.id, condition }); }
     }
@@ -318,7 +318,7 @@ export class FactoryService {
         const known = new Set(Object.keys(settings));
         if (Object.keys(body).some((key) => !known.has(key))) throw new FactoryError("invalid_settings", "Unknown factory setting");
         if (body.provider !== undefined) { if (!providers.includes(body.provider as FactoryProvider)) throw new FactoryError("invalid_provider", "Select a supported provider"); settings.provider = body.provider as FactoryProvider; }
-        for (const [key, maximum] of [["max_implementations", 3], ["max_agents", 32], ["max_builds", 16], ["max_artifact_bytes", 64 * 1024 * 1024], ["max_storage_bytes", Number.MAX_SAFE_INTEGER]] as const) {
+        for (const [key, maximum] of [["max_implementations", 32], ["max_agents", 32], ["max_builds", 16], ["max_artifact_bytes", 64 * 1024 * 1024], ["max_storage_bytes", Number.MAX_SAFE_INTEGER]] as const) {
           const value = body[key]; if (value === undefined) continue;
           if (!Number.isSafeInteger(value) || Number(value) < 1 || Number(value) > maximum) throw new FactoryError("invalid_limit", "Enter a positive limit within supported capacity");
           settings[key] = value as number;

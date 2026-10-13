@@ -8,6 +8,7 @@ import { useT } from "../lib/i18n.ts";
 import { OpenFileContext } from "../lib/filePaths.ts";
 import { base64FromBytes } from "../lib/api.ts";
 import { Markdown } from "./Markdown.tsx";
+import { FactoryOperationsPanel } from "./FactoryOperationsPanel.tsx";
 import { FactoryWorkflowPanel } from "./FactoryWorkflowPanel.tsx";
 import { FactoryArtifactPreview } from "./FactoryArtifactPreview.tsx";
 import { FactoryReviewPanel } from "./FactoryReviewPanel.tsx";
@@ -111,6 +112,7 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
     {busy && <p role="status">{t("Saving…")}</p>}
     {!overview && <p role="status">{t("Loading…")}</p>}
     {!selected && overview && <>
+      <FactoryOperationsPanel overview={overview} busy={busy} perform={perform} />
       {!allAssignments && <form className="factory-form factory-capture" onSubmit={(event) => void capture(event)}>
         <label>{t("Idea title")}<input className="input factory-input" value={title} onChange={(event) => setTitle(event.target.value)} required maxLength={200} /></label>
         <label>{t("Idea notes")}<textarea className="input factory-input" value={notes} onChange={(event) => setNotes(event.target.value)} maxLength={100_000} /></label>
@@ -118,7 +120,7 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
       </form>}
       <button className="btn" aria-pressed={showArchived} onClick={() => setShowArchived(!showArchived)}>{t("Archived tasks")}</button>
       <div className="factory-filters">
-        <label>{t("Run condition")}<select className="select factory-input" value={conditionFilter} onChange={(event) => setConditionFilter(event.target.value)}><option value="all">{t("All conditions")}</option>{["needs_you", "blocked", "disconnected", "interrupted", "working", "completed", "cancelled", "failed"].map((condition) => <option key={condition} value={condition}>{condition}</option>)}</select></label>
+        <label>{t("Run condition")}<select className="select factory-input" value={conditionFilter} onChange={(event) => setConditionFilter(event.target.value)}><option value="all">{t("All conditions")}</option>{["needs_you", "blocked", "disconnected", "interrupted", "working", "ready", "completed", "cancelled", "failed"].map((condition) => <option key={condition} value={condition}>{condition}</option>)}</select></label>
         {!projectId && <label>{t("Project")}<select className="select factory-input" value={projectFilter} disabled={!!projectId} onChange={(event) => setProjectFilter(event.target.value)}><option value="all">{t("All Projects")}</option><option value="unassigned">{t("Unassigned")}</option>{overview.projects.filter((p) => !p.removed_at).map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>}
         <label>{t("Provider")}<select className="select factory-input" value={providerFilter} onChange={(event) => setProviderFilter(event.target.value)}><option value="all">{t("All providers")}</option><option>codex</option><option>claude</option><option>opencode</option></select></label>
         <label>{t("Machine")}<select className="select factory-input" value={machineFilter} onChange={(event) => setMachineFilter(event.target.value)}><option value="all">{t("All Machines")}</option>{machines.map((machine) => <option key={machine.id} value={machine.id}>{machine.name}</option>)}</select></label>

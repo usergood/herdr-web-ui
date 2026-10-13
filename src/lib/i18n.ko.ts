@@ -6,6 +6,7 @@
  * braces keep their English names.
  */
 export const KO: Record<string, string> = {
+  "Finished chats release capacity. Waiting for input or disconnected work still counts.": "완료된 채팅은 실행 자리를 반환합니다. 입력 대기 중이거나 연결이 끊긴 작업은 계속 포함됩니다.",
   "Launch model": "시작 모델",
   "Launch reasoning": "시작 추론 수준",
   "Agent model settings": "에이전트 모델 설정",

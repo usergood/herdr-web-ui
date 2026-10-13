@@ -7,6 +7,7 @@
  * keep their English names.
  */
 export const TR: Record<string, string> = {
+  "Finished chats release capacity. Waiting for input or disconnected work still counts.": "Biten sohbetler kapasiteyi serbest bırakır. Girdi bekleyen veya bağlantısı kesilen işler sayılır.",
   "Source": "Kaynak",
   "Launch model": "Başlangıç modeli",
   "Launch reasoning": "Başlangıç akıl yürütmesi",

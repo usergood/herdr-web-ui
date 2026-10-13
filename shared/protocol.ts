@@ -1180,6 +1180,7 @@ export const DEFAULT_PORT = 7317;
  * POST /api/factory/projects/:id/accounts/verify -> credential-free AccountBindingSnapshot.
  * POST /api/factory/machines/:id/prepare (empty) -> FactoryCapabilities; pinned private source only.
  * POST /api/factory/implementations/:id/runs (start) -> FactoryRun, 202; scoped idempotent admission.
+ * Resting Runs/workers are ready: native capacity released, exclusive worktree ownership retained.
  * POST /api/factory/runs/:id/reconcile (empty) -> FactoryRun; observation never redispatches.
  * POST .../stop (stop) -> FactoryRun; verified ownership released, history/work retained.
  * POST .../cleanup (empty) -> FactoryCleanup; only stopped clean owned checkouts removed.

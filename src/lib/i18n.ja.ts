@@ -8,6 +8,7 @@
  * in English. Placeholders in braces keep their English names.
  */
 export const JA: Record<string, string> = {
+  "Finished chats release capacity. Waiting for input or disconnected work still counts.": "終了したチャットは実行枠を解放します。入力待ちや切断中の作業は引き続き数えます。",
   "Launch model": "起動時のモデル",
   "Launch reasoning": "起動時の推論レベル",
   "Agent model settings": "エージェントのモデル設定",

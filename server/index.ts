@@ -1529,6 +1529,7 @@ export function createServer(
     const status = completions.current(paneId);
     // a pane never reported here carries its count in the next snapshot
     if (status === undefined) return;
+    factory.observe(paneId, status, "claude", false, waits.waiting(paneId) || running > 0);
     broadcastAll(paneStatus(paneId, status, { background_tasks: running }));
     if (changed) push.onStatus(paneId, alertStatus(status, waits.waiting(paneId))).catch(logPushError);
   }
@@ -1538,6 +1539,7 @@ export function createServer(
     for (const paneId of waits.tick()) {
       const status = completions.current(paneId);
       if (status === undefined) continue;
+      factory.observe(paneId, status, "claude", false, waits.waiting(paneId) || claudeAgents.countOf(paneId) > 0);
       broadcastAll(paneStatus(paneId, status));
       push.onStatus(paneId, alertStatus(status, waits.waiting(paneId))).catch(logPushError);
     }
@@ -1558,7 +1560,6 @@ export function createServer(
       // read back from a snapshot around a gap between subscriptions. An OmO pane's status there
       // is OmO's own or herdr's by turns (server/omo-status.ts), and a difference is no change
       if (replay && (omo.runs(paneId) || !completions.replayed(paneId, raw, replay))) return;
-      factory.observe(paneId, raw, agent);
       // another agent took an OmO pane: what OmO worked on there is not that agent's to finish
       if (omo.named(paneId, agent)) completions.forget(paneId);
       // the frame below names no agent: one herdr names anew is read into the roster now. An OmO
@@ -1588,6 +1589,7 @@ export function createServer(
         try { claudeAgents.poll(paneId); } finally { settling = null; }
         waits.status(paneId, status);
       } else waits.forget(paneId);
+      factory.observe(paneId, status, agent, false, waits.waiting(paneId) || claudeAgents.countOf(paneId) > 0);
       broadcastAll(paneStatus(paneId, status, claude ? { background_tasks: claudeAgents.countOf(paneId) } : {}));
       push.onStatus(paneId, alertStatus(status, waits.waiting(paneId))).catch(logPushError);
     },
@@ -1614,7 +1616,9 @@ export function createServer(
     },
     // a pane created a moment ago got its agent after the roster's own read of it. After the
     // snapshot's replays: a roster read before them could show a finish ahead of its status frame
-    onReconciled: (panes) => { if (machines) machines.localAgents(panes); else bridgeAgents!.reconciled(panes); },
+    onReconciled: (panes) => {
+      for (const pane of panes) factory.observe(pane.pane_id, completions.current(pane.pane_id) ?? pane.agent_status, pane.agent ?? null, false, waits.waiting(pane.pane_id) || claudeAgents.countOf(pane.pane_id) > 0);
+      if (machines) machines.localAgents(panes); else bridgeAgents!.reconciled(panes); },
     // the tracker first: what it makes of each pane (a finish after work is done, not idle) is
     // what the alerts are measured against from here, or the next event would alert of it
     onResync: (panes, newer) => {
@@ -1622,6 +1626,7 @@ export function createServer(
       const settled = (pane: HerdrPane): AgentStatus => completions.current(pane.pane_id) ?? pane.agent_status;
       for (const pane of panes) { pending.status(pane.pane_id, settled(pane)); drainPending(pane.pane_id); }
       for (const pane of panes) if (!newer.has(pane.pane_id) && pane.agent === "claude") waits.status(pane.pane_id, settled(pane));
+      for (const pane of panes) if (!newer.has(pane.pane_id)) factory.observe(pane.pane_id, settled(pane), pane.agent ?? null, false, waits.waiting(pane.pane_id) || claudeAgents.countOf(pane.pane_id) > 0);
       push.resync(panes.map((pane) => ({ ...pane, agent_status: alertStatus(settled(pane), waits.waiting(pane.pane_id)) })), newer);
     },
     onPaneEnded: (paneId) => {
