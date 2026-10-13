@@ -10,6 +10,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 ### Fixed
 - Expose global execution limits in Inbox, allow six concurrent tasks, and release capacity
   when a native turn finishes while retaining its open chat and worktree ownership.
+  ([#24](https://github.com/usergood/saurons-eye/pull/24) by @usergood)
 
 ## [0.4.9] - 2026-10-13
 
