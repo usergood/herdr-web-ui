@@ -47,6 +47,9 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   ([#2](https://github.com/usergood/saurons-eye/pull/2) by @usergood)
 
 ### Changed
+- Integrate upstream main through `5a9fe39`: split panes across PCs, shared preferences and
+  pins, Portal, saved-PC discovery and file previews; preserve the fork's Factory and privacy.
+  ([#22](https://github.com/usergood/saurons-eye/pull/22) by @usergood)
 - Integrate upstream v0.4.8: held-message controls, compressed assets, standalone document
   reader, Markdown, prompt and phone fixes. Preserve fork workflows, privacy and plan controls.
   ([#14](https://github.com/usergood/saurons-eye/pull/14) by @usergood)
@@ -98,6 +101,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 ### Fixed
 - Discover app updates only from origin's Saurons eye release tags, skipping inherited upstream
   and local tags, and show the manual checking policy accurately in Settings.
+  ([#22](https://github.com/usergood/saurons-eye/pull/22) by @usergood)
 - Bundle the Eye and Android notification badge so background notifications retain
   their images when proxy authentication blocks a separate image request.
   ([#21](https://github.com/usergood/saurons-eye/pull/21) by @usergood)
