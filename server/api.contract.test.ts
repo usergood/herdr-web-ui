@@ -6,8 +6,9 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { ConversationMonitor } from "./conversation-monitor.ts";
 import { createServer } from "./index.ts";
-import type { AgentKind, AgentStatus, ApiError, HealthAuth, IntegrationsResponse, PushKey, RemoteAccess, SessionSnapshot, TabMoved, PaneFindResponse, PaneReadResult, UsageReport, WorkspaceCreated, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../shared/protocol.ts";
+import type { AgentKind, AgentStatus, ApiError, HealthAuth, IntegrationsResponse, LanExposure, PortalStatus, PushKey, RemoteAccess, SessionSnapshot, TabMoved, PaneFindResponse, PaneReadResult, UsageReport, WorkspaceCreated, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../shared/protocol.ts";
 import { HerdrUpdater } from "./herdr-update.ts";
+import { PortalService } from "./portal.ts";
 import { noInstalledNotes, unmanagedUpdateStatus, type HerdrUpdateStatus, type InstalledNotes, type UpdateNotes } from "../shared/update.ts";
 import { USAGE_PROVIDERS, UsageService } from "./usage.ts";
 import { VoiceService } from "./voice.ts";
@@ -40,6 +41,93 @@ afterAll(() => {
 });
 
 const base = () => `http://localhost:${server.port}`;
+
+describe("shared browser preferences", () => {
+  it("keeps unexpected persistence errors opaque", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-preferences-error-"));
+    const app = createServer({ port: 0, stateDir: state });
+    try {
+      mkdirSync(join(state, "preferences.json"));
+      const response = await fetch(`http://localhost:${app.port}/api/preferences`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ settings: { theme: "light" } }) });
+      expect(response.status).toBe(500);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      const body = await response.json();
+      expect(body.error.code).toBe("internal_error");
+      expect(body.error.message).toMatch(/^internal error \([0-9a-f]+\)$/);
+      expect(JSON.stringify(body)).not.toContain(state);
+    } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+
+  it("persists shared choices, broadcasts them, and rejects unauthorized changes", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-preferences-api-"));
+    const app = createServer({ port: 0, stateDir: state, token: "preferences-fixture-token" });
+    const origin = `http://localhost:${app.port}`;
+    const headers = { authorization: "Bearer preferences-fixture-token", "content-type": "application/json", origin };
+    let stream: Response | undefined;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      expect((await fetch(`${origin}/api/preferences`)).status).toBe(401);
+      const first = await fetch(`${origin}/api/preferences`, { headers });
+      expect(first.headers.get("cache-control")).toBe("no-store");
+      expect(await first.json()).toEqual({ revision: 0, settings: {} });
+      stream = await fetch(`${origin}/api/machines/events`, { headers });
+      reader = stream.body!.getReader();
+      const decoder = new TextDecoder();
+      // SSE's initial document can share a chunk with the machine roster.
+      let events = "";
+      const readUntil = async (text: string) => {
+        const deadline = Date.now() + 5000;
+        while (!events.includes(text)) {
+          const chunk = await Promise.race([reader!.read(), new Promise<never>((_resolve, reject) => {
+            const timeout = setTimeout(() => reject(new Error("Preferences event timed out")), Math.max(1, deadline - Date.now()));
+            timeout.unref();
+          })]);
+          if (chunk.done) throw new Error("Preferences stream ended");
+          events += decoder.decode(chunk.value, { stream: true });
+        }
+      };
+      await readUntil('"revision":0');
+      const put = (body: unknown, extra: Record<string, string> = {}) => fetch(`${origin}/api/preferences`, { method: "PUT", headers: { ...headers, ...extra }, body: JSON.stringify(body) });
+      expect((await put({ settings: { theme: "light" } }, { origin: "https://elsewhere.invalid", "sec-fetch-site": "cross-site" })).status).toBe(403);
+      expect((await put({ settings: [] })).status).toBe(400);
+      const changed = await put({ settings: { theme: "light" }, pins: ["local:p-fixture"] });
+      expect(changed.status).toBe(200);
+      const document = await changed.json();
+      expect(document).toEqual({ revision: 1, settings: { theme: "light" }, pins: ["local:p-fixture"] });
+      await readUntil('"revision":1');
+      expect(events).toContain('"type":"preferences"');
+      expect(await (await fetch(`${origin}/api/preferences`, { headers })).json()).toEqual(document);
+      expect(JSON.parse(readFileSync(join(state, "preferences.json"), "utf8"))).toEqual(document);
+    } finally { await reader?.cancel(); app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+});
+
+describe("HTML file previews", () => {
+  it("renders owned HTML under a sandbox and refuses cross-site subresource reads", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-html-api-"));
+    const file = join(state, "preview.html");
+    writeFileSync(file, "<!doctype html><title>Owned preview</title><h1>Fixture</h1>");
+    const app = createServer({ port: 0, stateDir: join(state, "app") });
+    const url = `http://localhost:${app.port}/api/fs/file?path=${encodeURIComponent(file)}`;
+    try {
+      const raw = await fetch(url);
+      expect(raw.headers.get("content-type")).toStartWith("text/plain");
+      const page = await fetch(`${url}&render=1`);
+      expect(page.status).toBe(200);
+      expect(page.headers.get("content-type")).toStartWith("text/html");
+      const policy = page.headers.get("content-security-policy")!;
+      expect(policy).toStartWith("sandbox allow-scripts;");
+      expect(policy).not.toContain("allow-same-origin");
+      expect(await page.text()).toContain("Owned preview");
+      const refused = await fetch(`${url}&render=1`, { headers: { "sec-fetch-site": "cross-site", "sec-fetch-mode": "no-cors", "sec-fetch-dest": "iframe" } });
+      expect(refused.status).toBe(403);
+      expect(await refused.json()).toMatchObject({ error: { code: "cross_site" } });
+      const navigated = await fetch(`${url}&render=1`, { headers: { "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" } });
+      expect(navigated.status).toBe(200);
+      expect(navigated.headers.get("content-type")).toStartWith("text/html");
+    } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+});
 
 describe("factory records", () => {
   it("requires a currently registered host when changing Project execution defaults", async () => {
@@ -1187,6 +1275,89 @@ describe("phone access", () => {
     try {
       expect((await fetch(`http://localhost:${protectedServer.port}/api/access`)).status).toBe(401);
     } finally { protectedServer.stop(); rmSync(protectedState, { recursive: true, force: true }); }
+  });
+});
+
+describe("Portal API", () => {
+  it("does not serve requests until startup cleanup completes", async () => {
+    const state = mkdtempSync(join(tmpdir(), "herdr-portal-startup-gate-"));
+    let releaseCleanup!: () => void;
+    const cleanup = new Promise<void>((resolve) => { releaseCleanup = resolve; });
+    class DeferredPortal extends PortalService {
+      override resume(): Promise<void> { return cleanup; }
+    }
+    const server = createServer({ port: 0, stateDir: state, token: "", portal: new DeferredPortal({ stateDir: state }) });
+    try {
+      let resolved = false;
+      const request = fetch(`http://127.0.0.1:${server.port}/api/health?scope=bridge`).then((response) => {
+        resolved = true;
+        return response;
+      });
+      const deadline = Date.now() + 50;
+      while (!resolved && Date.now() < deadline) await Bun.sleep(5);
+      expect(resolved).toBe(false);
+      releaseCleanup();
+      const response = await request;
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ ok: true, bridge_protocol: expect.any(Number) });
+    } finally {
+      releaseCleanup();
+      server.stop();
+      rmSync(state, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when startup cleanup rejects", async () => {
+    const state = mkdtempSync(join(tmpdir(), "herdr-portal-startup-failure-"));
+    class FailedPortal extends PortalService {
+      override resume(): Promise<void> { return Promise.reject(new Error("Portal cleanup failed")); }
+    }
+    const server = createServer({ port: 0, stateDir: state, token: "", portal: new FailedPortal({ stateDir: state }) });
+    try {
+      const response = await fetch(`http://127.0.0.1:${server.port}/api/health?scope=bridge`);
+      expect(response.status).toBe(500);
+      expect(await response.json()).toMatchObject({ error: { code: "internal_error" } });
+    } finally {
+      server.stop();
+      rmSync(state, { recursive: true, force: true });
+    }
+  });
+
+  it("opens a public address only behind the token, and closes it again", async () => {
+    const state = mkdtempSync(join(tmpdir(), "herdr-portal-api-"));
+    const standIn = join(state, "stand-in-portal");
+    writeFileSync(standIn, [
+      "#!/bin/sh",
+      'case "$1" in',
+      "  version) echo v2.6.1 ;;",
+      "  expose) trap 'exit 0' TERM; echo 'INF service ready at https://herdr-test-0123.relay.example:443'; while :; do sleep 0.05; done ;;",
+      "  *) exit 2 ;;",
+      "esac",
+      "",
+    ].join("\n"));
+    chmodSync(standIn, 0o755);
+    const relay = (async () => Response.json({ data: { release_version: "v2.6.1" } })) as unknown as typeof fetch;
+    const server = createServer({ port: 0, stateDir: state, token: "test-portal-token", portal: new PortalService({ stateDir: state, bin: standIn, fetch: relay }) });
+    const url = `http://127.0.0.1:${server.port}/api/portal`;
+    const signedIn = { authorization: "Bearer test-portal-token" };
+    const post = (action: string, headers: Record<string, string>) => fetch(`${url}/${action}`, { method: "POST", headers: { ...headers, "x-herdr-update": "1", "content-type": "application/json" }, body: JSON.stringify({ relay: "relay.example" }) });
+    const status = async (headers: Record<string, string> = signedIn) => await (await fetch(url, { headers })).json() as PortalStatus;
+    try {
+      expect((await fetch(url)).status).toBe(401);
+      expect(await status()).toMatchObject({ supported: true, usable: true, blocked: null, phase: "idle" });
+      expect((await post("start", {})).status).toBe(401);
+      expect((await post("start", signedIn)).status).toBe(202);
+      const deadline = Date.now() + 10_000;
+      let running = await status();
+      while (running.phase === "starting") {
+        if (Date.now() >= deadline) throw new Error("Timed out: Portal was ready");
+        await Bun.sleep(20);
+        running = await status();
+      }
+      expect(running).toMatchObject({ phase: "running", url: "https://herdr-test-0123.relay.example", relay: "https://relay.example" });
+      expect((await post("stop", signedIn)).status).toBe(202);
+      expect((await status()).url).toBeNull();
+    } finally { server.stop(); rmSync(state, { recursive: true, force: true }); }
   });
 });
 
@@ -3325,6 +3496,48 @@ describe("token auth", () => {
     expect(body.auth).toEqual({ required: true, authenticated: false, reason: "token_required" });
     // a Unix herdr attaches terminals; Windows PCs report false and open in the chat lens
     expect(body.herdr.terminal_attach).toBe(true);
+  });
+
+  it("tells a client that got in when this server is open to the network, and nobody else", async () => {
+    // the health body is JSON off the wire; LanExposure is the shape this endpoint adds to it
+    type HealthBody = { auth: HealthAuth; lan_exposure?: LanExposure };
+    const health = async (port: number, headers: Record<string, string> = {}): Promise<HealthBody> =>
+      (await (await fetch(`http://127.0.0.1:${port}/api/health`, { headers })).json()) as HealthBody;
+    // no token and nothing paired, pinned so an inherited HERDR_WEB_TOKEN cannot gate the case
+    const bound = (hostname: string) => {
+      const stateDir = mkdtempSync(join(tmpdir(), "herdr-lan-"));
+      const instance = createServer({ port: 0, hostname, token: "", stateDir });
+      return { port: instance.port, stop: () => { instance.stop(); rmSync(stateDir, { recursive: true, force: true }); } };
+    };
+    const open = bound("0.0.0.0");
+    try {
+      // bound past this PC, no token, nothing paired: the one state the warning is for
+      expect((await health(open.port)).lan_exposure).toEqual({ host: "0.0.0.0" });
+      // a request that did not get in is told nothing, whatever the server's state: Funnel is the
+      // public internet, which is never "open" (server/access.ts)
+      const refused = await health(open.port, { "x-forwarded-for": "100.64.0.9", "tailscale-funnel-request": "?1" });
+      expect(refused.auth).toMatchObject({ required: true, authenticated: false, reason: "pairing_required" });
+      expect(refused.lan_exposure).toBeUndefined();
+      // pairing one device closes the gate to strangers, and the warning leaves with the state
+      const guard = { "content-type": "application/json", "x-herdr-machine": "1" };
+      const { code } = (await (await fetch(`http://127.0.0.1:${open.port}/api/devices/pair/start`, { method: "POST", headers: guard })).json()) as { code: string };
+      const paired = await fetch(`http://127.0.0.1:${open.port}/api/devices/pair`, { method: "POST", headers: { ...guard, "x-forwarded-for": "100.64.0.9" }, body: JSON.stringify({ code, label: "Phone" }) });
+      expect(paired.status).toBe(204);
+      expect((await health(open.port)).auth).toMatchObject({ authenticated: true, via: "local" });
+      expect((await health(open.port)).lan_exposure).toBeUndefined();
+    } finally {
+      open.stop();
+    }
+    // the same empty configuration on a loopback bind is unreachable from the network
+    const loopback = bound("127.0.0.1");
+    try {
+      expect((await health(loopback.port)).lan_exposure).toBeUndefined();
+    } finally {
+      loopback.stop();
+    }
+    // and a token is a closed gate, which this endpoint already reported
+    const securedBody = await (await fetch(`${securedBase()}/api/health`)).json() as HealthBody;
+    expect(securedBody.lan_exposure).toBeUndefined();
   });
 
   it("refuses a token that does not match", async () => {

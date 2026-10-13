@@ -23,12 +23,14 @@ import { phaseRows, planRows, taskRows, todoRows, type ChecklistRow } from "../l
 import { isTodoTool, parseTodoAnswer, todoCallSummary, type TodoItem, type TodoStatus } from "../lib/todos.ts";
 import { formatGoalTime, turnGoal, type GoalState, type GoalStatus } from "../lib/goals.ts";
 import { useSettings } from "../lib/settings.ts";
+import { pageScrollDistance } from "../lib/pageScroll.ts";
 import { statusEdgeRead } from "../lib/status.ts";
 import { ConversationRefresh } from "../lib/conversationRefresh.ts";
 import { usePageVisible } from "../lib/visibility.ts";
 import { dismissKeyboardOn } from "../lib/keyboard.ts";
 import { useFacesArrived } from "../lib/fontFaces.ts";
 import { OpenFileContext } from "../lib/filePaths.ts";
+import { linkFilePaths } from "./FilePathLink.tsx";
 import { patchText } from "../../shared/patch.ts";
 import { toolVerb } from "../lib/toolVerbs.ts";
 import { machinePath } from "../../shared/machines.ts";
@@ -54,6 +56,7 @@ const LOAD_OLDER_PX = 400;
 
 export interface ChatViewProps {
   paneId: string;
+  pageScroll?: { current: ((direction: -1 | 1) => void) | null };
   refreshKey: number;
   /** bumped by a conversation push; coalesced at the former 2s polling cadence */
   invalidationKey?: number;
@@ -217,6 +220,7 @@ function PatchView({ patch }: { patch: string }) {
 }
 
 function ToolInputView({ part }: { part: ToolPartType }) {
+  const open = useContext(OpenFileContext);
   const t = useT();
   if (part.arguments_omitted) return <pre className="chat-tool-io">{t("Arguments omitted (too large)")}</pre>;
   // a todo call shows the list as it stood after it, when the agent answered with it
@@ -236,7 +240,7 @@ function ToolInputView({ part }: { part: ToolPartType }) {
   </li>)}</ol>;
   const str = (key: string): string | undefined => typeof parsed[key] === "string" ? parsed[key] : undefined;
   const command = str("command") ?? str("cmd");
-  if (command !== undefined) return <div className="chat-tool-io"><pre>{command}</pre>{(str("cwd") ?? str("description")) !== undefined && <p className="chat-tool-io-meta">{str("cwd") ?? str("description")}</p>}</div>;
+  if (command !== undefined) return <div className="chat-tool-io"><pre>{linkFilePaths(command, open)}</pre>{(str("cwd") ?? str("description")) !== undefined && <p className="chat-tool-io-meta">{str("cwd") ?? str("description")}</p>}</div>;
   const oldString = str("old_string");
   const newString = str("new_string");
   if (oldString !== undefined || newString !== undefined) return <div className="chat-tool-io">{str("file_path") !== undefined && <ToolFile path={str("file_path")!} />}<EditDiff before={oldString ?? ""} after={newString ?? ""} /></div>;
@@ -295,6 +299,8 @@ function ToolImages({ paneId, part }: { paneId: string; part: ToolPartType }) {
  */
 function WorkRow({ paneId, part }: { paneId: string; part: ToolPartType }) {
   const t = useT();
+  // the files an output names open from it ("saved /tmp/shot/t0.png")
+  const openFile = useContext(OpenFileContext);
   const [open, setOpen] = useState(false);
   const whole = useWholeOutput(part.output_ref);
   const summary = part.arguments_omitted ? t("Arguments omitted (too large)") : todoCallSummary(part) ?? part.summary;
@@ -312,7 +318,7 @@ function WorkRow({ paneId, part }: { paneId: string; part: ToolPartType }) {
       {/* after a verb the word follows the object: "Ran pnpm test failed", not "Ran failed pnpm test" */}
       {part.error && verb !== null && <>{" "}<span className="work-row-failed">{t("failed")}</span></>}
     </button>
-    {open && <div className="work-row-detail">{verb !== null && <p className="work-row-tool">{part.name}</p>}<ToolInputView part={part} /><ToolImages paneId={paneId} part={part} />{output.length > 0 && <section className="chat-tool-output"><h4>{t(part.error ? "Error" : "Output")}</h4><pre className={`chat-tool-io${whole.text !== null ? " is-whole" : ""}`}>{output}</pre>
+    {open && <div className="work-row-detail">{verb !== null && <p className="work-row-tool">{part.name}</p>}<ToolInputView part={part} /><ToolImages paneId={paneId} part={part} />{output.length > 0 && <section className="chat-tool-output"><h4>{t(part.error ? "Error" : "Output")}</h4><pre className={`chat-tool-io${whole.text !== null ? " is-whole" : ""}`}>{linkFilePaths(output, openFile)}</pre>
       {part.output_ref !== undefined && whole.text === null && <button type="button" className="btn btn-ghost chat-tool-more" disabled={whole.state === "loading"} onClick={whole.load}>
         {t(whole.state === "loading" ? "Loading the whole output…" : whole.state === "failed" ? "Couldn't load the whole output — retry" : "Show the whole output ({size} characters)", { size: formatTokens(part.output_size ?? 0) })}
       </button>}</section>}</div>}
@@ -473,6 +479,10 @@ function TaskResultRow({ task }: { task: OmoTaskResult }) {
 /** what a runtime notice was: a background result by name, anything else by its own first line */
 function noticeLabel(t: ReturnType<typeof useT>, notice: Extract<ConversationPart, { kind: "notice" }>): string {
   if (notice.source === undefined || notice.source === "async-result") return t("Background result delivered");
+  if (notice.source.startsWith("peer:")) {
+    const name = notice.source.slice(5);
+    return name ? t("Message from another session: {name}", { name }) : t("Message from another session");
+  }
   const first = notice.text.split("\n").find((line) => line.trim().length > 0)?.trim() ?? notice.source;
   return first.length > 96 ? `${first.slice(0, 95)}…` : first;
 }
@@ -583,7 +593,7 @@ function TerminalFallback({ paneId }: { paneId: string }) {
 }
 
 // the app re-renders on every pane-status and poll; an unchanged transcript sits those out
-export const ChatView = memo(function ChatView({ paneId, refreshKey, invalidationKey = 0, onConversationWatch, conversationPushes = false, onTerminalOutput, sentKey = 0, connected, ended, agent, agentStatus, onMetadata, onRead, greeted = false, onPrompt, onSuggestion, onRestored, promptRefreshKey = 0, pendingAnswer = null, onPendingAnswerDone, promptDock = null, onPromptAnswered }: ChatViewProps) {
+export const ChatView = memo(function ChatView({ paneId, pageScroll, refreshKey, invalidationKey = 0, onConversationWatch, conversationPushes = false, onTerminalOutput, sentKey = 0, connected, ended, agent, agentStatus, onMetadata, onRead, greeted = false, onPrompt, onSuggestion, onRestored, promptRefreshKey = 0, pendingAnswer = null, onPendingAnswerDone, promptDock = null, onPromptAnswered }: ChatViewProps) {
   const t = useT();
   const { fetchPaneConversation, fetchPanePromptState, fetchPaneTranscript } = useMachineApi();
   const { settings } = useSettings();
@@ -630,6 +640,9 @@ export const ChatView = memo(function ChatView({ paneId, refreshKey, invalidatio
   const [promptPollKey, setPromptPollKey] = useState(0);
   const scroller = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
+  // Explicit paging stays away even inside the ordinary near-bottom tolerance.
+  const pagingAway = useRef(false);
+  const lastScrollTop = useRef(0);
   const signature = useRef("");
   // Older pages sit above the newest one. Once any shows, the newest page is
   // polled from its start at that moment, so the two always meet.
@@ -667,7 +680,7 @@ export const ChatView = memo(function ChatView({ paneId, refreshKey, invalidatio
   useEffect(() => {
     shownPane.current = paneId;
     history.current = undefined; setHistoryId(undefined);
-    stickToBottom.current = true; signature.current = ""; setState(EMPTY_STATE); setNewMessages(false); setAway(false); setLoaded(false); setError(null); setErrorStatus(null); setPrompt(null); setAbandoned(null); setRestored(null);
+    pagingAway.current = false; stickToBottom.current = true; signature.current = ""; setState(EMPTY_STATE); setNewMessages(false); setAway(false); setLoaded(false); setError(null); setErrorStatus(null); setPrompt(null); setAbandoned(null); setRestored(null);
     dropOlder();
     lastAnswer.current = null;
     setSentOver(null);
@@ -728,7 +741,7 @@ export const ChatView = memo(function ChatView({ paneId, refreshKey, invalidatio
         if (history.current !== conversation.history_id) {
           dropOlder(); generation = olderGeneration.current;
           history.current = conversation.history_id; setHistoryId(conversation.history_id);
-          stickToBottom.current = true; setNewMessages(false); setAway(false);
+          pagingAway.current = false; stickToBottom.current = true; setNewMessages(false); setAway(false);
         }
         // a 304 hands back the answer already shown: nothing to compare or lay out again
         if (conversation === lastAnswer.current) { setError(null); setErrorStatus(null); return; }
@@ -869,6 +882,8 @@ export const ChatView = memo(function ChatView({ paneId, refreshKey, invalidatio
     if (node === null || anchor === null) return;
     prepended.current = null;
     node.scrollTop = anchor.top + (node.scrollHeight - anchor.height);
+    // Keeping the reader's place is not a downward scroll: it must not undo an explicit page away.
+    lastScrollTop.current = node.scrollTop;
   }, [older]);
 
   // Prompts belong to the visible screen, not the native transcript: a Codex directory-trust
@@ -962,7 +977,12 @@ export const ChatView = memo(function ChatView({ paneId, refreshKey, invalidatio
   const onScroll = (): void => {
     const node = scroller.current;
     if (node === null) return;
-    stickToBottom.current = node.scrollTop + node.clientHeight >= node.scrollHeight - 48;
+    const distanceFromBottom = node.scrollHeight - node.clientHeight - node.scrollTop;
+    const scrollingDown = node.scrollTop > lastScrollTop.current;
+    lastScrollTop.current = node.scrollTop;
+    // DOM heights are rounded; only downward intent may use the endpoint rounding allowance.
+    if (distanceFromBottom <= 0 || (scrollingDown && distanceFromBottom <= 1)) pagingAway.current = false;
+    stickToBottom.current = distanceFromBottom <= (pagingAway.current ? 0 : 48);
     setAway(!stickToBottom.current);
     if (stickToBottom.current) setNewMessages(false);
     if (node.scrollTop < LOAD_OLDER_PX && olderState === "idle") void loadOlder();
@@ -971,8 +991,36 @@ export const ChatView = memo(function ChatView({ paneId, refreshKey, invalidatio
     const node = scroller.current;
     if (node === null) return;
     node.scrollTo({ top: node.scrollHeight, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
-    stickToBottom.current = true; setNewMessages(false); setAway(false);
+    pagingAway.current = false; stickToBottom.current = true; setNewMessages(false); setAway(false);
   };
+  useLayoutEffect(() => {
+    if (!pageScroll) return;
+    const scroll = (direction: -1 | 1) => {
+      const node = scroller.current;
+      if (!node) return;
+      const prose = node.querySelector<HTMLElement>(".chat-turn-agent > .markdown, .chat-bubble") ?? node;
+      const style = getComputedStyle(prose);
+      const lineHeight = parseFloat(style.lineHeight);
+      const rowHeight = Number.isFinite(lineHeight) ? lineHeight : parseFloat(style.fontSize);
+      const distance = pageScrollDistance(node.clientHeight, rowHeight, settings.pageOverlapRows);
+      const before = node.scrollTop;
+      node.scrollTo({ top: before + direction * distance, behavior: "instant" });
+      // A physical end may still report a positive subpixel gap, even with no movement.
+      if (direction > 0 && node.scrollHeight - node.clientHeight - node.scrollTop <= 1) {
+        pagingAway.current = false;
+        onScroll();
+        return;
+      }
+      // At the loaded top, PageUp still asks for the earlier page the scroll position cannot reach.
+      if (node.scrollTop === before) { if (direction < 0) onScroll(); return; }
+      lastScrollTop.current = before;
+      if (direction < 0) pagingAway.current = true;
+      // Apply the intent before output or a deferred scroll event can restore following.
+      onScroll();
+    };
+    pageScroll.current = scroll;
+    return () => { if (pageScroll.current === scroll) pageScroll.current = null; };
+  });
   const turns = useMemo(() => older.length > 0 ? [...older, ...state.turns] : state.turns, [older, state.turns]);
   // A cancelled send back in the agent's input box is no sent turn: the transcript still holds it
   // (empty, blank, held and onRead keep the turns as read), but the rendered list drops it while

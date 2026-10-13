@@ -32,6 +32,8 @@ async function until(check: () => Promise<boolean>, message: string) {
 try {
   const files = await git(source, "ls-files", "--cached", "--others", "--exclude-standard", "-z");
   for (const file of new Set(files.split("\0").filter(Boolean))) {
+    // App-owned run controls and injected local skills are not installation source.
+    if (file.startsWith(".saurons-eye-") || file.startsWith(".agents/")) continue;
     mkdirSync(dirname(join(upstream, file)), { recursive: true });
     copyFileSync(join(source, file), join(upstream, file));
   }
@@ -74,6 +76,7 @@ try {
   await page.locator(".sidebar-footer").getByRole("button", { name: "Settings", exact: true }).click();
   await openSettingsPage(page, "About");
   await page.getByRole("heading", { name: "Updates", exact: true }).scrollIntoViewIfNeeded();
+  await page.getByText("Checks only when you choose Check for updates.", { exact: false }).waitFor();
 
   writeFileSync(join(upstream, "qa-revision.txt"), "second build\n");
   // as a release does: what was unreleased becomes the release's section of the changelog, the

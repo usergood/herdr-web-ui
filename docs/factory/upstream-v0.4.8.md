@@ -13,3 +13,13 @@ Apply the new phone Back behavior to the retained plan dialog and clear its open
 Project GitHub controls use the existing same-origin helper, including HTTPS terminated by the owner's reverse proxy. A public API fixture verifies that proxy requests pass while foreign origins are rejected.
 
 Confirmed validation seams remain the public HTTP/API with owned temporary fixtures, public CLI fixtures and real browser journeys. Validate the complete merged application through full local checks, the retained plan regression, new upstream phone/asset regressions and the existing GitHub account-to-ticket/PR journey. Standards and specification reviews must clear before merging. Actual deployment and Android acceptance are owner work, using the final pinned installation guide.
+
+## Subsequent main integration
+
+Upstream main through `5a9fe391e8239c5f038c129e885b7cec15a68b99` adds 15 commits after this
+release: split tabs across PCs, shared browser preferences, Portal controls, file preview/source
+improvements, paging, saved-PC discovery and input fixes. Reconcile against the imported v0.4.8
+content while recording upstream ancestry in the merge, preserving the fork decisions above.
+The telemetry expansion remains excluded. App updates now select only origin-advertised release
+tags carrying the fork plugin identity; inherited upstream tags cannot become fork updates.
+Release, runtime-bundle and website publication remain separate owner actions.
