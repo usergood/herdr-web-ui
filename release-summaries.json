@@ -1,4 +1,86 @@
 {
+  "0.4.9": {
+    "en": {
+      "new": [
+        "Manage Inbox ideas, Projects and native agent tasks in Saurons eye.",
+        "Choose a model and reasoning level before starting an agent task.",
+        "Use split panes across PCs and discover saved Herdr connections."
+      ],
+      "improved": [
+        "Share appearance preferences and pinned agents across your devices.",
+        "Preview Markdown and HTML files with clearer limits and source controls."
+      ],
+      "fixed": [
+        "App updates now recognize Saurons eye releases and skip inherited upstream tags.",
+        "Settings accurately shows when update checks are manual.",
+        "Codex task launches and background notification images work more reliably."
+      ]
+    },
+    "ko": {
+      "new": [
+        "Saurons eye에서 받은 편지함 아이디어, 프로젝트와 네이티브 에이전트 작업을 관리합니다.",
+        "에이전트 작업을 시작하기 전에 모델과 추론 수준을 선택합니다.",
+        "여러 PC의 패널을 나란히 열고 저장된 Herdr 연결을 찾습니다."
+      ],
+      "improved": [
+        "기기 간에 화면 설정과 고정한 에이전트를 공유합니다.",
+        "제한 안내와 소스 보기가 더 명확해진 Markdown 및 HTML 미리보기를 제공합니다."
+      ],
+      "fixed": [
+        "앱 업데이트가 Saurons eye 릴리스를 찾고 원본 프로젝트의 태그를 건너뜁니다.",
+        "설정에서 업데이트를 수동으로 확인하는 상태를 정확히 표시합니다.",
+        "Codex 작업 시작과 백그라운드 알림 이미지의 안정성을 높였습니다."
+      ]
+    },
+    "ja": {
+      "new": [
+        "Saurons eyeで受信箱のアイデア、プロジェクト、ネイティブエージェントのタスクを管理。",
+        "エージェントのタスクを始める前にモデルと推論レベルを選べます。",
+        "複数のPCのペインを並べ、保存済みのHerdr接続を見つけられます。"
+      ],
+      "improved": [
+        "表示設定とピン留めしたエージェントをデバイス間で共有できます。",
+        "MarkdownとHTMLのプレビューで制限の表示とソース操作が分かりやすくなりました。"
+      ],
+      "fixed": [
+        "更新はSaurons eyeのリリースを認識し、元プロジェクトのタグを除外します。",
+        "更新の確認が手動の場合、設定に正しく表示されます。",
+        "Codexのタスク起動とバックグラウンド通知の画像表示が安定しました。"
+      ]
+    },
+    "zh": {
+      "new": [
+        "在 Saurons eye 中管理收件箱想法、项目和原生智能体任务。",
+        "启动智能体任务前，可选择模型和推理级别。",
+        "跨电脑并排查看面板，并发现已保存的 Herdr 连接。"
+      ],
+      "improved": [
+        "在设备之间共享外观偏好和固定的智能体。",
+        "Markdown 和 HTML 预览提供更清晰的限制提示和源码操作。"
+      ],
+      "fixed": [
+        "应用更新现在识别 Saurons eye 版本，并跳过继承的上游标签。",
+        "手动检查更新时，设置会准确显示这一状态。",
+        "提高了 Codex 任务启动和后台通知图片显示的可靠性。"
+      ]
+    },
+    "tr": {
+      "new": [
+        "Saurons eye ile Gelen Kutusu fikirlerini, Projeleri ve yerel ajan görevlerini yönetin.",
+        "Ajan görevini başlatmadan önce model ve akıl yürütme düzeyini seçin.",
+        "PC’ler arasında bölünmüş paneller kullanın ve kayıtlı Herdr bağlantılarını bulun."
+      ],
+      "improved": [
+        "Görünüm tercihlerini ve sabitlenen ajanları cihazlarınız arasında paylaşın.",
+        "Markdown ve HTML önizlemelerinde sınırlar ve kaynak denetimleri daha anlaşılır."
+      ],
+      "fixed": [
+        "Güncellemeler Saurons eye sürümlerini tanır, üst projeden kalan etiketleri atlar.",
+        "Ayarlar, güncelleme denetimlerinin elle yapıldığını doğru gösterir.",
+        "Codex görev başlatma ve arka plan bildirim görselleri daha güvenilir çalışır."
+      ]
+    }
+  },
   "0.4.8": {
     "en": {
       "new": [
