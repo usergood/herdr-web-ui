@@ -304,9 +304,19 @@ export class FactoryExecutionHost {
     const snapshot = await this.native.snapshot();
     const workspace = snapshot.workspaces.find((entry) => entry.workspace_id === run.workspace_id);
     const pane = snapshot.panes.find((entry) => entry.pane_id === run.pane_id);
-    if (!workspace || workspace.label !== `saurons-eye-run-${id}` || !pane?.cwd || realpathSync(pane.cwd) !== run.worktree) throw new FactoryError("native_identity_uncertain", "Verify the recorded native identity before stopping it; ownership is retained", 409);
+    const ownsDirectory = (cwd: string | null | undefined): boolean => {
+      if (!cwd || !run.worktree) return false;
+      let path: string; try { path = realpathSync(cwd); } catch { path = resolve(cwd); }
+      return path === run.worktree || withinRoot(run.worktree, path);
+    };
+    // A complete fresh snapshot can prove recorded identities have ended. Missing IDs,
+    // a moved pane or another candidate retain ownership instead of guessing a target.
+    const alreadyClosed = !!run.workspace_id && !!run.pane_id && !workspace && !pane
+      && !snapshot.workspaces.some(entry => entry.label === `saurons-eye-run-${id}`)
+      && !snapshot.panes.some(entry => ownsDirectory(entry.cwd) || ownsDirectory(entry.foreground_cwd));
+    if (!alreadyClosed && (!workspace || workspace.label !== `saurons-eye-run-${id}` || !pane?.cwd || realpathSync(pane.cwd) !== run.worktree)) throw new FactoryError("native_identity_uncertain", "Verify the recorded native identity before stopping it; ownership is retained", 409);
     await this.worktrees.stopWorkers(id);
-    await this.native.closeWorkspace(workspace.workspace_id);
+    if (!alreadyClosed) await this.native.closeWorkspace(workspace!.workspace_id);
     await this.worktrees.stopChecks(id);
     const stopped: FactoryRun = { ...run, condition: "cancelled", waiting_reason: null, updated_at: new Date().toISOString() };
     this.store.put("host_leases", { ...lease, closing: true, run: stopped }); return stopped;

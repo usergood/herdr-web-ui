@@ -4,10 +4,26 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, syml
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "./index.ts";
-import { herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "./herdr/client.ts";
+import { HerdrError, herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 import { factoryNative } from "./factory-native.ts";
 
 describe("starting an Inbox idea through the public API", () => {
+  it("stops an already closed failed workspace and allows a fresh explicit start",async()=>{
+    const root=mkdtempSync(join(tmpdir(),"saurons-stop-closed-"));const repo=join(root,"repo");mkdirSync(repo);writeFileSync(join(repo,"README.md"),"Owned baseline\n");
+    for(const args of [["init","-b","main"],["add","."],["-c","user.name=Fixture","-c","user.email=fixture@example.invalid","commit","-m","initial"]])execFileSync("git",args,{cwd:repo,stdio:"ignore"});
+    const owned:string[]=[];let reject=true,unavailable=false;const app=createServer({port:0,stateDir:join(root,"state"),machines:false,factory:{accountDiscoveryHome:root,native:{version:async()=>"owned-cli-fixture",snapshot:async()=>{if(unavailable)throw new HerdrError("connect_failed","Owned unavailable snapshot");return sessionSnapshot();},createWorkspace:async options=>{const w=await workspaceCreate(options);owned.push(w.workspace.workspace_id);return w;},startAgent:async options=>{if(reject)throw new HerdrError("invalid_agent_argument","Owned rejected launch");await herdrRpc("pane.report_agent",{pane_id:options.paneId,source:"manual",agent:"codex",state:"working"});}}}});
+    const post=(path:string,body:unknown)=>fetch(`http://localhost:${app.port}/api/factory${path}`,{method:"POST",headers:{"content-type":"application/json","x-herdr-factory":"1"},body:JSON.stringify(body)});
+    try{
+      const project=await post("/projects",{name:"Closed workspace fixture",path:repo,machine_id:"local",provider:"codex",tracker:"app"}).then(r=>r.json());const idea=await post("/implementations",{title:"Retry owned work",description:"Keep original context",project_id:project.id}).then(r=>r.json());const run=await post(`/implementations/${idea.id}/runs`,{action:"work",idempotency_key:"rejected"}).then(r=>r.json());expect(run.condition).toBe("interrupted");
+      const other=await workspaceCreate({cwd:repo,label:"Unrelated owned fixture"});owned.push(other.workspace.workspace_id);await workspaceClose(run.workspace_id);
+      expect((await post(`/implementations/${idea.id}/runs`,{action:"work",idempotency_key:"before-stop"})).status).toBe(409);
+      const candidate=await workspaceCreate({cwd:run.worktree,label:"Moved owned fixture"});owned.push(candidate.workspace.workspace_id);expect((await post(`/runs/${run.id}/stop`,{})).status).toBe(409);expect((await sessionSnapshot()).workspaces.some(w=>w.workspace_id===candidate.workspace.workspace_id)).toBe(true);await workspaceClose(candidate.workspace.workspace_id);
+      unavailable=true;expect((await post(`/runs/${run.id}/stop`,{})).status).toBe(502);expect((await post(`/implementations/${idea.id}/runs`,{action:"work",idempotency_key:"while-offline"})).status).toBe(409);unavailable=false;
+      const stopped=await post(`/runs/${run.id}/stop`,{});expect(stopped.status).toBe(200);expect((await stopped.json()).condition).toBe("cancelled");expect((await post(`/runs/${run.id}/stop`,{})).status).toBe(200);
+      expect(readFileSync(join(run.worktree,".saurons-eye-prompt.md"),"utf8")).toContain("Keep original context");expect((await sessionSnapshot()).workspaces.some(w=>w.workspace_id===other.workspace.workspace_id)).toBe(true);
+      reject=false;const next=await post(`/implementations/${idea.id}/runs`,{action:"work",idempotency_key:"after-stop"}).then(r=>r.json());expect(next.condition).toBe("working");expect(next.id).not.toBe(run.id);
+    }finally{app.stop();for(const id of owned)await workspaceClose(id).catch(()=>{});rmSync(root,{recursive:true,force:true});}
+  });
   it("starts work in a new owned workspace while preserving changes in the Project checkout", async () => {
     const root=mkdtempSync(join(tmpdir(),"saurons-inbox-start-"));const repo=join(root,"repo");mkdirSync(repo);
     writeFileSync(join(repo,"README.md"),"Owned committed baseline\n");
