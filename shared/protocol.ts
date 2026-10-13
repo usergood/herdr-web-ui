@@ -1268,6 +1268,7 @@ export interface FactoryAgentRequests {
   proposal: { proposal: string };
 }
 export interface FactoryHostRequests {
+  model_catalog: { provider: import("./factory.ts").FactoryProvider; path: string; repository: string; account_snapshot?: import("./accounts.ts").AccountBindingSnapshot | null };
   pane_state: { pane_id: string };
   references: import("./factory.ts").ProjectReferencePayload & { machine_id: string; checkout: { path: string; repository: string } };
   prepare: { files: { path: string; content_base64: string }[] };

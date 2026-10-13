@@ -3,7 +3,7 @@ import { permissionDescription, validPermissionMode } from "../shared/agent-perm
 import { MATT_PROJECT_WORKFLOW } from "../shared/project-setup.ts";
 import { timingSafeEqual } from "node:crypto";
 import { join } from "node:path";
-import type { FactoryArtifact, FactoryChat, FactoryDetail, FactoryMessage, FactoryProject, FactoryProvider, FactoryRun, FactorySettings, Implementation, ProjectCheckout } from "../shared/protocol.ts";
+import type { FactoryHostRequests, FactoryArtifact, FactoryChat, FactoryDetail, FactoryMessage, FactoryProject, FactoryProvider, FactoryRun, FactorySettings, Implementation, ProjectCheckout } from "../shared/protocol.ts";
 import { badRequest, errorResponse, httpError, isJsonObject, jsonResponse } from "./http.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { FactoryError, hash, inspectCheckout } from "./factory-host.ts";
@@ -349,9 +349,9 @@ export class FactoryService {
       }
       if (url.pathname === "/api/factory-host/model-catalog" && request.method === "POST") {
         if (request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Use model controls from this app");
-        const body = await this.body(request);
+        const body = await this.body(request) as Partial<FactoryHostRequests["model_catalog"]>;
         if (!providers.includes(body.provider as FactoryProvider) || typeof body.path !== "string" || typeof body.repository !== "string") throw new FactoryError("invalid_provider", "Select a CLI and verified checkout");
-        return jsonResponse(await this.executionHost.modelCatalog(body.provider as FactoryProvider, body.path, body.repository as string, body.account_snapshot as import("../shared/accounts.ts").AccountBindingSnapshot));
+        return jsonResponse(await this.executionHost.modelCatalog(body.provider as FactoryProvider, body.path, body.repository, body.account_snapshot));
       }
       const artifactMutation = /^\/api\/factory\/artifacts\/([a-zA-Z0-9-]+)\/(note|delete)$/.exec(url.pathname);
       if (artifactMutation && request.method === "POST") return jsonResponse(this.artifacts.mutate(artifactMutation[1]!, artifactMutation[2]!, await this.body(request)));

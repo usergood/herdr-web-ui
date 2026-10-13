@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import type { FactoryAction, FactoryApproval, FactoryArtifact, FactoryMessage, FactoryOutput, FactoryProject, FactoryProvider, FactoryRun, FactorySettings, Implementation, ProjectCheckout } from "../shared/protocol.ts";
+import type { FactoryHostRequests, FactoryAction, FactoryApproval, FactoryArtifact, FactoryMessage, FactoryOutput, FactoryProject, FactoryProvider, FactoryRun, FactorySettings, Implementation, ProjectCheckout } from "../shared/protocol.ts";
 import { FactoryError, git, hash, inspectCheckout } from "./factory-host.ts";
 import { FactoryExecutionHost } from "./factory-execution-host.ts";
 import { bundlePayload, verifySkills } from "./factory-skills.ts";
@@ -25,7 +25,7 @@ export class FactoryRuntime {
   constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly host: FactoryExecutionHost, private readonly endpoint: MachineEndpoint, private readonly readArtifact: (record: FactoryArtifact) => Buffer, private readonly publicUrl: string | null, private readonly references: FactoryReferences, private readonly accounts: MachineAccounts) {}
   async discover(machineId: string, path: string): Promise<import("../shared/project-setup.ts").ProjectDiscovery> { return machineId === "local" ? this.host.discover(path) : this.remote(machineId, "/project-discovery", { path }); }
   async modelCatalog(machineId: string, provider: FactoryProvider, path: string, repository: string, snapshot?: AccountBindingSnapshot | null): Promise<import("../shared/agent-models.ts").AgentModelCatalog> {
-    const result = machineId === "local" ? await this.host.modelCatalog(provider, path, repository, snapshot) : await this.remote<import("../shared/agent-models.ts").AgentModelCatalog>(machineId, "/model-catalog", { provider, path, repository, account_snapshot: snapshot });
+    const result = machineId === "local" ? await this.host.modelCatalog(provider, path, repository, snapshot) : await this.remote<import("../shared/agent-models.ts").AgentModelCatalog>(machineId, "/model-catalog", { provider, path, repository, account_snapshot: snapshot } satisfies FactoryHostRequests["model_catalog"]);
     if (result.protocol !== 1 || result.provider !== provider || !Array.isArray(result.models)) throw new FactoryError("model_catalog_unavailable", "Update this Machine's bridge to read its model catalog", 409);
     return result;
   }
