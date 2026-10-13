@@ -3,7 +3,7 @@ import { writePrivateFile } from "./factory-files.ts";
 import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { FactoryCheck, FactoryProject, FactoryRun, FactoryWorker } from "../shared/protocol.ts";
-import { factoryAgentArguments, type FactoryNative } from "./factory-native.ts";
+import { factoryPaneResting, factoryAgentArguments, type FactoryNative } from "./factory-native.ts";
 import { prepareFactoryPrompt } from "./factory-prompt.ts";
 import { FactoryError, git, hash, inspectCheckout } from "./factory-host.ts";
 import { provisionFactoryAgent, provisionSkills, verifySkills } from "./factory-skills.ts";
@@ -28,7 +28,7 @@ export class FactoryWorktrees {
     const lease = this.store.get<Lease>("host_leases", id);
     if (lease?.closing) throw new FactoryError("run_stopping", "This Run is stopping; no new native work or builds may start", 409);
     const run = lease?.run;
-    if (!run?.worktree || !run.branch || !run.checkout || factoryRequired && run.action !== "implement-spec" || !["working", "needs_you", "blocked"].includes(run.condition)) throw new FactoryError("factory_run_required", "Use an observed, admitted repository Run", 409);
+    if (!run?.worktree || !run.branch || !run.checkout || factoryRequired && run.action !== "implement-spec" || !["working", "ready", "needs_you", "blocked"].includes(run.condition)) throw new FactoryError("factory_run_required", "Use an observed, admitted repository Run", 409);
     if (realpathSync(run.worktree) !== run.worktree) throw new FactoryError("worktree_changed", "The Run's owned worktree changed", 409);
     return run;
   }
@@ -82,7 +82,7 @@ export class FactoryWorktrees {
       const workspace = await this.native.createWorkspace({ cwd: path, label: `saurons-eye-worker-${worker.id}`, env: environment });
       record = { ...record, workspace_id: workspace.workspace.workspace_id, pane_id: workspace.root_pane.pane_id }; this.store.put("host_workers", record, id);
       const current = this.store.get<Lease>("host_leases", id);
-      if (!current || current.closing || !["working", "needs_you", "blocked"].includes(current.run.condition)) {
+      if (!current || current.closing || !["working", "ready", "needs_you", "blocked"].includes(current.run.condition)) {
         await this.stop(id, worker.id);
         return { ...record, condition: "cancelled", waiting_reason: "The owner stopped the parent Run before this native launch" };
       }
@@ -97,7 +97,7 @@ export class FactoryWorktrees {
       const afterLaunch = this.store.get<FactoryWorker>("host_workers", worker.id);
       if (afterLaunch?.condition === "cancelled") return afterLaunch;
       const parentLease = this.store.get<Lease>("host_leases", id);
-      if (!parentLease || parentLease.closing || !["working", "needs_you", "blocked"].includes(parentLease.run.condition)) { await this.stop(id, worker.id); return { ...record, condition: "cancelled", waiting_reason: "The owner stopped the parent Run during native launch" }; }
+      if (!parentLease || parentLease.closing || !["working", "ready", "needs_you", "blocked"].includes(parentLease.run.condition)) { await this.stop(id, worker.id); return { ...record, condition: "cancelled", waiting_reason: "The owner stopped the parent Run during native launch" }; }
       record = { ...record, condition: "working", updated_at: new Date().toISOString() };
     } catch { record = this.store.get<FactoryWorker>("host_workers", worker.id)?.condition === "cancelled" ? { ...record, condition: "cancelled", waiting_reason: "The owner stopped this native context" } : { ...record, condition: nativeAttempted ? "interrupted" : "failed", waiting_reason: nativeAttempted ? "Worker dispatch is uncertain; reconcile its owned identity before retrying" : "Worker provisioning failed before native allocation; files are retained for inspection" }; }
     this.store.put("host_workers", record, id); return record;
@@ -106,7 +106,8 @@ export class FactoryWorktrees {
     const snapshot = await this.native.snapshot();
     const pane = snapshot.panes.find((entry) => entry.pane_id === worker.pane_id);
     const workspace = snapshot.workspaces.find((entry) => entry.workspace_id === worker.workspace_id);
-    if (!pane?.cwd || realpathSync(pane.cwd) !== worker.worktree || workspace?.label !== `saurons-eye-worker-${worker.id}` || !["idle", "done"].includes(pane.agent_status)) throw new FactoryError("worker_busy", "Verify the worker is ready at its owned cwd before Git control", 409);
+    const provider = this.store.get<Lease>("host_leases", worker.run_id)?.run.provider;
+    if (!pane?.cwd || !provider || realpathSync(pane.cwd) !== worker.worktree || workspace?.label !== `saurons-eye-worker-${worker.id}` || !await factoryPaneResting(this.native, pane, provider)) throw new FactoryError("worker_busy", "Verify the worker is ready at its owned cwd before Git control", 409);
   }
   async reconcile(id: string, workerId: string): Promise<FactoryWorker> {
     const run = this.store.get<Lease>("host_leases", id)?.run; const worker = this.store.get<FactoryWorker>("host_workers", workerId);
@@ -125,8 +126,8 @@ export class FactoryWorktrees {
       next = { ...worker, workspace_id: workspace.workspace_id, pane_id: pane.pane_id };
       if (pane.agent !== run.provider) next = { ...next, condition: "interrupted", waiting_reason: "Native provider launch is unconfirmed; no retry was sent" };
       else if (pane.agent_status === "blocked") next = { ...next, condition: "needs_you", waiting_reason: "The native worker is waiting for an owner answer" };
-      else if (pane.agent_status === "working") next = { ...next, condition: "working", waiting_reason: null };
-      else if (["idle", "done"].includes(pane.agent_status)) next = { ...next, condition: "needs_you", waiting_reason: "Worker is ready; explicitly check and integrate its result" };
+      else if (await factoryPaneResting(this.native, pane, run.provider)) next = { ...next, condition: "ready", waiting_reason: "Worker is ready; explicitly check and integrate its result" };
+      else if (["working", "idle", "done"].includes(pane.agent_status)) next = { ...next, condition: "working", waiting_reason: null };
       else throw new FactoryError("native_identity_uncertain", "Native worker status is unknown; preserve ownership", 409);
     }
     catch (error) { next = { ...next, condition: "disconnected", waiting_reason: error instanceof FactoryError ? error.message : "The worker cannot currently be observed" }; }
@@ -141,7 +142,7 @@ export class FactoryWorktrees {
     if ((await git(path, ["diff", "--name-only", "HEAD", "--"])).trim()) throw new FactoryError("dirty_worker", "Commit or preserve the worker's changes before reconciliation", 409);
     const tip = (await git(run.worktree!, ["rev-parse", "HEAD"])).trim();
     await git(path, ["merge", "--no-edit", tip]);
-    const next: FactoryWorker = { ...worker, integration_tip: tip, head: (await git(path, ["rev-parse", "HEAD"])).trim(), condition: "needs_you", waiting_reason: "Run checks before integration", updated_at: new Date().toISOString() };
+    const next: FactoryWorker = { ...worker, integration_tip: tip, head: (await git(path, ["rev-parse", "HEAD"])).trim(), condition: "ready", waiting_reason: "Run checks before integration", updated_at: new Date().toISOString() };
     this.store.put("host_workers", next, id); return next;
   }
   async check(id: string, workerId: string | null, check: FactoryCheck): Promise<FactoryCheck> {

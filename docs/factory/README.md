@@ -6,9 +6,20 @@ Start with [runtime.md](runtime.md) for configuration, execution, review, remote
 
 Use [account setup](account-setup.md) to create Machine profiles, authorize native subscription/OAuth logins, generate and register GitHub keys, and bind accounts to a Project. The [account specification](account-profiles.md) describes the implementation; [the research](project-account-profiles-research.md) records its primary sources and initial design.
 
+Inbox and Project Inbox expose **Factory settings and recovery** directly. The same global
+controls remain under **Projects → Factory**. Set **Concurrent Implementations** and **Native
+context limit** to 6 to admit six tasks; Projects inherit these limits. The default task limit
+is 6, and both limits support up to 32. Existing saved limits are preserved until you save them.
+
+A native turn at rest is `ready`: its chat stays open and its worktree remains owned, but it
+no longer consumes an execution slot. Continuing the chat counts it again. Pending owner
+questions, background work and uncertain/disconnected execution retain capacity. Ready does
+not accept an implementation or integrate a Ticket; those still require the owner and checks.
+
 ## Interface cleanup design
 
 The [interface-cleanup design](interface-cleanup-design.md) records the agreed five-lane board, delivery-based completion, planned GitHub issue batches, opt-in implementation queue and scheduled upstream intake. These are planned changes pending Specification, Tickets and implementation. Existing runtime behavior remains documented below. Confirmed terms live in the [root glossary](../../GLOSSARY.md); the older proposal remains in the planning history.
+
 
 ## Records and source
 

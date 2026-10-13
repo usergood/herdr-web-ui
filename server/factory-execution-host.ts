@@ -9,7 +9,7 @@ import { HerdrError } from "./herdr/client.ts";
 import { paneRead, paneScrollInfo } from "./herdr/client.ts";
 import { claudeInputDraft, noteSubmitted, viewportShowsLive } from "./prompt.ts";
 import { FactoryError, git, hash, inspectCheckout, withinRoot } from "./factory-host.ts";
-import { factoryAgentArguments, factoryNative, type FactoryNative } from "./factory-native.ts";
+import { factoryPaneResting, factoryAgentArguments, factoryNative, type FactoryNative } from "./factory-native.ts";
 import { materializeSkills, provisionFactoryAgent, provisionSkills, verifySkills, type SkillManifest } from "./factory-skills.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { paneConversation } from "./conversation.ts";
@@ -298,7 +298,8 @@ export class FactoryExecutionHost {
       const candidates = snapshot.panes.filter((entry) => entry.workspace_id === workspace?.workspace_id && entry.cwd === run.worktree);
       const pane = run.pane_id ? snapshot.panes.find((entry) => entry.pane_id === run.pane_id) : candidates.length === 1 ? candidates[0] : undefined;
       if (!pane || !workspace || workspace.label !== `saurons-eye-run-${run.id}` || !pane.cwd || realpathSync(pane.cwd) !== run.worktree) throw new FactoryError("native_identity_uncertain", "Native identity is unavailable or changed; exclusive ownership is retained", 409);
-      run = { ...run, pane_id: pane.pane_id, workspace_id: workspace.workspace_id, condition: pane.agent !== run.provider ? "interrupted" : pane.agent_status === "blocked" ? "needs_you" : "working", waiting_reason: pane.agent !== run.provider ? "The workspace exists but native provider launch is unconfirmed; no retry was sent" : pane.agent_status === "blocked" ? "The native agent is waiting for an owner answer" : null };
+      const resting = await factoryPaneResting(this.native, pane, run.provider);
+      run = { ...run, pane_id: pane.pane_id, workspace_id: workspace.workspace_id, condition: pane.agent !== run.provider ? "interrupted" : pane.agent_status === "blocked" ? "needs_you" : resting ? "ready" : "working", waiting_reason: pane.agent !== run.provider ? "The workspace exists but native provider launch is unconfirmed; no retry was sent" : pane.agent_status === "blocked" ? "The native agent is waiting for an owner answer" : null };
     } catch (error) { run = { ...run, condition: "disconnected", waiting_reason: error instanceof FactoryError ? error.message : "The native Machine cannot be observed; ownership is retained" }; }
     const current = this.store.get<typeof lease>("host_leases", id);
     if (current && JSON.stringify(current) !== JSON.stringify(lease)) return current.run;
@@ -343,7 +344,7 @@ export class FactoryExecutionHost {
   private async sendOwned(id: string, text: string, signal: AbortSignal): Promise<void> {
     if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Native input is disabled on a restored copy", 409);
     const lease = this.store.get<{ run: FactoryRun; closing?: boolean }>("host_leases", id);
-    if (!lease || lease.closing || !["working", "needs_you"].includes(lease.run.condition)) throw new FactoryError("run_unavailable", "Reconcile the Run before submitting changes", 409);
+    if (!lease || lease.closing || !["working", "ready", "needs_you"].includes(lease.run.condition)) throw new FactoryError("run_unavailable", "Reconcile the Run before submitting changes", 409);
     const run = lease.run; const snapshot = await this.native.snapshot();
     const pane = snapshot.panes.find((entry) => entry.pane_id === run.pane_id);
     const workspace = snapshot.workspaces.find((entry) => entry.workspace_id === run.workspace_id);
@@ -358,7 +359,7 @@ export class FactoryExecutionHost {
       if (before !== after || claudeInputDraft(after, viewportShowsLive(scrollBefore, scrollAfter, shown, before, after) ? shown : null)) throw new FactoryError("input_draft", "The native input box contains a draft; retain this batch and send explicitly after it is cleared", 409);
     }
     if (signal.aborted) throw new FactoryError("disconnected", "The submitting connection closed; this input was not sent", 409);
-    await this.native.prompt(run.pane_id!, text, undefined, () => { const current = this.store.get<{ run: FactoryRun; closing?: boolean }>("host_leases", id); return !this.stopped && !signal.aborted && !current?.closing && ["working", "needs_you"].includes(current?.run.condition ?? ""); });
+    await this.native.prompt(run.pane_id!, text, undefined, () => { const current = this.store.get<{ run: FactoryRun; closing?: boolean }>("host_leases", id); return !this.stopped && !signal.aborted && !current?.closing && ["working", "ready", "needs_you"].includes(current?.run.condition ?? ""); });
     if (!this.promptBound) noteSubmitted(run.pane_id!, text);
   }
   private outputBytes(id: string, name: string): Buffer {

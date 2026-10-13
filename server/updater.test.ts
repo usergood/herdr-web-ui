@@ -37,6 +37,7 @@ beforeEach(async () => {
     typecheck: "bun --eval 'process.exit(0)'", build: "bun build-fixture.ts",
   } }));
   writeFileSync(join(upstream, ".gitignore"), "node_modules/\ndist/\n");
+  writeFileSync(join(upstream, "herdr-plugin.toml"), 'id = "usergood.saurons-eye"\n');
   await runCommand(upstream, [process.execPath, "install"]);
   await commit("first");
   await git(directory, "clone", "-q", upstream, root);
@@ -340,6 +341,40 @@ describe("managed source updates with real Git repositories and builds", () => {
     await updater.request("install");
     expect(updater.status.error).toBeNull();
     expect(updater.status.current_revision).toBe(target);
+  });
+
+  it("ignores inherited upstream tags and local tags when discovering fork releases", async () => {
+    const original = updater.release;
+    writeFileSync(join(upstream, "herdr-plugin.toml"), 'id = "devswha.herdr-web-ui"\n');
+    await release("inherited upstream release", "v99.0.0");
+    await updater.request("install");
+    expect(updater.release).toBe(original);
+    expect(updater.status.latest_revision).toBeNull();
+    expect(updater.status.blocked_reason).toContain("Inherited upstream tags are skipped");
+
+    writeFileSync(join(upstream, "herdr-plugin.toml"), 'id = "usergood.saurons-eye"\n');
+    const target = await release("fork release", "v0.2.0", { annotated: true });
+    await git(root, "tag", "v100.0.0");
+    await updater.request("install");
+    expect(updater.status.error).toBeNull();
+    expect(updater.status.current_revision).toBe(target);
+    expect(updater.status.latest_version).toBe("0.2.0");
+    expect(readFileSync(join(updater.release!.directory, "dist/index.html"), "utf8")).toBe("fork release");
+    expect(await git(root, "tag", "--list", "v100.0.0")).toBe("v100.0.0");
+  });
+
+  it("forgets a withdrawn origin tag without deleting the checkout's local tag", async () => {
+    await release("withdrawn fork release", "v0.2.0");
+    await updater.request("check");
+    expect(updater.status.available).toBe(true);
+    await git(root, "fetch", "--quiet", "origin", "tag", "v0.2.0");
+    await git(upstream, "tag", "-d", "v0.2.0");
+    await updater.request("install");
+    expect(updater.status.error).toBeNull();
+    expect(updater.status.available).toBe(false);
+    expect(updater.status.latest_revision).toBeNull();
+    expect(readFileSync(join(root, "build-fixture.ts"), "utf8")).toContain("first");
+    expect(await git(root, "tag", "--list", "v0.2.0")).toBe("v0.2.0");
   });
 
   it("treats a shallow plugin checkout ahead of the latest release as up to date", async () => {

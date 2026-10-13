@@ -57,6 +57,7 @@ describe("browser lane", () => {
       { script: "scripts/notification-icons-browser-qa.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/workspace-rows-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/pending-pane-switch-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/lan-exposure-notice-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/terminal-dispose-browser-qa.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/sticky-modifiers-regression.ts", seconds: expect.any(Number), code: 7 },
     ]);
@@ -67,17 +68,21 @@ describe("browser lane", () => {
   it("summarizes every script and exits zero on success without enabling local evidence", async () => {
     const { text, code, evidence } = await lane();
     expect(code).toBe(0);
-    expect(rows(text)).toHaveLength(46);
+    expect(rows(text)).toHaveLength(52);
+    expect(rows(text).map((row) => row.script)).toContain("scripts/portal-regression.ts");
     expect(rows(text).map((row) => row.script)).toContain("scripts/notification-icons-browser-qa.ts");
     expect(rows(text).map((row) => row.script)).toContain("scripts/agy-chat-browser-qa.ts");
     expect(rows(text).map((row) => row.script)).toContain("scripts/pending-pane-switch-regression.ts");
+    expect(rows(text).map((row) => row.script)).toContain("scripts/lan-exposure-notice-regression.ts");
     expect(rows(text).map((row) => row.script)).toContain("scripts/chat-fallback-browser-qa.ts");
     expect(rows(text).map((row) => row.script)).toContain("scripts/file-preview-text-browser-qa.ts");
     expect(rows(text).map((row) => row.script)).toContain("scripts/terminal-viewport-regression.ts");
+    expect(rows(text).map((row) => row.script)).toContain("scripts/pane-paging-demo-regression.ts");
+    expect(rows(text).map((row) => row.script)).toContain("scripts/application-paging-regression.ts");
     expect(rows(text).map((row) => row.script)).toContain("scripts/palette-machines-demo-regression.ts");
     expect(rows(text).map((row) => row.script)).toContain("scripts/restored-draft-demo-regression.ts");
     expect(rows(text).every((row) => row.code === 0 && row.seconds >= 0)).toBe(true);
-    expect(rows(text).at(-1)?.script).toBe("scripts/machine-conflict-regression.ts");
+    expect(rows(text).at(-1)?.script).toBe("scripts/herdr-profiles-browser-qa.ts");
     expect(evidence).toBe(false);
     expect(text).not.toMatch(/EVIDENCE=.+/);
   });

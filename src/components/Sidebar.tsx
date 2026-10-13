@@ -1,6 +1,6 @@
 import { paneStorageId } from "../../shared/machines.ts";
-import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
-import { ChevronDown, ChevronRight, Circle, Ellipsis, Folder, FolderOpen, GitBranch, Layers, ListChecks, LoaderCircle, Pencil, Plus, Terminal, Trash2, TriangleAlert, X } from "lucide-react";
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type AnimationEvent, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
+import { ChevronDown, ChevronRight, Circle, Ellipsis, Folder, FolderOpen, GitBranch, Layers, ListChecks, Pencil, Plus, Terminal, Trash2, TriangleAlert, X } from "lucide-react";
 
 import "./Sidebar.css";
 
@@ -24,6 +24,7 @@ import { useWorktreeBranches } from "../lib/useWorktreeBranches.ts";
 import { watchTouchReorder } from "../lib/touchReorder.ts";
 import { worktreeLabel } from "../lib/worktreeName.ts";
 import { paneMark, sidebarAgents, workspaceAgentLabels } from "../lib/sidebarAgents.ts";
+import { PANE_DRAG_TYPE, paneDragData } from "../lib/split.ts";
 
 const ERROR_NOTE_MS = 5000;
 
@@ -68,16 +69,22 @@ export function RestoreErrorBadge({ reason }: { reason: string }) {
   );
 }
 
+/** Every breathing dot keeps the document clock's phase, so a row that starts working breathes in step with the rest. */
+function alignBreath(event: AnimationEvent<HTMLSpanElement>) {
+  if (event.animationName !== "sidebar-breathe") return;
+  for (const animation of event.currentTarget.getAnimations()) animation.startTime = 0;
+}
+
 export function StatusBadge({ status, compact = false, showIdle = false }: { status?: AgentStatus; compact?: boolean; showIdle?: boolean }) {
   const t = useT();
   const value = knownStatus(status);
   const label = t(STATUS_WORD[value]);
   const description = value === "waiting" ? t("Agent waiting on background work") : t("Agent {status}", { status: label });
   // a compact cell draws only the states that ask for a look: a red question mark while the agent
-  // waits for an answer, a green dot once it has finished and was not looked at, a dim arc while
-  // it runs, the same arc held still in the working colour while its turn waits on background work.
-  // Ready and unknown keep the cell, its label and its tooltip
-  const Icon = { idle: null, working: LoaderCircle, blocked: null, done: null, waiting: LoaderCircle, unknown: null }[value];
+  // waits for an answer, a green dot once it has finished and was not looked at, a working-coloured
+  // dot that breathes while it runs, a working-coloured ring held still while its turn waits on
+  // background work. Ready and unknown keep the cell, its label and its tooltip
+  const dot = value === "working" || value === "done" || value === "waiting";
   return (
     <span
       className={`badge badge-${value}${compact ? " sidebar-status" : ""}`}
@@ -86,10 +93,9 @@ export function StatusBadge({ status, compact = false, showIdle = false }: { sta
       aria-label={compact ? description : undefined}
       title={description}
     >
-      {compact && Icon && <Icon aria-hidden="true" />}
       {compact && showIdle && value === "idle" && <Circle aria-hidden="true" />}
       {compact && value === "blocked" && <span className="sidebar-status-mark" aria-hidden="true">?</span>}
-      {compact && value === "done" && <span className="sidebar-status-dot" aria-hidden="true" />}
+      {compact && dot && <span className="sidebar-status-dot" aria-hidden="true" onAnimationStart={value === "working" ? alignBreath : undefined} />}
       <span className={compact ? "visually-hidden" : undefined}>{label}</span>
     </span>
   );
@@ -417,10 +423,12 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, excludedPan
     });
   };
 
-  const onDragStart = (event: DragEvent<HTMLElement>, workspaceId: string): void => {
+  const onDragStart = (event: DragEvent<HTMLElement>, workspaceId: string, paneId: string): void => {
     setDragWorkspaceId(workspaceId);
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("application/x-herdr-workspace", JSON.stringify({ machine_id: machineId, workspace_id: workspaceId }));
+    // dropped on the pane area instead, the row opens its pane in half of it (lib/split.ts)
+    event.dataTransfer.setData(PANE_DRAG_TYPE, paneDragData({ machineId, paneId }));
   };
 
   const onDrop = (event: DragEvent<HTMLElement>, targetWorkspaceId: string): void => {
@@ -568,7 +576,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, excludedPan
           role="button"
           tabIndex={0}
           draggable={!coarsePointer && !editingWorkspace}
-          onDragStart={(event) => { if (!editingWorkspace) onDragStart(event, workspace.workspace_id); }}
+          onDragStart={(event) => { if (!editingWorkspace) onDragStart(event, workspace.workspace_id, pane.pane_id); }}
           onDragEnd={() => setDragWorkspaceId(null)}
           aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
           aria-description={`${t("Reorder workspace {name}", { name: workspace.label })} · ${t("Drag to reorder · Alt+↑/↓")}`}

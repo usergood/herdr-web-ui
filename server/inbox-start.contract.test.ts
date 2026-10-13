@@ -8,6 +8,87 @@ import { HerdrError, herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate 
 import { factoryNative } from "./factory-native.ts";
 
 describe("starting an Inbox idea through the public API", () => {
+  it("counts active children under ready coordinators and preserves background reservations", async () => {
+    const root = mkdtempSync(join(tmpdir(), "saurons-child-capacity-")); const repo = join(root, "repo"); mkdirSync(repo); writeFileSync(join(repo, "README.md"), "Owned child fixture\n");
+    for (const args of [["init", "-b", "main"], ["add", "."], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "initial"]]) execFileSync("git", args, { cwd: repo, stdio: "ignore" });
+    const owned: string[] = []; let backgroundPane = ""; let background = 0;
+    const app = createServer({ port: 0, stateDir: join(root, "state"), machines: false, factory: { accountDiscoveryHome: root, native: {
+      version: async () => "owned-child-fixture",
+      createWorkspace: async options => { const result = await workspaceCreate(options); owned.push(result.workspace.workspace_id); return result; },
+      startAgent: async options => { await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "claude", state: "working" }); },
+      paneState: async id => { const pane = (await sessionSnapshot()).panes.find(pane => pane.pane_id === id); return pane ? { ...pane, background_tasks: id === backgroundPane ? background : 0, background_wait: id === backgroundPane && background > 0 ? true as const : undefined } : null; },
+    } } });
+    const post = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    try {
+      await post("/settings", { max_implementations: 1, max_agents: 6 });
+      const project = await post("/projects", { name: "Child Project", path: repo, machine_id: "local", provider: "claude", tracker: "app" }).then(response => response.json());
+      const a = await post("/implementations", { title: "Coordinator A", description: "", project_id: project.id }).then(response => response.json());
+      const b = await post("/implementations", { title: "Other task B", description: "", project_id: project.id }).then(response => response.json());
+      const run = await post(`/implementations/${a.id}/runs`, { action: "work", idempotency_key: "a" }).then(response => response.json());
+      await herdrRpc("pane.report_agent", { pane_id: run.pane_id, source: "manual", agent: "claude", state: "idle" });
+      const ready = await post(`/runs/${run.id}/reconcile`, {}).then(response => response.json()); expect(ready.condition).toBe("ready");
+      const worker = await post(`/runs/${run.id}/workers`, { role: "standards", idempotency_key: "child" }).then(response => response.json()); expect(worker.condition).toBe("working");
+      const startB = () => post(`/implementations/${b.id}/runs`, { action: "work", idempotency_key: "b" });
+      expect((await startB()).status).toBe(409);
+      backgroundPane = worker.pane_id; background = 1;
+      await herdrRpc("pane.report_agent", { pane_id: worker.pane_id, source: "manual", agent: "claude", state: "idle" });
+      const observe = () => post(`/runs/${run.id}/workers/${worker.id}/reconcile`, {}).then(response => response.json());
+      expect((await observe()).condition).toBe("working"); expect((await startB()).status).toBe(409);
+      background = 0; expect((await observe()).condition).toBe("ready"); expect((await startB()).status).toBe(202);
+      // A ready parent cannot allocate another child when a different task owns the sole slot.
+      const blockedChild = await post(`/runs/${run.id}/workers`, { role: "spec", idempotency_key: "blocked-child" }); expect(blockedChild.status).toBe(409); expect((await blockedChild.json()).error.code).toBe("capacity_exhausted");
+      expect((await sessionSnapshot()).panes.some(pane => pane.pane_id === worker.pane_id)).toBe(true);
+    } finally { app.stop(); for (const id of owned) await workspaceClose(id).catch(() => {}); rmSync(root, { recursive: true, force: true }); }
+  }, 60_000);
+
+  it("admits six tasks globally and releases finished open chats without accepting their work", async () => {
+    const root = mkdtempSync(join(tmpdir(), "saurons-inbox-capacity-"));
+    const repo = join(root, "repo"); mkdirSync(repo); writeFileSync(join(repo, "README.md"), "Owned capacity fixture\n");
+    for (const args of [["init", "-b", "main"], ["add", "."], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "initial"]]) execFileSync("git", args, { cwd: repo, stdio: "ignore" });
+    const owned: string[] = [];
+    const app = createServer({ port: 0, stateDir: join(root, "state"), machines: false, factory: { accountDiscoveryHome: root, native: {
+      version: async () => "owned-capacity-fixture",
+      createWorkspace: async options => { const result = await workspaceCreate(options); owned.push(result.workspace.workspace_id); return result; },
+      startAgent: async options => { await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "working" }); },
+    } } });
+    const post = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    const read = (id: string) => fetch(`http://localhost:${app.port}/api/factory/implementations/${id}`).then(response => response.json());
+    const waitCondition = async (id: string, condition: string) => {
+      const deadline = Date.now() + 10_000;
+      for (;;) { const detail = await read(id); if (detail.runs.at(-1)?.condition === condition) return detail; if (Date.now() > deadline) throw new Error(`Owned task did not become ${condition}`); await Bun.sleep(50); }
+    };
+    try {
+      const overview = await fetch(`http://localhost:${app.port}/api/factory`).then(response => response.json());
+      expect(overview.settings.max_implementations).toBe(6); expect(overview.settings.max_agents).toBe(6);
+      const project = await post("/projects", { name: "Capacity Project", path: repo, machine_id: "local", provider: "codex", tracker: "app" }).then(response => response.json());
+      const ideas: { id: string }[] = [];
+      for (let index = 0; index < 8; index++) ideas.push(await post("/implementations", { title: `Owned task ${index}`, description: "", project_id: project.id }).then(response => response.json()));
+      const runs: { id: string; pane_id: string; workspace_id: string }[] = [];
+      for (const idea of ideas.slice(0, 6)) {
+        const response = await post(`/implementations/${idea.id}/runs`, { action: "work", idempotency_key: "start" }); expect(response.status).toBe(202); runs.push(await response.json());
+      }
+      const start = (index: number) => post(`/implementations/${ideas[index]!.id}/runs`, { action: "work", idempotency_key: "start" });
+      const full = await start(6); expect(full.status).toBe(409); expect((await full.json()).error.code).toBe("capacity_exhausted");
+      await herdrRpc("pane.report_agent", { pane_id: runs[0]!.pane_id, source: "manual", agent: "codex", state: "idle" });
+      const ready = await waitCondition(ideas[0]!.id, "ready"); expect(ready.implementation.stage).toBe("running"); expect(ready.implementation.outcome).toBe("none");
+      expect((await sessionSnapshot()).panes.some(pane => pane.pane_id === runs[0]!.pane_id)).toBe(true);
+      const sameTask = await post(`/implementations/${ideas[0]!.id}/runs`, { action: "work", idempotency_key: "another" }); expect(sameTask.status).toBe(409); expect((await sameTask.json()).error.code).toBe("implementation_owned");
+      const question = await post(`/implementations/${ideas[0]!.id}/questions`, { run_id: runs[0]!.id, question: "Owned owner decision" }).then(response => response.json());
+      expect((await start(6)).status).toBe(409);
+      expect((await post(`/implementations/${ideas[0]!.id}/questions/${question.id}/answer`, { revision: question.revision, answer: "Owned answer" })).status).toBe(200);
+      expect((await post(`/runs/${runs[0]!.id}/reconcile`, {}).then(response => response.json())).condition).toBe("ready");
+      expect((await start(6)).status).toBe(202);
+      await herdrRpc("pane.report_agent", { pane_id: runs[0]!.pane_id, source: "manual", agent: "codex", state: "working" }); await waitCondition(ideas[0]!.id, "working");
+      expect((await start(7)).status).toBe(409);
+      await herdrRpc("pane.report_agent", { pane_id: runs[1]!.pane_id, source: "manual", agent: "codex", state: "blocked" }); await waitCondition(ideas[1]!.id, "needs_you"); expect((await start(7)).status).toBe(409);
+      await workspaceClose(runs[2]!.workspace_id);
+      expect((await post(`/runs/${runs[2]!.id}/reconcile`, {})).status).toBe(200); await waitCondition(ideas[2]!.id, "disconnected"); expect((await start(7)).status).toBe(409);
+      // Two finished chats leave five active or uncertain contexts, even while both remain open.
+      for (const index of [0, 3]) { await herdrRpc("pane.report_agent", { pane_id: runs[index]!.pane_id, source: "manual", agent: "codex", state: "idle" }); await waitCondition(ideas[index]!.id, "ready"); }
+      expect((await start(7)).status).toBe(202);
+    } finally { app.stop(); for (const id of owned) await workspaceClose(id).catch(() => {}); rmSync(root, { recursive: true, force: true }); }
+  });
+
   it.skipIf(!Bun.which("codex"))("launches Approve for me planning with arguments accepted by the real Codex parser",async()=>{
     const root=mkdtempSync(join(tmpdir(),"saurons-codex-permissions-"));const repo=join(root,"repo");mkdirSync(repo);writeFileSync(join(repo,"README.md"),"Owned baseline\n");
     const home=join(root,"codex-home");mkdirSync(home,{mode:0o700});
@@ -178,7 +259,7 @@ describe("starting an Inbox idea through the public API", () => {
     try {
       const project=await post("/projects",{name:"Acceptance Project",path:repo,machine_id:"local",provider:"codex",tracker:"app"}).then(r=>r.json());const idea=await post("/implementations",{title:"Review receipt",description:"",project_id:project.id}).then(r=>r.json());const run=await post(`/implementations/${idea.id}/runs`,{action:"grill-with-docs",idempotency_key:"capture-race"}).then(r=>r.json());expect(run.condition).toBe("working");
       advance=run.worktree;const accepted=await post(`/runs/${run.id}/accept`,{head:run.base});expect(accepted.status).toBe(409);expect((await accepted.json()).error.code).toBe("review_stale");expect(changed).toBe(true);
-      const detail=await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then(r=>r.json());expect(detail.runs.at(-1).condition).toBe("working");expect(detail.approvals.some((a:any)=>a.kind==="review")).toBe(false);expect((await sessionSnapshot()).panes.some(p=>p.pane_id===run.pane_id)).toBe(true);
+      const detail=await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then(r=>r.json());expect(["working","ready"]).toContain(detail.runs.at(-1).condition);expect((await post(`/implementations/${idea.id}/runs`,{action:"grill-with-docs",idempotency_key:"after-stale-accept"})).status).toBe(409);expect(detail.approvals.some((a:any)=>a.kind==="review")).toBe(false);expect((await sessionSnapshot()).panes.some(p=>p.pane_id===run.pane_id)).toBe(true);
     } finally {app.stop();for(const id of owned)await workspaceClose(id).catch(()=>{});rmSync(root,{recursive:true,force:true});}
   });
 });
