@@ -26,7 +26,7 @@ try {
     headless: true, args: ["--no-sandbox"],
   });
   try {
-    const evidence = process.env["UI_EVIDENCE_DIR"] ?? join(root, "evidence");
+    const evidence = process.env["UI_EVIDENCE_DIR"] || join(root, "evidence");
     mkdirSync(evidence, { recursive: true });
     for (const width of [1440, 1920, 390]) {
       for (const theme of ["dark", "light"]) {
