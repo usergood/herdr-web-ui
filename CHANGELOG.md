@@ -80,6 +80,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 - Release an explicitly stopped Run when a fresh native snapshot proves its recorded
   workspace and pane are already closed; preserve context and unrelated sessions while
   retaining ownership for offline or ambiguous identities.
+  ([#19](https://github.com/usergood/saurons-eye/pull/19) by @usergood)
 - Fix Inbox and factory launches rejected by herdr's multiline argument validation.
   Preserve complete requests in private prompt files and offer explicit failed-attempt
   recovery without marking unstarted work complete.
