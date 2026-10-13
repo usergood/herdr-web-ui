@@ -1274,4 +1274,6 @@ export const KO: Record<string, string> = {
   "Automated implementation needs a verified agent skill setup. Direct work and planning are available before verification.": "자동 구현에는 검증된 에이전트 스킬 설정이 필요합니다. 검증 전에도 직접 작업과 계획을 시작할 수 있습니다.",
   "Some planning context could not be retained. Check the previous agent chat and documents before starting the next step.": "일부 계획 맥락을 보존하지 못했습니다. 다음 단계를 시작하기 전에 이전 에이전트 채팅과 문서를 확인하세요.",
   "Continue with available context": "사용 가능한 맥락으로 계속",
+  "Stop this attempt": "이 시도 중지",
+  "Stopping keeps the worktree. You can start a new attempt afterwards.": "중지해도 작업 트리는 보존됩니다. 이후 새 시도를 시작할 수 있습니다.",
 };

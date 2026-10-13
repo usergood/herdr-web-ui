@@ -77,6 +77,10 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   ([#1](https://github.com/usergood/saurons-eye/pull/1) by @usergood)
 
 ### Fixed
+- Fix Inbox and factory launches rejected by herdr's multiline argument validation.
+  Preserve complete requests in private prompt files and offer explicit failed-attempt
+  recovery without marking unstarted work complete.
+  ([#18](https://github.com/usergood/saurons-eye/pull/18) by @usergood)
 - Keep the phone Inbox control within the header beside upstream's plan button, preventing
   viewport expansion and offset Settings taps on narrow phones.
   ([#11](https://github.com/usergood/saurons-eye/pull/11) by @usergood)

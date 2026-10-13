@@ -12,6 +12,7 @@ export function AssignmentActions({ detail, project, machineId, machineName, pro
   useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
   const capability = capabilities?.providers.find(entry => entry.provider === provider);
   const active = [...detail.runs].reverse().find(run => ["accepted", "working", "needs_you", "blocked", "disconnected", "interrupted"].includes(run.condition));
+  const unconfirmedWork = active?.action === "work" && ["interrupted", "disconnected"].includes(active.condition);
   const specification = detail.specifications.at(-1);
   const approved = (kind: string, revision: string) => detail.approvals.some(a => a.kind === kind && a.revision === revision);
   const specReady = !!specification && approved("specification", specification.id) && approved("testing_seams", specification.id);
@@ -40,10 +41,11 @@ export function AssignmentActions({ detail, project, machineId, machineName, pro
     {!active && handoffProblem && <div><p role="alert">{t("Some planning context could not be retained. Check the previous agent chat and documents before starting the next step.")}</p>{incompleteHandoff && <button className="btn" disabled={busy} onClick={() => setAcknowledgedHandoff(latest?.id ?? null)}>{t("Continue with available context")}</button>}</div>}
     {project && !capability?.installed && capabilities && <p role="status">{t("Install or sign in to this Project's agent on its Machine, then try again.")}</p>}
     {active ? <div className="factory-actions">
+      {unconfirmedWork && active.waiting_reason && <p role="alert">{active.waiting_reason}</p>}
       <button className="btn btn-primary" disabled={busy || !active.pane_id} onClick={() => active.pane_id && onOpenPane(active.machine_id, active.pane_id)}><MessageSquare />{t("Continue in agent chat")}</button>
-      {active.action==="implement-spec" ? <button className="btn" disabled={busy||check?.condition!=="passed"} onClick={()=>void perform(async()=>{await factoryRequest(`/runs/${active.id}/accept`,{head:check?.head??""});})}>{t("Accept reviewed head")}</button> : <button className="btn" disabled={busy} onClick={() => void perform(async () => { if(active.action==="work")await factoryRequest(prefix+"/complete-work",{run_id:active.id});else await factoryRequest(`/runs/${active.id}/stop`, { summary: "Owner finished this workflow step; retained work remains available" }); })}>{active.action==="work"?t("Mark work done"):t("Finish this step")}</button>}
+      {active.action==="implement-spec" ? <button className="btn" disabled={busy||check?.condition!=="passed"} onClick={()=>void perform(async()=>{await factoryRequest(`/runs/${active.id}/accept`,{head:check?.head??""});})}>{t("Accept reviewed head")}</button> : <button className="btn" disabled={busy} onClick={() => void perform(async () => { if(active.action==="work"&&!unconfirmedWork)await factoryRequest(prefix+"/complete-work",{run_id:active.id});else await factoryRequest(`/runs/${active.id}/stop`, { summary: unconfirmedWork ? "Owner stopped an unconfirmed work attempt; retained work remains available" : "Owner finished this workflow step; retained work remains available" }); })}>{unconfirmedWork?t("Stop this attempt"):active.action==="work"?t("Mark work done"):t("Finish this step")}</button>}
       {active.action==="implement-spec" && detail.review_evidence.filter(r=>r.run_id===active.id).map(r=><details key={r.id}><summary>{r.axis} · {r.outcome}</summary><pre>{r.content}</pre></details>)}
-      <p className="field-hint">{t("Answer questions in the agent chat. Finish this step when its proposal is ready, then review it here.")}</p>
+      <p className="field-hint">{unconfirmedWork?t("Stopping keeps the worktree. You can start a new attempt afterwards."):t("Answer questions in the agent chat. Finish this step when its proposal is ready, then review it here.")}</p>
     </div> : <div className="factory-actions">
       <button className="btn btn-primary" disabled={disabled} onClick={() => void start("work")}><Play />{t("Start work")}</button>
       {!specification && <button className="btn" disabled={disabled} onClick={() => void start("grill-with-docs")}><ListChecks />{t("Plan implementation")}</button>}

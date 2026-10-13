@@ -1278,4 +1278,6 @@ export const ZH: Record<string, string> = {
   "Automated implementation needs a verified agent skill setup. Direct work and planning are available before verification.": "自动实现需要经过验证的智能体技能配置。验证前仍可直接工作和规划。",
   "Some planning context could not be retained. Check the previous agent chat and documents before starting the next step.": "部分规划上下文未能保留。开始下一步之前，请检查之前的代理聊天和文档。",
   "Continue with available context": "使用现有上下文继续",
+  "Stop this attempt": "停止此次尝试",
+  "Stopping keeps the worktree. You can start a new attempt afterwards.": "停止后会保留工作树。之后可以开始新的尝试。",
 };

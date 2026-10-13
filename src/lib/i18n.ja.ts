@@ -1276,4 +1276,6 @@ export const JA: Record<string, string> = {
   "Automated implementation needs a verified agent skill setup. Direct work and planning are available before verification.": "自動実装には検証済みのエージェントのスキル設定が必要です。検証前でも直接作業や計画を開始できます。",
   "Some planning context could not be retained. Check the previous agent chat and documents before starting the next step.": "計画の文脈の一部を保存できませんでした。次のステップを始める前に、前のエージェントのチャットと文書を確認してください。",
   "Continue with available context": "利用可能な文脈で続行",
+  "Stop this attempt": "この試行を停止",
+  "Stopping keeps the worktree. You can start a new attempt afterwards.": "停止しても作業ツリーは保持されます。その後、新しい試行を開始できます。",
 };
