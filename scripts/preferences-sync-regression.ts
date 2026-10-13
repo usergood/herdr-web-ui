@@ -95,8 +95,9 @@ try {
     await until(async () => a.puts.length === 2, "A's theme request starts");
     assert.equal(a.puts.length, 2, "A's theme is on its way");
     assert.equal(await write(b.page, { settings: { palette: "forest" } }), 200);
-    await until(async () => (await stored(a.page))["palette"] === "forest", "A takes B's palette while its own change is in flight");
+    assert.equal((await held()).settings["palette"], "forest", "B's change persists while A's PUT is held");
     releasePut.resolve();
+    await until(async () => (await stored(a.page))["palette"] === "forest", "A takes B's held palette after its own change settles");
     await until(async () => { const now = await held(); return now.settings["theme"] === "dark" && now.settings["palette"] === "forest"; }, "the server holds both changes");
     assert.equal((await stored(a.page))["theme"], "dark", "A keeps its own change");
     await until(async () => await theme(b.page) === "dark", "B takes A's theme");
