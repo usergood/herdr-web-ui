@@ -1,5 +1,7 @@
 # Proposed domain and tracker setup
 
+Historical setup proposal. The current app-native tracker and single-context guidance are documented in [issue-tracker.md](../agents/issue-tracker.md) and [domain.md](../agents/domain.md). The GitHub-tracker proposal below is preserved as history, not the current factory execution authority.
+
 This is a reviewed-setup proposal, not installed Matt skills configuration. The owner must explicitly invoke `setup-matt-pocock-skills` and confirm its tracker findings and proposed edits before they are applied. [Pinned setup skill](https://github.com/mattpocock/skills/blob/24fe0ef7737efae15c87225755e9f6f5965e4888/skills/engineering/setup-matt-pocock-skills/SKILL.md)
 
 ## Domain layout
