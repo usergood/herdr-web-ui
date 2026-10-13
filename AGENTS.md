@@ -85,3 +85,17 @@ The app is only a bridge: herdr owns every pty, scrollback and agent state.
   - Link the PR, not the issue. An entry built from several PRs links each one.
   - Credit every PR author except @devswha and bots, also when the maintainer pushed fixes to the PR or carried it into a new one; then link both, with `by @login` after the PR that person wrote.
   - A PR has no number until it opens, so add the link in a commit after `gh pr create`. At release, fill in missing links and credits from `git log --format=%s <last tag>..main` and `gh pr view N --json author`.
+
+## Agent skills
+
+### Issue tracker
+
+For factory planning, questions, Specifications, Tickets or execution, use the app-native tracker described in `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+When interpreting or publishing GitHub issue readiness, read `docs/agents/triage-labels.md` for the default roles and Project overrides.
+
+### Domain docs
+
+Before designing factory lifecycle, queue or delivery changes, read the root `GLOSSARY.md` and applicable `docs/adr/` decisions; `docs/agents/domain.md` explains the historical records and design status.

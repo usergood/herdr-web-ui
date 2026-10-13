@@ -1,5 +1,7 @@
 # Proposed factory glossary
 
+Historical proposal retained for context. The root [confirmed glossary](../../GLOSSARY.md) takes precedence for terms resolved in the interface-cleanup interview; the other entries below remain proposals.
+
 Vocabulary proposed by the owner for review before API contracts are committed. These are product terms; technical storage and protocol decisions belong in the specification.
 
 | Term | Meaning |
