@@ -54,6 +54,7 @@ describe("browser lane", () => {
       { script: "scripts/plan-browser-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/project-references-browser-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/pwa-install-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/notification-icons-browser-qa.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/workspace-rows-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/pending-pane-switch-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/lan-exposure-notice-regression.ts", seconds: expect.any(Number), code: 0 },
@@ -67,8 +68,9 @@ describe("browser lane", () => {
   it("summarizes every script and exits zero on success without enabling local evidence", async () => {
     const { text, code, evidence } = await lane();
     expect(code).toBe(0);
-    expect(rows(text)).toHaveLength(51);
+    expect(rows(text)).toHaveLength(52);
     expect(rows(text).map((row) => row.script)).toContain("scripts/portal-regression.ts");
+    expect(rows(text).map((row) => row.script)).toContain("scripts/notification-icons-browser-qa.ts");
     expect(rows(text).map((row) => row.script)).toContain("scripts/agy-chat-browser-qa.ts");
     expect(rows(text).map((row) => row.script)).toContain("scripts/pending-pane-switch-regression.ts");
     expect(rows(text).map((row) => row.script)).toContain("scripts/lan-exposure-notice-regression.ts");

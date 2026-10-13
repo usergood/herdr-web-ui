@@ -8,6 +8,46 @@ import { HerdrError, herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate 
 import { factoryNative } from "./factory-native.ts";
 
 describe("starting an Inbox idea through the public API", () => {
+  it.skipIf(!Bun.which("codex"))("launches Approve for me planning with arguments accepted by the real Codex parser",async()=>{
+    const root=mkdtempSync(join(tmpdir(),"saurons-codex-permissions-"));const repo=join(root,"repo");mkdirSync(repo);writeFileSync(join(repo,"README.md"),"Owned baseline\n");
+    const home=join(root,"codex-home");mkdirSync(home,{mode:0o700});
+    for(const args of [["init","-b","main"],["add","."],["-c","user.name=Fixture","-c","user.email=fixture@example.invalid","commit","-m","initial"]])execFileSync("git",args,{cwd:repo,stdio:"ignore"});
+    const owned:string[]=[];let parserExit:number|undefined;const sandboxes:string[]=[];
+    const app=createServer({port:0,stateDir:join(root,"state"),machines:false,factory:{accountDiscoveryHome:root,native:{version:async()=>"codex-cli 0.162.1",createWorkspace:async options=>{const w=await workspaceCreate(options);owned.push(w.workspace.workspace_id);return w;},startAgent:async options=>{
+      // A schema command checks the real root argument parser without starting inference.
+      const result=Bun.spawnSync(["codex",...options.args!.slice(0,-1),"app-server","generate-json-schema","--out",join(root,"schema")],{env:{...process.env,CODEX_HOME:home},stdout:"pipe",stderr:"pipe"});
+      parserExit=result.exitCode;if(result.exitCode!==0)throw new HerdrError("invalid_agent_argument","Owned Codex parser rejected native permission arguments");
+      sandboxes.push(options.args![options.args!.indexOf("--sandbox")+1]!);
+      await herdrRpc("pane.report_agent",{pane_id:options.paneId,source:"manual",agent:"codex",state:"working"});
+    }}}});
+    const post=(path:string,body:unknown)=>fetch(`http://localhost:${app.port}/api/factory${path}`,{method:"POST",headers:{"content-type":"application/json","x-herdr-factory":"1"},body:JSON.stringify(body)});
+    try{
+      const project=await post("/projects",{name:"Permissions fixture",path:repo,machine_id:"local",provider:"codex",tracker:"app"}).then(r=>r.json());expect((await post(`/projects/${project.id}/configure`,{permission_mode:"approve_for_me"})).status).toBe(200);
+      const idea=await post("/implementations",{title:"Plan owned work",description:"",project_id:project.id}).then(r=>r.json());const response=await post(`/implementations/${idea.id}/runs`,{action:"grill-with-docs",idempotency_key:"owned-approve"});const run=await response.json();expect(parserExit).toBe(0);expect(run.condition).toBe("working");
+      expect((await post(`/runs/${run.id}/stop`,{})).status).toBe(200);
+      const work=await post(`/implementations/${idea.id}/runs`,{action:"work",idempotency_key:"owned-work"}).then(r=>r.json());expect(work.condition).toBe("working");
+      const review=await post(`/runs/${work.id}/workers`,{role:"standards",idempotency_key:"owned-review"}).then(r=>r.json());expect(review.condition).toBe("working");expect(sandboxes).toEqual(["workspace-write","workspace-write","read-only"]);
+    }finally{app.stop();for(const id of owned)await workspaceClose(id).catch(()=>{});rmSync(root,{recursive:true,force:true});}
+  });
+  for (const [provider, format] of [["codex", undefined], ["claude", undefined], ["opencode", "agent_config"], ["opencode", "model_suffix"]] as const) it(`freezes a ${provider} ${format ?? "native"} task model override for the parent and reviewer while Project defaults change`,async()=>{
+    const root=mkdtempSync(join(tmpdir(),"saurons-model-launch-"));const repo=join(root,"repo");mkdirSync(repo);writeFileSync(join(repo,"README.md"),"Owned baseline\n");
+    for(const args of [["init","-b","main"],["add","."],["-c","user.name=Fixture","-c","user.email=fixture@example.invalid","commit","-m","initial"]])execFileSync("git",args,{cwd:repo,stdio:"ignore"});
+    const owned:string[]=[];const launches:string[][]=[];const modelId=(id:string)=>provider==="opencode"?`fixture/${id}`:id;
+    const app=createServer({port:0,stateDir:join(root,"state"),machines:false,factory:{accountDiscoveryHome:root,native:{version:async()=>"owned-cli-fixture",modelCatalog:async provider=>({protocol:1,provider,models:[{id:modelId("fixture-sol"),name:"Fixture Sol",reasoning:[{id:"medium",name:"Medium"},{id:"xhigh",name:"Extra high"}],default_reasoning:"medium"},{id:modelId("fixture-other"),name:"Fixture Other",reasoning:[{id:"high",name:"High"}],default_reasoning:"high"}],problem:null,...(format?{reasoning_format:format}:{})}),createWorkspace:async options=>{const w=await workspaceCreate(options);owned.push(w.workspace.workspace_id);return w;},startAgent:async options=>{launches.push(options.args!);await herdrRpc("pane.report_agent",{pane_id:options.paneId,source:"manual",agent:provider,state:"working"});}}}});
+    const post=(path:string,body:unknown)=>fetch(`http://localhost:${app.port}/api/factory${path}`,{method:"POST",headers:{"content-type":"application/json","x-herdr-factory":"1"},body:JSON.stringify(body)});
+    try{
+      const project=await post("/projects",{name:"Preset fixture",path:repo,machine_id:"local",provider,tracker:"app"}).then(r=>r.json());expect((await post(`/projects/${project.id}/configure`,{execution_preset:{model:modelId("fixture-sol"),reasoning:"xhigh"}})).status).toBe(200);
+      const idea=await post("/implementations",{title:"Use selected model",description:"",project_id:project.id}).then(r=>r.json());const run=await post(`/implementations/${idea.id}/runs`,{action:"work",execution_preset:{model:modelId("fixture-other"),reasoning:"high"},idempotency_key:"override"}).then(r=>r.json());expect(run.condition).toBe("working");expect(run.manifest.execution_preset).toMatchObject({model:modelId("fixture-other"),reasoning:"high"});
+      expect((await post(`/projects/${project.id}/configure`,{execution_preset:{model:modelId("fixture-sol"),reasoning:"medium"}})).status).toBe(200);
+      const reviewer=await post(`/runs/${run.id}/workers`,{role:"standards",idempotency_key:"review"}).then(r=>r.json());expect(reviewer.condition).toBe("working");
+      for(const args of launches){expect(args[args.indexOf("--model")+1]).toBe(modelId("fixture-other")+(format==="model_suffix"?"#high":""));if(provider==="codex")expect(args).toContain('model_reasoning_effort="high"');else if(provider==="claude")expect(args[args.indexOf("--effort")+1]).toBe("high");}
+      if(provider==="codex")expect(launches[1]![launches[1]!.indexOf("--sandbox")+1]).toBe("read-only");
+      if(format==="agent_config")expect(readFileSync(join(reviewer.worktree,".opencode","agents","saurons-eye.md"),"utf8")).toContain('variant: "high"');
+      expect((await post(`/runs/${run.id}/stop`,{})).status).toBe(200);
+      const invalid=await post(`/implementations/${idea.id}/runs`,{action:"work",execution_preset:{model:modelId("fixture-other"),reasoning:"xhigh"},idempotency_key:"invalid-effort"});expect(invalid.status).toBe(409);expect((await invalid.json()).error.code).toBe("reasoning_unavailable");
+      const next=await post(`/implementations/${idea.id}/runs`,{action:"work",idempotency_key:"inherit-default"}).then(r=>r.json());expect(next.condition).toBe("working");expect(next.manifest.execution_preset).toMatchObject({model:modelId("fixture-sol"),reasoning:"medium"});
+    }finally{app.stop();for(const id of owned)await workspaceClose(id).catch(()=>{});rmSync(root,{recursive:true,force:true});}
+  });
   it("stops an already closed failed workspace and allows a fresh explicit start",async()=>{
     const root=mkdtempSync(join(tmpdir(),"saurons-stop-closed-"));const repo=join(root,"repo");mkdirSync(repo);writeFileSync(join(repo,"README.md"),"Owned baseline\n");
     for(const args of [["init","-b","main"],["add","."],["-c","user.name=Fixture","-c","user.email=fixture@example.invalid","commit","-m","initial"]])execFileSync("git",args,{cwd:repo,stdio:"ignore"});

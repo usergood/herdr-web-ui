@@ -3,7 +3,7 @@ import { permissionDescription, validPermissionMode } from "../shared/agent-perm
 import { MATT_PROJECT_WORKFLOW } from "../shared/project-setup.ts";
 import { timingSafeEqual } from "node:crypto";
 import { join } from "node:path";
-import type { FactoryArtifact, FactoryChat, FactoryDetail, FactoryMessage, FactoryProject, FactoryProvider, FactoryRun, FactorySettings, Implementation, ProjectCheckout } from "../shared/protocol.ts";
+import type { FactoryHostRequests, FactoryArtifact, FactoryChat, FactoryDetail, FactoryMessage, FactoryProject, FactoryProvider, FactoryRun, FactorySettings, Implementation, ProjectCheckout } from "../shared/protocol.ts";
 import { badRequest, errorResponse, httpError, isJsonObject, jsonResponse } from "./http.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { FactoryError, hash, inspectCheckout } from "./factory-host.ts";
@@ -24,6 +24,7 @@ import { MachineAccounts } from "./accounts.ts";
 import type { AccountTools } from "./account-tools.ts";
 import { ProjectGitHub } from "./github-project.ts";
 import { sameOrigin } from "./machine-security.ts";
+import { parseModelSelection, resolveModelSelection } from "./agent-model-selection.ts";
 
 const providers: FactoryProvider[] = ["codex", "claude", "opencode"];
 const initialSettings: FactorySettings = { provider: "codex", max_implementations: 2, max_agents: 6, max_builds: 2, max_artifact_bytes: 25 * 1024 * 1024, max_storage_bytes: 2 * 1024 * 1024 * 1024, skills_path: null };
@@ -333,6 +334,25 @@ export class FactoryService {
         const snapshot = bindings && Object.keys(bindings).length ? await this.runtime.accountSnapshot(machine, bindings) : null;
         return jsonResponse(await this.runtime.capabilities(machine, snapshot));
       }
+      if (url.pathname === "/api/factory/model-catalog" && request.method === "POST") {
+        const body = await this.body(request);
+        const project = typeof body.project_id === "string" ? this.store.get<FactoryProject>("projects", body.project_id) : null;
+        if (!project || project.removed_at) throw new FactoryError("not_found", "Project not found", 404);
+        const machine = typeof body.machine_id === "string" ? body.machine_id : project.machine_id;
+        const provider = (body.provider ?? project.provider) as FactoryProvider;
+        if (!providers.includes(provider) || !this.registeredMachine(machine)) throw new FactoryError("invalid_provider", "Select a connected Machine and CLI");
+        const checkout = this.store.list<ProjectCheckout>("checkouts", project.id).find(entry => entry.machine_id === machine);
+        if (!checkout) throw new FactoryError("checkout_required", "Configure this Machine's Project checkout", 409);
+        const bindings = project.account_bindings?.[machine];
+        const snapshot = bindings && Object.keys(bindings).length ? await this.runtime.accountSnapshot(machine, bindings) : null;
+        return jsonResponse(await this.runtime.modelCatalog(machine, provider, checkout.path, checkout.repository, snapshot));
+      }
+      if (url.pathname === "/api/factory-host/model-catalog" && request.method === "POST") {
+        if (request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Use model controls from this app");
+        const body = await this.body(request) as Partial<FactoryHostRequests["model_catalog"]>;
+        if (!providers.includes(body.provider as FactoryProvider) || typeof body.path !== "string" || typeof body.repository !== "string") throw new FactoryError("invalid_provider", "Select a CLI and verified checkout");
+        return jsonResponse(await this.executionHost.modelCatalog(body.provider as FactoryProvider, body.path, body.repository, body.account_snapshot));
+      }
       const artifactMutation = /^\/api\/factory\/artifacts\/([a-zA-Z0-9-]+)\/(note|delete)$/.exec(url.pathname);
       if (artifactMutation && request.method === "POST") return jsonResponse(this.artifacts.mutate(artifactMutation[1]!, artifactMutation[2]!, await this.body(request)));
       const retroRoute = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/retrospectives$/.exec(url.pathname);
@@ -423,6 +443,17 @@ export class FactoryService {
         if (body.shared_paths !== undefined) { if (!Array.isArray(body.shared_paths) || body.shared_paths.some((path: unknown) => typeof path !== "string" || !path || path.startsWith("/") || path.split(/[\\/]/).includes(".."))) throw new FactoryError("invalid_shared_paths", "Select repository-relative shared documents"); next.shared_paths = body.shared_paths as string[]; }
         if (body.provider !== undefined) { if (!providers.includes(body.provider as FactoryProvider)) throw new FactoryError("invalid_provider", "Select a provider"); next.provider = body.provider as FactoryProvider; }
         if (body.machine_id !== undefined) { if (typeof body.machine_id !== "string" || !this.registeredMachine(body.machine_id)) throw new FactoryError("invalid_machine", "Select a registered execution Machine"); if (!this.store.list<ProjectCheckout>("checkouts", project.id).some((entry) => entry.machine_id === body.machine_id)) throw new FactoryError("checkout_required", "Configure this Machine's checkout first"); next.machine_id = body.machine_id; }
+        if (body.execution_preset !== undefined) {
+          const selection = parseModelSelection(body.execution_preset);
+          if (selection.model) {
+            const checkout = this.store.list<ProjectCheckout>("checkouts", project.id).find(entry => entry.machine_id === next.machine_id);
+            if (!checkout) throw new FactoryError("checkout_required", "Configure this Machine's Project checkout", 409);
+            const bindings = next.account_bindings?.[next.machine_id];
+            const snapshot = bindings && Object.keys(bindings).length ? await this.runtime.accountSnapshot(next.machine_id, bindings) : null;
+            resolveModelSelection(selection, await this.runtime.modelCatalog(next.machine_id, next.provider, checkout.path, checkout.repository, snapshot));
+          }
+          next.execution_preset = selection;
+        } else if (next.provider !== project.provider) delete next.execution_preset;
         if (hash(JSON.stringify(this.store.get("projects", project.id))) !== hash(JSON.stringify(project))) throw new FactoryError("project_changed", "Refresh this Project before saving changes", 409);
         this.store.put("projects", next); this.store.event(null, "project_configured", { project_id: project.id }); return jsonResponse(next);
       }

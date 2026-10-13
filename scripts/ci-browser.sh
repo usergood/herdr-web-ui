@@ -64,6 +64,7 @@ run_script scripts/account-profiles-browser-regression.ts
 run_script scripts/plan-browser-regression.ts
 run_script scripts/project-references-browser-regression.ts
 run_script scripts/pwa-install-regression.ts
+run_script scripts/notification-icons-browser-qa.ts
 run_script scripts/workspace-rows-regression.ts
 run_script scripts/pending-pane-switch-regression.ts
 run_script scripts/lan-exposure-notice-regression.ts

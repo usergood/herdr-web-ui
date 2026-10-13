@@ -8,6 +8,9 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 ## [Unreleased]
 
 ### Added
+- Add native model and reasoning dropdowns for Project defaults and individual
+  Inbox starts, with validated choices and frozen parent/worker launch settings.
+  ([#21](https://github.com/usergood/saurons-eye/pull/21) by @usergood)
 - Add direct native work and guided Matt Pocock planning from Inbox ideas, visible owner
   questions and approvals, retained planning handoffs, and completion/archive controls.
   Restore Project agents in the global Agents overview.
@@ -95,6 +98,12 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 ### Fixed
 - Discover app updates only from origin's Saurons eye release tags, skipping inherited upstream
   and local tags, and show the manual checking policy accurately in Settings.
+- Bundle the Eye and Android notification badge so background notifications retain
+  their images when proxy authentication blocks a separate image request.
+  ([#21](https://github.com/usergood/saurons-eye/pull/21) by @usergood)
+- Fix Codex Approve for me launches rejected by conflicting sandbox flags; keep
+  explicit role sandboxing and select automatic review through native configuration.
+  ([#20](https://github.com/usergood/saurons-eye/pull/20) by @usergood)
 - Release an explicitly stopped Run when a fresh native snapshot proves its recorded
   workspace and pane are already closed; preserve context and unrelated sessions while
   retaining ownership for offline or ambiguous identities.

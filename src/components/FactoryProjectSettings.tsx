@@ -8,6 +8,7 @@ import { useT } from "../lib/i18n.ts";
 import { ProjectFolderPicker } from "./ProjectFolderPicker.tsx";
 import { ProjectPermissions } from "./ProjectPermissions.tsx";
 import { ProjectChecks } from "./ProjectChecks.tsx";
+import { AgentModelPicker } from "./AgentModelPicker.tsx";
 
 const existingCheckId = (args: string[]) => `existing:${JSON.stringify(args)}`;
 
@@ -23,6 +24,8 @@ export function FactoryProjectSettings({ project, overview, machineId, machines,
   const [selected, setSelected] = useState<string[]>((project.checks ?? []).map(existingCheckId));
   const [checksTouched, setChecksTouched] = useState(false);
   const modeTouched = useRef(false);
+  const [preset, setPreset] = useState(project.execution_preset ?? { model: null, reasoning: null });
+  const presetTouched = useRef(false);
   const hosts = machines.filter(m => overview.checkouts.some(c => c.project_id === project.id && c.machine_id === m.id));
   const selectedHost = hosts.some(m => m.id === host) ? host : "";
   const checkout = overview.checkouts.find(c => c.project_id === project.id && c.machine_id === (section === "execution" ? host : machineId));
@@ -42,11 +45,12 @@ export function FactoryProjectSettings({ project, overview, machineId, machines,
   return <section className="factory-section"><h3>{section === "checkout" ? t("Verify Machine checkout") : t("Project execution settings")}</h3>
     {section === "execution" && <form className="factory-form" onSubmit={event => {
       event.preventDefault(); if (!selectedHost) return;
-      void perform(async () => { await factoryRequest(`/projects/${project.id}/configure`, { provider, machine_id: selectedHost, permission_mode: mode, context_target_tokens: target, ...(data || checksTouched ? { checks: choices.filter(c => selected.includes(c.id)).map(c => c.args) } : {}), ...(!project.workflow_instructions?.trim() ? { workflow_instructions: MATT_PROJECT_WORKFLOW } : {}) }); });
+      void perform(async () => { await factoryRequest(`/projects/${project.id}/configure`, { provider, machine_id: selectedHost, permission_mode: mode, context_target_tokens: target, ...(presetTouched.current ? { execution_preset: preset } : {}), ...(data || checksTouched ? { checks: choices.filter(c => selected.includes(c.id)).map(c => c.args) } : {}), ...(!project.workflow_instructions?.trim() ? { workflow_instructions: MATT_PROJECT_WORKFLOW } : {}) }); });
     }}>
-      <label>{t("CLI agent")}<select className="select" value={provider} onChange={event => { const next = event.target.value as FactoryProvider; setProvider(next); modeTouched.current = true; setMode(next === "codex" && data?.permission_modes.codex.includes("approve_for_me") ? "approve_for_me" : "ask"); }}><option>codex</option><option>claude</option><option>opencode</option></select></label>
+      <label>{t("CLI agent")}<select className="select" value={provider} onChange={event => { const next = event.target.value as FactoryProvider; setProvider(next); modeTouched.current = true; presetTouched.current = true; setPreset({ model: null, reasoning: null }); setMode(next === "codex" && data?.permission_modes.codex.includes("approve_for_me") ? "approve_for_me" : "ask"); }}><option>codex</option><option>claude</option><option>opencode</option></select></label>
       <label>{t("Machine")}<select className="select" value={selectedHost} onChange={event => setHost(event.target.value)}><option value="" disabled>{t("Select a Machine")}</option>{hosts.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></label>
       <ProjectPermissions value={mode} modes={data?.permission_modes[provider] ?? AGENT_PERMISSION_MODES[provider]} onChange={next => { modeTouched.current = true; setMode(next); }} />
+      {selectedHost && <AgentModelPicker projectId={project.id} machineId={selectedHost} provider={provider} accountScope={JSON.stringify(project.account_bindings?.[selectedHost] ?? {})} value={preset} onChange={selection => { presetTouched.current = true; setPreset(selection); }} disabled={busy} />}
       <label>{t("Context handoff target")}<select className="select" value={target} onChange={event => setTarget(Number(event.target.value))}>{![150000, 200000].includes(target) && <option value={target}>{target.toLocaleString()}</option>}<option value={150000}>150,000</option><option value={200000}>200,000</option></select></label>
       <p className="field-hint">{t("A planning target for smaller Ticket workers, not a measured hard token limit.")}</p>
       <ProjectChecks choices={choices} selected={selected} onChange={ids => {setChecksTouched(true);setSelected(ids);}} />{problem && <p role="status">{problem}</p>}

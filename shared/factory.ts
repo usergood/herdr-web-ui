@@ -18,6 +18,7 @@ export interface FactoryProject extends FactoryRecord {
   checks?: string[][]; setup?: string[][]; environment?: Record<string, string>;
   permissions?: string; shared_paths?: string[];
   permission_mode?: import("./agent-permissions.ts").AgentPermissionMode;
+  execution_preset?: import("./agent-models.ts").AgentModelSelection;
   guidance_assignment_id?: string;
   account_bindings?: Record<string, ProjectAccountBindings>;
   removed_at?: string | null;
