@@ -175,6 +175,7 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
     }
   }
   const answer = /^\/api\/factory\/implementations\/([^/]+)\/questions\/([^/]+)\/answer$/.exec(path);
+  if (/^\/api\/factory\/implementations\/[^/]+\/complete-work$/.test(path)) return failure("demo_unavailable", "Completing a native work session requires a real Machine; the demo cannot certify work");
   if (answer && method === "POST") { const detail = details.get(answer[1]!); const question = detail?.questions.find((entry) => entry.id === answer[2]); if (!question || question.revision !== body.revision || question.answer !== null) return failure("stale_question", "This asking is no longer active"); question.answer = String(body.answer); detail!.question_revision = crypto.randomUUID(); save(); return json(question); }
   if (path.startsWith("/api/factory") || path.startsWith("/api/factory-host")) return failure("demo_unavailable", "This operation needs a real Machine; the browser demo keeps fictional records only");
   return failure("not_found", "Unknown demo factory endpoint", 404);

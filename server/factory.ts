@@ -49,7 +49,7 @@ export class FactoryService {
     this.references = new FactoryReferences(this.store, this.artifacts);
     this.executionHost = new FactoryExecutionHost(this.store, () => this.settings().skills_path, native, this.accounts);
     this.runtime = new FactoryRuntime(this.store, this.workflow, () => this.settings(), this.executionHost, endpoint, (record) => this.artifacts.read(record), publicUrl, this.references, this.accounts); this.review = new FactoryReview(this.store, (machine, path, base, mode) => this.runtime.capture(machine, path, base, mode), (machine, path) => this.runtime.inspect(machine, path));
-    this.pipeline = new FactoryPipeline(this.store, this.runtime, this.workflow, () => this.settings());
+    this.pipeline = new FactoryPipeline(this.store, this.runtime, this.workflow, () => this.settings(), id => this.retainHandoff(id));
     this.retrospectives = new FactoryRetrospectives(this.store);
     this.github = new ProjectGitHub(this.store, this.accounts, (machineId, path) => this.runtime.discover(machineId, path));
   }
@@ -104,7 +104,7 @@ export class FactoryService {
       if (!run || ["completed", "cancelled", "failed"].includes(run.condition)) throw new FactoryError("run_closed", "This Run's control scope has ended", 409);
       if (request.headers.has("origin") && request.headers.get("origin") !== url.origin) throw new FactoryError("invalid_origin", "Use the scoped tracker on its authenticated app origin", 403);
       const action = route[2]!;
-      if (action === "contract" && request.method === "GET") return jsonResponse({ tracker_guide: factoryTrackerGuide, run, workers: this.store.list("workers", run.id), checks: this.store.list("checks", run.id), review_batches: this.store.list("review_batches", run.implementation_id), messages: this.store.list<FactoryMessage>("messages", run.implementation_id).filter((message) => (run.manifest as { context_message_ids?: string[] }).context_message_ids?.includes(message.id)), question_revision: this.workflow.questionRevision(run.implementation_id), questions: this.store.list("questions", run.implementation_id), frontier: run.action === "implement-spec" ? this.pipeline.frontier(run) : [], artifacts: this.store.list("artifacts", run.implementation_id) });
+      if (action === "contract" && request.method === "GET") return jsonResponse({ tracker_guide: factoryTrackerGuide, run, workers: this.store.list("workers", run.id), checks: this.store.list("checks", run.id), review_batches: this.store.list("review_batches", run.implementation_id), messages: this.store.list<FactoryMessage>("messages", run.implementation_id).filter((message) => (run.manifest as { context_message_ids?: string[] }).context_message_ids?.includes(message.id)), question_revision: this.workflow.questionRevision(run.implementation_id), questions: this.store.list("questions", run.implementation_id), frontier: run.action === "implement-spec" ? this.pipeline.frontier(run) : [], artifacts: (run.manifest as { artifacts?: FactoryArtifact[] }).artifacts ?? [] });
       if (action.startsWith("ticket/") && request.method === "GET") {
         const ticket = (run.manifest as { tickets: import("../shared/protocol.ts").FactoryTicket[] }).tickets.find((ticket) => ticket.id === action.slice(7));
         if (!ticket) throw new FactoryError("not_found", "Ticket is outside this Run's frozen graph", 404);
@@ -147,6 +147,41 @@ export class FactoryService {
       const record = { ...this.store.record(), ...captured, run_id: id, sequence: snapshots.filter((entry) => entry.source_id === captured.source_id).length };
       this.store.put("native_snapshots", record, id); this.store.event(run.implementation_id, "native_snapshot_retained", { snapshot_id: record.id, source_id: record.source_id, sequence: record.sequence, version: record.version }); return record;
     }).immediate();
+  }
+  private async retainHandoff(id: string): Promise<void> {
+    const run = this.store.get<FactoryRun>("runs", id);
+    if (!run) throw new FactoryError("not_found", "Run not found", 404);
+    if (["cancelled", "completed", "failed"].includes(run.condition)) return;
+    try {
+      const snapshot = await this.retainNative(id);
+      const source = `native-handoff:${snapshot.id}`;
+      const text = snapshot.turns.map(turn => `${turn.role}: ${turn.parts.flatMap(part => part.kind === "text" || part.kind === "compact" ? [part.text] : []).join("\n")}`).join("\n\n");
+      const token = this.store.get<{ token: string }>("run_access", id)?.token;
+      const safe = this.accounts.sanitize(token ? text.split(token).join("[scoped credential redacted]") : text);
+      const content = `Planning handoff from Run ${id}, native snapshot ${snapshot.id}, source ${snapshot.source_id}.\n${snapshot.cursor ? "This native history page has earlier pages; consult the retained native history for omitted context.\n" : ""}${safe.length > 48_000 ? "Earlier text omitted to keep this handoff within 50,000 characters.\n" : ""}\n${safe.slice(-48_000)}`;
+      this.store.db.transaction(() => {
+        if (this.store.list<FactoryMessage>("messages", run.implementation_id).some(message => message.source_id === source)) return;
+        const chat = this.store.list<FactoryChat>("chats", run.implementation_id)[0]!;
+        const message: FactoryMessage = { ...this.store.record(), implementation_id: run.implementation_id, chat_id: chat.id, role: "system", content, source_id: source, sequence: 0 };
+        this.store.put("messages", message, run.implementation_id); this.store.event(run.implementation_id, "planning_handoff_retained", { run_id: id, snapshot_id: snapshot.id, message_id: message.id, partial: !!snapshot.cursor || safe.length > 48_000 });
+      }).immediate();
+    } catch { this.store.event(run.implementation_id, "native_snapshot_unavailable", { run_id: id, native_store_retained: true }); }
+    if (["setup", "grill-me", "grill-with-docs", "to-spec", "to-tickets"].includes(run.action)) {
+      try { const outputs = await this.importOutputs(run); this.store.event(run.implementation_id, "planning_documents_retained", { run_id: id, artifact_ids: outputs.map(output => output.id) }); }
+      catch (error) { this.store.event(run.implementation_id, "planning_documents_unavailable", { run_id: id, code: error instanceof FactoryError ? error.code : "capture_failed", worktree_retained: true }); }
+    }
+  }
+  private async importOutputs(run: FactoryRun): Promise<FactoryArtifact[]> {
+    const chat = this.store.list<FactoryChat>("chats", run.implementation_id)[0]!;
+    const imported: FactoryArtifact[] = [];
+    for (const output of await this.runtime.outputs(run)) {
+      const origin = `${run.machine_id}:run-${run.id}:artifact-${hash(output.name).slice(0, 48)}`;
+      const bytes = await this.runtime.output(run, output);
+      const existing = this.store.list<FactoryArtifact>("artifacts", run.implementation_id).find(artifact => artifact.origin === origin && artifact.hash === output.hash);
+      imported.push(existing ?? this.artifacts.create(run.implementation_id, { ...output, ...bytes, chat_id: chat.id, origin }, this.settings()));
+    }
+    if (["setup", "grill-me", "grill-with-docs", "to-spec", "to-tickets"].includes(run.action)) this.store.put("planning_captures", { id: run.id, artifact_ids: imported.filter(artifact => /^planning-(?:[a-f0-9]{16}-|index-)/.test(artifact.name)).map(artifact => artifact.id) });
+    return imported;
   }
   observe(paneId: string, status: string, agent: string | null, ended = false): void {
     if (this.stopped) return;
@@ -273,7 +308,7 @@ export class FactoryService {
       const hostSend = /^\/api\/factory-host\/runs\/([a-zA-Z0-9-]+)\/send$/.exec(url.pathname);
       if (hostSend && request.method === "POST") { const body = await this.body(request); if (typeof body.text !== "string" || body.text.length > 250_000) throw new FactoryError("invalid_input", "Enter a bounded change request"); await this.executionHost.send(hostSend[1]!, body.text, request.signal); return jsonResponse({ ok: true }); }
       const hostOutputs = /^\/api\/factory-host\/runs\/([a-zA-Z0-9-]+)\/artifacts(\/content)?$/.exec(url.pathname);
-      if (hostOutputs && request.method === "GET") return jsonResponse(hostOutputs[2] ? this.executionHost.output(hostOutputs[1]!, url.searchParams.get("name") ?? "", url.searchParams.get("hash") ?? "") : this.executionHost.outputs(hostOutputs[1]!));
+      if (hostOutputs && request.method === "GET") return jsonResponse(hostOutputs[2] ? this.executionHost.output(hostOutputs[1]!, url.searchParams.get("name") ?? "", url.searchParams.get("hash") ?? "") : await this.executionHost.outputs(hostOutputs[1]!));
       const prepareRoute = /^\/api\/factory\/machines\/([a-zA-Z0-9_-]+)\/prepare$/.exec(url.pathname);
       if (prepareRoute && request.method === "POST") return jsonResponse(await this.runtime.prepare(prepareRoute[1]!));
       if (url.pathname === "/api/factory" && request.method === "GET") return jsonResponse({ implementations: this.store.list<Implementation>("implementations").sort((a, b) => a.position - b.position), pane_links: this.paneLinks(), pane_archives: this.store.list("pane_archives"), projects: this.store.list("projects"), checkouts: this.store.list<ProjectCheckout>("checkouts").map((entry) => { if (url.searchParams.get("navigation") !== "1") return entry; const { instructions: _instructions, ...metadata } = entry; return metadata; }), settings: this.settings(), activity: this.store.list<Implementation>("implementations").flatMap((idea) => { const run = this.store.list<FactoryRun>("runs", idea.id).at(-1); return run ? [{ implementation_id: idea.id, run_id: run.id, condition: run.condition, action: run.action, waiting_reason: run.waiting_reason, completed_tickets: this.workflow.tickets(idea.id).filter((ticket) => ticket.status === "done").length, total_tickets: this.workflow.tickets(idea.id).length }] : []; }) });
@@ -419,7 +454,7 @@ export class FactoryService {
       const stopRoute = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/stop$/.exec(url.pathname);
       if (stopRoute && request.method === "POST") {
         const body = await this.body(request);
-        try { await this.retainNative(stopRoute[1]!); } catch { const run = this.store.get<FactoryRun>("runs", stopRoute[1]!); if (run) this.store.event(run.implementation_id, "native_snapshot_unavailable", { run_id: run.id, native_store_retained: true }); }
+        await this.retainHandoff(stopRoute[1]!);
         return jsonResponse(await this.runtime.stopRun(stopRoute[1]!, body));
       }
       const nativeImport = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/import-conversation$/.exec(url.pathname);
@@ -448,14 +483,7 @@ export class FactoryService {
       if (importRoute && request.method === "POST") {
         const run = this.store.get<FactoryRun>("runs", importRoute[1]!);
         if (!run) throw new FactoryError("not_found", "Run not found", 404);
-        const chat = this.store.list<FactoryChat>("chats", run.implementation_id)[0]!;
-        const imported: FactoryArtifact[] = [];
-        for (const output of await this.runtime.outputs(run)) {
-          const origin = `${run.machine_id}:run-${run.id}:artifact-${hash(output.name).slice(0, 48)}`;
-          const existing = this.store.list<FactoryArtifact>("artifacts", run.implementation_id).find((artifact) => artifact.origin === origin && artifact.hash === output.hash);
-          imported.push(existing ?? this.artifacts.create(run.implementation_id, { ...output, ...await this.runtime.output(run, output), chat_id: chat.id, origin }, this.settings()));
-        }
-        return jsonResponse(imported, 201);
+        return jsonResponse(await this.importOutputs(run), 201);
       }
       if (url.pathname === "/api/factory/backups" && request.method === "POST") return jsonResponse(this.backup.create(), 201);
       if (url.pathname === "/api/factory/backups" && request.method === "GET") return jsonResponse(this.store.list("backups"));
@@ -538,6 +566,23 @@ export class FactoryService {
         const checkout: ProjectCheckout = { ...this.store.record(), ...inspected, project_id: project.id, machine_id: body.machine_id };
         this.store.db.transaction(() => { this.store.put("projects", project); this.store.put("checkouts", checkout, project.id); if (guidance) { this.store.put("implementations", guidance); const chat: FactoryChat = { ...this.store.record(), implementation_id: guidance.id, title: "Setup" }; this.store.put("chats", chat, guidance.id); } this.store.event(null, "project_registered", { project_id: project.id, checkout_id: checkout.id }); })();
         return jsonResponse(project, 201);
+      }
+      const completeWork = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/complete-work$/.exec(url.pathname);
+      if (completeWork && request.method === "POST") {
+        const body = await this.body(request); const id = completeWork[1]!;
+        const idea = this.store.get<Implementation>("implementations", id);
+        const run = this.store.list<FactoryRun>("runs", id).at(-1);
+        if (!idea || !run || run.id !== body.run_id || run.action !== "work" || !run.workspace_id || !run.pane_id) throw new FactoryError("direct_work_required", "Select this Assignment's latest direct work session before marking it done", 409);
+        if (idea.stage === "done" && !this.activeWork(id)) return jsonResponse(idea);
+        const scope = hash(JSON.stringify({project_id:idea.project_id,provider:idea.provider,machine_id:idea.machine_id,archived_at:idea.archived_at}));
+        await this.retainHandoff(run.id);
+        await this.runtime.stopRun(run.id, {summary:"Owner marked direct work done; its worktree is retained"});
+        return jsonResponse(this.store.db.transaction(() => {
+          const current = this.store.get<Implementation>("implementations", id)!;
+          if (this.store.list<FactoryRun>("runs", id).at(-1)?.id !== run.id || this.activeWork(id) || hash(JSON.stringify({project_id:current.project_id,provider:current.provider,machine_id:current.machine_id,archived_at:current.archived_at})) !== scope) throw new FactoryError("scope_changed", "The Assignment changed during completion; refresh it before continuing", 409);
+          const next: Implementation = {...current,stage:"done",outcome:"implementation_complete",updated_at:new Date().toISOString()};
+          this.store.put("implementations",next);this.store.event(id,"direct_work_completed",{run_id:run.id,owner_accepted:true});return next;
+        })());
       }
       const archiveRoute = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/(archive|restore)$/.exec(url.pathname);
       if (archiveRoute && request.method === "POST") {

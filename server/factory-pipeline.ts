@@ -7,7 +7,7 @@ import { FactoryWorkflow } from "./factory-workflow.ts";
 const owns = (condition: string): boolean => !["completed", "cancelled", "failed"].includes(condition);
 /** Admission reservations cover all native contexts and builds, including uncertain remote work. */
 export class FactoryPipeline {
-  constructor(private readonly store: FactoryStore, private readonly runtime: FactoryRuntime, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings) {}
+  constructor(private readonly store: FactoryStore, private readonly runtime: FactoryRuntime, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly retainBeforeStop: (id: string) => Promise<void>) {}
   private run(id: string, factoryRequired = true): FactoryRun {
     const run = this.store.get<FactoryRun>("runs", id);
     if (!run || factoryRequired && run.action !== "implement-spec" || !run.checkout || !["working", "needs_you", "blocked"].includes(run.condition)) throw new FactoryError("factory_run_required", "Reconcile an admitted repository Run first", 409);
@@ -130,7 +130,10 @@ export class FactoryPipeline {
     this.store.event(run.implementation_id, "ticket_integrated", { worker_id: workerId, ticket_id: worker.ticket_id, head: next.head }); return next;
   }
   async accept(id: string, body: Record<string, unknown>): Promise<FactoryRun> {
-    const run = this.run(id, false); const current = await this.runtime.operation<{ head: string; workspace_hash: string }>(run, "head");
+    const run = this.run(id, false);
+    await this.retainBeforeStop(id);
+    this.run(id, false); // Capture may overlap an owner action; validate the live scope afterwards.
+    const current = await this.runtime.operation<{ head: string; workspace_hash: string }>(run, "head");
     if (body.head !== current.head) throw new FactoryError("review_stale", "Accept the exact current integration head", 409);
     const check = this.store.list<FactoryCheck>("checks", id).filter((entry) => entry.worker_id === null).at(-1);
     const reviews = this.store.list<FactoryReviewEvidence>("review_evidence", id);

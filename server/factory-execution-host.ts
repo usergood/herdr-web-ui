@@ -23,6 +23,7 @@ import type { CodexReferenceContext, ProjectReferencePayload } from "../shared/p
 import type { AccountBindingSnapshot } from "../shared/accounts.ts";
 import type { MachineAccounts } from "./accounts.ts";
 import { withAccountEnvironment } from "./account-execution.ts";
+import { stagePlanningDocuments } from "./factory-planning-docs.ts";
 
 function providerProofId(provider: string, snapshot?: AccountBindingSnapshot | null): string {
   const profile = snapshot?.profiles.find((entry) => entry.service === provider);
@@ -91,7 +92,9 @@ export class FactoryExecutionHost {
         this.store.put("host_native_identity", { id, history_id: conversation.history_id });
         if (JSON.stringify(conversation.turns).length > 4 * 1024 * 1024) throw new FactoryError("native_history_too_large", "Capture a smaller page of this native history", 413);
         const captured = { source_id: `${run.provider}:${hash(conversation.history_id)}`, version: conversation.version, turns: conversation.turns.map((turn) => ({ ...turn, parts: turn.parts.map((part) => part.kind === "tool" && (/\.saurons-eye-access\.json/.test(part.input) || Boolean(this.accounts && part.input.includes(this.accounts.root))) ? { ...part, output: "Scoped runtime credential redacted" } : part) })), cursor: conversation.cursor };
-        return this.accounts?.sanitize(captured) ?? captured;
+        const token = this.store.get<{ token: string }>("host_access", id)?.token;
+        const redacted = token ? JSON.parse(JSON.stringify(captured).split(token).join("[scoped credential redacted]")) as typeof captured : captured;
+        return this.accounts?.sanitize(redacted) ?? redacted;
       } catch (error) { if (error instanceof FactoryError) throw error; throw new FactoryError("native_evidence_required", "This exact native history is unavailable; its original store remains on the Machine", 409); }
     }
     if (action === "head") return this.worktrees.head(id);
@@ -131,7 +134,7 @@ export class FactoryExecutionHost {
   }
   async launch(record: FactoryRun, access?: { token: string; url: string }, attachments: { id: string; name: string; hash: string; size: number; content_base64: string }[] = [], references?: ProjectReferencePayload): Promise<FactoryRun> {
     if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Native execution is disabled on a restored copy", 409);
-    if (!/^[a-f0-9-]{36}$/.test(record.id) || !/^[a-f0-9-]{36}$/.test(record.implementation_id) || !["codex", "claude", "opencode"].includes(record.provider) || !["setup", "grill-me", "grill-with-docs", "to-spec", "to-tickets", "implement-spec", "retro", "apply-retro", "verify-provider"].includes(record.action)) throw new FactoryError("invalid_launch", "Invalid owned execution identity");
+    if (!/^[a-f0-9-]{36}$/.test(record.id) || !/^[a-f0-9-]{36}$/.test(record.implementation_id) || !["codex", "claude", "opencode"].includes(record.provider) || !["work", "setup", "grill-me", "grill-with-docs", "to-spec", "to-tickets", "implement-spec", "retro", "apply-retro", "verify-provider"].includes(record.action)) throw new FactoryError("invalid_launch", "Invalid owned execution identity");
     const signature = hash(JSON.stringify(record));
     const accepted = this.store.db.transaction(() => {
       const previous = this.store.get<{ id: string; signature: string; run: FactoryRun }>("host_leases", record.id);
@@ -169,7 +172,7 @@ export class FactoryExecutionHost {
       if (run.action === "implement-spec" && !(await this.capabilities((run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot)).providers.find((entry) => entry.provider === run.provider)?.factory_ready) throw new FactoryError("provider_unavailable", "The native factory contract has not passed on this Machine", 409);
       if (run.checkout) {
         const checkout = await inspectCheckout(run.checkout);
-        if (checkout.repository !== expected.checkout?.repository || checkout.head !== run.base || (await git(checkout.path, ["status", "--porcelain", "--untracked-files=all"])).trim()) throw new FactoryError("checkout_changed", "The verified checkout changed or has unpublished work; preserve it", 409);
+        if (checkout.repository !== expected.checkout?.repository || checkout.head !== run.base || run.action === "implement-spec" && (await git(checkout.path, ["status", "--porcelain", "--untracked-files=all"])).trim()) throw new FactoryError("checkout_changed", "The verified checkout changed or has unpublished work; preserve it", 409);
       }
       const root = run.checkout ? join(this.store.root, "worktrees", run.id) : join(this.store.root, "inbox", run.implementation_id, run.id);
       const worktree = join(root, run.checkout ? "integration" : "workspace");
@@ -204,22 +207,26 @@ export class FactoryExecutionHost {
       provisionSkills(worktree, run.provider, skills);
       const access = this.store.get("host_access", run.id);
       if (access) { writePrivateFile(join(worktree, ".saurons-eye-access.json"), JSON.stringify(access), { mode: 0o600, flag: "wx" }); writePrivateFile(join(worktree, ".saurons-eye-tracker.mjs"), factoryTrackerClient, { mode: 0o600, flag: "wx" }); }
-      writePrivateFile(join(worktree, ".saurons-eye-context.json"), JSON.stringify({ run, project_reference_context: referenceContext, tracker: { guide: factoryTrackerGuide, type: "Other: app-native", command: "bun .saurons-eye-tracker.mjs", instructions: "The app owns stable Ticket IDs, dependencies and resolution. Read contract and ticket IDs through this adapter. Question records require actual owner answers; consume records their version. The coordinator uses worker, refresh, check and integrate for the accepted dependency frontier. All native contexts and builds must use this adapter's reservations; never spawn unmanaged children or builds. Each worker writes only its own checkout. Shared progress/glossary/ADRs/migrations/lockfiles require explicit path claims. The backend merger alone writes integration. Do not accept your own work, publish or deploy. If synchronization fails, stop and retain the failure." }, environment: { cache: join(root, "cache"), state: join(root, "state"), notes: join(root, "notes"), temporary: join(root, "tmp") }, workflow: "Load only the explicitly selected pinned action. Preserve its owner question and approval gates. Reuse frozen approvals within their scope. Keep application scaffolding and attachments out of commits. Preserve the primary checkout and retain separate Standards and Spec evidence." }, null, 2), { mode: 0o600, flag: "wx" });
+      writePrivateFile(join(worktree, ".saurons-eye-context.json"), JSON.stringify({ run, project_reference_context: referenceContext, tracker: { guide: factoryTrackerGuide, type: "Other: app-native", command: "bun .saurons-eye-tracker.mjs", instructions: run.action === "work" ? "This is direct owner-requested work in this owned workspace. Read the frozen idea, notes and Project guidance; native CLI skills and subagents follow the selected native permission controls. Edit this workspace directly. No factory Ticket graph is required. The primary checkout and separately authorized publication scope remain preserved." : "The app owns stable Ticket IDs, dependencies and resolution. Read contract and ticket IDs through this adapter. Question records require actual owner answers; consume records their version. The coordinator uses worker, refresh, check and integrate for the accepted dependency frontier. All native contexts and builds must use this adapter's reservations; never spawn unmanaged children or builds. Each worker writes only its own checkout. Shared progress/glossary/ADRs/migrations/lockfiles require explicit path claims. The backend merger alone writes integration. Do not accept your own work, publish or deploy. If synchronization fails, stop and retain the failure." }, environment: { cache: join(root, "cache"), state: join(root, "state"), notes: join(root, "notes"), temporary: join(root, "tmp") }, workflow: run.action === "work" ? "Follow the Project workflow and coding standards using its native skills. Ask actual owner questions in chat and preserve separate publication/acceptance gates." : "Load only the explicitly selected pinned action. Preserve its owner question and approval gates. Reuse frozen approvals within their scope. Keep application scaffolding and attachments out of commits. Preserve the primary checkout and retain separate Standards and Spec evidence." }, null, 2), { mode: 0o600, flag: "wx" });
       if (this.stopped) throw new FactoryError("stopping", "The bridge stopped before native launch; reconcile the accepted intent", 409);
       nativeAttempted = true; save();
       const workspace = await this.native.createWorkspace({ cwd: worktree, label: `saurons-eye-run-${run.id}`, env: environment });
       run = { ...run, workspace_id: workspace.workspace.workspace_id, pane_id: workspace.root_pane.pane_id }; save();
       const skill = run.action === "setup" ? "setup-matt-pocock-skills" : run.action === "apply-retro" ? "tdd" : run.action;
-      provisionFactoryAgent(worktree, run.provider, skill, skills, run.action === "implement-spec", (run.manifest as { project?: import("../shared/factory.ts").FactoryProject }).project?.permission_mode);
+      const readOnly = run.action === "implement-spec" || run.action === "verify-provider";
+      provisionFactoryAgent(worktree, run.provider, skill, skills, readOnly, (run.manifest as { project?: import("../shared/factory.ts").FactoryProject }).project?.permission_mode);
       recordScaffolding(this.store, run.id, worktree, run.provider, skills);
       if (this.store.get<{ closing?: boolean }>("host_leases", run.id)?.closing) return this.stopRun(run.id);
       let prompt = run.action === "verify-provider"
         ? `${skills.skills.map((entry) => `${run.provider === "codex" ? "$" : run.provider === "opencode" ? "@" : "/"}${entry.name}`).join(" ")} This is an explicitly requested native skill-loading probe. Load each of these pinned skills through your supported skill mechanism and read the project-local SKILL.md and referenced support files: ${skills.skills.map((entry) => entry.name).join(", ")}. Inspect instructions only; do not execute their workflows, publish, spawn children or change global settings. Describe question and permission differences. Use bun .saurons-eye-tracker.mjs question unused '{"question":"Confirm this read-only native verification round?"}' to record one owner question, then wait for the actual answer. When explicitly resumed, read contract and use consume with its question revision. Read .saurons-eye-context.json for this disposable scope.`
-        : `${run.provider === "codex" ? "$" : run.provider === "opencode" ? "@" : "/"}${skill} Read .saurons-eye-context.json for the frozen owner scope. Follow this action's confirmation gates and await actual owner answers.`;
+        : `${run.provider === "codex" ? "$" : run.provider === "opencode" ? "@" : "/"}${skill} Read .saurons-eye-context.json for the frozen owner scope. Read contract through bun .saurons-eye-tracker.mjs for retained owner messages and the previous planning discussion; read the notes .research-index.json and planning indexes for retained glossary, decisions and documents. Follow this action's confirmation gates and await actual owner answers.`;
+      if (run.action === "work") {
+        const idea = (run.manifest as { implementation: import("../shared/factory.ts").Implementation }).implementation;
+        prompt = `Work on this Project idea:\n\n${idea.title}\n\n${idea.description}\n\nRead the repository's guidance and .saurons-eye-context.json for the selected Project scope. Read contract through bun .saurons-eye-tracker.mjs for retained owner messages and the notes .research-index.json for attachments. This is a direct owner-requested work session. Preserve the primary checkout; this workspace starts from its committed revision. Follow the Project's coding standards and native permissions. Ask for missing decisions in this chat. Publication and deployment require their separately authorized scope.`;
+      }
       prompt += projectWorkflowPrompt((run.manifest as { project?: import("../shared/factory.ts").FactoryProject }).project);
       if (referenceContext) prompt += ` ${referenceContext.prompt}`;
-      const coordinator = run.action === "implement-spec";
-      await this.native.startAgent({ name: `saurons-${run.id.replaceAll("-", "").slice(0, 24)}`, kind: run.provider, paneId: run.pane_id!, args: factoryAgentArguments(run.provider, worktree, prompt, coordinator, Boolean((run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot?.profiles.some((entry) => entry.service === run.provider)), (run.manifest as { project?: import("../shared/factory.ts").FactoryProject }).project?.permission_mode), timeoutMs: 60_000 });
+      await this.native.startAgent({ name: `saurons-${run.id.replaceAll("-", "").slice(0, 24)}`, kind: run.provider, paneId: run.pane_id!, args: factoryAgentArguments(run.provider, worktree, prompt, readOnly, Boolean((run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot?.profiles.some((entry) => entry.service === run.provider)), (run.manifest as { project?: import("../shared/factory.ts").FactoryProject }).project?.permission_mode, run.action === "work"), timeoutMs: 60_000 });
       const afterLaunch = this.store.get<{ run: FactoryRun; closing?: boolean }>("host_leases", run.id);
       if (afterLaunch?.closing || afterLaunch && ["cancelled", "completed", "failed"].includes(afterLaunch.run.condition)) return this.stopRun(run.id);
       run = { ...run, condition: "working", waiting_reason: null, updated_at: new Date().toISOString() }; save(); return run;
@@ -337,21 +344,31 @@ export class FactoryExecutionHost {
       descriptor = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       const info = fstatSync(descriptor);
       if (!info.isFile() || info.nlink > 1 || info.size > 25 * 1024 * 1024) throw new FactoryError("invalid_output", "This output exceeds the import budget or is not an owned regular file", 413);
-      const bytes = readFileSync(descriptor); this.accounts?.assertPublic(bytes.toString("utf8")); return bytes;
+      const bytes = readFileSync(descriptor); const text = bytes.toString("utf8"); this.accounts?.assertPublic(text);
+      const token = this.store.get<{ token: string }>("host_access", id)?.token;
+      if (token && text.includes(token)) throw new FactoryError("private_runtime_material", "Scoped credentials cannot be retained in Run outputs", 409);
+      return bytes;
     } catch (error) { if (error instanceof FactoryError) throw error; throw new FactoryError("output_unavailable", "This Run's output is unavailable or changed during import", 409); }
     finally { if (descriptor !== undefined) closeSync(descriptor); }
   }
-  outputs(id: string): FactoryOutput[] {
+  async outputs(id: string): Promise<FactoryOutput[]> {
     const lease = this.store.get<{ run: FactoryRun }>("host_leases", id);
     if (!lease?.run.worktree) throw new FactoryError("invalid_run", "This Machine has no owned Run outputs", 409);
+    const currentPlanning = await stagePlanningDocuments(lease.run, text => {
+      this.accounts?.assertPublic(text);
+      const token = this.store.get<{ token: string }>("host_access", id)?.token;
+      if (token && text.includes(token)) throw new FactoryError("private_runtime_material", "Scoped credentials cannot be retained in planning documents", 409);
+    });
     const root = join(dirname(lease.run.worktree), "notes");
+    const inputs = existsSync(join(root, ".research-index.json")) ? JSON.parse(readFileSync(join(root, ".research-index.json"), "utf8")) as { file: string }[] : [];
+    const materialized = new Set(inputs.map(input => input.file));
     const entries = readdirSync(root, { withFileTypes: true });
     if (entries.length > 200) throw new FactoryError("outputs_too_large", "Import at most 200 named research outputs per Run", 413);
     const types: Record<string, string> = { ".md": "text/markdown", ".txt": "text/plain", ".html": "text/html", ".json": "application/json", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp" };
     const result: FactoryOutput[] = [];
     for (const entry of entries) {
       const mediaType = types[extname(entry.name).toLowerCase()];
-      if (!entry.isFile() || !mediaType || entry.name.startsWith(".")) continue;
+      if (!entry.isFile() || !mediaType || entry.name.startsWith(".") || materialized.has(entry.name) || currentPlanning && /^planning-(?:[a-f0-9]{16}-|index-)/.test(entry.name) && !currentPlanning.has(entry.name)) continue;
       const bytes = this.outputBytes(id, entry.name); result.push({ name: entry.name, media_type: mediaType, size: bytes.length, hash: hash(bytes) });
     }
     return result;

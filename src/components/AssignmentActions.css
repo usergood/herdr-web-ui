@@ -1,0 +1,3 @@
+.assignment-actions .factory-actions { align-items: center; }
+.assignment-actions .factory-actions svg { width: var(--icon-size); height: var(--icon-size); flex: none; }
+.assignment-proposal { display: grid; gap: var(--space-3); }

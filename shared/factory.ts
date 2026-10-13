@@ -4,7 +4,7 @@ import type { ProjectAccountBindings } from "./accounts.ts";
 export type FactoryProvider = "codex" | "claude" | "opencode";
 export type FactoryStage = "inbox" | "specifying" | "ready" | "running" | "review" | "done";
 export type RunCondition = "accepted" | "working" | "needs_you" | "blocked" | "disconnected" | "interrupted" | "failed" | "cancelled" | "completed";
-export type FactoryAction = "setup" | "grill-me" | "grill-with-docs" | "to-spec" | "to-tickets" | "implement-spec" | "retro" | "apply-retro" | "verify-provider";
+export type FactoryAction = "work" | "setup" | "grill-me" | "grill-with-docs" | "to-spec" | "to-tickets" | "implement-spec" | "retro" | "apply-retro" | "verify-provider";
 export interface FactoryRecord { id: string; created_at: string; updated_at: string }
 export interface Implementation extends FactoryRecord {
   title: string; description: string; project_id: string | null; provider: FactoryProvider | null;

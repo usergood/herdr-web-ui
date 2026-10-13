@@ -45,6 +45,7 @@ try {
   await page.getByRole("button", { name: "Close settings", exact: true }).click();
   await page.waitForFunction((expected) => location.hash === expected, registeredProjectHash);
   await page.locator(".project-navigation").getByRole("button", { name: /Project native chat/ }).waitFor();
+  await page.locator(".agents-sidebar").getByRole("button", { name: /Project native chat/ }).waitFor();
   assert.equal(await page.locator(".project-navigation").getByRole("button", { name: /Unmatched native chat/ }).count(), 0);
   await page.locator(".machine-group").getByRole("button", { name: /Unmatched fixture/ }).first().waitFor();
   const mixed = await workspaceCreate({ label: "Mixed native workspace", cwd: siblingPath }); ownedWorkspaces.push(mixed.workspace.workspace_id);
@@ -67,6 +68,7 @@ try {
   await page.getByRole("textbox", { name: "Idea title", exact: true }).fill("Project scoped idea");
   await page.getByRole("button", { name: "Capture idea", exact: true }).click();
   await page.getByRole("heading", { name: "Project scoped idea", exact: true }).waitFor();
+  await page.getByText("Advanced controls", { exact: true }).click();
   assert.equal(await page.getByRole("combobox", { name: "Project", exact: true }).locator("option:checked").textContent(), "Browser Project");
   assert.equal(await page.locator(".tab-strip").count(), 0);
   const assignmentId = new URL(page.url()).hash.slice("#factory/".length);
@@ -114,6 +116,7 @@ try {
   await page.getByRole("button", { name: "Capture idea", exact: true }).click();
   await page.getByRole("heading", { name: "Retained browser research", exact: true }).waitFor();
   const hash = new URL(page.url()).hash;
+  await page.getByText("Advanced controls", { exact: true }).click();
   await page.getByRole("textbox", { name: "New note", exact: true }).fill("A durable second note");
   await page.getByRole("button", { name: "Save note", exact: true }).click();
   await page.getByText("A durable second note", { exact: true }).waitFor();
@@ -123,15 +126,19 @@ try {
   await page.locator(".project-navigation").getByRole("button", { name: "Assignments", exact: true }).click();
   await page.getByRole("button", { name: "Retained browser research", exact: true }).click();
   await page.getByRole("heading", { name: "Retained browser research", exact: true }).waitFor();
+  await page.getByText("Advanced controls", { exact: true }).click();
   const escaped: string[] = [];
   page.on("request", (request) => { if (request.url().includes("factory-sandbox-exfiltrate")) escaped.push(request.url()); });
   await page.locator(".factory-panel input[type=file]").setInputFiles({ name: "sandbox.html", mimeType: "text/html", buffer: Buffer.from('<h1>Sandboxed research</h1><script>parent.document.body.dataset.compromised="yes";fetch("/factory-sandbox-exfiltrate")</script><img src="/factory-sandbox-exfiltrate"><form action="/factory-sandbox-exfiltrate" target="_top"><button>Escape sandbox</button></form>') });
   await page.frameLocator('iframe[title="sandbox.html"]').getByRole("heading", { name: "Sandboxed research" }).waitFor();
+  await page.locator('iframe[title="sandbox.html"]').scrollIntoViewIfNeeded();
+  await shot("inbox-legacy-preview.png");
   await page.frameLocator('iframe[title="sandbox.html"]').getByRole("button", { name: "Escape sandbox" }).click();
   assert.equal(await page.evaluate(() => document.body.dataset.compromised), undefined);
   assert.deepEqual(escaped, []);
   app.stop(); app = createServer({ port: 0, stateDir: state, factory: factoryOptions });
   await page.goto(`http://localhost:${app.port}/${hash}`);
+  await page.getByText("Advanced controls", { exact: true }).click();
   await page.getByText("A durable second note", { exact: true }).waitFor();
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForFunction(() => document.querySelector(".sidebar")!.getBoundingClientRect().right <= 0);

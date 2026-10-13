@@ -1097,6 +1097,8 @@ export const DEFAULT_PORT = 7317;
  * POST .../questions (question) -> FactoryQuestion, 201; POST .../questions/:question/answer (answer)
  * -> FactoryQuestion; revision-bound, never invents answers.
  * POST .../order (order) -> {ok:true}; reordering never dispatches.
+ * POST .../complete-work (complete_work) -> Implementation; explicit owner completion of the
+ * latest direct-work Run after confirmed native stop, with its worktree retained.
  * POST /api/factory/settings (settings) -> FactorySettings; validated limits and future defaults.
  * POST /api/factory/projects/:id/configure (project_settings) -> FactoryProject;
  * GET /api/factory/projects/:id/references -> ProjectReferenceLibrary; current immutable versions.
@@ -1180,6 +1182,7 @@ export interface FactoryRequests {
   github_action: { head: string; base: string; policy_revision: string };
   implementation: { title: string; description: string; project_id?: string | null };
   configure: { project_id?: string | null; provider?: import("./factory.ts").FactoryProvider | null; machine_id?: string | null };
+  complete_work: { run_id: string };
   project: { name: string; path: string; machine_id: string; provider: import("./factory.ts").FactoryProvider; tracker: import("./factory.ts").FactoryProject["tracker"]; tracker_reference?: string; guided_setup?: boolean; permission_mode?: import("./agent-permissions.ts").AgentPermissionMode; check_ids?: string[]; context_target_tokens?: number; guidance_task?: boolean; github_account_id?: string };
   project_settings: Partial<Pick<import("./factory.ts").FactoryProject, "name" | "checks" | "setup" | "environment" | "permissions" | "permission_mode" | "shared_paths" | "provider" | "machine_id" | "account_bindings" | "workflow_instructions" | "context_target_tokens">>;
   project_discovery: { machine_id: string; path: string };
