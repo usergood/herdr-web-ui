@@ -7,6 +7,8 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 
 ## [Unreleased]
 
+## [0.4.9] - 2026-10-13
+
 ### Added
 - Add native model and reasoning dropdowns for Project defaults and individual
   Inbox starts, with validated choices and frozen parent/worker launch settings.
