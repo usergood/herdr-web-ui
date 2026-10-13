@@ -1,10 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "./index.ts";
 import { herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "./herdr/client.ts";
+import { factoryNative } from "./factory-native.ts";
 
 describe("starting an Inbox idea through the public API", () => {
   it("starts work in a new owned workspace while preserving changes in the Project checkout", async () => {
@@ -13,14 +14,20 @@ describe("starting an Inbox idea through the public API", () => {
     for(const args of [["init","-b","main"],["add","."],["-c","user.name=Fixture","-c","user.email=fixture@example.invalid","commit","-m","initial"]])execFileSync("git",args,{cwd:repo,stdio:"ignore"});
     writeFileSync(join(repo,"personal-note.txt"),"Keep this uncommitted note\n");
     const owned:string[]=[];
-    const app=createServer({port:0,stateDir:join(root,"state"),machines:false,factory:{accountDiscoveryHome:root,native:{version:async()=>"codex-cli 0.162.1",createWorkspace:async options=>{const created=await workspaceCreate(options);owned.push(created.workspace.workspace_id);return created;},startAgent:async options=>{await herdrRpc("pane.report_agent",{pane_id:options.paneId,source:"manual",agent:"codex",state:"working"});}}}});
+    // Muse preserves herdr's real argument validation without starting a paid model CLI.
+    const app=createServer({port:0,stateDir:join(root,"state"),machines:false,factory:{accountDiscoveryHome:root,native:{version:async()=>"codex-cli 0.162.1",createWorkspace:async options=>{const created=await workspaceCreate({...options,focus:false});owned.push(created.workspace.workspace_id);return created;},startAgent:async options=>{await factoryNative.startAgent({...options,kind:"muse"});await herdrRpc("pane.report_agent",{pane_id:options.paneId,source:"manual",agent:"codex",state:"working"});}}}});
     const post=(path:string,body:unknown)=>fetch(`http://localhost:${app.port}/api/factory${path}`,{method:"POST",headers:{"content-type":"application/json","x-herdr-factory":"1"},body:JSON.stringify(body)});
     try {
       const project=await post("/projects",{name:"Inbox Project",path:repo,machine_id:"local",provider:"codex",tracker:"app"}).then(r=>r.json());
-      const idea=await post("/implementations",{title:"Fix the storefront",description:"Keep the checkout's existing files.",project_id:project.id}).then(r=>r.json());
+      const idea=await post("/implementations",{title:"Fix the storefront",description:"Keep the checkout's existing files.\nPreserve `literal code`, quotes and café.",project_id:project.id}).then(r=>r.json());
       const response=await post(`/implementations/${idea.id}/runs`,{action:"work",idempotency_key:"owned-work"});expect(response.status).toBe(202);
       const run=await response.json();expect(run.condition).toBe("working");expect(run.pane_id).toBeString();expect(run.workspace_id).toBeString();expect(run.worktree).not.toBe(repo);
-      expect(run.manifest.implementation.description).toBe("Keep the checkout's existing files.");
+      expect(run.manifest.implementation.description).toBe("Keep the checkout's existing files.\nPreserve `literal code`, quotes and café.");
+      expect(readFileSync(join(run.worktree,".saurons-eye-prompt.md"),"utf8")).toContain("Keep the checkout's existing files.\nPreserve `literal code`, quotes and café.");
+      expect(readFileSync(join(run.worktree,".saurons-eye-prompt.md"),"utf8")).toContain("Frozen Project workflow:");
+      expect(statSync(join(run.worktree,".saurons-eye-prompt.md")).mode&0o777).toBe(0o600);
+      const reviewed=await post(`/runs/${run.id}/workers`,{role:"standards",idempotency_key:"owned-review"});expect(reviewed.status).toBe(200);const reviewer=await reviewed.json();expect(reviewer.condition).toBe("working");
+      expect(readFileSync(join(reviewer.worktree,".saurons-eye-prompt.md"),"utf8")).toContain("Review only the Standards axis");
       expect(readFileSync(join(repo,"personal-note.txt"),"utf8")).toBe("Keep this uncommitted note\n");
       expect(execFileSync("git",["status","--porcelain"],{cwd:repo,encoding:"utf8"})).toBe("?? personal-note.txt\n");
       const again=await post(`/implementations/${idea.id}/runs`,{action:"work",idempotency_key:"owned-work"}).then(r=>r.json());expect(again.id).toBe(run.id);
@@ -28,6 +35,17 @@ describe("starting an Inbox idea through the public API", () => {
       const finished=await post(`/implementations/${idea.id}/complete-work`,{run_id:run.id});expect(finished.status).toBe(200);expect((await finished.json()).stage).toBe("done");
       expect((await post(`/implementations/${idea.id}/archive`,{})).status).toBe(200);
     } finally {app.stop();for(const id of owned)await workspaceClose(id).catch(()=>{});rmSync(root,{recursive:true,force:true});}
+  });
+  for(const provider of ["codex","claude","opencode"] as const) it(`starts ${provider} planning through native validation with its selected skill`, async()=>{
+    const root=mkdtempSync(join(tmpdir(),"saurons-native-planning-"));const repo=join(root,"repo");mkdirSync(repo);writeFileSync(join(repo,"README.md"),"Owned baseline\n");
+    for(const args of [["init","-b","main"],["add","."],["-c","user.name=Fixture","-c","user.email=fixture@example.invalid","commit","-m","initial"]])execFileSync("git",args,{cwd:repo,stdio:"ignore"});
+    const owned:string[]=[];const app=createServer({port:0,stateDir:join(root,"state"),machines:false,factory:{accountDiscoveryHome:root,native:{version:async()=>"owned-cli-fixture",createWorkspace:async options=>{const w=await workspaceCreate({...options,focus:false});owned.push(w.workspace.workspace_id);return w;},startAgent:async options=>{await factoryNative.startAgent({...options,kind:"muse"});await herdrRpc("pane.report_agent",{pane_id:options.paneId,source:"manual",agent:provider,state:"working"});}}}});
+    const post=(path:string,body:unknown)=>fetch(`http://localhost:${app.port}/api/factory${path}`,{method:"POST",headers:{"content-type":"application/json","x-herdr-factory":"1"},body:JSON.stringify(body)});
+    try{
+      const project=await post("/projects",{name:"Planning fixture",path:repo,machine_id:"local",provider,tracker:"app"}).then(r=>r.json());await post(`/projects/${project.id}/configure`,{workflow_instructions:"Preserve the domain language.\nKeep actual owner decisions."});
+      const idea=await post("/implementations",{title:"Plan the receipt",description:"First line.\nSecond line.",project_id:project.id}).then(r=>r.json());const response=await post(`/implementations/${idea.id}/runs`,{action:"grill-with-docs",idempotency_key:"owned-plan"});expect(response.status).toBe(202);const run=await response.json();expect(run.condition).toBe("working");
+      const prompt=readFileSync(join(run.worktree,".saurons-eye-prompt.md"),"utf8");expect(prompt).toContain("Preserve the domain language.\nKeep actual owner decisions.");expect(prompt).toContain(`${provider==="codex"?"$":provider==="opencode"?"@":"/"}grill-with-docs`);
+    }finally{app.stop();for(const id of owned)await workspaceClose(id).catch(()=>{});rmSync(root,{recursive:true,force:true});}
   });
   it("hands native owner decisions and grilling documents to the specification agent", async () => {
     const root=mkdtempSync(join(tmpdir(),"saurons-planning-handoff-"));const repo=join(root,"repo");mkdirSync(repo);writeFileSync(join(repo,"README.md"),"Owned baseline\n");

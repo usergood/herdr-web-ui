@@ -9,7 +9,7 @@ import { FactoryStore } from "./factory-store.ts";
 /** Record only app-created files. Cleanup never force-removes unexpected or ignored work. */
 export function recordScaffolding(store: FactoryStore, id: string, path: string, provider: FactoryProvider, manifest: SkillManifest): void {
   const folder = provider === "claude" ? ".claude" : provider === "opencode" ? ".opencode" : ".agents";
-  const paths = [".saurons-eye-context.json", ".saurons-eye-access.json", ".saurons-eye-tracker.mjs", ...(provider === "opencode" ? [".opencode/agents/saurons-eye.md"] : [])];
+  const paths = [".saurons-eye-context.json", ".saurons-eye-prompt.md", ".saurons-eye-access.json", ".saurons-eye-tracker.mjs", ...(provider === "opencode" ? [".opencode/agents/saurons-eye.md"] : [])];
   for (const skill of manifest.skills) for (const file of manifest.files) if (file.path.startsWith(skill.path + "/")) paths.push(`${folder}/skills/${skill.name}/${file.path.slice(skill.path.length + 1)}`);
   const files = paths.filter((name) => existsSync(join(path, name))).map((name) => ({ path: name, hash: hash(readFileSync(join(path, name))) }));
   store.put("host_scaffolding", { id, path, files });

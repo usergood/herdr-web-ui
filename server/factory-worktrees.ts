@@ -4,6 +4,7 @@ import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readF
 import { dirname, join } from "node:path";
 import type { FactoryCheck, FactoryProject, FactoryRun, FactoryWorker } from "../shared/protocol.ts";
 import { factoryAgentArguments, type FactoryNative } from "./factory-native.ts";
+import { prepareFactoryPrompt } from "./factory-prompt.ts";
 import { FactoryError, git, hash, inspectCheckout } from "./factory-host.ts";
 import { provisionFactoryAgent, provisionSkills, verifySkills } from "./factory-skills.ts";
 import { FactoryStore } from "./factory-store.ts";
@@ -87,9 +88,10 @@ export class FactoryWorktrees {
       }
       const selected = worker.role === "implementer" ? "tdd" : "code-review";
       provisionFactoryAgent(path, run.provider, selected, verifySkills(this.skillsPath()), worker.role !== "implementer", (run.manifest as { project?: FactoryProject }).project?.permission_mode);
-      recordScaffolding(this.store, worker.id, path, run.provider, verifySkills(this.skillsPath()));
       const prompt = `${run.provider === "codex" ? "$" : run.provider === "opencode" ? "@" : "/"}${selected} Read .saurons-eye-context.json. ${worker.role === "implementer" ? "Implement only the accepted Ticket using its confirmed seams; the app's merger owns integration." : `Review only the ${worker.role === "standards" ? "Standards" : "Spec"} axis against the frozen scope. Keep this context independent of the other axis. Make no repository changes. End with FACTORY_REVIEW: PASS or FACTORY_REVIEW: FAIL and explain findings.`}${referenceContext ? ` ${referenceContext.prompt}` : ""}`;
-      const args = factoryAgentArguments(run.provider, path, prompt + projectWorkflowPrompt((run.manifest as { project?: FactoryProject }).project), worker.role !== "implementer", Boolean((run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot?.profiles.some((entry) => entry.service === run.provider)), (run.manifest as { project?: import("../shared/factory.ts").FactoryProject }).project?.permission_mode);
+      const launchPrompt = prepareFactoryPrompt(path, prompt + projectWorkflowPrompt((run.manifest as { project?: FactoryProject }).project), `${run.provider === "codex" ? "$" : run.provider === "opencode" ? "@" : "/"}${selected}`);
+      recordScaffolding(this.store, worker.id, path, run.provider, verifySkills(this.skillsPath()));
+      const args = factoryAgentArguments(run.provider, path, launchPrompt, worker.role !== "implementer", Boolean((run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot?.profiles.some((entry) => entry.service === run.provider)), (run.manifest as { project?: import("../shared/factory.ts").FactoryProject }).project?.permission_mode);
       await this.native.startAgent({ kind: run.provider, paneId: record.pane_id!, name: `eye-worker-${worker.id.replaceAll("-", "").slice(0, 21)}`, args, timeoutMs: 60_000 });
       const afterLaunch = this.store.get<FactoryWorker>("host_workers", worker.id);
       if (afterLaunch?.condition === "cancelled") return afterLaunch;

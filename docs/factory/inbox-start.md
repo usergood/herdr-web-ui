@@ -27,6 +27,10 @@ Return to the Assignment to **Continue in agent chat** or **Mark work done**, th
 archive completed work. Completion retains the worktree; it does not merge or
 publish its changes.
 
+If a start is interrupted, choose **Stop this attempt**, then **Start work** again.
+Stopping preserves its worktree and does not mark the Assignment complete. If a
+native agent is already present, **Continue in agent chat** opens it for inspection.
+
 For planning, answer the agent's questions in its chat or the recorded **Questions**
 form. Confirm shared understanding, then choose **Finish this step** and **Create
 specification**. Read and accept the specification and its testing plan before
