@@ -48,10 +48,11 @@ export class FactoryExecutionHost {
     const prepared = this.store.get<{ id: string; path: string }>("host_skills", "default"); this.preparedPath = prepared?.path ?? null;
   }
   discover(path: string) { return discoverProject(path, this.native, this.accounts?.discoveryHome); }
-  async modelCatalog(provider: import("../shared/factory.ts").FactoryProvider, path: string, snapshot?: AccountBindingSnapshot | null) {
+  async modelCatalog(provider: import("../shared/factory.ts").FactoryProvider, path: string, repository: string, snapshot?: AccountBindingSnapshot | null) {
     if (this.stopped || existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Native model reads are disabled on a stopped or restored bridge", 409);
     const checkout = await inspectCheckout(path);
-    const environment = await this.accounts?.environment(snapshot) ?? {};
+    if (checkout.repository !== repository) throw new FactoryError("wrong_checkout", "The selected checkout belongs to a different repository", 409);
+    const environment = await this.accounts?.environment(snapshot, false, checkout.path) ?? {};
     const catalog = await withAccountEnvironment(environment, () => this.native.modelCatalog(provider, checkout.path));
     if (catalog.protocol !== 1 || catalog.provider !== provider || !Array.isArray(catalog.models)) throw new FactoryError("model_catalog_unavailable", "The Machine returned an incompatible model catalog", 409);
     this.accounts?.assertPublic(JSON.stringify(catalog));

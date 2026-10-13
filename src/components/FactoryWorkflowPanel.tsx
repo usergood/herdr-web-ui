@@ -1,17 +1,18 @@
+import type { AgentModelSelection } from "../../shared/agent-models.ts";
 import { useState } from "react";
 import type { FactoryAction, FactoryCapabilities, FactoryDetail, FactoryProvider } from "../../shared/protocol.ts";
 import { factoryRequest } from "../lib/factoryApi.ts";
 import { useT } from "../lib/i18n.ts";
 
 type Perform = (action: () => Promise<void>) => Promise<void>;
-export function FactoryWorkflowPanel({ detail, machineId, provider, busy, perform, showQuestions = true, capabilities, problem, onCapabilities }: { detail: FactoryDetail; machineId: string; provider: FactoryProvider; busy: boolean; perform: Perform; showQuestions?: boolean; capabilities: FactoryCapabilities | null; problem: string | null; onCapabilities: (value: FactoryCapabilities) => void }) {
+export function FactoryWorkflowPanel({ preset, detail, machineId, provider, busy, perform, showQuestions = true, capabilities, problem, onCapabilities }: { preset: AgentModelSelection; detail: FactoryDetail; machineId: string; provider: FactoryProvider; busy: boolean; perform: Perform; showQuestions?: boolean; capabilities: FactoryCapabilities | null; problem: string | null; onCapabilities: (value: FactoryCapabilities) => void }) {
   const t = useT();
   const [question, setQuestion] = useState("");
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const prefix = `/implementations/${detail.implementation.id}`;
   const capability = capabilities?.providers.find((entry) => entry.provider === provider);
   const active = detail.runs.some((run) => ["accepted", "working", "needs_you", "blocked", "disconnected", "interrupted"].includes(run.condition));
-  const start = (action: FactoryAction) => perform(async () => { await factoryRequest(`${prefix}/runs`, { action, idempotency_key: crypto.randomUUID(), expected: { provider, machine_id: machineId, project_id: detail.implementation.project_id, specification_id: detail.specifications.at(-1)?.id ?? null, graph_hash: detail.graph_hash } }); });
+  const start = (action: FactoryAction) => perform(async () => { await factoryRequest(`${prefix}/runs`, { action, execution_preset: preset, idempotency_key: crypto.randomUUID(), expected: { provider, machine_id: machineId, project_id: detail.implementation.project_id, specification_id: detail.specifications.at(-1)?.id ?? null, graph_hash: detail.graph_hash } }); });
   return <section className="factory-section"><h3>{t("Workflow")}</h3>
     <p>{provider} · {capability?.version ?? t("Not verified")}</p>
     {problem && <p role="alert">{problem}</p>}

@@ -1,26 +1,53 @@
-import { execFile, spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { promisify } from "node:util";
 import { createInterface } from "node:readline";
 import type { AgentModelCatalog, AgentModelChoice } from "../shared/agent-models.ts";
 import type { FactoryProvider } from "../shared/factory.ts";
+import { claudeSubscriptionSettings } from "./account-subscriptions.ts";
 import { currentAccountEnvironment } from "./account-execution.ts";
 
 const effortNames: Record<string, string> = { none: "None", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Maximum" };
 const identifier = (value: unknown): value is string => typeof value === "string" && /^[a-zA-Z0-9][a-zA-Z0-9._:/@+\[\]-]{0,199}$/.test(value);
 type ObjectValue = Record<string, any>;
 
+function stopCatalogProcess(child: ChildProcess): void {
+  try { if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL"); else child.kill("SIGKILL"); }
+  catch { child.kill("SIGKILL"); }
+}
+async function cleanupCatalogProcess(child: ChildProcess): Promise<void> {
+  stopCatalogProcess(child);
+  child.stdin?.destroy(); child.stdout?.destroy(); child.stderr?.destroy();
+  await new Promise<void>(resolve => {
+    const done = () => { clearTimeout(timer); child.off("close", done); resolve(); };
+    const timer = setTimeout(done, 500);
+    child.once("close", done);
+    if (child.exitCode !== null || child.signalCode !== null) done();
+  });
+}
+async function nativeVersion(executable: string, cwd: string, environment: NodeJS.ProcessEnv): Promise<string> {
+  const child = spawn(executable, ["--version"], { cwd, env: environment, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true });
+  let output = "", bytes = 0;
+  let timer: ReturnType<typeof setTimeout>;
+  try { return await new Promise<string>((resolve, reject) => {
+    const fail = () => reject(new Error("Native version unavailable"));
+    timer = setTimeout(fail, 4000); child.once("error", fail);
+    child.once("close", code => code === 0 ? resolve(output) : fail());
+    child.stdout.on("data", (chunk: Buffer) => { bytes += chunk.length; if (bytes > 65536) fail(); else output += chunk.toString(); });
+    child.stderr.on("data", (chunk: Buffer) => { bytes += chunk.length; if (bytes > 65536) fail(); });
+  }); } finally { clearTimeout(timer!); await cleanupCatalogProcess(child); }
+}
+
 /** Initialize/read only; no thread, user input or inference request is sent. */
 async function protocolModels(executable: string, cwd: string, provider: "codex" | "claude"): Promise<AgentModelChoice[]> {
-  const args = provider === "codex" ? [...(currentAccountEnvironment()["CODEX_HOME"] ? ["-c", 'cli_auth_credentials_store="file"', "-c", 'forced_login_method="chatgpt"', "-c", 'model_provider="openai"'] : []), "app-server"] : ["--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--no-session-persistence", "--disable-slash-commands", "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--settings", '{"disableAllHooks":true}'];
-  const child = spawn(executable, args, { cwd, env: { ...process.env, ...currentAccountEnvironment() }, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+  const args = provider === "codex" ? [...(currentAccountEnvironment()["CODEX_HOME"] ? ["-c", 'cli_auth_credentials_store="file"', "-c", 'forced_login_method="chatgpt"', "-c", 'model_provider="openai"'] : []), "app-server"] : ["--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--no-session-persistence", "--disable-slash-commands", "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--settings", JSON.stringify({ ...(currentAccountEnvironment()["CLAUDE_CONFIG_DIR"] ? JSON.parse(claudeSubscriptionSettings) : {}), disableAllHooks: true })];
+  const child = spawn(executable, args, { cwd, env: { ...process.env, ...currentAccountEnvironment() }, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true });
   const pending = new Map<number, { resolve: (value: ObjectValue) => void; reject: (error: Error) => void }>();
   let sequence = 0, bytes = 0, closed = false;
   const failure = () => { for (const task of pending.values()) task.reject(new Error("Native model catalog unavailable")); pending.clear(); };
   child.once("error", failure); child.once("close", () => { closed = true; failure(); });
   child.stdin.on("error", failure);
-  const budget = (chunk: Buffer) => { bytes += chunk.length; if (bytes > 4 * 1024 * 1024) { failure(); child.kill("SIGKILL"); } };
+  const budget = (chunk: Buffer) => { bytes += chunk.length; if (bytes > 4 * 1024 * 1024) { failure(); stopCatalogProcess(child); } };
   child.stdout.on("data", budget); child.stderr.on("data", budget);
   const lines = createInterface({ input: child.stdout });
   lines.on("line", line => {
@@ -32,9 +59,9 @@ async function protocolModels(executable: string, cwd: string, provider: "codex"
       pending.delete(message.id);
       if (message.error || !message.result || typeof message.result !== "object") task.reject(new Error("Native model catalog unavailable"));
       else task.resolve(message.result);
-    } catch { failure(); child.kill("SIGKILL"); }
+    } catch { failure(); stopCatalogProcess(child); }
   });
-  const deadline = setTimeout(() => { failure(); child.kill("SIGKILL"); }, 12000);
+  const deadline = setTimeout(() => { failure(); stopCatalogProcess(child); }, 12000);
   const request = (method: string, params: ObjectValue): Promise<ObjectValue> => new Promise((resolve, reject) => {
     if (closed) { reject(new Error("Native model catalog unavailable")); return; }
     const id = ++sequence; pending.set(id, { resolve, reject });
@@ -70,25 +97,25 @@ async function protocolModels(executable: string, cwd: string, provider: "codex"
     throw new Error("Native model catalog exceeds page budget");
   } finally {
     clearTimeout(deadline); lines.close();
-    if (!closed) { child.kill("SIGKILL"); await new Promise<void>(resolve => child.once("close", () => resolve())); }
+    await cleanupCatalogProcess(child);
   }
 }
 
 /** A private loopback metadata server, never the user's existing OpenCode service. */
 async function opencodeModels(executable: string, cwd: string): Promise<AgentModelCatalog> {
   const environment = { ...process.env, ...currentAccountEnvironment() };
-  const version = (await promisify(execFile)(executable, ["--version"], { cwd, env: environment, timeout: 4000, maxBuffer: 65536 })).stdout;
+  const version = await nativeVersion(executable, cwd, environment);
   const generation = Number(version.match(/(?:^|\s)(\d+)\.\d+\.\d+/)?.[1]);
   if (!generation || generation > 2) throw new Error("Unsupported OpenCode catalog generation");
   const password = randomUUID();
   const child = spawn(executable, ["serve", "--hostname", "127.0.0.1", "--port", "0"], { cwd, env: { ...environment, OPENCODE_SERVER_USERNAME: "opencode", OPENCODE_SERVER_PASSWORD: password }, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true });
-  let closed = false, bytes = 0, output = "";
-  const stop = () => { if (closed) return; try { if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL"); else child.kill("SIGKILL"); } catch { child.kill("SIGKILL"); } };
+  let bytes = 0, output = "";
+  const stop = () => stopCatalogProcess(child);
   let rejectAddress!: (error: Error) => void;
   const address = new Promise<string>((resolve, reject) => {
     rejectAddress = reject;
     child.once("error", () => reject(new Error("Native model catalog unavailable")));
-    child.once("close", () => { closed = true; reject(new Error("Native model catalog unavailable")); });
+    child.once("close", () => reject(new Error("Native model catalog unavailable")));
     child.stdout.on("data", (chunk: Buffer) => {
       bytes += chunk.length; if (bytes > 1024 * 1024) { stop(); reject(new Error("Native model catalog exceeds output budget")); return; }
       output += chunk.toString(); const match = /http:\/\/127\.0\.0\.1:(\d+)/.exec(output);
@@ -122,7 +149,7 @@ async function opencodeModels(executable: string, cwd: string): Promise<AgentMod
     }
     return { protocol: 1, provider: "opencode", models, problem: models.length ? null : "This CLI reported no selectable models", reasoning_format: generation === 2 ? "model_suffix" : "agent_config" };
   } finally {
-    clearTimeout(deadline); stop(); if (!closed) await new Promise<void>(resolve => child.once("close", () => resolve()));
+    clearTimeout(deadline); await cleanupCatalogProcess(child);
   }
 }
 

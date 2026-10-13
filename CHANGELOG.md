@@ -80,6 +80,9 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   ([#1](https://github.com/usergood/saurons-eye/pull/1) by @usergood)
 
 ### Fixed
+- Bundle the Eye and Android notification badge so background notifications retain
+  their images when proxy authentication blocks a separate image request.
+  ([#21](https://github.com/usergood/saurons-eye/pull/21) by @usergood)
 - Fix Codex Approve for me launches rejected by conflicting sandbox flags; keep
   explicit role sandboxing and select automatic review through native configuration.
   ([#20](https://github.com/usergood/saurons-eye/pull/20) by @usergood)

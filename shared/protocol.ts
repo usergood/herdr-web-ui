@@ -1177,7 +1177,7 @@ export type { ProjectReference, ProjectReferenceLibrary, CodexReferenceContext, 
 
 /** Factory mutation bodies. Runtime validation still treats incoming JSON as untrusted. */
 /** POST /api/factory/model-catalog: Project/Machine/CLI -> AgentModelCatalog.
- * POST /api/factory-host/model-catalog: provider/path/account_snapshot -> AgentModelCatalog;
+ * POST /api/factory-host/model-catalog: provider/path/repository/account_snapshot -> AgentModelCatalog;
  * Owner reads require the same-origin factory header; host reads also require the Machine header.
  * Catalog reads never send prompts or start model inference.
  */

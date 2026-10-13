@@ -345,13 +345,13 @@ export class FactoryService {
         if (!checkout) throw new FactoryError("checkout_required", "Configure this Machine's Project checkout", 409);
         const bindings = project.account_bindings?.[machine];
         const snapshot = bindings && Object.keys(bindings).length ? await this.runtime.accountSnapshot(machine, bindings) : null;
-        return jsonResponse(await this.runtime.modelCatalog(machine, provider, checkout.path, snapshot));
+        return jsonResponse(await this.runtime.modelCatalog(machine, provider, checkout.path, checkout.repository, snapshot));
       }
       if (url.pathname === "/api/factory-host/model-catalog" && request.method === "POST") {
         if (request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Use model controls from this app");
         const body = await this.body(request);
-        if (!providers.includes(body.provider as FactoryProvider) || typeof body.path !== "string") throw new FactoryError("invalid_provider", "Select a CLI and checkout");
-        return jsonResponse(await this.executionHost.modelCatalog(body.provider as FactoryProvider, body.path, body.account_snapshot as import("../shared/accounts.ts").AccountBindingSnapshot));
+        if (!providers.includes(body.provider as FactoryProvider) || typeof body.path !== "string" || typeof body.repository !== "string") throw new FactoryError("invalid_provider", "Select a CLI and verified checkout");
+        return jsonResponse(await this.executionHost.modelCatalog(body.provider as FactoryProvider, body.path, body.repository as string, body.account_snapshot as import("../shared/accounts.ts").AccountBindingSnapshot));
       }
       const artifactMutation = /^\/api\/factory\/artifacts\/([a-zA-Z0-9-]+)\/(note|delete)$/.exec(url.pathname);
       if (artifactMutation && request.method === "POST") return jsonResponse(this.artifacts.mutate(artifactMutation[1]!, artifactMutation[2]!, await this.body(request)));
@@ -450,7 +450,7 @@ export class FactoryService {
             if (!checkout) throw new FactoryError("checkout_required", "Configure this Machine's Project checkout", 409);
             const bindings = next.account_bindings?.[next.machine_id];
             const snapshot = bindings && Object.keys(bindings).length ? await this.runtime.accountSnapshot(next.machine_id, bindings) : null;
-            resolveModelSelection(selection, await this.runtime.modelCatalog(next.machine_id, next.provider, checkout.path, snapshot));
+            resolveModelSelection(selection, await this.runtime.modelCatalog(next.machine_id, next.provider, checkout.path, checkout.repository, snapshot));
           }
           next.execution_preset = selection;
         } else if (next.provider !== project.provider) delete next.execution_preset;

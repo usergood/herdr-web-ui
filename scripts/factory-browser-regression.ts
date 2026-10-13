@@ -19,6 +19,11 @@ try {
   page.setDefaultTimeout(10_000);
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
+  await page.route("**/api/factory/providers?**", async route => {
+    const response = await route.fetch(); const capabilities = await response.json();
+    for (const provider of capabilities.providers) { provider.installed = true; provider.skills_verified = true; }
+    await route.fulfill({ response, json: capabilities });
+  });
   await page.goto(`http://localhost:${app.port}`);
   const evidence = process.env["UI_EVIDENCE_DIR"];
   if (evidence) mkdirSync(evidence, { recursive: true });
@@ -78,6 +83,16 @@ try {
   await taskSettings.getByRole("combobox", { name: "Model", exact: true }).selectOption("fixture-fast");
   assert.equal(await taskSettings.getByRole("combobox", { name: "Reasoning level", exact: true }).isEnabled(), false);
   assert.equal(await taskSettings.getByRole("combobox", { name: "Reasoning level", exact: true }).inputValue(), "");
+  // Capture the public launch request; never launch a paid agent in browser QA.
+  const launchUrl = `http://localhost:${app.port}/api/factory/implementations/${assignmentId}/runs`;
+  await page.route(launchUrl, route => route.fulfill({ status: 409, json: { error: { code: "owned_launch_intercepted", message: "Owned launch intercepted" } } }));
+  const launchRequest = page.waitForRequest(request => request.url() === launchUrl && request.method() === "POST");
+  await page.getByRole("button", { name: "Grill with docs", exact: true }).click();
+  const launch = (await launchRequest).postDataJSON();
+  assert.equal(launch.action, "grill-with-docs");
+  assert.deepEqual(launch.execution_preset, { model: "fixture-fast", reasoning: null });
+  await page.getByRole("alert").filter({ hasText: "Owned launch intercepted" }).waitFor();
+  await page.unroute(launchUrl);
   // The browser seam may use owned public-response fixtures for a child relationship;
   // the API contract separately proves that real worker records project these links.
   const overviewUrl = `http://localhost:${app.port}/api/factory?navigation=1`;
