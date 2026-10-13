@@ -1,5 +1,6 @@
 import type { AgentStatus } from "../../shared/protocol.ts";
 import { ENDED_NOTIFICATION_BODY, paneNotificationTag, statusNotificationBody } from "../../shared/notify-policy.ts";
+import { NOTIFICATION_ICON, NOTIFICATION_BADGE } from "../../shared/notification-icons.generated.ts";
 
 /**
  * Tab alerts: Web Notifications for pane status transitions while this page is open
@@ -35,7 +36,7 @@ async function show(paneId: string, title: string, body: string, onClick?: () =>
   if (typeof globalThis.Notification === "undefined") return;
   if (globalThis.Notification.permission !== "granted") return;
   if (typeof document !== "undefined" && !document.hidden) return; // visible tab: the UI already shows it
-  const options: NotificationOptions = { body, tag: paneNotificationTag(paneId, machineId), data: { pane_id: paneId, machine_id: machineId }, icon: "/icons/icon-192.png?v=eye1", badge: "/icons/badge-96.png?v=eye1" };
+  const options: NotificationOptions = { body, tag: paneNotificationTag(paneId, machineId), data: { pane_id: paneId, machine_id: machineId }, icon: NOTIFICATION_ICON, badge: NOTIFICATION_BADGE };
   try {
     const registration = "serviceWorker" in navigator ? await navigator.serviceWorker.getRegistration() : undefined;
     if (registration?.active) {
