@@ -384,7 +384,8 @@ describe("factory records", () => {
       const ready = await request(`runs/${run.id}/workers/${worker.id}/reconcile`, {}).then((response) => response.json());
       expect(ready.condition).toBe("ready"); expect(ready.waiting_reason).toContain("ready");
       expect(worker.worktree).not.toBe(run.worktree); expect(worker.base).toBe(run.base);
-      expect((await request(`runs/${run.id}/workers`, { role: "spec", idempotency_key: "independent-spec" })).status).toBe(200);
+      const specResponse = await request(`runs/${run.id}/workers`, { role: "spec", idempotency_key: "independent-spec" }); expect(specResponse.status).toBe(200);
+      const specWorker = await specResponse.json(); workspaces.push(specWorker.workspace_id);
       expect((await request(`runs/${run.id}/workers`, { role: "standards", idempotency_key: "another-review" })).status).toBe(409);
       expect((await request(`runs/${run.id}/workers`, { role: "standards", idempotency_key: "independent-standards" }).then((response) => response.json())).id).toBe(worker.id);
       expect((await request(`runs/${run.id}/workers/${worker.id}/review-evidence`, {})).status).toBe(409);
