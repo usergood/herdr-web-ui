@@ -21,8 +21,10 @@ let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 let workspaceId: string | undefined;
 const log = openSync(join(evidence, "supervisor.log"), "w");
 
-async function until(check: () => Promise<boolean>, message: string) {
-  const deadline = Date.now() + 60_000;
+// Dependency install, typecheck and build have 180s/120s/120s command deadlines, then a boot probe.
+const INSTALL_TIMEOUT_MS = 8 * 60_000;
+async function until(check: () => Promise<boolean>, message: string, timeout = 60_000) {
+  const deadline = Date.now() + timeout;
   while (!await check()) {
     if (Date.now() > deadline) throw new Error(message);
     await Bun.sleep(200);
@@ -32,6 +34,8 @@ async function until(check: () => Promise<boolean>, message: string) {
 try {
   const files = await git(source, "ls-files", "--cached", "--others", "--exclude-standard", "-z");
   for (const file of new Set(files.split("\0").filter(Boolean))) {
+    // App-owned run controls and injected local skills are not installation source.
+    if (file.startsWith(".saurons-eye-") || file.startsWith(".agents/")) continue;
     mkdirSync(dirname(join(upstream, file)), { recursive: true });
     copyFileSync(join(source, file), join(upstream, file));
   }
@@ -74,6 +78,7 @@ try {
   await page.locator(".sidebar-footer").getByRole("button", { name: "Settings", exact: true }).click();
   await openSettingsPage(page, "About");
   await page.getByRole("heading", { name: "Updates", exact: true }).scrollIntoViewIfNeeded();
+  await page.getByText("Checks only when you choose Check for updates.", { exact: false }).waitFor();
 
   writeFileSync(join(upstream, "qa-revision.txt"), "second build\n");
   // as a release does: what was unreleased becomes the release's section of the changelog, the
@@ -118,7 +123,11 @@ try {
   await page.screenshot({ path: join(evidence, "notes-desktop.png") });
   console.log("PASS release notes beside the offered update, and from the header line");
   await installButton.click();
-  await until(async () => (await status())?.current_revision === next, "Updated process never became active");
+  await until(async () => {
+    const current = await status();
+    if (current?.phase === "error") throw new Error(current.error ?? "Update failed");
+    return current?.current_revision === next;
+  }, "Updated process never became active", INSTALL_TIMEOUT_MS);
   await page.locator(".update-notice").getByRole("button", { name: "Reload app" }).waitFor();
   await page.getByRole("button", { name: "Close settings", exact: true }).click();
   assert.equal(await draft.inputValue(), "Unsent draft preserved across update");
@@ -155,7 +164,7 @@ try {
   await page.getByRole("button", { name: "Check for updates", exact: true }).click();
   await until(() => installButton.isEnabled(), "Rollback candidate never became available");
   await installButton.click();
-  await page.getByText(/Previous version restored/).waitFor();
+  await page.getByText(/Previous version restored/).waitFor({ timeout: INSTALL_TIMEOUT_MS });
   assert.equal((await status())?.current_revision, next);
   // the release is still on offer, and so are its notes
   await notes.getByRole("heading", { name: "v99.0.1" }).waitFor();

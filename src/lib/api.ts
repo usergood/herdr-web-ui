@@ -1,3 +1,4 @@
+import type { PreferencesChange, SharedPreferences } from "../../shared/preferences.ts";
 import { machinePath, type BridgeHealth, type HerdrIdentity, type Machine, type SetupAction, type SetupJob, type SetupRequest } from "../../shared/machines.ts";
 import type {
   AgentKind,
@@ -11,6 +12,7 @@ import type {
   FocusPaneRequest,
   HealthAuth,
   IntegrationsResponse,
+  LanExposure,
   InteractivePrompt,
   MovePaneDestination,
   MovePaneRequest,
@@ -34,6 +36,7 @@ import type {
   PlanStep,
   PromptAnswer,
   PushKey,
+  PortalStatus,
   RemoteAccess,
   RemoveWorktreeRequest,
   ResizePaneRequest,
@@ -102,6 +105,30 @@ export async function requestHerdrUpdate(): Promise<void> {
   const url = "/api/herdr/update";
   const response = await fetch(url, { method: "POST", headers: { "x-herdr-update": "1" } });
   if (!response.ok) throw await errorFrom(url, response);
+}
+
+/** Settings → Phone & devices: Portal's public address for the server's PC. */
+export function fetchPortal(): Promise<PortalStatus> {
+  return getJson<PortalStatus>("/api/portal");
+}
+
+export async function requestPortal(action: "start" | "stop", relay?: string): Promise<void> {
+  const url = `/api/portal/${action}`;
+  const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify(relay === undefined ? {} : { relay }) });
+  if (!response.ok) throw await errorFrom(url, response);
+}
+
+/** What every browser of this server shares (shared/preferences.ts); null where the server predates it. */
+export async function fetchPreferences(): Promise<SharedPreferences | null> {
+  try { return await getJson<SharedPreferences>("/api/preferences"); }
+  catch (error) { if (error instanceof ApiError && error.status === 404) return null; throw error; }
+}
+
+export async function savePreferences(body: PreferencesChange): Promise<SharedPreferences> {
+  const url = "/api/preferences";
+  const response = await fetch(url, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  if (!response.ok) throw await errorFrom(url, response);
+  return (await response.json()) as SharedPreferences;
 }
 
 /**
@@ -267,6 +294,8 @@ export interface HealthInfo {
   web_ui?: { boot_id: string | null; revision: string | null };
   /** Absent only on a server that predates the token gate. */
   auth?: HealthAuth;
+  /** present only while this server is reachable beyond this PC with no token and nothing paired */
+  lan_exposure?: LanExposure;
 }
 
 export async function fetchHealth(): Promise<HealthInfo> {

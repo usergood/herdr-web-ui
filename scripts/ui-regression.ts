@@ -32,6 +32,7 @@ import { checkHeldDraftPaneSwitch } from "./terminal-draft-regression.ts";
 import { checkDefaultView } from "./default-view-regression.ts";
 import { checkComposerReconnect } from "./composer-reconnect-regression.ts";
 import { checkDroplet } from "./droplet-regression.ts";
+import { checkSplitView } from "./split-view-regression.ts";
 import { checkTakeOver } from "./take-over-regression.ts";
 import { checkAlertSound } from "./alert-sound-regression.ts";
 import { checkBackgroundTabKeepsTerminalSize, checkChatKeepsTerminalSize, checkFocusedWindowReclaimsTerminalSize, checkPaneSwitchKeepsTerminalSize } from "./chat-size-regression.ts";
@@ -350,6 +351,11 @@ try {
   await herdrRpc("pane.report_agent", { pane_id: paneA, source: "manual", agent: "claude", state: "working" });
   await until(async () => await badge.getAttribute("data-status") === "working", "working event before poll");
   await agentRow(paneA).locator('.badge[data-status="working"]').waitFor();
+  // RUN is a working-coloured dot that breathes in opacity steps, no arc (Sidebar.css)
+  const runDot = agentRow(paneA).locator('.badge[data-status="working"] .sidebar-status-dot');
+  assert.equal(await runDot.count(), 1, "RUN draws a dot");
+  assert.equal(await agentRow(paneA).locator('.badge[data-status="working"] svg').count(), 0, "RUN draws no arc");
+  assert.equal(await runDot.evaluate((dot) => getComputedStyle(dot).animationName), "sidebar-breathe", "the dot breathes");
   releasePoll();
   await until(() => pollFinished, "stale machines response released");
   await page.waitForTimeout(300);
@@ -456,7 +462,11 @@ try {
   await waitingBadge.waitFor();
   assert.equal((await waitingBadge.textContent())?.trim(), "BG");
   assert.equal(await waitingBadge.getAttribute("title"), "Agent waiting on background work");
-  assert.equal(await waitingBadge.locator("svg").count(), 1, "BG draws the running arc, held still");
+  // BG is a still ring in the working colour; RUN is a dot of it that breathes (Sidebar.css)
+  assert.equal(await waitingBadge.locator("svg").count(), 0, "BG draws no arc any more");
+  const ring = waitingBadge.locator(".sidebar-status-dot");
+  assert.equal(await ring.count(), 1, "BG draws a ring");
+  assert.deepEqual(await ring.evaluate((dot) => { const style = getComputedStyle(dot); return { hollow: style.backgroundColor === "rgba(0, 0, 0, 0)", bordered: parseFloat(style.borderTopWidth) > 0, animation: style.animationName }; }), { hollow: true, bordered: true, animation: "none" }, "the ring is hollow, bordered and still");
   await page.locator('.composer-status[data-status="waiting"] strong.visually-hidden', { hasText: "BG" }).waitFor();
   for (const peer of ["working", "done", "blocked", "idle"] as const) {
     backgroundPeer = peer;
@@ -854,6 +864,7 @@ try {
   await checkDefaultView(browser, origin);
   await checkComposerReconnect(browser, origin, paneB);
   await checkDroplet(browser, origin);
+  await checkSplitView(browser, origin);
   await checkTakeOver(browser, origin);
   await checkAlertSound(browser, origin);
   await checkChatKeepsTerminalSize(browser, origin);
@@ -1142,6 +1153,7 @@ try {
   assert.equal(await composer.inputValue(), "draft for A");
   console.log("PASS drafts stay with their panes");
 
+
   // A real successful send waits on its acknowledgement while its composer unmounts.
   for (const returnBeforeAck of [false, true]) {
     await composer.fill("# confirmed draft");
@@ -1173,19 +1185,211 @@ try {
     await route.continue(); // Delay real traffic; no synthetic responses.
   });
   const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aS1kAAAAASUVORK5CYII=", "base64");
-  await page.locator('input[type="file"]').setInputFiles([
-    { name: "first.png", mimeType: "image/png", buffer: png },
-    { name: "second.png", mimeType: "image/png", buffer: png },
-  ]);
-  await until(() => uploads.length === 1, "first upload started");
+  await page.locator('input[type="file"]').setInputFiles(["first", "second", "third", "fourth"].map((name) => ({ name: `${name}.png`, mimeType: "image/png", buffer: png })));
+  await until(() => uploads.length === 3, "three uploads started side by side");
+  await Bun.sleep(300);
+  assert.equal(uploads.length, 3, "no more than three uploads run at once");
   await selectPane(paneB);
   const imageResponse = page.waitForResponse((response) => response.url().endsWith("/api/pane/image"));
   releaseImage();
   assert.equal((await imageResponse).status(), 200);
   await Bun.sleep(300);
-  assert.deepEqual(uploads, [paneA], "leaving a pane cancels remaining uploads");
+  assert.deepEqual(uploads, [paneA, paneA, paneA], "leaving a pane cancels the uploads not yet started");
   assert.equal(await composer.inputValue(), "draft for B");
   console.log("PASS upload batch cannot cross panes");
+
+  // Each path goes to the start of the message as its upload finishes, in the order the files were
+  // picked, and what the user types meanwhile stays where the caret is.
+  await page.unroute("**/api/pane/image");
+  const held = new Map<string, () => void>();
+  await page.route("**/api/pane/image", async (route) => {
+    const name = route.request().postDataJSON().name as string;
+    await new Promise<void>((resolve) => { held.set(name, resolve); releases.push(resolve); });
+    await route.continue();
+  });
+  await composer.fill("");
+  await page.locator('input[type="file"]').setInputFiles(["first", "second"].map((name) => ({ name: `${name}.txt`, mimeType: "text/plain", buffer: Buffer.from(name) })));
+  await until(() => held.size === 2, "both uploads in flight at once");
+  await composer.pressSequentially("hello");
+  held.get("second.txt")!();
+  await until(async () => /^@\S*second-\S* hello$/.test(await composer.inputValue()), "the second file's path went to the start");
+  await composer.pressSequentially(" there");
+  held.get("first.txt")!();
+  await until(async () => /^@\S*first-\S* @\S*second-\S* hello there$/.test(await composer.inputValue()), "the first file's path went before the second's");
+  assert.equal(await composer.evaluate((element: HTMLTextAreaElement) => element.selectionStart === element.value.length), true, "the caret stays after what was typed");
+  console.log("PASS uploads run side by side and put their paths at the start in pick order, away from the caret");
+
+  // The limit holds across picks, and a later pick's path follows an earlier pick's path.
+  const pickFiles = (...names: string[]) => page.locator('input[type="file"]').setInputFiles(names.map((name) => ({ name, mimeType: "text/plain", buffer: Buffer.from(name) })));
+  const finish = async (name: string) => {
+    const response = page.waitForResponse((response) => response.url().endsWith("/api/pane/image") && response.request().postDataJSON().name === name);
+    held.get(name)!();
+    assert.equal((await response).status(), 200);
+  };
+  held.clear();
+  await composer.fill("");
+  await pickFiles("third.txt", "fourth.txt");
+  await pickFiles("fifth.txt", "sixth.txt");
+  await until(() => held.size === 3, "three uploads in flight");
+  await Bun.sleep(300);
+  assert.equal(held.size, 3, "a second pick waits for the first pick's uploads");
+  for (const name of ["third.txt", "fourth.txt", "fifth.txt"]) await finish(name);
+  await until(() => held.has("sixth.txt"), "the queued upload starts once one finishes");
+  await finish("sixth.txt");
+  await until(async () => /^@\S*third-\S* @\S*fourth-\S* @\S*fifth-\S* @\S*sixth-\S* $/.test(await composer.inputValue()), "paths from both picks in pick order");
+  held.clear();
+  await composer.fill("");
+  await pickFiles("seventh.txt");
+  await until(() => held.has("seventh.txt"), "seventh upload in flight");
+  await finish("seventh.txt");
+  await pickFiles("eighth.txt");
+  await until(() => held.has("eighth.txt"), "eighth upload in flight");
+  await finish("eighth.txt");
+  await until(async () => /^@\S*seventh-\S* @\S*eighth-\S* $/.test(await composer.inputValue()), "a later pick's path follows the earlier pick's path");
+  console.log("PASS one upload limit spans picks, and later picks' paths follow earlier ones");
+
+  // A path waits while the box holds a /command still being typed or an IME composition,
+  // and a backward selection keeps its direction.
+  held.clear();
+  await composer.fill("");
+  await composer.pressSequentially("/");
+  await pickFiles("ninth.txt");
+  await until(() => held.has("ninth.txt"), "ninth upload in flight");
+  await finish("ninth.txt");
+  await Bun.sleep(300);
+  assert.equal(await composer.inputValue(), "/", "a lone slash is left to be typed on");
+  await composer.pressSequentially("rev");
+  assert.equal(await composer.inputValue(), "/rev", "the command keeps its letters together");
+  await composer.pressSequentially(" ");
+  await until(async () => /^\/rev @\S*ninth-\S* $/.test(await composer.inputValue()), "the path follows the finished command");
+  assert.equal(await composer.evaluate((element: HTMLTextAreaElement) => element.selectionStart === element.value.length), true, "typing goes on after the path");
+  held.clear();
+  await composer.fill("");
+  await composer.focus();
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Input.imeSetComposition", { text: "한", selectionStart: 1, selectionEnd: 1 });
+  await pickFiles("tenth.txt");
+  await until(() => held.has("tenth.txt"), "tenth upload in flight");
+  await finish("tenth.txt");
+  await Bun.sleep(300);
+  assert.equal(await composer.inputValue(), "한", "an IME composition is left alone");
+  await cdp.send("Input.insertText", { text: "한" });
+  await until(async () => /^@\S*tenth-\S* 한$/.test(await composer.inputValue()), "the path arrives once the composition ends");
+  await cdp.detach();
+  // WebKit ends the composition before the input that commits a candidate other than the one shown
+  held.clear();
+  await composer.fill("");
+  await composer.focus();
+  const compose = (phase: "start" | "commit") => composer.evaluate((element: HTMLTextAreaElement, phase) => {
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+    if (phase === "start") {
+      element.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+      setValue.call(element, "ㅎ");
+      element.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: true, data: "ㅎ", inputType: "insertCompositionText" }));
+      return;
+    }
+    element.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "한" }));
+    setValue.call(element, "한");
+    element.dispatchEvent(new InputEvent("input", { bubbles: true, data: "한", inputType: "insertFromComposition" }));
+  }, phase);
+  await compose("start");
+  await pickFiles("twelfth.txt");
+  await until(() => held.has("twelfth.txt"), "twelfth upload in flight");
+  await finish("twelfth.txt");
+  await Bun.sleep(300);
+  assert.equal(await composer.inputValue(), "ㅎ", "the shown candidate is left alone");
+  await compose("commit");
+  await until(async () => /^@\S*twelfth-\S* 한$/.test(await composer.inputValue()), "the path joins the committed candidate");
+  // dictation that turns a lone slash into a command lets a waiting path in;
+  // the composer takes its speech engine when it mounts, so a pane round trip picks up the fake
+  held.clear();
+  await composer.fill("");
+  await page.evaluate(() => {
+    class FakeSpeech {
+      lang = ""; continuous = false; interimResults = false;
+      onaudiostart: (() => void) | null = null; onresult: ((event: unknown) => void) | null = null;
+      onerror: ((event: unknown) => void) | null = null; onend: (() => void) | null = null;
+      start() { (window as unknown as { fakeSpeech: FakeSpeech }).fakeSpeech = this; setTimeout(() => this.onaudiostart?.(), 0); }
+      stop() { setTimeout(() => this.onend?.(), 0); }
+      abort() { this.onend?.(); }
+    }
+    const speech = window as unknown as Record<string, unknown>;
+    speech.realSpeech = { SpeechRecognition: speech.SpeechRecognition, webkitSpeechRecognition: speech.webkitSpeechRecognition };
+    Object.assign(window, { SpeechRecognition: FakeSpeech, webkitSpeechRecognition: FakeSpeech });
+  });
+  await selectPane(paneA);
+  await selectPane(paneB);
+  await composer.pressSequentially("/");
+  await pickFiles("thirteenth.txt");
+  await until(() => held.has("thirteenth.txt"), "thirteenth upload in flight");
+  await finish("thirteenth.txt");
+  await Bun.sleep(300);
+  assert.equal(await composer.inputValue(), "/", "the path waits on the lone slash");
+  const mic = page.locator(".composer .voice-mic");
+  await mic.focus();
+  await page.keyboard.press("Enter");
+  await until(() => page.evaluate(() => "fakeSpeech" in window), "dictation listening");
+  await Bun.sleep(1200);
+  await page.evaluate(() => (window as unknown as { fakeSpeech: { onresult: (event: unknown) => void } }).fakeSpeech.onresult({ results: { length: 1, 0: { isFinal: true, 0: { transcript: "review this" } } } }));
+  await page.keyboard.press("Enter");
+  await until(async () => /@\S*thirteenth-\S* /.test(await composer.inputValue()), "the path goes in once dictation ends the command");
+  assert.match(await composer.inputValue(), /review this/);
+  await page.evaluate(() => {
+    const speech = window as unknown as Record<string, unknown>;
+    Object.assign(window, speech.realSpeech as object);
+    delete speech.realSpeech;
+    delete speech.fakeSpeech;
+  });
+  await composer.fill("");
+  await selectPane(paneA);
+  await selectPane(paneB);
+  held.clear();
+  await composer.fill("hello");
+  await composer.evaluate((element: HTMLTextAreaElement) => element.setSelectionRange(1, 4, "backward"));
+  await pickFiles("eleventh.txt");
+  await until(() => held.has("eleventh.txt"), "eleventh upload in flight");
+  await finish("eleventh.txt");
+  await until(async () => /^@\S*eleventh-\S* hello$/.test(await composer.inputValue()), "the path went to the start");
+  const selection = await composer.evaluate((element: HTMLTextAreaElement) => ({ text: element.value.slice(element.selectionStart, element.selectionEnd), direction: element.selectionDirection }));
+  assert.deepEqual(selection, { text: "ell", direction: "backward" }, "the selection keeps its text and direction");
+  await composer.fill("");
+  console.log("PASS paths wait for a /command, typed or dictated, or an IME composition to finish, and selections keep their direction");
+
+  // One pick takes as many files as Settings → Chat → Files at once says, and says what it left out.
+  await page.unroute("**/api/pane/image");
+  const limitedUploads: string[] = [];
+  await page.route("**/api/pane/image", async (route) => {
+    limitedUploads.push(route.request().postDataJSON().pane_id);
+    await route.continue();
+  });
+  const setAttachLimit = async (from: number, to: number) => {
+    await page.keyboard.press("ControlOrMeta+Shift+Comma");
+    await openSettingsPage(page, "Chat");
+    const button = page.getByRole("button", { name: to < from ? "Attach fewer files at once" : "Attach more files at once", exact: true });
+    for (let step = 0; step < Math.abs(from - to); step += 1) await button.click();
+    assert.equal(await page.getByRole("group", { name: "Files at once", exact: true }).locator("output").textContent(), String(to));
+    await page.getByRole("button", { name: "Close settings", exact: true }).click();
+  };
+  const ready = page.locator(".composer-attachment.is-ready");
+  const readyBefore = await ready.count();
+  await page.locator('input[type="file"]').setInputFiles(["a", "b", "c", "d", "e", "f"].map((name) => ({ name: `${name}.png`, mimeType: "image/png", buffer: png })));
+  await until(async () => (await ready.count()) === readyBefore + 6, "six attachments uploaded at the default limit");
+  assert.deepEqual(limitedUploads, Array(6).fill(paneB), "every picked file is uploaded at the default limit");
+  assert.equal(await page.getByRole("alert").filter({ hasText: /the first \d+ of \d+ files/ }).count(), 0, "nothing was left out");
+  limitedUploads.length = 0;
+  await setAttachLimit(20, 2);
+  // the first file is over the size limit: its error and the count left out both stay in the note
+  await page.locator('input[type="file"]').setInputFiles([
+    { name: "huge.bin", mimeType: "application/octet-stream", buffer: Buffer.alloc(8 * 1024 * 1024 + 1) },
+    ...["one", "two"].map((name) => ({ name: `${name}.png`, mimeType: "image/png", buffer: png })),
+  ]);
+  await until(async () => (await ready.count()) === readyBefore + 7, "the file within both limits uploaded");
+  const note = page.getByRole("alert").filter({ hasText: "Too large to attach: huge.bin" });
+  await note.waitFor();
+  assert.match(await note.innerText(), /the first 2 of 3 files were taken/);
+  assert.deepEqual(limitedUploads, [paneB], "only the files within the limit are uploaded");
+  await setAttachLimit(2, 20);
+  console.log("PASS one pick attaches up to the chosen number of files and names what it left out");
 
   let releaseCreate!: () => void;
   const createGate = new Promise<void>((resolve) => { releaseCreate = resolve; });
@@ -1779,6 +1983,37 @@ try {
   workspaces.splice(workspaces.indexOf(pendingWorkspace.workspace.workspace_id), 1);
   await selectPane(paneA);
   console.log("PASS Send now on a server-owned pending message drops Claude's suggestion");
+
+  // Split view (lib/split.ts): a sidebar row dragged to the right half opens its pane there beside
+  // the one open, each half with its own conversation; a press in the other half makes it the
+  // active one without moving either pane, and closing a half leaves one pane
+  // (after the steps that take the newest socket for the page's own: the other half opens one)
+  {
+    await selectPane(paneA);
+    const area = page.locator(".pane-split");
+    const box = (await area.boundingBox())!;
+    await page.locator(`.pane-select[title^="${paneB} —"]`).dragTo(area, { targetPosition: { x: box.width * 0.8, y: box.height / 2 } });
+    await until(async () => await page.locator(".pane-slot").count() === 2, "two halves after the drop");
+    const half = (side: string) => page.locator(`.pane-slot[data-side="${side}"]`);
+    await half("left").getByRole("log", { name: `conversation of ${paneA}`, exact: true }).waitFor();
+    await half("right").getByRole("log", { name: `conversation of ${paneB}`, exact: true }).waitFor();
+    assert.equal(await half("right").evaluate((slot) => slot.classList.contains("is-active")), true, "the dropped pane's half is active");
+    assert.equal(await page.locator(".pane-select[aria-current=\"true\"]").getAttribute("title").then((title) => title?.startsWith(`${paneB} —`)), true, "and its pane is the selected one");
+    const [left, right] = await Promise.all([half("left").boundingBox(), half("right").boundingBox()]);
+    assert.ok(left && right && Math.abs(left.width - right.width) <= 2 && left.x + left.width <= right.x + 1, "the halves share the pane area side by side");
+    await half("left").locator(".terminal-host").click({ position: { x: 40, y: 40 } });
+    await until(async () => await half("left").evaluate((slot) => slot.classList.contains("is-active")), "a press makes the left half active");
+    // the header speaks for the active half's connection, handed over by a terminal that was already connected
+    await page.locator(".conn.conn-live").waitFor();
+    await half("left").getByRole("log", { name: `conversation of ${paneA}`, exact: true }).waitFor();
+    await half("right").getByRole("log", { name: `conversation of ${paneB}`, exact: true }).waitFor();
+    assert.match(await page.evaluate(() => sessionStorage.getItem("herdr-web-ui:split") ?? ""), /"active":"a"/, "the split is kept for a reload");
+    await half("right").getByRole("button", { name: "Close this half", exact: true }).click();
+    await until(async () => await page.locator(".pane-slot").count() === 1, "one pane after closing a half");
+    assert.equal(await page.evaluate(() => sessionStorage.getItem("herdr-web-ui:split")), null);
+    await page.getByRole("log", { name: `conversation of ${paneA}`, exact: true }).waitFor();
+  }
+  console.log("PASS a dragged row opens its pane beside the open one; a press switches the active half; a half closes");
 
   const mobile = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   await mobile.addInitScript(() => {

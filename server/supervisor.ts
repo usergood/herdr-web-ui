@@ -149,7 +149,7 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
     started.resolve();
     updater.start();
     process.send?.({ type: "supervisor-ready" });
-    console.log(`Managed updates: ${updater.status.auto_update ? "automatic install" : "automatic checks, install from Settings"}`);
+    console.log(`Managed updates: ${updater.status.auto_update ? "automatic checks and install" : "check and install from Settings"}`);
   } catch (error) {
     console.error(error);
     await shutdown(1);

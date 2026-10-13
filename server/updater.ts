@@ -40,6 +40,9 @@ export function readNotesFile(path: string): string {
 const SHA = /^[0-9a-f]{40,64}$/;
 /** A release is a plain `vX.Y.Z` tag: `remote-v*` bundle tags and pre-releases never qualify. */
 const RELEASE_TAG = /^v(\d+)\.(\d+)\.(\d+)$/;
+/** Keep origin's advertised tags apart from inherited or locally created release tags. */
+const RELEASE_REFS = "refs/saurons-eye/releases/";
+const PLUGIN_ID = "usergood.saurons-eye";
 
 function packageVersion(directory: string): string | null {
   try {
@@ -204,19 +207,30 @@ export class Updater {
     const reason = await this.sourceBlock();
     if (reason) { this.patch({ blocked_reason: reason, checked_at: new Date().toISOString() }); return; }
     // Only published releases update installs: commits pushed to main without a tag stay put.
-    await this.git("fetch", "--no-tags", "origin", "+refs/tags/v*:refs/tags/v*");
-    const tags = (await this.git("for-each-ref", "--sort=-v:refname", "--format=%(refname:short)", "refs/tags/v*"))
-      .split("\n").filter((tag) => RELEASE_TAG.test(tag));
+    await this.git("fetch", "--prune", "--no-tags", "origin", `+refs/tags/v*:${RELEASE_REFS}v*`);
+    const refs = (await this.git("for-each-ref", "--sort=-v:refname", "--format=%(refname)", `${RELEASE_REFS}v*`))
+      .split("\n").filter((ref) => RELEASE_TAG.test(ref.slice(RELEASE_REFS.length)));
     const checked_at = new Date().toISOString();
-    const latest = tags[0];
-    if (!latest) {
+    let target: string | null = null;
+    let latest: string | null = null;
+    for (const ref of refs) {
+      // Forks retain upstream tags. Only this app's own manifest can offer a fork update.
+      const revision = await this.git("rev-parse", `${ref}^{commit}`);
+      if (!SHA.test(revision)) throw new Error("Invalid update revision");
+      try {
+        const manifest = Bun.TOML.parse(await this.git("show", `${revision}:herdr-plugin.toml`)) as { id?: unknown };
+        if (manifest["id"] !== PLUGIN_ID) continue;
+      } catch { continue; /* old upstream releases, missing or malformed manifests */ }
+      target = revision;
+      latest = ref.slice(RELEASE_REFS.length);
+      break;
+    }
+    if (!latest || !target) {
       this.notes = noUpdateNotes();
-      this.patch({ latest_revision: null, latest_version: null, checked_at, blocked_reason: null, available: false });
+      this.patch({ latest_revision: null, latest_version: null, checked_at,
+        blocked_reason: "No Saurons eye releases are published on origin yet. Inherited upstream tags are skipped.", available: false });
       return;
     }
-    // ^{commit} peels an annotated tag to the commit the build and the health check report
-    const target = await this.git("rev-parse", `${latest}^{commit}`);
-    if (!SHA.test(target)) throw new Error("Invalid update revision");
     const current = this.release!.revision;
     let block: string | null = null;
     let available = false;
