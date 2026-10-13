@@ -20,7 +20,6 @@ not accept an implementation or integrate a Ticket; those still require the owne
 
 The [interface-cleanup design](interface-cleanup-design.md) records the agreed five-lane board, delivery-based completion, planned GitHub issue batches, opt-in implementation queue and scheduled upstream intake. These are planned changes pending Specification, Tickets and implementation. Existing runtime behavior remains documented below. Confirmed terms live in the [root glossary](../../GLOSSARY.md); the older proposal remains in the planning history.
 
-
 ## Records and source
 
 The connection server owns the SQLite records, imported artifacts and evidence. Execution Machines own their worktrees and native processes. Repository-writing Runs use owned worktrees; the primary checkout is preserved. Existing ordinary chats and terminals remain available.
