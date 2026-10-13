@@ -13,7 +13,7 @@ export function AssignmentActions({ preset, onPresetChange, detail, project, mac
   const prefix = `/implementations/${detail.implementation.id}`;
   useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
   const capability = capabilities?.providers.find(entry => entry.provider === provider);
-  const active = [...detail.runs].reverse().find(run => ["accepted", "working", "needs_you", "blocked", "disconnected", "interrupted"].includes(run.condition));
+  const active = [...detail.runs].reverse().find(run => ["accepted", "working", "ready", "needs_you", "blocked", "disconnected", "interrupted"].includes(run.condition));
   const unconfirmedWork = active?.action === "work" && ["interrupted", "disconnected"].includes(active.condition);
   const specification = detail.specifications.at(-1);
   const approved = (kind: string, revision: string) => detail.approvals.some(a => a.kind === kind && a.revision === revision);

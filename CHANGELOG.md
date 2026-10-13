@@ -7,6 +7,10 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 
 ## [Unreleased]
 
+### Fixed
+- Expose global execution limits in Inbox, allow six concurrent tasks, and release capacity
+  when a native turn finishes while retaining its open chat and worktree ownership.
+
 ## [0.4.9] - 2026-10-13
 
 ### Added

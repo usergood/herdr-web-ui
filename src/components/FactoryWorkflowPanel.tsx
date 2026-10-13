@@ -11,7 +11,7 @@ export function FactoryWorkflowPanel({ preset, detail, machineId, provider, busy
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const prefix = `/implementations/${detail.implementation.id}`;
   const capability = capabilities?.providers.find((entry) => entry.provider === provider);
-  const active = detail.runs.some((run) => ["accepted", "working", "needs_you", "blocked", "disconnected", "interrupted"].includes(run.condition));
+  const active = detail.runs.some((run) => ["accepted", "working", "ready", "needs_you", "blocked", "disconnected", "interrupted"].includes(run.condition));
   const start = (action: FactoryAction) => perform(async () => { await factoryRequest(`${prefix}/runs`, { action, execution_preset: preset, idempotency_key: crypto.randomUUID(), expected: { provider, machine_id: machineId, project_id: detail.implementation.project_id, specification_id: detail.specifications.at(-1)?.id ?? null, graph_hash: detail.graph_hash } }); });
   return <section className="factory-section"><h3>{t("Workflow")}</h3>
     <p>{provider} · {capability?.version ?? t("Not verified")}</p>

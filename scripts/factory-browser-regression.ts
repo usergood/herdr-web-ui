@@ -69,6 +69,18 @@ try {
   await page.locator(".project-navigation").getByRole("button", { name: "Inbox chat", exact: true }).click();
   assert.equal(await page.locator(".factory-panel").getByRole("button", { name: "Global idea outside this Project", exact: true }).count(), 0);
   assert.equal(await page.locator(".tab-strip").count(), 0);
+  await page.getByText("Factory settings and recovery", { exact: true }).click();
+  const taskLimit = page.getByRole("spinbutton", { name: "Concurrent Implementations", exact: true });
+  assert.equal(await taskLimit.inputValue(), "6");
+  await taskLimit.fill("2");
+  let savedLimit = page.waitForResponse(response => response.url().endsWith("/api/factory/settings") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Save factory settings", exact: true }).click(); assert.equal((await savedLimit).status(), 200);
+  assert.equal((await page.request.get(`http://localhost:${app.port}/api/factory`).then(r => r.json())).settings.max_implementations, 2);
+  await taskLimit.fill("6");
+  savedLimit = page.waitForResponse(response => response.url().endsWith("/api/factory/settings") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Save factory settings", exact: true }).click(); assert.equal((await savedLimit).status(), 200);
+  assert.equal((await page.request.get(`http://localhost:${app.port}/api/factory`).then(r => r.json())).settings.max_implementations, 6);
+  await page.getByText("Factory settings and recovery", { exact: true }).click();
 
   await page.getByRole("textbox", { name: "Idea title", exact: true }).fill("Project scoped idea");
   await page.getByRole("button", { name: "Capture idea", exact: true }).click();

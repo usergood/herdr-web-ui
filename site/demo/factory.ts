@@ -12,7 +12,7 @@ import { fictionalGitHubPull } from "./github-fixtures.ts";
 const storageKey = "saurons-eye:demo-factory";
 const details = new Map<string, FactoryDetail>();
 let projects: FactoryProject[] = []; let checkouts: ProjectCheckout[] = [];
-let settings: FactoryOverview["settings"] = { provider: "codex", max_implementations: 2, max_agents: 6, max_builds: 2, max_artifact_bytes: 25 * 1024 * 1024, max_storage_bytes: 2 * 1024 * 1024 * 1024, skills_path: null };
+let settings: FactoryOverview["settings"] = { provider: "codex", max_implementations: 6, max_agents: 6, max_builds: 2, max_artifact_bytes: 25 * 1024 * 1024, max_storage_bytes: 2 * 1024 * 1024 * 1024, skills_path: null };
 const blobs = new Map<string, string>();
 let referenceVersions: ProjectReference[] = []; let referenceHeads: string[] = [];
 let paneArchives: import("../../shared/factory.ts").FactoryPaneArchive[] = [];
