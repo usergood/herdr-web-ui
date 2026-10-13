@@ -8,6 +8,8 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 ## [Unreleased]
 
 ### Added
+- Add native model and reasoning dropdowns for Project defaults and individual
+  Inbox starts, with validated choices and frozen parent/worker launch settings.
 - Add direct native work and guided Matt Pocock planning from Inbox ideas, visible owner
   questions and approvals, retained planning handoffs, and completion/archive controls.
   Restore Project agents in the global Agents overview.

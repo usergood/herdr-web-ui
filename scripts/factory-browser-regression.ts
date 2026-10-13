@@ -10,7 +10,7 @@ import { workspaceCreate, workspaceClose, paneRename, herdrRpc, paneSplit, paneS
 
 const state = mkdtempSync(join(tmpdir(), "saurons-eye-browser-"));
 const accountCli = join(state, "gh-discovery.mjs"); writeFileSync(accountCli, 'console.log(JSON.stringify({hosts:{}}));\n');
-const factoryOptions = { accountDiscoveryHome: state, accountTools: { github: { executable: process.execPath, args: [accountCli] } } };
+const factoryOptions = { accountDiscoveryHome: state, accountTools: { github: { executable: process.execPath, args: [accountCli] } }, native: { modelCatalog: async (provider: "codex" | "claude" | "opencode") => ({ protocol: 1 as const, provider, models: [{ id: "fixture-sol", name: "Fixture Sol", reasoning: [{ id: "medium", name: "Medium" }, { id: "xhigh", name: "Extra high" }], default_reasoning: "medium" }, { id: "fixture-fast", name: "Fixture fast", reasoning: [], default_reasoning: null }], problem: null }) } };
 let app = createServer({ port: 0, stateDir: state, factory: factoryOptions });
 const ownedWorkspaces: string[] = [];
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
@@ -72,6 +72,12 @@ try {
   assert.equal(await page.getByRole("combobox", { name: "Project", exact: true }).locator("option:checked").textContent(), "Browser Project");
   assert.equal(await page.locator(".tab-strip").count(), 0);
   const assignmentId = new URL(page.url()).hash.slice("#factory/".length);
+  const taskSettings = page.getByRole("region", { name: "Next step", exact: true });
+  await taskSettings.getByRole("combobox", { name: "Model", exact: true }).selectOption("fixture-sol");
+  await taskSettings.getByRole("combobox", { name: "Reasoning level", exact: true }).selectOption("xhigh");
+  await taskSettings.getByRole("combobox", { name: "Model", exact: true }).selectOption("fixture-fast");
+  assert.equal(await taskSettings.getByRole("combobox", { name: "Reasoning level", exact: true }).isEnabled(), false);
+  assert.equal(await taskSettings.getByRole("combobox", { name: "Reasoning level", exact: true }).inputValue(), "");
   // The browser seam may use owned public-response fixtures for a child relationship;
   // the API contract separately proves that real worker records project these links.
   const overviewUrl = `http://localhost:${app.port}/api/factory?navigation=1`;
@@ -163,9 +169,12 @@ try {
   await page.getByRole("tab", { name: "Workflow", exact: true }).click();
   await page.getByRole("combobox", { name: "Context handoff target", exact: true }).selectOption("200000");
   await page.getByRole("combobox", { name: "Execution permissions", exact: true }).selectOption("ask");
+  const projectSettings = page.getByRole("dialog", { name: "Project settings", exact: true });
+  await projectSettings.getByRole("combobox", { name: "Model", exact: true }).selectOption("fixture-sol");
+  await projectSettings.getByRole("combobox", { name: "Reasoning level", exact: true }).selectOption("xhigh");
   const save = page.waitForResponse((response) => /\/api\/factory\/projects\/[^/]+\/configure$/.test(response.url()) && response.request().method() === "POST");
   await page.getByRole("button", { name: "Save Project settings", exact: true }).click();
-  const saved = await save; assert.equal(saved.status(), 200); assert.equal((await saved.json()).context_target_tokens, 200000);
+  const saved = await save; assert.equal(saved.status(), 200); const settingsResult = await saved.json(); assert.equal(settingsResult.context_target_tokens, 200000); assert.deepEqual(settingsResult.execution_preset, { model: "fixture-sol", reasoning: "xhigh" });
   await page.waitForFunction(() => [...document.querySelectorAll<HTMLButtonElement>("button")].some((button) => button.textContent?.trim() === "Save Project settings" && !button.disabled));
   await shot("project-settings-mobile.png");
   await page.keyboard.press("Control+Shift+,");

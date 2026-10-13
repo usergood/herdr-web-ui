@@ -49,6 +49,7 @@ export class FactoryExecutionHost {
   }
   discover(path: string) { return discoverProject(path, this.native, this.accounts?.discoveryHome); }
   async modelCatalog(provider: import("../shared/factory.ts").FactoryProvider, path: string, snapshot?: AccountBindingSnapshot | null) {
+    if (this.stopped || existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Native model reads are disabled on a stopped or restored bridge", 409);
     const checkout = await inspectCheckout(path);
     const environment = await this.accounts?.environment(snapshot) ?? {};
     const catalog = await withAccountEnvironment(environment, () => this.native.modelCatalog(provider, checkout.path));

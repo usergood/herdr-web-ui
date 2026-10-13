@@ -1178,7 +1178,7 @@ export type { ProjectReference, ProjectReferenceLibrary, CodexReferenceContext, 
 /** Factory mutation bodies. Runtime validation still treats incoming JSON as untrusted. */
 /** POST /api/factory/model-catalog: Project/Machine/CLI -> AgentModelCatalog.
  * POST /api/factory-host/model-catalog: provider/path/account_snapshot -> AgentModelCatalog;
- * same-origin factory header and Machine header are required for native catalog reads.
+ * Owner reads require the same-origin factory header; host reads also require the Machine header.
  * Catalog reads never send prompts or start model inference.
  */
 export type { AgentModelCatalog, AgentModelSelection, AgentExecutionPreset } from "./agent-models.ts";

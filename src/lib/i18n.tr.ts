@@ -7,6 +7,8 @@
  * keep their English names.
  */
 export const TR: Record<string, string> = {
+  "Launch model": "Başlangıç modeli",
+  "Launch reasoning": "Başlangıç akıl yürütmesi",
   "Agent model settings": "Ajan model ayarları",
   "Model": "Model seçimi",
   "Use CLI default": "CLI varsayılanını kullan",

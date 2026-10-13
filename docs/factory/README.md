@@ -25,7 +25,7 @@ working CPU Whisper benchmark and proposes managed transcription setup plus an a
 for factory Implementations only. These remain proposed extensions; existing worker controls,
 owner approvals and ordinary chat behavior retain their current scope.
 
-The [provider admission research](provider-admission-research.md) adds immutable model, reasoning and native permission presets, per-account subscription/API spending rules, and fresh-usage verification before automatic resumption after quota reset. It preserves the requested Codex `gpt-6.1-sol` / `xhigh` / Approve for me preset and records Claude and legacy Zen reporting limits. These are queue implementation requirements, not active automation.
+The [model selection implementation](agent-model-selection.md) loads native model and reasoning catalogs, saves Project defaults, and allows explicit task overrides inherited by owned workers. The [provider admission research](provider-admission-research.md) records the remaining subscription/API spending rules and quota-reset resumption requirements; those rules are not active automation.
 
 ## Planning provenance
 

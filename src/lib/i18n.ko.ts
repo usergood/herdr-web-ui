@@ -6,6 +6,8 @@
  * braces keep their English names.
  */
 export const KO: Record<string, string> = {
+  "Launch model": "시작 모델",
+  "Launch reasoning": "시작 추론 수준",
   "Agent model settings": "에이전트 모델 설정",
   "Model": "모델",
   "Use CLI default": "CLI 기본값 사용",

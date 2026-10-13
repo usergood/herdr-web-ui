@@ -8,6 +8,8 @@
  * in English. Placeholders in braces keep their English names.
  */
 export const JA: Record<string, string> = {
+  "Launch model": "起動時のモデル",
+  "Launch reasoning": "起動時の推論レベル",
   "Agent model settings": "エージェントのモデル設定",
   "Model": "モデル",
   "Use CLI default": "CLIの既定値を使用",

@@ -99,7 +99,11 @@ async function opencodeModels(executable: string, cwd: string): Promise<AgentMod
   const deadline = setTimeout(() => { rejectAddress(new Error("Native model catalog timed out")); stop(); }, 12000);
   try {
     const origin = await address;
-    const response = await fetch(origin + (generation === 2 ? `/api/model?location=${encodeURIComponent(JSON.stringify({ directory: cwd }))}` : "/provider"), { headers: { authorization: "Basic " + Buffer.from("opencode:" + password).toString("base64") }, redirect: "error", signal: AbortSignal.timeout(6000) });
+    const endpoint = origin + (generation === 2 ? `/api/model?location=${encodeURIComponent(JSON.stringify({ directory: cwd }))}` : "/provider");
+    const unauthenticated = await fetch(endpoint, { redirect: "error", signal: AbortSignal.timeout(3000) });
+    await unauthenticated.body?.cancel();
+    if (![401, 403].includes(unauthenticated.status)) throw new Error("Native metadata server must require authentication");
+    const response = await fetch(endpoint, { headers: { authorization: "Basic " + Buffer.from("opencode:" + password).toString("base64") }, redirect: "error", signal: AbortSignal.timeout(6000) });
     if (!response.ok) throw new Error("Native model catalog unavailable");
     const reader = response.body!.getReader(); const chunks: Uint8Array[] = []; let size = 0;
     try { for (;;) { const chunk = await reader.read(); if (chunk.done) break; size += chunk.value.length; if (size > 4 * 1024 * 1024) throw new Error("Native model catalog exceeds output budget"); chunks.push(chunk.value); } }

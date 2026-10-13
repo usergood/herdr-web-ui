@@ -10,6 +10,8 @@
  * Placeholders in braces keep their English names.
  */
 export const ZH: Record<string, string> = {
+  "Launch model": "启动模型",
+  "Launch reasoning": "启动推理级别",
   "Agent model settings": "智能体模型设置",
   "Model": "模型",
   "Use CLI default": "使用 CLI 默认值",
