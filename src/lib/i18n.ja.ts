@@ -8,6 +8,17 @@
  * in English. Placeholders in braces keep their English names.
  */
 export const JA: Record<string, string> = {
+  "Launch model": "起動時のモデル",
+  "Launch reasoning": "起動時の推論レベル",
+  "Agent model settings": "エージェントのモデル設定",
+  "Model": "モデル",
+  "Use CLI default": "CLIの既定値を使用",
+  "Unavailable": "利用不可",
+  "Reasoning level": "推論レベル",
+  "Use model default": "モデルの既定値を使用",
+  "Loading models…": "モデルを読み込み中…",
+  "Model catalog unavailable. Use CLI defaults or refresh after signing in.": "モデル一覧を取得できません。CLIの既定値を使うか、ログイン後に更新してください。",
+  "Refresh model list": "モデル一覧を更新",
   "Account name": "アカウント名",
   "Account service": "アカウントのサービス",
   "Account sign-in completed": "アカウントへのログインが完了しました",

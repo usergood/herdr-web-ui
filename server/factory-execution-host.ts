@@ -48,6 +48,16 @@ export class FactoryExecutionHost {
     const prepared = this.store.get<{ id: string; path: string }>("host_skills", "default"); this.preparedPath = prepared?.path ?? null;
   }
   discover(path: string) { return discoverProject(path, this.native, this.accounts?.discoveryHome); }
+  async modelCatalog(provider: import("../shared/factory.ts").FactoryProvider, path: string, repository: string, snapshot?: AccountBindingSnapshot | null) {
+    if (this.stopped || existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Native model reads are disabled on a stopped or restored bridge", 409);
+    const checkout = await inspectCheckout(path);
+    if (checkout.repository !== repository) throw new FactoryError("wrong_checkout", "The selected checkout belongs to a different repository", 409);
+    const environment = await this.accounts?.environment(snapshot, false, checkout.path) ?? {};
+    const catalog = await withAccountEnvironment(environment, () => this.native.modelCatalog(provider, checkout.path));
+    if (catalog.protocol !== 1 || catalog.provider !== provider || !Array.isArray(catalog.models)) throw new FactoryError("model_catalog_unavailable", "The Machine returned an incompatible model catalog", 409);
+    this.accounts?.assertPublic(JSON.stringify(catalog));
+    return catalog;
+  }
   skillPath(): string | null { return this.sourcePath() ?? this.preparedPath; }
   async prepareReferences(payload: ProjectReferencePayload & { machine_id: string; checkout: { path: string; repository: string } }): Promise<CodexReferenceContext> {
     if (this.stopped || existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("preparation_disabled", "Reference preparation is disabled on this bridge", 409);
@@ -215,7 +225,7 @@ export class FactoryExecutionHost {
       run = { ...run, workspace_id: workspace.workspace.workspace_id, pane_id: workspace.root_pane.pane_id }; save();
       const skill = run.action === "setup" ? "setup-matt-pocock-skills" : run.action === "apply-retro" ? "tdd" : run.action;
       const readOnly = run.action === "implement-spec" || run.action === "verify-provider";
-      provisionFactoryAgent(worktree, run.provider, skill, skills, readOnly, (run.manifest as { project?: import("../shared/factory.ts").FactoryProject }).project?.permission_mode);
+      provisionFactoryAgent(worktree, run.provider, skill, skills, readOnly, (run.manifest as { project?: import("../shared/factory.ts").FactoryProject }).project?.permission_mode, (run.manifest as { execution_preset?: import("../shared/agent-models.ts").AgentExecutionPreset }).execution_preset);
       recordScaffolding(this.store, run.id, worktree, run.provider, skills);
       if (this.store.get<{ closing?: boolean }>("host_leases", run.id)?.closing) return this.stopRun(run.id);
       const skillPrefix = run.action === "work" ? "" : run.action === "verify-provider" ? skills.skills.map(entry => `${run.provider === "codex" ? "$" : run.provider === "opencode" ? "@" : "/"}${entry.name}`).join(" ") : `${run.provider === "codex" ? "$" : run.provider === "opencode" ? "@" : "/"}${skill}`;
@@ -230,7 +240,7 @@ export class FactoryExecutionHost {
       if (referenceContext) prompt += ` ${referenceContext.prompt}`;
       const launchPrompt = prepareFactoryPrompt(worktree, prompt, skillPrefix);
       recordScaffolding(this.store, run.id, worktree, run.provider, skills);
-      await this.native.startAgent({ name: `saurons-${run.id.replaceAll("-", "").slice(0, 24)}`, kind: run.provider, paneId: run.pane_id!, args: factoryAgentArguments(run.provider, worktree, launchPrompt, readOnly, Boolean((run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot?.profiles.some((entry) => entry.service === run.provider)), (run.manifest as { project?: import("../shared/factory.ts").FactoryProject }).project?.permission_mode, run.action === "work"), timeoutMs: 60_000 });
+      await this.native.startAgent({ name: `saurons-${run.id.replaceAll("-", "").slice(0, 24)}`, kind: run.provider, paneId: run.pane_id!, args: factoryAgentArguments(run.provider, worktree, launchPrompt, readOnly, Boolean((run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot?.profiles.some((entry) => entry.service === run.provider)), (run.manifest as { project?: import("../shared/factory.ts").FactoryProject }).project?.permission_mode, run.action === "work", (run.manifest as { execution_preset?: import("../shared/agent-models.ts").AgentExecutionPreset }).execution_preset), timeoutMs: 60_000 });
       const afterLaunch = this.store.get<{ run: FactoryRun; closing?: boolean }>("host_leases", run.id);
       if (afterLaunch?.closing || afterLaunch && ["cancelled", "completed", "failed"].includes(afterLaunch.run.condition)) return this.stopRun(run.id);
       run = { ...run, condition: "working", waiting_reason: null, updated_at: new Date().toISOString() }; save(); return run;

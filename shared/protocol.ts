@@ -1176,7 +1176,14 @@ export type { FactoryPaneLink, FactoryPaneArchive } from "./factory.ts";
 export type { ProjectReference, ProjectReferenceLibrary, CodexReferenceContext, ProjectReferencePayload } from "./factory.ts";
 
 /** Factory mutation bodies. Runtime validation still treats incoming JSON as untrusted. */
+/** POST /api/factory/model-catalog: Project/Machine/CLI -> AgentModelCatalog.
+ * POST /api/factory-host/model-catalog: provider/path/repository/account_snapshot -> AgentModelCatalog;
+ * Owner reads require the same-origin factory header; host reads also require the Machine header.
+ * Catalog reads never send prompts or start model inference.
+ */
+export type { AgentModelCatalog, AgentModelSelection, AgentExecutionPreset } from "./agent-models.ts";
 export interface FactoryRequests {
+  model_catalog: { project_id: string; machine_id: string; provider: import("./factory.ts").FactoryProvider };
   pane_archive: { machine_id: string; pane_id: string; archived: boolean; terminal_id?: string; session_ref?: string | null };
   github_configuration: import("./github-project.ts").ProjectGitHubConfiguration;
   github_action: { head: string; base: string; policy_revision: string };
@@ -1184,7 +1191,7 @@ export interface FactoryRequests {
   configure: { project_id?: string | null; provider?: import("./factory.ts").FactoryProvider | null; machine_id?: string | null };
   complete_work: { run_id: string };
   project: { name: string; path: string; machine_id: string; provider: import("./factory.ts").FactoryProvider; tracker: import("./factory.ts").FactoryProject["tracker"]; tracker_reference?: string; guided_setup?: boolean; permission_mode?: import("./agent-permissions.ts").AgentPermissionMode; check_ids?: string[]; context_target_tokens?: number; guidance_task?: boolean; github_account_id?: string };
-  project_settings: Partial<Pick<import("./factory.ts").FactoryProject, "name" | "checks" | "setup" | "environment" | "permissions" | "permission_mode" | "shared_paths" | "provider" | "machine_id" | "account_bindings" | "workflow_instructions" | "context_target_tokens">>;
+  project_settings: Partial<Pick<import("./factory.ts").FactoryProject, "name" | "checks" | "setup" | "environment" | "permissions" | "permission_mode" | "execution_preset" | "shared_paths" | "provider" | "machine_id" | "account_bindings" | "workflow_instructions" | "context_target_tokens">>;
   project_discovery: { machine_id: string; path: string };
   account_import: { source_id: string; path?: string };
   checkout: { machine_id: string; path: string };
@@ -1203,7 +1210,7 @@ export interface FactoryRequests {
   question: { question: string; run_id?: string };
   answer: { revision: string; answer: string };
   order: { direction: -1 | 1 } | { before_id: string };
-  start: { action: import("./factory.ts").FactoryAction; idempotency_key: string; retrospective_id?: string; expected?: { provider: import("./factory.ts").FactoryProvider; machine_id: string; project_id: string | null; specification_id: string | null; graph_hash: string } };
+  start: { action: import("./factory.ts").FactoryAction; idempotency_key: string; execution_preset?: import("./agent-models.ts").AgentModelSelection; retrospective_id?: string; expected?: { provider: import("./factory.ts").FactoryProvider; machine_id: string; project_id: string | null; specification_id: string | null; graph_hash: string } };
   stop: { summary?: string };
   import_conversation: { before?: string };
   send_answers: { revision: string; idempotency_key: string };
@@ -1261,6 +1268,7 @@ export interface FactoryAgentRequests {
   proposal: { proposal: string };
 }
 export interface FactoryHostRequests {
+  model_catalog: { provider: import("./factory.ts").FactoryProvider; path: string; repository: string; account_snapshot?: import("./accounts.ts").AccountBindingSnapshot | null };
   pane_state: { pane_id: string };
   references: import("./factory.ts").ProjectReferencePayload & { machine_id: string; checkout: { path: string; repository: string } };
   prepare: { files: { path: string; content_base64: string }[] };

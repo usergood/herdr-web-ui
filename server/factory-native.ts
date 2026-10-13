@@ -4,8 +4,11 @@ import { promisify } from "node:util";
 import { dirname, join } from "node:path";
 import type { FactoryProvider, HerdrPane } from "../shared/protocol.ts";
 import { agentManifests, agentPrompt, agentStart, HerdrError, sessionSnapshot, workspaceClose, workspaceCreate } from "./herdr/client.ts";
+import { readAgentModelCatalog } from "./agent-model-catalog.ts";
+import type { AgentExecutionPreset } from "../shared/agent-models.ts";
 
 export interface FactoryNative {
+  modelCatalog: (provider: FactoryProvider, cwd: string) => Promise<import("../shared/agent-models.ts").AgentModelCatalog>;
   version: (provider: FactoryProvider) => Promise<string | null>;
   createWorkspace: typeof workspaceCreate;
   startAgent: typeof agentStart;
@@ -17,6 +20,7 @@ export interface FactoryNative {
 }
 const execute = promisify(execFile);
 export const factoryNative: FactoryNative = {
+  modelCatalog: readAgentModelCatalog,
   createWorkspace: workspaceCreate, snapshot: sessionSnapshot, closeWorkspace: workspaceClose, prompt: agentPrompt,
   startAgent: async (options, socketPath) => {
     const deadline = Date.now() + 10_000;
@@ -36,9 +40,10 @@ export const factoryNative: FactoryNative = {
 };
 
 /** Keep native permission prompts; child processes must use application reservations. */
-export function factoryAgentArguments(provider: FactoryProvider, cwd: string, prompt: string, readonly = false, subscriptionProfile = false, permissionMode?: AgentPermissionMode, directWork = false): string[] {
+export function factoryAgentArguments(provider: FactoryProvider, cwd: string, prompt: string, readonly = false, subscriptionProfile = false, permissionMode?: AgentPermissionMode, directWork = false, preset?: AgentExecutionPreset): string[] {
   readonly ||= permissionMode === "read_only";
-  if (provider === "codex") return ["-C", cwd, ...(subscriptionProfile ? ["-c", 'cli_auth_credentials_store="file"', "-c", 'forced_login_method="chatgpt"', "-c", 'model_provider="openai"'] : []), ...(!directWork ? ["--disable", "multi_agent"] : []), "--sandbox", readonly ? "read-only" : "workspace-write", ...(permissionMode ? ["-a", "on-request", "-c", permissionMode === "approve_for_me" ? 'approvals_reviewer="auto_review"' : 'approvals_reviewer="user"'] : []), ...(!readonly ? ["notes", "state", "cache", "tmp"].flatMap((name) => ["--add-dir", join(dirname(cwd), name)]) : []), prompt];
-  if (provider === "claude") return [...(!directWork ? ["--tools", "Bash,Edit,Read,Write,Glob,Grep,Skill,AskUserQuestion,TodoWrite"] : []), ...(readonly ? ["--permission-mode", "plan"] : permissionMode ? ["--permission-mode", permissionMode === "accept_edits" ? "acceptEdits" : permissionMode === "auto" ? "auto" : "default"] : []), prompt];
-  return ["--agent", "saurons-eye", "--prompt", prompt];
+  const modelArgs = preset?.model ? ["--model", provider === "opencode" && preset.reasoning && preset.reasoning_format === "model_suffix" ? `${preset.model}#${preset.reasoning}` : preset.model, ...(preset.reasoning ? provider === "codex" ? ["-c", `model_reasoning_effort=${JSON.stringify(preset.reasoning)}`] : provider === "claude" ? ["--effort", preset.reasoning] : [] : [])] : [];
+  if (provider === "codex") return ["-C", cwd, ...modelArgs, ...(subscriptionProfile ? ["-c", 'cli_auth_credentials_store="file"', "-c", 'forced_login_method="chatgpt"', "-c", 'model_provider="openai"'] : []), ...(!directWork ? ["--disable", "multi_agent"] : []), "--sandbox", readonly ? "read-only" : "workspace-write", ...(permissionMode ? ["-a", "on-request", "-c", permissionMode === "approve_for_me" ? 'approvals_reviewer="auto_review"' : 'approvals_reviewer="user"'] : []), ...(!readonly ? ["notes", "state", "cache", "tmp"].flatMap((name) => ["--add-dir", join(dirname(cwd), name)]) : []), prompt];
+  if (provider === "claude") return [...modelArgs, ...(!directWork ? ["--tools", "Bash,Edit,Read,Write,Glob,Grep,Skill,AskUserQuestion,TodoWrite"] : []), ...(readonly ? ["--permission-mode", "plan"] : permissionMode ? ["--permission-mode", permissionMode === "accept_edits" ? "acceptEdits" : permissionMode === "auto" ? "auto" : "default"] : []), prompt];
+  return [...modelArgs, "--agent", "saurons-eye", "--prompt", prompt];
 }

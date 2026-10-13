@@ -7,6 +7,17 @@
  * keep their English names.
  */
 export const TR: Record<string, string> = {
+  "Launch model": "Başlangıç modeli",
+  "Launch reasoning": "Başlangıç akıl yürütmesi",
+  "Agent model settings": "Ajan model ayarları",
+  "Model": "Model seçimi",
+  "Use CLI default": "CLI varsayılanını kullan",
+  "Unavailable": "Kullanılamıyor",
+  "Reasoning level": "Akıl yürütme düzeyi",
+  "Use model default": "Model varsayılanını kullan",
+  "Loading models…": "Modeller yükleniyor…",
+  "Model catalog unavailable. Use CLI defaults or refresh after signing in.": "Model listesi alınamıyor. CLI varsayılanlarını kullanın veya oturum açtıktan sonra yenileyin.",
+  "Refresh model list": "Model listesini yenile",
   "Antigravity chat is unavailable. Open Terminal to see activity and tool calls.": "Antigravity sohbeti kullanılamıyor. Etkinliği ve araç çağrılarını görmek için Terminal'i açın.",
   "Chat read timed out.": "Sohbet okunurken zaman aşımına uğradı.",
   "Thinking…": "Düşünüyor…",

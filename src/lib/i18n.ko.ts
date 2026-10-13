@@ -6,6 +6,17 @@
  * braces keep their English names.
  */
 export const KO: Record<string, string> = {
+  "Launch model": "시작 모델",
+  "Launch reasoning": "시작 추론 수준",
+  "Agent model settings": "에이전트 모델 설정",
+  "Model": "모델",
+  "Use CLI default": "CLI 기본값 사용",
+  "Unavailable": "사용 불가",
+  "Reasoning level": "추론 수준",
+  "Use model default": "모델 기본값 사용",
+  "Loading models…": "모델을 불러오는 중…",
+  "Model catalog unavailable. Use CLI defaults or refresh after signing in.": "모델 목록을 불러올 수 없습니다. CLI 기본값을 사용하거나 로그인 후 새로 고침하세요.",
+  "Refresh model list": "모델 목록 새로 고침",
   "Account name": "계정 이름",
   "Account service": "계정 서비스",
   "Account sign-in completed": "계정 로그인이 완료되었습니다",
