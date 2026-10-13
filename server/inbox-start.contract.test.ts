@@ -36,6 +36,18 @@ describe("starting an Inbox idea through the public API", () => {
       expect((await post(`/implementations/${idea.id}/archive`,{})).status).toBe(200);
     } finally {app.stop();for(const id of owned)await workspaceClose(id).catch(()=>{});rmSync(root,{recursive:true,force:true});}
   });
+  it("retains verified cleanup when the owner stops during workspace allocation",async()=>{
+    const root=mkdtempSync(join(tmpdir(),"saurons-launch-stop-"));const repo=join(root,"repo");mkdirSync(repo);writeFileSync(join(repo,"README.md"),"Owned baseline\n");
+    for(const args of [["init","-b","main"],["add","."],["-c","user.name=Fixture","-c","user.email=fixture@example.invalid","commit","-m","initial"]])execFileSync("git",args,{cwd:repo,stdio:"ignore"});
+    let release!:()=>void,notify!:()=>void;const held=new Promise<void>(resolve=>{release=resolve;});const created=new Promise<void>(resolve=>{notify=resolve;});const owned:string[]=[];let pending:Promise<Response>|undefined;
+    const app=createServer({port:0,stateDir:join(root,"state"),machines:false,factory:{accountDiscoveryHome:root,native:{version:async()=>"owned-cli-fixture",createWorkspace:async options=>{const workspace=await workspaceCreate(options);owned.push(workspace.workspace.workspace_id);notify();await held;return workspace;},startAgent:async()=>{throw new Error("Cancelled fixture must not launch a model");}}}});
+    const post=(path:string,body:unknown)=>fetch(`http://localhost:${app.port}/api/factory${path}`,{method:"POST",headers:{"content-type":"application/json","x-herdr-factory":"1"},body:JSON.stringify(body)});
+    try{
+      const project=await post("/projects",{name:"Cancellation fixture",path:repo,machine_id:"local",provider:"codex",tracker:"app"}).then(r=>r.json());const idea=await post("/implementations",{title:"Stop owned work",description:"",project_id:project.id}).then(r=>r.json());pending=post(`/implementations/${idea.id}/runs`,{action:"work",idempotency_key:"owned-stop"});await created;
+      const detail=await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then(r=>r.json());const id=detail.runs.at(-1).id;const stopping=await post(`/runs/${id}/stop`,{});expect(stopping.status).toBe(409);expect((await stopping.json()).error.code).toBe("native_identity_uncertain");release();const run=await (await pending).json();expect(run.condition).toBe("cancelled");
+      const cleaned=await post(`/runs/${id}/cleanup`,{});expect(cleaned.status).toBe(200);expect((await cleaned.json()).removed).toHaveLength(1);
+    }finally{release();await pending?.catch(()=>{});app.stop();for(const id of owned)await workspaceClose(id).catch(()=>{});rmSync(root,{recursive:true,force:true});}
+  });
   for(const provider of ["codex","claude","opencode"] as const) it(`starts ${provider} planning through native validation with its selected skill`, async()=>{
     const root=mkdtempSync(join(tmpdir(),"saurons-native-planning-"));const repo=join(root,"repo");mkdirSync(repo);writeFileSync(join(repo,"README.md"),"Owned baseline\n");
     for(const args of [["init","-b","main"],["add","."],["-c","user.name=Fixture","-c","user.email=fixture@example.invalid","commit","-m","initial"]])execFileSync("git",args,{cwd:repo,stdio:"ignore"});
