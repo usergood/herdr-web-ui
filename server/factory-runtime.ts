@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import type { FactoryAction, FactoryApproval, FactoryArtifact, FactoryMessage, FactoryOutput, FactoryProject, FactoryRun, FactorySettings, Implementation, ProjectCheckout } from "../shared/protocol.ts";
+import type { FactoryAction, FactoryApproval, FactoryArtifact, FactoryMessage, FactoryOutput, FactoryProject, FactoryProvider, FactoryRun, FactorySettings, Implementation, ProjectCheckout } from "../shared/protocol.ts";
 import { FactoryError, git, hash, inspectCheckout } from "./factory-host.ts";
 import { FactoryExecutionHost } from "./factory-execution-host.ts";
 import { bundlePayload, verifySkills } from "./factory-skills.ts";
@@ -13,6 +13,7 @@ import type { AccountBindingSnapshot, ProjectAccountBindings } from "../shared/a
 import type { AccountOverview, AccountProfile, AccountSetup } from "../shared/accounts.ts";
 import type { MachineAccounts } from "./accounts.ts";
 import { validPermissionMode } from "../shared/agent-permissions.ts";
+import { parseModelSelection, resolveModelSelection } from "./agent-model-selection.ts";
 
 export type MachineEndpoint = (machineId: string) => { url: string; token: string } | undefined;
 type HostCapabilities = Awaited<ReturnType<FactoryExecutionHost["capabilities"]>>;
@@ -23,6 +24,11 @@ export class FactoryRuntime {
   private stopped = false;
   constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly host: FactoryExecutionHost, private readonly endpoint: MachineEndpoint, private readonly readArtifact: (record: FactoryArtifact) => Buffer, private readonly publicUrl: string | null, private readonly references: FactoryReferences, private readonly accounts: MachineAccounts) {}
   async discover(machineId: string, path: string): Promise<import("../shared/project-setup.ts").ProjectDiscovery> { return machineId === "local" ? this.host.discover(path) : this.remote(machineId, "/project-discovery", { path }); }
+  async modelCatalog(machineId: string, provider: FactoryProvider, path: string, snapshot?: AccountBindingSnapshot | null): Promise<import("../shared/agent-models.ts").AgentModelCatalog> {
+    const result = machineId === "local" ? await this.host.modelCatalog(provider, path, snapshot) : await this.remote<import("../shared/agent-models.ts").AgentModelCatalog>(machineId, "/model-catalog", { provider, path, account_snapshot: snapshot });
+    if (result.protocol !== 1 || result.provider !== provider || !Array.isArray(result.models)) throw new FactoryError("model_catalog_unavailable", "Update this Machine's bridge to read its model catalog", 409);
+    return result;
+  }
   async accountSnapshot(machineId: string, bindings: ProjectAccountBindings): Promise<AccountBindingSnapshot> {
     return machineId === "local" ? this.accounts.freeze(bindings) : this.remote(machineId, "/accounts/snapshot", { bindings });
   }
@@ -58,7 +64,7 @@ export class FactoryRuntime {
     const endpoint = this.endpoint(machineId);
     if (!endpoint) throw new FactoryError("machine_offline", "The selected Machine is disconnected; its ownership is retained", 409);
     try {
-      const deadline = AbortSignal.timeout(path.endsWith("/operations/check") ? 325_000 : path === "/launch" ? 75_000 : 15_000);
+      const deadline = AbortSignal.timeout(path.endsWith("/operations/check") ? 325_000 : path === "/launch" ? 75_000 : path === "/model-catalog" ? 30_000 : 15_000);
       const response = await fetch(`${endpoint.url}/api/factory-host${path}`, { method: body === undefined ? "GET" : "POST", headers: { authorization: `Bearer ${endpoint.token}`, "x-herdr-factory": "1", "x-herdr-machine": "1", "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), redirect: "error", signal: signal ? AbortSignal.any([signal, deadline]) : deadline });
       if (!response.ok) throw new FactoryError("remote_factory_unavailable", "The selected Machine rejected this factory operation; verify its bridge, native tools and checkout", response.status === 404 ? 409 : response.status);
       return await response.json() as T;
@@ -140,6 +146,9 @@ export class FactoryRuntime {
       if (action === "implement-spec" && machineId === "local" && (await git(inspected.path, ["status", "--porcelain", "--untracked-files=all"])).trim()) throw new FactoryError("dirty_checkout", "Save the Project checkout's existing changes before starting automated implementation. Planning and direct work can start in their own workspaces", 409);
     }
     if (action === "implement-spec" && project?.tracker !== "app") throw new FactoryError("tracker_setup_required", "Select the app-native Other tracker explicitly; external tracker publication remains a separately configured action", 409);
+    const selection = parseModelSelection(body.execution_preset === undefined ? project?.provider === provider ? project.execution_preset : undefined : body.execution_preset);
+    const executionPreset = selection.model && inspected ? resolveModelSelection(selection, await this.modelCatalog(machineId, provider, inspected.path, accountSnapshot)) : selection;
+    if (selection.model && !inspected) throw new FactoryError("checkout_required", "Select a Project checkout before choosing a model", 409);
     const specification = this.workflow.specification(id); const graphHash = this.workflow.graphHash(id);
     const selectedEvidence = new Set(retrospective?.evidence_ids ?? []);
     const selectedArtifacts = (): FactoryArtifact[] => {
@@ -173,7 +182,7 @@ export class FactoryRuntime {
       const children = this.store.list<{ condition: string }>("workers").filter((entry) => activeConditions.has(entry.condition as FactoryRun["condition"])).length;
       if (new Set(active.map((entry) => entry.implementation_id)).size >= this.settings().max_implementations || active.length + children >= this.settings().max_agents) throw new FactoryError("capacity_exhausted", "Global execution capacity is in use; start manually after capacity is released", 409);
       const record: FactoryRun = { ...this.store.record(), implementation_id: id, action, provider, machine_id: machineId, condition: "accepted", waiting_reason: null, idempotency_key: body.idempotency_key as string, specification_id: specification?.id ?? null, graph_hash: graphHash, base: inspected?.head ?? null, checkout: inspected?.path ?? null, worktree: null, branch: null, workspace_id: null, pane_id: null, manifest: { skills, artifacts, context_message_ids: messages.map(message => message.id), retrospective, retrospective_evidence: retrospective ? this.store.get("retro_evidence", retrospective.id) : null, implementation, project, checkout: inspected, specification, tickets: this.workflow.tickets(id), approvals: this.store.list<FactoryApproval>("approvals", id), effective_settings: this.settings(), provider_version: capability.version, permissions: "Retain native controls; publication, merge, deployment and destructive cleanup are separate owner actions", contract_hash: contractHash } };
-      record.manifest = { ...(record.manifest as object), project_references: projectReferences, account_snapshot: accountSnapshot };
+      record.manifest = { ...(record.manifest as object), execution_preset: executionPreset, project_references: projectReferences, account_snapshot: accountSnapshot };
       if (projectReferences) this.references.freeze(projectReferences.project_id);
       this.store.put("runs", record, id); this.store.event(id, "dispatch_accepted", { run_id: record.id, action }); return { run: record, accepted: true };
     }).immediate();

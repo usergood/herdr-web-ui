@@ -5,10 +5,14 @@ import { factoryRequest } from "../lib/factoryApi.ts";
 import { useT } from "../lib/i18n.ts";
 import { Markdown } from "./Markdown.tsx";
 import "./AssignmentActions.css";
+import { AgentModelPicker } from "./AgentModelPicker.tsx";
+import type { AgentExecutionPreset, AgentModelSelection } from "../../shared/agent-models.ts";
 
 export function AssignmentActions({ detail, project, machineId, machineName, provider, busy, perform, onOpenPane, capabilities, problem, onCapabilities }: { detail: FactoryDetail; project?: FactoryProject; machineId: string; machineName: string; provider: FactoryProvider; busy: boolean; perform: (action: () => Promise<void>) => Promise<void>; onOpenPane: (machineId: string, paneId: string) => void; capabilities: FactoryCapabilities | null; problem: string | null; onCapabilities: (value: FactoryCapabilities) => void }) {
   const t = useT(); const live = useRef(true);
   const prefix = `/implementations/${detail.implementation.id}`;
+  const [preset, setPreset] = useState<AgentModelSelection>(project?.execution_preset ?? { model: null, reasoning: null });
+  useEffect(() => { setPreset(project?.execution_preset ?? { model: null, reasoning: null }); }, [project?.id, provider, machineId, project?.execution_preset?.model, project?.execution_preset?.reasoning]);
   useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
   const capability = capabilities?.providers.find(entry => entry.provider === provider);
   const active = [...detail.runs].reverse().find(run => ["accepted", "working", "needs_you", "blocked", "disconnected", "interrupted"].includes(run.condition));
@@ -28,7 +32,7 @@ export function AssignmentActions({ detail, project, machineId, machineName, pro
   async function start(action: FactoryAction) {
     await perform(async () => {
       if (!capability?.skills_verified) await factoryRequest(`/machines/${encodeURIComponent(machineId)}/prepare`, {});
-      const run = await factoryRequest<FactoryRun>(prefix + "/runs", { action, idempotency_key: crypto.randomUUID(), expected: { provider, machine_id: machineId, project_id: detail.implementation.project_id, specification_id: specification?.id ?? null, graph_hash: detail.graph_hash } });
+      const run = await factoryRequest<FactoryRun>(prefix + "/runs", { action, execution_preset: preset, idempotency_key: crypto.randomUUID(), expected: { provider, machine_id: machineId, project_id: detail.implementation.project_id, specification_id: specification?.id ?? null, graph_hash: detail.graph_hash } });
       if (!live.current) return;
       if (run.condition !== "working" || !run.pane_id) throw new Error(run.waiting_reason ?? t("The agent did not start. Open advanced controls to inspect the retained attempt."));
       onOpenPane(run.machine_id, run.pane_id);
@@ -38,6 +42,8 @@ export function AssignmentActions({ detail, project, machineId, machineName, pro
   return <section className="assignment-actions factory-section" aria-label={t("Next step")}>
     <p role="status">{project ? t("Work uses {agent} on {machine} with this Project's settings.", { agent: provider, machine: machineName }) : t("Choose a Project to start work or plan implementation.")}</p>
     {problem && <p role="alert">{problem}</p>}
+    {!active && project && <AgentModelPicker projectId={project.id} machineId={machineId} provider={provider} accountScope={JSON.stringify(project.account_bindings?.[machineId] ?? {})} value={preset} onChange={setPreset} disabled={busy} />}
+    {active && <p>{t("Model")} · {(active.manifest as { execution_preset?: AgentExecutionPreset }).execution_preset?.model ?? t("Use CLI default")} · {t("Reasoning level")} · {(active.manifest as { execution_preset?: AgentExecutionPreset }).execution_preset?.reasoning ?? t("Use model default")}</p>}
     {!active && handoffProblem && <div><p role="alert">{t("Some planning context could not be retained. Check the previous agent chat and documents before starting the next step.")}</p>{incompleteHandoff && <button className="btn" disabled={busy} onClick={() => setAcknowledgedHandoff(latest?.id ?? null)}>{t("Continue with available context")}</button>}</div>}
     {project && !capability?.installed && capabilities && <p role="status">{t("Install or sign in to this Project's agent on its Machine, then try again.")}</p>}
     {active ? <div className="factory-actions">

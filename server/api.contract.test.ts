@@ -42,6 +42,19 @@ afterAll(() => {
 const base = () => `http://localhost:${server.port}`;
 
 describe("factory records", () => {
+  it("discovers model choices for the selected Project checkout through the owner API", async () => {
+    const root=mkdtempSync(join(tmpdir(),"saurons-model-catalog-"));const repo=join(root,"repo");mkdirSync(repo);writeFileSync(join(repo,"README.md"),"Owned catalog fixture\n");
+    for(const args of [["init","-b","main"],["add","."],["-c","user.name=Fixture","-c","user.email=fixture@example.invalid","commit","-m","initial"]])expect(Bun.spawnSync(["git",...args],{cwd:repo}).exitCode).toBe(0);
+    const calls:{provider:string;path:string}[]=[];
+    const app=createServer({port:0,stateDir:join(root,"state"),machines:false,factory:{accountDiscoveryHome:root,native:{version:async()=>"owned-cli-fixture",modelCatalog:async(provider,path)=>{calls.push({provider,path});return {protocol:1,provider,models:[{id:"owned-model",name:"Owned model",reasoning:[{id:"medium",name:"Medium"},{id:"xhigh",name:"Extra high"}],default_reasoning:"medium"}],problem:null};}}}});
+    const post=(path:string,body:unknown,header=true)=>fetch(`http://localhost:${app.port}/api/factory${path}`,{method:"POST",headers:{"content-type":"application/json",...(header?{"x-herdr-factory":"1"}:{})},body:JSON.stringify(body)});
+    try{
+      const project=await post("/projects",{name:"Models fixture",path:repo,machine_id:"local",provider:"codex",tracker:"app"}).then(r=>r.json());
+      const body={project_id:project.id,machine_id:"local",provider:"codex"};
+      const response=await post("/model-catalog",body);expect(response.status).toBe(200);expect((await response.json()).models).toEqual([{id:"owned-model",name:"Owned model",reasoning:[{id:"medium",name:"Medium"},{id:"xhigh",name:"Extra high"}],default_reasoning:"medium"}]);expect(calls).toEqual([{provider:"codex",path:repo}]);
+      expect((await post("/model-catalog",body,false)).status).toBe(403);expect((await post("/model-catalog",{...body,project_id:"absent"})).status).toBe(404);expect(calls).toHaveLength(1);
+    }finally{app.stop();rmSync(root,{recursive:true,force:true});}
+  });
   it("requires a currently registered host when changing Project execution defaults", async () => {
     const state = mkdtempSync(join(tmpdir(), "saurons-host-default-")); const repo = join(state, "repo"); mkdirSync(repo); writeFileSync(join(repo, "README.md"), "Owned host fixture\n");
     for (const args of [["init", "-b", "main"], ["add", "."], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "initial"]]) expect(Bun.spawnSync(["git", ...args], { cwd: repo }).exitCode).toBe(0);

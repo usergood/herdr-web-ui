@@ -10,6 +10,15 @@
  * Placeholders in braces keep their English names.
  */
 export const ZH: Record<string, string> = {
+  "Agent model settings": "智能体模型设置",
+  "Model": "模型",
+  "Use CLI default": "使用 CLI 默认值",
+  "Unavailable": "不可用",
+  "Reasoning level": "推理级别",
+  "Use model default": "使用模型默认值",
+  "Loading models…": "正在加载模型…",
+  "Model catalog unavailable. Use CLI defaults or refresh after signing in.": "无法获取模型列表。请使用 CLI 默认值，或登录后刷新。",
+  "Refresh model list": "刷新模型列表",
   "Account name": "账户名称",
   "Account service": "账户服务",
   "Account sign-in completed": "账户登录已完成",
