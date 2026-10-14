@@ -67,7 +67,16 @@ export class FactoryRuntime {
     try {
       const deadline = AbortSignal.timeout(path.endsWith("/operations/check") ? 325_000 : path === "/launch" ? 75_000 : path === "/model-catalog" ? 30_000 : 15_000);
       const response = await fetch(`${endpoint.url}/api/factory-host${path}`, { method: body === undefined ? "GET" : "POST", headers: { authorization: `Bearer ${endpoint.token}`, "x-herdr-factory": "1", "x-herdr-machine": "1", "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), redirect: "error", signal: signal ? AbortSignal.any([signal, deadline]) : deadline });
-      if (!response.ok) throw new FactoryError("remote_factory_unavailable", "The selected Machine rejected this factory operation; verify its bridge, native tools and checkout", response.status === 404 ? 409 : response.status);
+      if (!response.ok) {
+        // Verification may be resting before its native transcript is fully recorded.
+        // Preserve only known retry semantics, never a remote diagnostic or credential.
+        if (response.status === 409 && path.endsWith("/verify-provider")) {
+          const failure = await response.json().catch(() => null) as { error?: { code?: string } } | null;
+          const code = failure?.error?.code;
+          if (code === "native_evidence_required" || code === "agent_busy") throw new FactoryError(code, "The Machine has not finished recording native verification evidence", 409);
+        }
+        throw new FactoryError("remote_factory_unavailable", "The selected Machine rejected this factory operation; verify its bridge, native tools and checkout", response.status === 404 ? 409 : response.status);
+      }
       return await response.json() as T;
     } catch (error) { if (error instanceof FactoryError) throw error; throw new FactoryError("machine_disconnected", "The selected Machine could not be observed; reconcile its accepted identity before retrying", 409); }
   }

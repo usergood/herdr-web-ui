@@ -1901,7 +1901,13 @@ describe("workspace and discovery endpoints", () => {
       if (files.includes(fileName)) break;
       await Bun.sleep(25);
     } while (Date.now() < deadline);
-    expect(files).toContain(fileName);
+    let diagnostic: string | undefined;
+    if (!files.includes(fileName)) {
+      const { snapshot } = await fetch(`${base()}/api/session`).then(response => response.json());
+      const pane = snapshot.panes.find((entry: { pane_id: string }) => entry.pane_id === paneId);
+      diagnostic = JSON.stringify({ directory, fixture: readFileSync(filePath, "utf8"), pane: { cwd: pane?.cwd, foreground_cwd: pane?.foreground_cwd, agent: pane?.agent, agent_status: pane?.agent_status }, files });
+    }
+    expect(files, diagnostic).toContain(fileName);
 
     const prompt = await fetch(`${base()}/api/pane/prompt?pane_id=${encodeURIComponent(paneId)}`);
     expect(prompt.status).toBe(200);

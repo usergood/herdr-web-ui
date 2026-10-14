@@ -66,7 +66,13 @@ try {
   await workflow.getByRole("textbox",{name:"Your answer",exact:true}).fill("The receipt selected by the owner.");await workflow.getByRole("button",{name:"Save answer",exact:true}).click();
   await workflow.getByRole("button",{name:"Confirm shared understanding",exact:true}).click();
   const specRun=await continueStep();assert.equal(specRun.action,"to-spec");
-  await openWorkflow();await workflow.getByRole("button",{name:"Accept specification",exact:true}).click();await workflow.getByRole("button",{name:"Confirm testing seams",exact:true}).click();
+  await openWorkflow();
+  const confirmation=await page.request.post(`http://localhost:${app.port}/api/factory/implementations/${planningId}/questions`,{headers:{"x-herdr-factory":"1"},data:{run_id:specRun.id,question:"Confirm this retained scope after specification",answer_kind:"confirmation"}}).then(r=>r.json());
+  await workflow.getByText("Confirm this retained scope after specification",{exact:true}).waitFor();
+  await workflow.getByRole("button",{name:"Confirm shared understanding",exact:true}).click();
+  const confirmed=await page.request.get(`http://localhost:${app.port}/api/factory/implementations/${planningId}`).then(r=>r.json());
+  assert.equal(confirmed.questions.find((q:any)=>q.id===confirmation.id).answer,"Confirmed");
+  await workflow.getByRole("button",{name:"Accept specification",exact:true}).click();await workflow.getByRole("button",{name:"Confirm testing seams",exact:true}).click();
   const ticketRun=await continueStep();assert.equal(ticketRun.action,"to-tickets");
   await openWorkflow();await workflow.getByText("Add the receipt preview",{exact:true}).waitFor();
   await workflow.getByRole("button",{name:"Approve Ticket graph",exact:true}).click();

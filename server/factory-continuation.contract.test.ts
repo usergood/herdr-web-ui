@@ -66,7 +66,9 @@ describe("continuing approved workflow steps", () => {
           { role: "user", ts: new Date(Date.parse(questionTime) + 1000).toISOString(), parts: [{ kind: "text", text: "Retain the workflow history" }] },
         ] });
       }
-      return fetch(`http://localhost:${host.app.port}${url.pathname}${url.search}`, request);
+      const response = await fetch(`http://localhost:${host.app.port}${url.pathname}${url.search}`, request);
+      const headers = new Headers(response.headers); headers.delete("content-encoding"); headers.delete("content-length");
+      return new Response(response.body, { status: response.status, headers });
     } });
     const app = createServer({ port: 0, stateDir: state, token: "", machines: false, factory: { machineEndpoint: id => id === "external-host" ? { url: `http://localhost:${proxy.port}`, token: "owned-sync-host" } : undefined } });
     const api = (path: string, body?: unknown) => fetch(`http://localhost:${app.port}/api/factory${path}`, { method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
@@ -96,7 +98,15 @@ describe("continuing approved workflow steps", () => {
   it.each([false, true])("observes remote verification readiness and fences changed checkout configuration (%s)", async (changeCheckout) => {
     const host = await fixture("owned-continuation-host");
     const state = mkdtempSync(join(tmpdir(), "remote-continuation-"));
-    const app = createServer({ port: 0, stateDir: state, token: "", machines: false, factory: { machineEndpoint: id => id === "external-host" ? { url: `http://localhost:${host.app.port}`, token: "owned-continuation-host" } : undefined } });
+    let verificationRequests = 0;
+    const proxy = Bun.serve({ port: 0, async fetch(request) {
+      const url = new URL(request.url);
+      if (url.pathname.endsWith("/verify-provider")) verificationRequests++;
+      const response = await fetch(`http://localhost:${host.app.port}${url.pathname}${url.search}`, request);
+      const headers = new Headers(response.headers); headers.delete("content-encoding"); headers.delete("content-length");
+      return new Response(response.body, { status: response.status, headers });
+    } });
+    const app = createServer({ port: 0, stateDir: state, token: "", machines: false, factory: { machineEndpoint: id => id === "external-host" ? { url: `http://localhost:${proxy.port}`, token: "owned-continuation-host" } : undefined } });
     const request = (path: string, body?: unknown) => fetch(`http://localhost:${app.port}/api/factory${path}`, { method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     try {
       const project = await request("/projects", { name: "Remote continuation", path: host.repo, machine_id: "external-host", provider: "codex", tracker: "app" }).then(r => r.json());
@@ -123,17 +133,18 @@ describe("continuing approved workflow steps", () => {
         expect(changed.status).toBe(201);
       }
       await herdrRpc("pane.report_agent", { pane_id: run.pane_id, source: "manual", agent: "codex", state: "idle" });
-      const expectedProblem = changeCheckout ? "Project settings or the approved scope changed" : "selected Machine rejected";
+      const expectedProblem = changeCheckout ? "Project settings or the approved scope changed" : "not finished recording native verification evidence";
       const deadline = Date.now() + 8_000;
       let detail;
       do {
         detail = await request(prefix).then(r => r.json());
-        if (detail.events.some((event: { kind: string; data: { message?: string } }) => event.kind === "continuation_waiting" && event.data.message?.includes(expectedProblem))) break;
+        if ((changeCheckout || verificationRequests >= 2) && detail.events.some((event: { kind: string; data: { message?: string } }) => event.kind === "continuation_waiting" && event.data.message?.includes(expectedProblem))) break;
         await Bun.sleep(100);
       } while (Date.now() < deadline);
       expect(detail.events.some((event: { kind: string; data: { message?: string } }) => event.kind === "continuation_waiting" && event.data.message?.includes(expectedProblem)), JSON.stringify({ runs: detail.runs.map((r: FactoryRun)=>({ id:r.id, condition:r.condition, waiting_reason:r.waiting_reason })), events: detail.events.filter((e: {kind:string})=>e.kind.includes("continuation")) })).toBe(true);
       expect(detail.runs.some((entry: FactoryRun) => entry.action === "implement-spec")).toBe(false);
-    } finally { app.stop(); await host.close(); rmSync(state, { recursive: true, force: true }); }
+      if (changeCheckout) expect(verificationRequests).toBe(0); else expect(verificationRequests).toBeGreaterThanOrEqual(2);
+    } finally { app.stop(); proxy.stop(); await host.close(); rmSync(state, { recursive: true, force: true }); }
   }, 60_000);
 
   it("confirms shared understanding once without inventing text answers or approving obsolete probes", async () => {

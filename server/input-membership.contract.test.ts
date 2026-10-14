@@ -73,7 +73,8 @@ async function pane(label: string): Promise<string> {
 
 /** What the pane's own screen shows, which is where typed text ends up either way. */
 async function screen(paneId: string): Promise<string> {
-  return (await paneRead({ paneId, source: "visible", format: "text" })).text;
+  // The visible grid may soft-wrap a literal input around a long CI shell prompt.
+  return (await paneRead({ paneId, source: "visible", format: "text" })).text.replace(/\r?\n/g, "");
 }
 
 describe("typing into a pane held by another connection", () => {
