@@ -63,6 +63,7 @@ run_script scripts/factory-delivery-browser-regression.ts
 run_script scripts/project-setup-browser-regression.ts
 run_script scripts/project-navigation-browser-regression.ts
 run_script scripts/project-schedules-browser-regression.ts
+run_script scripts/github-readiness-browser-regression.ts
 run_script scripts/inbox-start-browser-regression.ts
 run_script scripts/account-profiles-browser-regression.ts
 run_script scripts/plan-browser-regression.ts

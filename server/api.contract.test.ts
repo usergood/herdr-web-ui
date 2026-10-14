@@ -217,6 +217,33 @@ describe("Assignment delivery policy", () => {
   }, 30_000);
 });
 
+describe("GitHub issue readiness", () => {
+  it("binds issue readiness to the owner-approved revision and current Project scope across restart", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      const issue = { number: 12, node_id: "fictional-ready-12", title: "Retain decisions", body: "Keep local notes", html_url: "https://github.com/fictional/schedules/issues/12", state: "open", labels: [{ name: "ready-for-agent" }] };
+      writeFileSync(f.responses, JSON.stringify({ issues: [issue] }));
+      const policy = (await f.request(f.route + "/configure", { ...f.policy, auto_implement: true })).body;
+      const source = (await f.request(f.route + "/sync", {})).body.sources[0];
+      const proof = { policy_revision: policy.revision, issue_revision: source.revision, plan: { acceptance_criteria: "Keep local notes", dependencies: [], testing_seams: ["Public HTTP"], planning_decisions: [] } };
+      const endpoint = f.origin() + "/api/factory" + f.route + "/issues/12/approve";
+      const foreign = await fetch(endpoint, { method: "POST", headers: { ...f.headers, origin: "https://foreign.invalid" }, body: JSON.stringify(proof) });
+      expect(foreign.status).toBe(403); expect((await foreign.json()).error.code).toBe("invalid_origin");
+      const missingHeader = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(proof) });
+      expect(missingHeader.status).toBe(403);
+      const incomplete = await f.request(f.route + "/issues/12/approve", { ...proof, plan: { ...proof.plan, testing_seams: [] } });
+      expect(incomplete.status).toBe(400); expect(incomplete.body.error.code).toBe("github_plan_required");
+      const approved = await f.request(f.route + "/issues/12/approve", proof);
+      expect(approved.status).toBe(200); expect(approved.body.sources[0].readiness.eligible).toBe(true);
+      f.restart();
+      expect((await f.request(f.route)).body.sources[0].readiness.eligible).toBe(true);
+      const projectId = f.route.split("/")[2];
+      expect((await f.request(`/projects/${projectId}/configure`, { account_bindings: { local: { github: f.policy.account_profile_id } } })).status).toBe(200);
+      expect((await f.request(f.route)).body.sources[0].readiness.eligible).toBe(false);
+    } finally { f.close(); }
+  });
+});
+
 describe("Project schedules", () => {
   it("offers disabled built-in defaults without enabling GitHub policy", async () => {
     const f = await githubScheduleFixture();

@@ -256,6 +256,11 @@ export class FactoryService {
         if (scheduleRoute[2] === "reconcile" && typeof body.result_id !== "string") throw new FactoryError("invalid_schedule", "Select the interrupted synchronization result");
         return jsonResponse(await this.github.runSchedule(scheduleRoute[1]!, body.job, scheduleRoute[2] === "reconcile" ? "reconcile" : "manual", body.result_id as string | undefined));
       }
+      const issueApproval = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/github\/issues\/(\d+)\/approve$/.exec(url.pathname);
+      if (issueApproval) {
+        if (request.method !== "POST" || !sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1" || request.headers.get("x-herdr-factory") !== "1") return httpError(403, "invalid_origin", "Use issue readiness controls from this app");
+        return jsonResponse(await this.github.approveIssue(issueApproval[1]!, Number(issueApproval[2]), await this.body(request) as unknown as import("../shared/github-project.ts").ProjectIssueApprovalRequest));
+      }
       const github = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/github(?:\/(configure|sync|settings|schedules)|\/pulls\/(\d+)\/(merge|update|rerequest|import|files))?$/.exec(url.pathname);
       if (github) {
         if (request.method === "GET" && github[2] === "schedules") return jsonResponse(this.github.schedules(github[1]!));

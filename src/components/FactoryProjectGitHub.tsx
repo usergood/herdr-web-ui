@@ -7,6 +7,7 @@ import { useT } from "../lib/i18n.ts";
 import { accountRequest } from "../lib/accountsApi.ts";
 import { factoryRequest } from "../lib/factoryApi.ts";
 import { NativeAccountImport } from "./NativeAccountImport.tsx";
+import { ProjectIssuePolicy, ProjectIssueReadiness } from "./ProjectIssueReadiness.tsx";
 import { ProjectSyncSchedules } from "./ProjectSyncSchedules.tsx";
 import "./FactoryProjectGitHub.css";
 
@@ -29,7 +30,7 @@ export function FactoryProjectGitHub({ project, busy, perform, checkoutPath, che
     void Promise.all([factoryRequest<ProjectGitHubOverview>(route), accountRequest<AccountOverview>("/machines/local/accounts")]).then(async ([next, profiles]) => {
       if (id !== epoch.current) return;
       setView(next); setAccounts(profiles);
-      if (next.policy) { const policy = next.policy; setForm({ repository: policy.repository, account_profile_id: policy.account_profile_id, sync_enabled: policy.sync_enabled, import_issues: policy.import_issues, import_fixes: policy.import_fixes, auto_update: policy.auto_update, auto_merge: policy.auto_merge, trusted_reviewers: policy.trusted_reviewers, required_checks: policy.required_checks, review_context: policy.review_context, poll_minutes: policy.poll_minutes, expected_revision: policy.revision }); }
+      if (next.policy) { const policy = next.policy; setForm({ repository: policy.repository, account_profile_id: policy.account_profile_id, sync_enabled: policy.sync_enabled, import_issues: policy.import_issues, import_fixes: policy.import_fixes, auto_update: policy.auto_update, auto_merge: policy.auto_merge, triage_labels: policy.triage_labels, auto_implement: policy.auto_implement ?? false, trusted_issue_approvers: policy.trusted_issue_approvers ?? [], trusted_reviewers: policy.trusted_reviewers, required_checks: policy.required_checks, review_context: policy.review_context, poll_minutes: policy.poll_minutes, expected_revision: policy.revision }); }
       else {
         const repository = await metadata;
         if (id !== epoch.current) return;
@@ -54,7 +55,7 @@ export function FactoryProjectGitHub({ project, busy, perform, checkoutPath, che
     <form className="factory-form" onSubmit={event => { event.preventDefault(); void perform(async () => {
       const id = epoch.current;
       if (checkoutPath) await accountRequest(`/projects/${project.id}/configure`, { account_bindings: { ...project.account_bindings, local: { ...project.account_bindings?.local, github: form.account_profile_id } } });
-      const policy = await accountRequest<{ revision: string }>(route + "/configure", form); if (id !== epoch.current) return; setForm(current => ({ ...current, expected_revision: policy.revision })); await refresh();
+      const policy = await accountRequest<{ revision: string }>(route + "/configure", { ...form, trusted_issue_approvers: form.trusted_issue_approvers?.map(login => login.trim()).filter(Boolean) }); if (id !== epoch.current) return; setForm(current => ({ ...current, expected_revision: policy.revision })); await refresh();
     }); }}>
       <label>{t("Repository (owner/name)")}<input className="input" readOnly value={form.repository} /></label>
       {!form.repository && <p role="status">{t("No GitHub remote detected for this checkout.")}</p>}
@@ -62,6 +63,7 @@ export function FactoryProjectGitHub({ project, busy, perform, checkoutPath, che
       {!ready && <p className="field-hint">{t("Import a saved login below or finish sign-in in Accounts. Created accounts remain visible until ready.")}</p>}
       <label><input type="checkbox" checked={form.sync_enabled} onChange={event => setForm({ ...form, sync_enabled: event.target.checked })} />{t("Automatic sync")}</label>
       <label><input type="checkbox" checked={form.import_issues} onChange={event => setForm({ ...form, import_issues: event.target.checked })} />{t("Import GitHub issues")}</label>
+      <ProjectIssuePolicy form={form} change={setForm} />
       <details><summary>{t("Advanced GitHub automation")}</summary>
         <p>{t("Repository standards provide review guidance. Automation stays off until you choose its rules.")}</p>
         <label><input type="checkbox" checked={form.import_fixes} onChange={event => setForm({ ...form, import_fixes: event.target.checked })} />{t("Import requested changes")}</label>
@@ -78,6 +80,7 @@ export function FactoryProjectGitHub({ project, busy, perform, checkoutPath, che
     <button type="button" className="btn" disabled={busy || !view?.policy} onClick={() => void perform(async () => { setView(await accountRequest<ProjectGitHubOverview>(route + "/sync", {})); })}>{t("Sync GitHub")}</button>
     {view?.problem && <p role="alert">{view.problem}</p>}
     {view?.last_sync && <p>{new Date(view.last_sync).toLocaleString()}</p>}
+    {view?.sources.filter(source => source.kind === "issue").map(source => <ProjectIssueReadiness key={`${source.id}:${source.revision}`} source={source} policyRevision={view.policy!.revision} route={route} busy={busy} perform={perform} onChanged={setView} />)}
     {view?.pulls.map((item) => <article className="factory-section" key={item.id}>
       <a href={item.pull.url} target="_blank" rel="noreferrer">#{item.pull.number} · {item.pull.title}</a>
       <p>{item.pull.author?.login} · {item.pull.headRefName} → {item.pull.baseRefName}</p>
