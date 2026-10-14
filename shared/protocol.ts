@@ -1164,6 +1164,12 @@ export const DEFAULT_PORT = 7317;
  * retained Run/worker repositories and ownership. Unavailable Machine evidence stays unknown.
  * POST .../complete-work (complete_work) -> Implementation; accepts no-change research only
  * after fresh repository and quiescence evidence; repository changes require PR delivery.
+ * GET .../delivery -> AssignmentDelivery | null; owner-linked repository, branch and PR evidence.
+ * POST .../delivery (AssignmentDeliveryConfiguration) -> AssignmentDelivery; revision-bound correction.
+ * POST .../delivery/sync ({expected_revision}) -> AssignmentDelivery; read-only GitHub verification;
+ * all intended committed changes and linked merges must be covered before merge-based completion.
+ * POST /api/factory-host/delivery-read (DeliveryReadRequest) -> bounded read-only GitHub resource;
+ * selected Machine account snapshot only, no publication or merge authority.
  * POST /api/factory/settings (settings) -> FactorySettings; validated limits and future defaults.
  * POST /api/factory/projects/:id/configure (project_settings) -> FactoryProject;
  * GET /api/factory/projects/:id/references -> ProjectReferenceLibrary; current immutable versions.
@@ -1249,6 +1255,8 @@ export type { FactoryBoardItem, FactoryBoardLane, FactoryActivity, FactoryOvervi
 export type { FactoryWorker, FactoryCheck, FactoryReviewEvidence, FactoryRetrospective } from "./factory.ts";
 export type { NativeConversationSnapshot } from "./factory.ts";
 export type { FactoryPaneLink, FactoryPaneArchive } from "./factory.ts";
+export type { AssignmentDelivery, AssignmentDeliveryConfiguration, DeliveryChange } from "./factory.ts";
+export type { DeliveryReadRequest } from "./factory-delivery.ts";
 export type { ProjectReference, ProjectReferenceLibrary, CodexReferenceContext, ProjectReferencePayload } from "./factory.ts";
 
 /** Factory mutation bodies. Runtime validation still treats incoming JSON as untrusted. */
@@ -1268,6 +1276,8 @@ export interface FactoryRequests {
   implementation: { title: string; description: string; project_id?: string | null };
   configure: { project_id?: string | null; provider?: import("./factory.ts").FactoryProvider | null; machine_id?: string | null };
   complete_work: { run_id: string };
+  delivery: import("./factory.ts").AssignmentDeliveryConfiguration;
+  delivery_sync: { expected_revision: string | null };
   project: { name: string; path: string; machine_id: string; provider: import("./factory.ts").FactoryProvider; tracker: import("./factory.ts").FactoryProject["tracker"]; tracker_reference?: string; guided_setup?: boolean; permission_mode?: import("./agent-permissions.ts").AgentPermissionMode; check_ids?: string[]; context_target_tokens?: number; guidance_task?: boolean; github_account_id?: string };
   project_settings: Partial<Pick<import("./factory.ts").FactoryProject, "name" | "checks" | "setup" | "environment" | "permissions" | "permission_mode" | "execution_preset" | "shared_paths" | "provider" | "machine_id" | "account_bindings" | "workflow_instructions" | "context_target_tokens" | "delivery_policy" | "delivery_branch">>;
   project_discovery: { machine_id: string; path: string };
@@ -1367,6 +1377,7 @@ export interface FactoryNativeAnswers {
   questions: import("./factory.ts").FactoryQuestion[];
 }
 export interface FactoryHostRequests {
+  delivery_read: import("./factory-delivery.ts").DeliveryReadRequest;
   model_catalog: { provider: import("./factory.ts").FactoryProvider; path: string; repository: string; account_snapshot?: import("./accounts.ts").AccountBindingSnapshot | null };
   pane_state: { pane_id: string };
   references: import("./factory.ts").ProjectReferencePayload & { machine_id: string; checkout: { path: string; repository: string } };

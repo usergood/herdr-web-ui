@@ -1425,4 +1425,11 @@ export const ZH: Record<string, string> = {
   "Remove dependency": "移除依赖项",
   "Add dependency": "添加依赖项",
   "Approve this issue revision": "批准此议题版本",
+  "Delivery evidence": "交付证据",
+  "Link every required delivery PR.": "请关联所有必需的交付 PR。",
+  "Delivery PR numbers": "交付 PR 编号",
+  "Save delivery links": "保存交付关联",
+  "Sync delivery evidence": "同步交付证据",
+  "Covered changes": "涵盖的更改",
+  "Intended changes": "预期更改",
 };

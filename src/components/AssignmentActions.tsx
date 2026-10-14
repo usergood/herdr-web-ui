@@ -7,6 +7,7 @@ import { Markdown } from "./Markdown.tsx";
 import "./AssignmentActions.css";
 import { AgentModelPicker } from "./AgentModelPicker.tsx";
 import type { AgentExecutionPreset, AgentModelSelection } from "../../shared/agent-models.ts";
+import { AssignmentDeliveryPanel } from "./AssignmentDeliveryPanel.tsx";
 
 export function AssignmentActions({ preset, onPresetChange, detail, project, machineId, machineName, provider, busy, perform, onOpenPane, capabilities, problem, onCapabilities }: { preset: AgentModelSelection; onPresetChange: (value: AgentModelSelection) => void; detail: FactoryDetail; project?: FactoryProject; machineId: string; machineName: string; provider: FactoryProvider; busy: boolean; perform: (action: () => Promise<void>) => Promise<void>; onOpenPane: (machineId: string, paneId: string) => void; capabilities: FactoryCapabilities | null; problem: string | null; onCapabilities: (value: FactoryCapabilities) => void }) {
   const t = useT(); const live = useRef(true);
@@ -64,6 +65,7 @@ export function AssignmentActions({ preset, onPresetChange, detail, project, mac
     {handoffProblem && <div><p role="alert">{t("Some planning context could not be retained. Check the previous agent chat and documents before starting the next step.")}</p>{incompleteHandoff && <button className="btn factory-button" disabled={busy} onClick={() => setAcknowledgedHandoff(latest?.id ?? null)}>{t("Continue with available context")}</button>}</div>}
     {project && !capability?.installed && capabilities && <p role="status">{t("Install or sign in to this Project's agent on its Machine, then try again.")}</p>}
     {detail.implementation.delivery_scope && <p>{t("Delivery milestone")}: {detail.implementation.delivery_scope.milestone === "release" ? t("Containing release") : t("Verified merge")} · {detail.implementation.delivery_scope.branch}</p>}
+    {detail.implementation.delivery_scope && detail.runs.length > 0 && <AssignmentDeliveryPanel key={detail.implementation.id} detail={detail} project={project} busy={busy} perform={perform} />}
     {detail.runs.length > 0 && detail.implementation.stage !== "done" && <div className="factory-actions">
       <button className="btn factory-button" disabled={busy} onClick={() => void perform(async () => { await factoryRequest(prefix + "/completion-evidence"); })}>{t("Check completion evidence")}</button>
       {!active && latest?.action === "work" && <button className="btn factory-button" disabled={busy || !canAcceptResearch} onClick={() => void perform(async () => { await factoryRequest(prefix + "/complete-work", { run_id: latest.id }); })}>{t("Accept research")}</button>}

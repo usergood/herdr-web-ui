@@ -1421,4 +1421,11 @@ export const KO: Record<string, string> = {
   "Remove dependency": "의존 항목 제거",
   "Add dependency": "의존 항목 추가",
   "Approve this issue revision": "이 이슈 버전 승인",
+  "Delivery evidence": "전달 근거",
+  "Link every required delivery PR.": "필요한 전달 PR을 모두 연결하세요.",
+  "Delivery PR numbers": "전달 PR 번호",
+  "Save delivery links": "전달 링크 저장",
+  "Sync delivery evidence": "전달 근거 동기화",
+  "Covered changes": "포함된 변경 사항",
+  "Intended changes": "의도한 변경 사항",
 };

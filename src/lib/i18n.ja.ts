@@ -1423,4 +1423,11 @@ export const JA: Record<string, string> = {
   "Remove dependency": "依存関係を削除",
   "Add dependency": "依存関係を追加",
   "Approve this issue revision": "このIssueの版を承認",
+  "Delivery evidence": "デリバリーの証拠",
+  "Link every required delivery PR.": "必要なデリバリーPRをすべてリンクしてください。",
+  "Delivery PR numbers": "デリバリーPR番号",
+  "Save delivery links": "デリバリーリンクを保存",
+  "Sync delivery evidence": "デリバリーの証拠を同期",
+  "Covered changes": "含まれる変更",
+  "Intended changes": "意図した変更",
 };

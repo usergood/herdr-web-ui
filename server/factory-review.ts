@@ -42,7 +42,8 @@ export async function captureReview(path: string, base: string, mode: ReviewSnap
           const oversized = existsSync(file) && lstatSync(file).size > FILE_LIMIT;
           const diff = oversized ? "" : await git(path, ["diff", "--no-ext-diff", "--no-textconv", "--find-renames", ...group.args, "--", ...(change.oldPath ? [change.oldPath] : []), change.path]);
           size += diff.length;
-          files.push({ path: change.path, status: `${group.name}:${change.status}`, diff, binary: /Binary files .* differ|GIT binary patch/.test(diff), oversized });
+          const treeEntry = mode === "branch" ? (await git(path, ["ls-tree", "-z", head, "--", change.path])).split("\t")[0]?.split(" ") : undefined;
+          files.push({ path: change.path, status: `${group.name}:${change.status}`, diff, binary: /Binary files .* differ|GIT binary patch/.test(diff), oversized, ...(mode === "branch" ? { new_oid: treeEntry?.[2] ?? null, new_mode: treeEntry?.[0] || null, ...(change.oldPath ? { old_path: change.oldPath } : {}) } : {}) });
         }
       }
       if (mode === "workspace") for (const name of (await git(path, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0").filter(Boolean)) {

@@ -7,15 +7,16 @@ import { herdrRpc, workspaceClose, type WorkspaceCreateResult } from "./herdr/cl
 import type { FactoryRun } from "../shared/factory.ts";
 
 /** Owned external repository and native workspace; every observation uses HTTP. */
-export async function factoryDeliveryFixture(remote = false, reviewReports = false) {
+export async function factoryDeliveryFixture(remote = false, reviewReports = false, options: { githubRepository?: string; accountTools?: import("./account-tools.ts").AccountTools } = {}) {
   const root = mkdtempSync(join(tmpdir(), "saurons-delivery-"));
   const repo = join(root, "repo"); mkdirSync(repo);
   writeFileSync(join(repo, "README.md"), "Owned delivery fixture\n");
   const git = (args: string[], cwd = repo) => execFileSync("git", args, { cwd, encoding: "utf8" });
   git(["init", "-b", "main"]); git(["add", "."]);
   git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "initial"]);
+  if (options.githubRepository) git(["remote", "add", "origin", `https://github.com/${options.githubRepository}.git`]);
   const owned: string[] = [];
-  const host = createServer({ port: 0, token: remote ? "owned-delivery-host" : "", stateDir: join(root, "state"), ...(remote ? { machines: false as const } : {}), factory: { accountDiscoveryHome: root, native: {
+  const host = createServer({ port: 0, token: remote ? "owned-delivery-host" : "", stateDir: join(root, "state"), ...(remote ? { machines: false as const } : {}), factory: { accountTools: options.accountTools, accountDiscoveryHome: root, native: {
     version: async () => "owned-delivery-fixture",
     createWorkspace: async options => { const result = await herdrRpc<WorkspaceCreateResult>("workspace.create", { ...options, focus: false }); owned.push(result.workspace.workspace_id); return result; },
     startAgent: async options => { await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "idle" }); },
@@ -32,7 +33,7 @@ export async function factoryDeliveryFixture(remote = false, reviewReports = fal
     return new Response(response.body, { status: response.status, headers });
   } }) : null;
   const app = remote ? createServer({ port: 0, token: "", stateDir: join(root, "coordinator"), machines: false, factory: { machineEndpoint: id => id === "delivery-host" && !offline ? { url: `http://localhost:${proxy!.port}`, token: "owned-delivery-host" } : undefined } }) : host;
-  const request = (path: string, body?: unknown) => fetch(`http://localhost:${app.port}/api/factory${path}`, { method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  const request = (path: string, body?: unknown) => fetch(`http://localhost:${app.port}/api/factory${path}`, { method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1", "x-herdr-machine": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const project = await request("/projects", { name: "Delivery Project", path: repo, machine_id: remote ? "delivery-host" : "local", provider: "codex", tracker: "app" }).then(r => r.json());
   const idea = await request("/implementations", { title: "Retained research", description: "", project_id: project.id }).then(r => r.json());
   const prefix = `/implementations/${idea.id}`;

@@ -27,7 +27,7 @@ export class ProjectGitHub {
   private stopped = false;
   private readonly stopPolling: () => void;
   private readonly now: () => number;
-  constructor(private readonly store: FactoryStore, private readonly accounts: MachineAccounts, private readonly discover?: (machineId: string, path: string) => Promise<import("../shared/project-setup.ts").ProjectDiscovery>, timing: ProjectScheduleTiming = {}) {
+  constructor(private readonly store: FactoryStore, private readonly accounts: MachineAccounts, private readonly discover?: (machineId: string, path: string) => Promise<import("../shared/project-setup.ts").ProjectDiscovery>, timing: ProjectScheduleTiming = {}, private readonly observeDelivery?: (projectId: string) => Promise<void>) {
     this.now = timing.now ?? Date.now;
     this.retainUncertainAttempts();
     if (timing.subscribe) this.stopPolling = timing.subscribe(() => this.poll());
@@ -505,12 +505,14 @@ export class ProjectGitHub {
           this.store.put<ProjectGitHubPull>("github_pulls", { ...(previous ?? this.store.record()), project_id: id, pull, blockers: this.blockers(pull, policy), observed_at: new Date().toISOString(), fix_implementation_id: fix?.implementation_id ?? previous?.fix_implementation_id ?? null }, id);
           const proof = { head: pull.headRefOid, base: pull.baseRefOid, policy_revision: policy.revision };
           const own = pull.author?.login.toLowerCase() === scope.profiles[0]!.identity.login?.toLowerCase();
-          if (readOnly) continue;
+          const deliveryLinked = this.store.list<Implementation>("implementations").some(idea => idea.project_id === id && idea.delivery?.repository.toLowerCase() === policy.repository.toLowerCase() && idea.delivery.pull_numbers.includes(pull.number));
+          if (readOnly || deliveryLinked) continue;
           if (policy.auto_update && own && pull.mergeStateStatus === "BEHIND") await this.mutate(policy, scope, pull.number, "update", proof);
           else if (policy.auto_merge && !this.blockers(pull, policy).length) await this.mutate(policy, scope, pull.number, "merge", proof);
           else if (own && previous?.fix_implementation_id && previous.pull.headRefOid !== pull.headRefOid && this.store.get<Implementation>("implementations", previous.fix_implementation_id)?.outcome === "implementation_complete" && this.opinions(pull).some((review) => review.state === "CHANGES_REQUESTED" && review.commit?.oid !== pull.headRefOid) && !pull.reviewRequests.nodes.length) await this.mutate(policy, scope, pull.number, "rerequest", proof);
         }
         for (const item of this.store.list<ProjectGitHubPull>("github_pulls", id)) if (!pulls.some((pull) => pull.id === item.pull.id)) this.store.remove("github_pulls", item.id);
+        await this.observeDelivery?.(id);
         if (readOnly && this.store.list<ProjectGitHubMutation>("github_mutations", id).some(m => m.condition !== "confirmed")) throw new FactoryError("github_mutation_uncertain", "Inspect the retained GitHub mutation before releasing synchronization ownership", 409);
         this.store.put<SyncState>("github_sync", { id, last_sync: new Date(this.now()).toISOString(), next_sync: this.now() + policy.poll_minutes * 60_000, problem: null });
         return this.overview(id);

@@ -23,6 +23,7 @@ import type { FactoryAction, FactoryRun } from "../shared/factory.ts";
 import type { FactoryNative } from "./factory-native.ts";
 import { githubScheduleFixture } from "./github-schedules.fixture.ts";
 import { factoryDeliveryFixture } from "./factory-delivery.fixture.ts";
+import { factoryMergeFixture } from "./factory-merge.fixture.ts";
 
 async function factoryBoardFixture(native: Partial<FactoryNative> = {}) {
   const state = mkdtempSync(join(tmpdir(), "saurons-eye-board-live-")); const repo = join(state, "repo");
@@ -206,13 +207,35 @@ describe("Assignment delivery policy", () => {
       expect(f.project).toMatchObject({ delivery_policy: "merge", delivery_branch: "main" });
       expect((await f.request(`/projects/${f.project.id}/configure`, { delivery_policy: "release", delivery_branch: "stable" })).status).toBe(200);
       const run = await f.start();
-      const scope = { milestone: "release", repository: f.project.repository, branch: "stable", base: run.base };
+      const scope = { milestone: "release", repository: f.project.repository, branch: "stable", base: run.base, github_repository: null };
       expect((await f.request(f.prefix).then(r => r.json())).implementation.delivery_scope).toEqual(scope);
       await f.request(`/projects/${f.project.id}/configure`, { delivery_policy: "merge", delivery_branch: "main" });
       await f.request(`/runs/${run.id}/stop`, {});
       const next = await f.start("delivery-successor");
       expect((await f.request(f.prefix).then(r => r.json())).implementation.delivery_scope).toEqual(scope);
       expect((next.manifest as any).implementation.delivery_scope).toEqual(scope);
+    } finally { await f.close(); }
+  }, 30_000);
+});
+
+describe("PR delivery contract", () => {
+  it("requires same-origin owner controls, a Machine header and the displayed delivery revision", async () => {
+    const f = await factoryMergeFixture();
+    try {
+      const url = `http://localhost:${f.app.port}/api/factory${f.prefix}/delivery`;
+      expect(await f.request(f.prefix + "/delivery").then(r => r.json())).toBeNull();
+      const headers = { "content-type": "application/json", "x-herdr-factory": "1" };
+      let response = await fetch(url, { method: "POST", headers, body: JSON.stringify(f.links) });
+      expect(response.status).toBe(403);
+      expect((await response.json()).error.code).toBe("invalid_origin");
+      response = await fetch(url, { method: "POST", headers: { ...headers, "x-herdr-machine": "1", origin: "https://unrelated.invalid" }, body: JSON.stringify(f.links) });
+      expect(response.status).toBe(403);
+      response = await f.request(f.prefix + "/delivery", { ...f.links, pull_numbers: [12, 12] });
+      expect(response.status).toBe(400); expect((await response.json()).error.code).toBe("invalid_delivery");
+      const linked = await f.request(f.prefix + "/delivery", f.links).then(r => r.json());
+      response = await f.request(f.prefix + "/delivery/sync", { expected_revision: "outdated" });
+      expect(response.status).toBe(409); expect((await response.json()).error.code).toBe("delivery_changed");
+      expect((await f.request(f.prefix + "/delivery").then(r => r.json())).revision).toBe(linked.revision);
     } finally { await f.close(); }
   }, 30_000);
 });

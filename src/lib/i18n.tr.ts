@@ -1376,4 +1376,11 @@ export const TR: Record<string, string> = {
   "Remove dependency": "Bağımlılığı kaldır",
   "Add dependency": "Bağımlılık ekle",
   "Approve this issue revision": "Bu konu sürümünü onayla",
+  "Delivery evidence": "Teslim kanıtı",
+  "Link every required delivery PR.": "Gerekli tüm teslim PR’larını bağlayın.",
+  "Delivery PR numbers": "Teslim PR numaraları",
+  "Save delivery links": "Teslim bağlantılarını kaydet",
+  "Sync delivery evidence": "Teslim kanıtını eşitle",
+  "Covered changes": "Kapsanan değişiklikler",
+  "Intended changes": "Amaçlanan değişiklikler",
 };

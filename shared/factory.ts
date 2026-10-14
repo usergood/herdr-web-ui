@@ -20,9 +20,20 @@ export interface Implementation extends FactoryRecord {
   outcome: "none" | "implementation_complete" | "research_accepted" | "pr_open" | "merged" | "released";
   archived_at?: string | null;
   /** Fixed at the first accepted Run, including its committed repository baseline. */
-  delivery_scope?: { milestone: "merge" | "release"; repository: string | null; branch: string | null; base: string | null };
+  delivery_scope?: { milestone: "merge" | "release"; repository: string | null; branch: string | null; base: string | null; github_repository?: string | null };
   completion_evidence?: { repository_changes: "none" | "changes" | "unknown"; quiescent: boolean; reason: string | null; checked_at: string };
+  delivery?: AssignmentDelivery;
 }
+export interface DeliveryChange { path: string; oid: string | null; mode: string | null; old_path?: string }
+export interface AssignmentDelivery {
+  revision: string; machine_id: string; account_profile_id: string; repository: string; branch: string;
+  pull_numbers: number[]; condition: "linked" | "needs_you" | "merged";
+  changes: DeliveryChange[];
+  pulls: { number: number; url: string; head: string; merge_commit: string; covered_paths: string[] }[];
+  branch_head?: string;
+  problem: string | null; checked_at: string | null;
+}
+export interface AssignmentDeliveryConfiguration { expected_revision: string | null; machine_id: string; account_profile_id: string; pull_numbers: number[] }
 export interface FactoryProject extends FactoryRecord {
   name: string; repository: string; provider: FactoryProvider; machine_id: string;
   tracker: "app" | "github" | "gitlab" | "local"; tracker_reference: string;
@@ -78,7 +89,7 @@ export interface FactoryRun extends FactoryRecord {
 export interface ReviewSnapshot extends FactoryRecord {
   implementation_id: string; run_id: string | null; machine_id: string; repository: string;
   mode: "branch" | "workspace"; base: string; head: string; hash: string;
-  files: { path: string; status: string; diff: string; binary: boolean; oversized: boolean }[];
+  files: { path: string; status: string; diff: string; binary: boolean; oversized: boolean; new_oid?: string | null; new_mode?: string | null; old_path?: string }[];
 }
 export interface ReviewComment extends FactoryRecord {
   implementation_id: string; run_id: string | null; snapshot_id: string; path: string; change: string;

@@ -8,6 +8,8 @@ import { badRequest, errorResponse, httpError, isJsonObject, jsonResponse } from
 import { FactoryStore } from "./factory-store.ts";
 import { FactoryError, hash, inspectCheckout } from "./factory-host.ts";
 import { FactoryDelivery } from "./factory-delivery.ts";
+import { FactoryMergeDelivery } from "./factory-merge-delivery.ts";
+import { readDeliveryGitHub } from "./factory-delivery-github.ts";
 import { FactoryArtifacts } from "./factory-artifacts.ts";
 import { FactoryWorkflow } from "./factory-workflow.ts";
 import { FactoryBackup } from "./factory-backup.ts";
@@ -46,6 +48,7 @@ export class FactoryService {
   private readonly references: FactoryReferences;
   private readonly accounts: MachineAccounts;
   private readonly github: ProjectGitHub;
+  private readonly delivery: FactoryMergeDelivery;
   private stopped = false;
   constructor(stateDir: string, private readonly skillsPath: string | null = null, native: Partial<FactoryNative> = {}, endpoint: MachineEndpoint = () => undefined, publicUrl: string | null = null, accountTools: AccountTools = {}, private readonly registeredMachine: (id: string) => boolean = (id) => id === "local" || !!endpoint(id), accountDiscoveryHome?: string, scheduleTiming?: import("./project-schedules.ts").ProjectScheduleTiming) {
     this.accounts = new MachineAccounts(stateDir, accountTools, false, accountDiscoveryHome);
@@ -62,7 +65,12 @@ export class FactoryService {
       if (!allowPartial && (latest(["native_snapshot_unavailable", "planning_handoff_retained"]) === "native_snapshot_unavailable" || latest(["planning_documents_unavailable", "planning_documents_retained"]) === "planning_documents_unavailable")) throw new FactoryError("handoff_incomplete", "Some planning context could not be retained. Review the warning and choose Continue with available context", 409);
     });
     this.retrospectives = new FactoryRetrospectives(this.store);
-    this.github = new ProjectGitHub(this.store, this.accounts, (machineId, path) => this.runtime.discover(machineId, path), scheduleTiming);
+    this.delivery = new FactoryMergeDelivery(this.store, this.runtime, id => this.retainHandoff(id));
+    this.github = new ProjectGitHub(this.store, this.accounts, (machineId, path) => this.runtime.discover(machineId, path), scheduleTiming, async projectId => {
+      for (const idea of this.store.list<Implementation>("implementations")) {
+        if (idea.project_id === projectId && idea.delivery && !idea.archived_at && idea.stage !== "done") await this.delivery.sync(idea.id, idea.delivery.revision);
+      }
+    });
   }
   settings(): FactorySettings { return this.store.get<{ id: string; value: FactorySettings }>("settings", "default")?.value ?? { ...initialSettings, skills_path: this.skillsPath }; }
   private activeWork(id: string): boolean {
@@ -305,6 +313,10 @@ export class FactoryService {
         return jsonResponse(await this.runtime.accountOperation(machine, id, action + (suffix ? "/" + suffix : ""), body), action === "setup" && suffix !== "status" ? 202 : 200, { "cache-control": "no-store" });
       }
       if (url.pathname === "/api/factory-host/accounts/snapshot" && request.method === "POST") { if (request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Use account controls from this app"); return jsonResponse(await this.accounts.freeze((await this.body(request)).bindings as import("../shared/accounts.ts").ProjectAccountBindings)); }
+      if (url.pathname === "/api/factory-host/delivery-read" && request.method === "POST") {
+        if (request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Use delivery controls from this app");
+        return jsonResponse(await readDeliveryGitHub(this.accounts, await this.body(request) as unknown as import("../shared/factory-delivery.ts").DeliveryReadRequest));
+      }
       if (url.pathname === "/api/factory/reference-template" && request.method === "GET") return jsonResponse(projectReferenceTemplate);
       const referencePrepare = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/references\/prepare$/.exec(url.pathname);
       if (referencePrepare && request.method === "POST") { const body = await this.body(request); if (typeof body.machine_id !== "string") throw new FactoryError("invalid_machine", "Select an execution Machine"); return jsonResponse(await this.runtime.prepareReferences(referencePrepare[1]!, body.machine_id, body.expected_revision)); }
@@ -641,6 +653,15 @@ export class FactoryService {
         const checkout: ProjectCheckout = { ...this.store.record(), ...inspected, project_id: project.id, machine_id: body.machine_id };
         this.store.db.transaction(() => { this.store.put("projects", project); this.store.put("checkouts", checkout, project.id); if (guidance) { this.store.put("implementations", guidance); const chat: FactoryChat = { ...this.store.record(), implementation_id: guidance.id, title: "Setup" }; this.store.put("chats", chat, guidance.id); } this.store.event(null, "project_registered", { project_id: project.id, checkout_id: checkout.id }); })();
         return jsonResponse(project, 201);
+      }
+      const deliveryRoute = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/delivery(?:\/(sync))?$/.exec(url.pathname);
+      if (deliveryRoute) {
+        const idea = this.store.get<Implementation>("implementations", deliveryRoute[1]!);
+        if (!idea) throw new FactoryError("not_found", "Assignment not found", 404);
+        if (request.method === "GET" && !deliveryRoute[2]) return jsonResponse(idea.delivery ?? null);
+        if (request.method !== "POST" || !sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Use delivery controls from this app");
+        const body = await this.body(request);
+        return jsonResponse(deliveryRoute[2] ? await this.delivery.sync(idea.id, body.expected_revision) : await this.delivery.link(idea.id, body as unknown as import("../shared/factory.ts").AssignmentDeliveryConfiguration));
       }
       const completionEvidence = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/completion-evidence$/.exec(url.pathname);
       if (completionEvidence && request.method === "GET") {
