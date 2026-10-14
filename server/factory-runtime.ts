@@ -11,6 +11,7 @@ import { FactoryWorkflow } from "./factory-workflow.ts";
 import { FactoryReferences } from "./factory-references.ts";
 import { captureReview } from "./factory-review.ts";
 import { readDeliveryGitHub } from "./factory-delivery-github.ts";
+import { githubDirectory } from "./project-discovery.ts";
 import type { CodexReferenceContext } from "../shared/protocol.ts";
 import type { AccountBindingSnapshot, ProjectAccountBindings } from "../shared/accounts.ts";
 import type { AccountOverview, AccountProfile, AccountSetup } from "../shared/accounts.ts";
@@ -205,7 +206,9 @@ export class FactoryRuntime {
     const artifacts = selectedArtifacts();
     const messages = this.store.list<FactoryMessage>("messages", id);
     const projectReferences = project ? this.references.current(project.id) : null;
-    const deliveryRepository = !implementation.delivery_scope && inspected ? (await this.discover(machineId, inspected.path)).github.repository : null;
+    const deliveryRepository = !implementation.delivery_scope && inspected
+      ? machineId === "local" ? (await githubDirectory(inspected.path, this.accounts.discoveryHome)).repository : (await this.discover(machineId, inspected.path)).github.repository
+      : null;
     if (projectReferences?.entries.length && capabilities.project_reference_protocol !== 1) throw new FactoryError("factory_bridge_incompatible", "The selected Machine needs a bridge with Project reference support", 409);
     if (projectReferences?.entries.length && provider !== "codex") throw new FactoryError("reference_provider_unavailable", "Project references currently require Codex; keep the selected provider or explicitly choose Codex", 409);
     if (artifacts.reduce((size, artifact) => size + artifact.size, 0) + (projectReferences?.entries.reduce((size, entry) => size + entry.size, 0) ?? 0) > 64 * 1024 * 1024) throw new FactoryError("context_too_large", "Retained inputs exceed this Run's 64 MiB materialization budget", 413);
