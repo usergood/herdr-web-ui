@@ -17,8 +17,11 @@ export interface FactoryRecord { id: string; created_at: string; updated_at: str
 export interface Implementation extends FactoryRecord {
   title: string; description: string; project_id: string | null; provider: FactoryProvider | null;
   machine_id: string | null; stage: FactoryStage; position: number;
-  outcome: "none" | "implementation_complete" | "pr_open" | "merged" | "released";
+  outcome: "none" | "implementation_complete" | "research_accepted" | "pr_open" | "merged" | "released";
   archived_at?: string | null;
+  /** Fixed at the first accepted Run, including its committed repository baseline. */
+  delivery_scope?: { milestone: "merge" | "release"; repository: string | null; branch: string | null; base: string | null };
+  completion_evidence?: { repository_changes: "none" | "changes" | "unknown"; quiescent: boolean; reason: string | null; checked_at: string };
 }
 export interface FactoryProject extends FactoryRecord {
   name: string; repository: string; provider: FactoryProvider; machine_id: string;
@@ -32,6 +35,8 @@ export interface FactoryProject extends FactoryRecord {
   removed_at?: string | null;
   workflow_instructions?: string;
   context_target_tokens?: number;
+  delivery_policy?: "merge" | "release";
+  delivery_branch?: string;
 }
 export interface ProjectCheckout extends FactoryRecord {
   project_id: string; machine_id: string; path: string; repository: string; head: string;

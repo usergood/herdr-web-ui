@@ -181,8 +181,8 @@ describe("starting an Inbox idea through the public API", () => {
       expect(execFileSync("git",["status","--porcelain"],{cwd:repo,encoding:"utf8"})).toBe("?? personal-note.txt\n");
       const again=await post(`/implementations/${idea.id}/runs`,{action:"work",idempotency_key:"owned-work"}).then(r=>r.json());expect(again.id).toBe(run.id);
       const overview=await fetch(`http://localhost:${app.port}/api/factory?navigation=1`).then(r=>r.json());expect(overview.implementations.find((i:any)=>i.id===idea.id).stage).toBe("running");
-      const finished=await post(`/implementations/${idea.id}/complete-work`,{run_id:run.id});expect(finished.status).toBe(200);expect((await finished.json()).stage).toBe("done");
-      expect((await post(`/implementations/${idea.id}/archive`,{})).status).toBe(200);
+      const finished=await post(`/implementations/${idea.id}/complete-work`,{run_id:run.id});expect(finished.status).toBe(409);expect((await finished.json()).error.code).toBe("repository_delivery_required");
+      expect((await post(`/implementations/${idea.id}/archive`,{})).status).toBe(409);
     } finally {app.stop();for(const id of owned)await workspaceClose(id).catch(()=>{});rmSync(root,{recursive:true,force:true});}
   });
   it("retains verified cleanup when the owner stops during workspace allocation",async()=>{
