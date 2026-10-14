@@ -3,9 +3,11 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "./index.ts";
+import type { FactoryNative } from "./factory-native.ts";
 
 /** Owned native GitHub responses, exercised only through the server's HTTP surface. */
-export async function githubScheduleFixture(factory: NonNullable<NonNullable<Parameters<typeof createServer>[0]>["factory"]> = {}) {
+export async function githubScheduleFixture(input: Partial<FactoryNative> | { native: Partial<FactoryNative> } = {}) {
+  const native = "native" in input ? input.native : input;
   const root = mkdtempSync(join(tmpdir(), "saurons-schedules-"));
   const repo = join(root, "repo");
   execFileSync("git", ["init", "-b", "main", repo], { stdio: "ignore" });
@@ -35,7 +37,7 @@ process.stdout.write(JSON.stringify(result));
 `);
   let now = Date.parse("2026-10-14T08:59:00Z");
   let poll: () => Promise<void> = async () => {};
-  const options = { port: 0, token: "", tailscaleOwner: null, machines: false, stateDir: join(root, "state"), factory: { ...factory, accountDiscoveryHome: root, accountTools: { github: { executable: process.execPath, args: [tool] } }, scheduleTiming: { now: () => now, subscribe: (run: () => Promise<void>) => { poll = run; return () => { poll = async () => {}; }; } } } };
+  const options = { port: 0, token: "", tailscaleOwner: null, machines: false, stateDir: join(root, "state"), factory: { native, accountDiscoveryHome: root, accountTools: { github: { executable: process.execPath, args: [tool] } }, scheduleTiming: { now: () => now, subscribe: (run: () => Promise<void>) => { poll = run; return () => { poll = async () => {}; }; } } } };
   let app = createServer(options);
   const origin = () => `http://localhost:${app.port}`;
   const headers = { "content-type": "application/json", "x-herdr-machine": "1", "x-herdr-factory": "1" };
