@@ -70,8 +70,8 @@ export function ProjectQueue({ projectId }: { projectId: string }) {
           <a href={`#factory/${item.implementation_id}`}>{item.title}</a>
           <p>{item.eligible ? t("Eligible") : [...new Set(item.reasons.map(reason => reasonLabel(reason, t)))].join(" · ")}</p>
           <div className="project-queue-actions">
-            <button className="icon-button" aria-label={t("Move earlier")} disabled={busy || index === 0} onClick={() => void act(`/implementations/${item.implementation_id}/order`, { direction: -1 })}><ArrowUp aria-hidden="true" /></button>
-            <button className="icon-button" aria-label={t("Move later")} disabled={busy || index === view.items.length - 1} onClick={() => void act(`/implementations/${item.implementation_id}/order`, { direction: 1 })}><ArrowDown aria-hidden="true" /></button>
+            <button className="icon-button" aria-label={t("Move earlier")} disabled={busy || index === 0} onClick={() => void act(`/implementations/${item.implementation_id}/order`, { before_id: view.items[index - 1]!.implementation_id })}><ArrowUp aria-hidden="true" /></button>
+            <button className="icon-button" aria-label={t("Move later")} disabled={busy || index === view.items.length - 1} onClick={() => void act(`/implementations/${view.items[index + 1]!.implementation_id}/order`, { before_id: item.implementation_id })}><ArrowDown aria-hidden="true" /></button>
             {item.failed_run_id && item.reasons.includes("retry_required") && <button className="btn" disabled={busy || item.reasons.includes("implementation_owned")} onClick={() => void act(`/implementations/${item.implementation_id}/retry`, { run_id: item.failed_run_id! })}>{t("Retry")}</button>}
           </div>
         </li>)}</ol>

@@ -11,12 +11,16 @@ const projectId = f.route.split("/")[2]!;
 const policy = (await f.request(f.route + "/configure", { ...f.policy, auto_implement: true })).body;
 writeFileSync(f.responses, JSON.stringify({ issues: [1, 2].map(number => ({ number, node_id: `I_QUEUE_${number}`, title: `Queue browser issue ${number}`, body: "Reviewed fictional work", state: "open", html_url: `https://github.com/fictional/schedules/issues/${number}`, updated_at: "2026-10-14T09:00:00Z", labels: [{ name: "ready-for-agent" }] })) }));
 const sources = (await f.request(f.route + "/sync", {})).body.sources;
+const gap = (await f.request("/implementations", { title: "Other Project priority gap", description: "" })).body;
+const firstId = sources.find((source: { number: number }) => source.number === 1).implementation_id;
+const secondId = sources.find((source: { number: number }) => source.number === 2).implementation_id;
 for (const source of sources) await f.request(f.route + `/issues/${source.number}/approve`, { issue_revision: source.revision, policy_revision: policy.revision, plan: { acceptance_criteria: "Owned work follows the Project queue", testing_seams: ["Public API and browser"], planning_decisions: [], dependencies: source.number === 1 ? [{ repository: "fictional/schedules", issue_number: 90, requires: "merge" }] : [] } });
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 const errors: string[] = [];
 let activePage: Page | undefined;
 try {
   for (const width of [1440, 390, 320]) {
+    await f.request(`/implementations/${gap.id}/order`, { before_id: secondId });
     const page = await browser.newPage({ viewport: { width, height: 900 }, ...(width < 640 ? { isMobile: true, hasTouch: true } : {}) });
     activePage = page;
     page.setDefaultTimeout(10000); page.on("pageerror", error => errors.push(error.message));
@@ -42,10 +46,12 @@ try {
     const row = queue.getByRole("listitem").filter({ hasText: "Queue browser issue 2" });
     await row.getByRole("button", { name: "Move earlier", exact: true }).click();
     await page.waitForFunction(() => document.querySelector('.project-queue-list li a')?.textContent === "Queue browser issue 2");
+    await f.request(`/implementations/${gap.id}/order`, { before_id: firstId });
+    await row.getByRole("button", { name: "Move later", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('.project-queue-list li a')?.textContent === "Queue browser issue 1");
     assert.equal(await page.getByRole("dialog", { name: "Project settings", exact: true }).evaluate(element => element.scrollWidth <= element.clientWidth + 1), true);
     if (width < 640) for (const button of await queue.getByRole("button").all()) { const box = await button.boundingBox(); assert.ok(box && box.width >= 40 && box.height >= 40, JSON.stringify({ width, label: await button.getAttribute("aria-label") ?? await button.innerText(), box })); }
     await f.request(`/projects/${projectId}/queue/configure`, { expected_revision: (await f.request(`/projects/${projectId}/queue`)).body.revision, max_implementations: 1, paused: false });
-    await f.request(`/implementations/${sources.find((source: { number: number }) => source.number === 1).implementation_id}/order`, { direction: -1 });
     await page.close();
     activePage = undefined;
   }
