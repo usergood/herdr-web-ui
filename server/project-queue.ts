@@ -35,8 +35,11 @@ export class ProjectQueue {
       const source = sources.find(entry => entry.implementation_id === idea.id);
       const reasons: string[] = [...(source?.readiness?.reasons ?? ["planning_required"])];
       const hold = this.store.get<AdmissionHold>("issue_admission_holds", idea.id);
-      const problem = hold?.approval_id === source?.readiness?.approval?.id ? hold?.problem ?? null : null;
+      const stopped = this.store.list<FactoryRun>("runs", idea.id).filter(run => run.action === "implement-spec").at(-1);
+      const ownerStopped = stopped?.condition === "cancelled" && (stopped.manifest as { issue_scope?: { approval: { id: string } } }).issue_scope?.approval.id === source?.readiness?.approval?.id;
+      const problem = ownerStopped ? "Automatic implementation was stopped. Start another attempt explicitly." : hold?.approval_id === source?.readiness?.approval?.id ? hold?.problem ?? null : null;
       if (problem) reasons.push("admission_held");
+      if (ownerStopped) reasons.push("implementation_stopped");
       if (["implementation_complete", "pr_open", "merged", "released"].includes(idea.outcome) || idea.delivery && ["merged", "released"].includes(idea.delivery.condition)) reasons.push("awaiting_delivery");
       if (source?.readiness?.approval?.plan.dependencies.length) {
         try { this.prerequisites(idea.id); } catch { reasons.push("dependency_unverified"); }
@@ -62,6 +65,15 @@ export class ProjectQueue {
     if (prior?.approval_id === approval.id && prior.problem === problem) return;
     this.store.put<AdmissionHold>("issue_admission_holds", { id, approval_id: approval.id, problem });
     this.store.event(id, "issue_admission_held", { reason: problem, approval_id: approval.id });
+  }
+  admissionProblem(id: string): string | null {
+    const idea = this.store.get<Implementation>("implementations", id);
+    if (!idea?.project_id) return null;
+    try {
+      const approval = this.issues(idea.project_id).sources.find(source => source.implementation_id === id)?.readiness?.approval;
+      const hold = this.store.get<AdmissionHold>("issue_admission_holds", id);
+      return approval && !approval.revoked_at && hold?.approval_id === approval.id ? hold.problem : null;
+    } catch { return null; }
   }
   /** Delivery receipts cover the whole prerequisite, including Assignments still
    * awaiting a release. Closing an issue or accepting implementation is insufficient. */

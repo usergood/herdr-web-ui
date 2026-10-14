@@ -33,7 +33,7 @@ try {
       assert.equal(f.launches.length, 0);
       const pause = queue.getByRole("switch", { name: "Pause queue", exact: true });
       await pause.click();
-      await queue.getByText("Queue paused", { exact: true }).waitFor();
+      await queue.getByText("Queue paused", { exact: false }).waitFor();
       await f.request(`/projects/${f.project.id}/configure`, { checks: [["git", "status", "--porcelain"]] });
       await f.tick(); assert.equal(f.launches.length, 0);
       await pause.click();

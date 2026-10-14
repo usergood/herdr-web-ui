@@ -188,8 +188,25 @@ test("an unavailable execution contract is visible in the queue and clearing it 
     expect(queue.items[0].eligible).toBe(false);
     expect(queue.items[0].problem).toContain("Configure known Project checks");
     expect(f.launches).toHaveLength(0);
+    expect((await f.request(`/implementations/${source.implementation_id}`)).body.board).toMatchObject({ lane: "needs_you", waiting_reason: expect.stringContaining("Configure known Project checks") });
     await f.request(`/projects/${f.project.id}/configure`, { checks: [["git", "status", "--porcelain"]] });
     await f.tick();
     expect(f.launches).toHaveLength(1);
+  } finally { f.close(); }
+}, 30_000);
+
+test("an owner-stopped automatic attempt is not relaunched by the same readiness receipt", async () => {
+  const f = await readyIssuesFixture();
+  try {
+    const policy = (await f.request(f.route + "/configure", f.policy)).body;
+    f.respond({ issues: [f.issue(1)] });
+    const source = (await f.request(f.route + "/sync", {})).body.sources[0];
+    await f.request(f.route + "/issues/1/approve", { issue_revision: source.revision, policy_revision: policy.revision, plan: f.plan });
+    await f.tick();
+    const run = (await f.request(`/implementations/${source.implementation_id}`)).body.runs[0];
+    await f.request(`/runs/${run.id}/stop`, { summary: "Owner stops automatic work" });
+    f.restart(); await f.tick();
+    expect(f.launches).toHaveLength(1);
+    expect((await f.request(`/implementations/${source.implementation_id}`)).body.runs[0].condition).toBe("cancelled");
   } finally { f.close(); }
 }, 30_000);
