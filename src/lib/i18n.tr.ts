@@ -1443,4 +1443,10 @@ export const TR: Record<string, string> = {
   "Waiting for verified dependencies": "Doğrulanmış bağımlılıklar bekleniyor",
   "Issue batch publication incomplete": "Sorun grubunun yayımlanması tamamlanmadı",
   "Waiting for verification": "Doğrulama bekleniyor",
+  "Implementation PR": "Uygulama PR’si",
+  "Publish PR": "PR yayımla",
+  "Reconcile PR publication": "PR yayımını doğrula",
+  "Publication needs reconciliation": "Yayımın doğrulanması gerekiyor",
+  "Publish implementation PRs automatically": "Uygulama PR’lerini otomatik yayımla",
+  "Only accepted Assignments with current checks and independent reviews are published. Merge approval remains manual.": "Yalnızca güncel kontrolleri ve bağımsız incelemeleri geçen kabul edilmiş atamalar yayımlanır. Birleştirme için elle onay gerekir.",
 };

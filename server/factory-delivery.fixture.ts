@@ -25,22 +25,24 @@ export async function factoryDeliveryFixture(remote = false, reviewReports = fal
   } } });
   let offline = false;
   let reviewHead = "";
+  let reviewOutcome: "passed" | "failed" = "passed";
   let handoffWrite: (() => void | Promise<void>) | null = null;
   let loseCheckResponse = false;
   const proxy = remote ? Bun.serve({ port: 0, async fetch(request) {
     const url = new URL(request.url);
     if (url.pathname.endsWith("/operations/transcript") && handoffWrite) { const write = handoffWrite; handoffWrite = null; await write(); }
-    if (reviewReports && url.pathname.endsWith("/operations/review-evidence")) return Response.json({ head: reviewHead, source_id: "owned-external-review", content: "Owned external review passed", outcome: "passed" });
+    if (reviewReports && url.pathname.endsWith("/operations/review-evidence")) return Response.json({ head: reviewHead, source_id: "owned-external-review", content: `Owned external review ${reviewOutcome}`, outcome: reviewOutcome });
     const response = await fetch(`http://localhost:${host.port}${url.pathname}${url.search}`, request);
     if (loseCheckResponse && url.pathname.endsWith("/operations/check")) { await response.arrayBuffer(); return new Response(null, { status: 503 }); }
     const headers = new Headers(response.headers); headers.delete("content-encoding"); headers.delete("content-length");
     return new Response(response.body, { status: response.status, headers });
   } }) : null;
-  const app = remote ? createServer({ port: 0, token: "", stateDir: join(root, "coordinator"), machines: false, factory: { machineEndpoint: id => id === "delivery-host" && !offline ? { url: `http://localhost:${proxy!.port}`, token: "owned-delivery-host" } : undefined } }) : host;
+  const coordinator = () => createServer({ port: 0, token: "", stateDir: join(root, "coordinator"), machines: false, factory: { accountTools: options.accountTools, accountDiscoveryHome: root, machineEndpoint: id => id === "delivery-host" && !offline ? { url: `http://localhost:${proxy!.port}`, token: "owned-delivery-host" } : undefined } });
+  let app = remote ? coordinator() : host;
   const request = (path: string, body?: unknown) => fetch(`http://localhost:${app.port}/api/factory${path}`, { method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1", "x-herdr-machine": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const project = await request("/projects", { name: "Delivery Project", path: repo, machine_id: remote ? "delivery-host" : "local", provider: "codex", tracker: "app" }).then(r => r.json());
   const idea = await request("/implementations", { title: "Retained research", description: "", project_id: project.id }).then(r => r.json());
   const prefix = `/implementations/${idea.id}`;
   const start = (key = "delivery-work"): Promise<FactoryRun> => request(`${prefix}/runs`, { action: "work", idempotency_key: key }).then(r => r.json());
-  return { root, repo, git, app, project, prefix, request, start, loseCheckResponse: () => { loseCheckResponse = true; }, changeDuringHandoff: (write: () => void | Promise<void>) => { handoffWrite = write; }, setReviewHead: (head: string) => { reviewHead = head; }, disconnect: () => { offline = true; }, reconnect: () => { offline = false; }, close: async () => { app.stop(); proxy?.stop(); if (app !== host) host.stop(); for (const id of owned) await workspaceClose(id).catch(() => {}); rmSync(root, { recursive: true, force: true }); } };
+  return { root, repo, git, get app() { return app; }, project, prefix, request, start, restart: () => { if (!remote) throw new Error("Restart requires the owned remote fixture"); app.stop(); app = coordinator(); }, loseCheckResponse: () => { loseCheckResponse = true; }, changeDuringHandoff: (write: () => void | Promise<void>) => { handoffWrite = write; }, setReviewOutcome: (outcome: "passed" | "failed") => { reviewOutcome = outcome; }, setReviewHead: (head: string) => { reviewHead = head; }, disconnect: () => { offline = true; }, reconnect: () => { offline = false; }, close: async () => { app.stop(); proxy?.stop(); if (app !== host) host.stop(); for (const id of owned) await workspaceClose(id).catch(() => {}); rmSync(root, { recursive: true, force: true }); } };
 }

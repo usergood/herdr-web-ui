@@ -1490,4 +1490,10 @@ export const JA: Record<string, string> = {
   "Waiting for verified dependencies": "依存関係の検証を待機中",
   "Issue batch publication incomplete": "課題の一括公開が未完了",
   "Waiting for verification": "検証を待機中",
+  "Implementation PR": "実装 PR",
+  "Publish PR": "PR を公開",
+  "Reconcile PR publication": "PR の公開を照合",
+  "Publication needs reconciliation": "公開結果の照合が必要",
+  "Publish implementation PRs automatically": "実装 PR を自動公開",
+  "Only accepted Assignments with current checks and independent reviews are published. Merge approval remains manual.": "最新のチェックと独立したレビューに合格した承認済み Assignment のみ公開されます。マージには引き続き手動の承認が必要です。",
 };

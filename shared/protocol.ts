@@ -1178,6 +1178,8 @@ export const DEFAULT_PORT = 7317;
  * GET overview/detail board.sidebar_hidden is true only for finished, quiescent work.
  * POST /api/factory/settings (settings) -> FactorySettings; validated limits and future defaults.
  * POST /api/factory/projects/:id/configure (project_settings) -> FactoryProject;
+ * auto_publish_pr is a separate default-off publication opt-in; editing it requires
+ * same origin and x-herdr-machine: 1, independently of issue publication/automatic implementation.
  * GET /api/factory/projects/:id/references -> ProjectReferenceLibrary; current immutable versions.
  * POST .../references (project_reference) -> ProjectReference, 201; displayed revision required.
  * GET .../references/:version/source|preview|download -> private verified bytes; Project scoped.
@@ -1218,7 +1220,16 @@ export const DEFAULT_PORT = 7317;
  * POST .../workers/:worker/check (empty) -> FactoryCheck; stop (empty) -> {ok:true};
  * POST .../workers/:worker/review-evidence (empty) -> FactoryReviewEvidence; independent current-head report.
  * POST .../checks (empty), POST .../checks/:check/reconcile (empty) -> FactoryCheck; owned build reservation.
- * POST .../accept (accept) -> FactoryRun; exact head, fresh checks/reviews, resolved findings; no publication.
+ * POST .../accept (accept) -> FactoryRun; exact head, fresh checks/reviews, resolved findings;
+ * publication requires its separate default-off Project opt-in or later Publish PR action.
+ * GET /api/factory/runs/:id/publication -> PublicationOverview; accepted scope and current blockers.
+ * POST .../publication/publish (accept) -> ImplementationPublication; exact accepted head,
+ * current checks and independent reviews, selected Machine account; x-herdr-machine: 1 required.
+ * POST .../publication/reconcile (empty) -> ImplementationPublication; read-only receipt recovery;
+ * uncertain creation never replays. A verified upload with no creation dispatched can be
+ * prepared for another explicit Publish PR. Automatic publication has a separate default-off Project setting.
+ * POST /api/factory-host/publication (FactoryHostRequests.publication) -> scoped native GitHub result;
+ * bridge authentication and x-herdr-machine: 1; retained Run branch and account only.
  * GET /api/factory/tickets/:id -> FactoryTicket; stable app-native tracker identity.
  * POST /api/factory/implementations/:id/snapshots (snapshot) -> ReviewSnapshot, 201;
  * POST .../comments (comment) -> ReviewComment, 201; immutable line/hunk anchor.
@@ -1265,6 +1276,7 @@ export type { NativeConversationSnapshot } from "./factory.ts";
 export type { FactoryPaneLink, FactoryPaneArchive } from "./factory.ts";
 export type { AssignmentDelivery, AssignmentDeliveryConfiguration, DeliveryChange } from "./factory.ts";
 export type { DeliveryReadRequest } from "./factory-delivery.ts";
+export type { ImplementationPublication, PublicationOverview } from "./factory-publication.ts";
 export type { ProjectReference, ProjectReferenceLibrary, CodexReferenceContext, ProjectReferencePayload } from "./factory.ts";
 
 /** Factory mutation bodies. Runtime validation still treats incoming JSON as untrusted. */
@@ -1292,7 +1304,7 @@ export interface FactoryRequests {
   delivery_sync: { expected_revision: string | null };
   discard: Record<string, never>;
   project: { name: string; path: string; machine_id: string; provider: import("./factory.ts").FactoryProvider; tracker: import("./factory.ts").FactoryProject["tracker"]; tracker_reference?: string; guided_setup?: boolean; permission_mode?: import("./agent-permissions.ts").AgentPermissionMode; check_ids?: string[]; context_target_tokens?: number; guidance_task?: boolean; github_account_id?: string };
-  project_settings: Partial<Pick<import("./factory.ts").FactoryProject, "name" | "checks" | "setup" | "environment" | "permissions" | "permission_mode" | "execution_preset" | "shared_paths" | "provider" | "machine_id" | "account_bindings" | "workflow_instructions" | "context_target_tokens" | "delivery_policy" | "delivery_branch">>;
+  project_settings: Partial<Pick<import("./factory.ts").FactoryProject, "name" | "checks" | "setup" | "environment" | "permissions" | "permission_mode" | "execution_preset" | "shared_paths" | "provider" | "machine_id" | "account_bindings" | "workflow_instructions" | "context_target_tokens" | "delivery_policy" | "delivery_branch" | "auto_publish_pr">>;
   project_discovery: { machine_id: string; path: string };
   account_import: { source_id: string; path?: string };
   checkout: { machine_id: string; path: string };
@@ -1419,6 +1431,7 @@ export interface FactoryNativeAnswers {
   questions: import("./factory.ts").FactoryQuestion[];
 }
 export interface FactoryHostRequests {
+  publication: import("./factory-publication.ts").PublicationHostRequest;
   delivery_read: import("./factory-delivery.ts").DeliveryReadRequest;
   model_catalog: { provider: import("./factory.ts").FactoryProvider; path: string; repository: string; account_snapshot?: import("./accounts.ts").AccountBindingSnapshot | null };
   pane_state: { pane_id: string };

@@ -41,6 +41,15 @@ if (!details.size) capture("Explore release notes", "A fictional Inbox idea: kee
 
 export async function factoryDemo(url: URL, method: string, body: Record<string, unknown>, machines: Machine[] = []): Promise<Response> {
   const path = url.pathname;
+  if (path === "/api/factory-host/publication") return failure("demo_unavailable", "Native PR publication is unavailable in the fictional demo");
+  const publication = /^\/api\/factory\/runs\/([^/]+)\/publication(?:\/(publish|reconcile))?$/.exec(path);
+  if (publication) {
+    const detail = [...details.values()].find(d => d.runs.some(r => r.id === publication[1]));
+    const run = detail?.runs.find(r => r.id === publication[1]);
+    if (!run) return failure("not_found", "Run not found", 404);
+    if (method === "GET" && !publication[2]) return json({ run_id: run.id, head: run.accepted_result?.head ?? null, repository: detail!.implementation.delivery_scope?.github_repository ?? null, branch: run.branch, target_branch: detail!.implementation.delivery_scope?.branch ?? null, eligible: false, publication: null, problem: "The fictional demo cannot publish a GitHub PR." } satisfies import("../../shared/factory-publication.ts").PublicationOverview);
+    return failure("demo_unavailable", "PR publication requires a real Machine, current checks and independent reviews");
+  }
   if (/^\/api\/factory\/implementations\/[^/]+\/delivery(?:\/sync)?$/.test(path)) {
     const id = path.split("/")[4]!;
     return method === "GET" ? json(details.get(id)?.implementation.delivery ?? null) : failure("demo_unavailable", "Verifying PR and release delivery requires a real repository and selected GitHub account", 409);
@@ -163,7 +172,7 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
   if (path === "/api/factory/providers" || /\/machines\/[^/]+\/prepare$/.test(path)) return json({ factory_host_protocol: 1, skill_manifest: null, providers: ["codex", "claude", "opencode"].map((provider) => ({ provider, version: "demo", installed: false, skills_verified: false, factory_ready: false, reasons: ["Native agents and SSH preparation require a real execution Machine. The demo retains fictional records only."] })) });
   if (path === "/api/factory/implementations" && method === "POST") { if (typeof body.title !== "string" || !body.title.trim()) return failure("invalid_implementation", "Enter an idea title", 400); const project = projects.find((p) => p.id === body.project_id && !p.removed_at); if (body.project_id != null && !project) return failure("invalid_project", "Select a registered Project", 400); const idea = capture(body.title, typeof body.description === "string" ? body.description : ""); idea.project_id = project?.id ?? null; save(); return json(idea, 201); }
   if (path === "/api/factory/projects" && method === "POST") {
-    const project: FactoryProject = { ...record(), name: String(body.name), repository: "fictional-demo-repository", provider: body.provider as FactoryProject["provider"], machine_id: String(body.machine_id ?? "local"), tracker: "app", tracker_reference: "demo" };
+    const project: FactoryProject = { ...record(), name: String(body.name), repository: "fictional-demo-repository", provider: body.provider as FactoryProject["provider"], machine_id: String(body.machine_id ?? "local"), tracker: "app", tracker_reference: "demo", auto_publish_pr: false };
     if (body.guided_setup) { project.permission_mode = body.permission_mode as FactoryProject["permission_mode"]; project.permissions = permissionDescription(project.permission_mode ?? "ask"); project.checks = [["bun", "run", "test"]]; project.workflow_instructions = MATT_PROJECT_WORKFLOW; project.context_target_tokens = Number(body.context_target_tokens ?? 150000); if(body.guidance_task){const idea=capture(`Set up ${project.name} guidance`,MATT_PROJECT_WORKFLOW);idea.project_id=project.id;project.guidance_assignment_id=idea.id;} }
     projects.push(project); checkouts.push({ ...record(), project_id: project.id, machine_id: project.machine_id, path: String(body.path), repository: project.repository, head: "0000000000000000000000000000000000000000", branch: "demo", instructions: [] }); save(); return json(project, 201);
   }

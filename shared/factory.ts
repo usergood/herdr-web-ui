@@ -54,6 +54,8 @@ export interface FactoryProject extends FactoryRecord {
   context_target_tokens?: number;
   delivery_policy?: "merge" | "release";
   delivery_branch?: string;
+  /** Separate publication authority. Missing on older Projects means disabled. */
+  auto_publish_pr?: boolean;
 }
 export interface ProjectCheckout extends FactoryRecord {
   project_id: string; machine_id: string; path: string; repository: string; head: string;
@@ -92,6 +94,7 @@ export interface FactoryRun extends FactoryRecord {
   checkout: string | null; worktree: string | null; branch: string | null;
   workspace_id: string | null; pane_id: string | null; manifest: unknown;
   scope_pause?: { source_id: string; approved_revision: string; observed_revision: string; condition: "requested" | "paused" | "uncertain"; reason: string };
+  accepted_result?: { head: string; workspace_hash: string; check_id: string; review_ids: string[]; question_revision: string };
 }
 export interface ReviewSnapshot extends FactoryRecord {
   implementation_id: string; run_id: string | null; machine_id: string; repository: string;

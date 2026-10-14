@@ -26,6 +26,37 @@ import { batchProposal, githubIssueBatchFixture } from "./github-issue-batches.f
 import { factoryDeliveryFixture } from "./factory-delivery.fixture.ts";
 import { factoryMergeFixture } from "./factory-merge.fixture.ts";
 
+describe("implementation PR publication HTTP contract", () => {
+  it("requires the explicit mutation header and same origin for automatic publication settings", async () => {
+    const f = await factoryDeliveryFixture();
+    try {
+      const url = `http://localhost:${f.app.port}/api/factory/projects/${f.project.id}/configure`;
+      const headers = { "content-type": "application/json", "x-herdr-factory": "1" };
+      expect((await fetch(url, { method: "POST", headers, body: '{"auto_publish_pr":true}' })).status).toBe(403);
+      expect((await fetch(url, { method: "POST", headers: { ...headers, "x-herdr-machine": "1", origin: "https://unrelated.invalid" }, body: '{"auto_publish_pr":true}' })).status).toBe(403);
+      expect((await f.request("").then(r => r.json())).projects[0].auto_publish_pr).toBe(false);
+    } finally { await f.close(); }
+  });
+  it("requires owner authentication and mutation guards, and rejects malformed host publication", async () => {
+    const root = mkdtempSync(join(tmpdir(), "saurons-pr-http-"));
+    const app = createServer({ port: 0, stateDir: root, token: "owned-publication-owner", machines: false });
+    const origin = `http://localhost:${app.port}`;
+    const path = "/api/factory/runs/unknown-owned-run/publication/publish";
+    const headers = { authorization: "Bearer owned-publication-owner", "content-type": "application/json", "x-herdr-factory": "1", "x-herdr-machine": "1" };
+    try {
+      expect((await fetch(origin + path, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status).toBe(401);
+      expect((await fetch(origin + path, { method: "POST", headers: { ...headers, "x-herdr-machine": "0" }, body: "{}" })).status).toBe(403);
+      expect((await fetch(origin + path, { method: "POST", headers: { ...headers, origin: "https://unrelated.invalid" }, body: "{}" })).status).toBe(403);
+      const missing = await fetch(origin + path.replace("/publish", ""), { headers });
+      expect(missing.status).toBe(404);
+      expect((await missing.json()).error.code).toBe("not_found");
+      const malformed = await fetch(origin + "/api/factory-host/publication", { method: "POST", headers, body: "{}" });
+      expect(malformed.status).toBe(400);
+      expect((await malformed.json()).error.code).toBe("invalid_publication");
+    } finally { app.stop(); rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
 async function factoryBoardFixture(native: Partial<FactoryNative> = {}) {
   const state = mkdtempSync(join(tmpdir(), "saurons-eye-board-live-")); const repo = join(state, "repo");
   mkdirSync(repo); writeFileSync(join(repo, "README.md"), "Owned board fixture\n");

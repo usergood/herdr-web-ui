@@ -570,7 +570,8 @@ export class ProjectGitHub {
           const proof = { head: pull.headRefOid, base: pull.baseRefOid, policy_revision: policy.revision };
           const own = pull.author?.login.toLowerCase() === scope.profiles[0]!.identity.login?.toLowerCase();
           const deliveryLinked = this.store.list<Implementation>("implementations").some(idea => idea.project_id === id && idea.delivery?.repository.toLowerCase() === policy.repository.toLowerCase() && idea.delivery.pull_numbers.includes(pull.number));
-          if (readOnly || deliveryLinked) continue;
+          const implementationPublication = this.store.list<import("../shared/factory-publication.ts").ImplementationPublication>("pr_publications").some(publication => publication.repository.toLowerCase() === policy.repository.toLowerCase() && (pull.body.includes(`<!-- saurons-eye-pr:${publication.id} -->`) || pull.headRefName === publication.branch && pull.headRepository?.nameWithOwner.toLowerCase() === publication.repository.toLowerCase()));
+          if (readOnly || deliveryLinked || implementationPublication) continue;
           if (policy.auto_update && own && pull.mergeStateStatus === "BEHIND") await this.mutate(policy, scope, pull.number, "update", proof);
           else if (policy.auto_merge && !this.blockers(pull, policy).length) await this.mutate(policy, scope, pull.number, "merge", proof);
           else if (own && previous?.fix_implementation_id && previous.pull.headRefOid !== pull.headRefOid && this.store.get<Implementation>("implementations", previous.fix_implementation_id)?.outcome === "implementation_complete" && this.opinions(pull).some((review) => review.state === "CHANGES_REQUESTED" && review.commit?.oid !== pull.headRefOid) && !pull.reviewRequests.nodes.length) await this.mutate(policy, scope, pull.number, "rerequest", proof);

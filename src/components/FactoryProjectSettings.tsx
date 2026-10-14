@@ -9,6 +9,8 @@ import { ProjectFolderPicker } from "./ProjectFolderPicker.tsx";
 import { ProjectPermissions } from "./ProjectPermissions.tsx";
 import { ProjectChecks } from "./ProjectChecks.tsx";
 import { AgentModelPicker } from "./AgentModelPicker.tsx";
+import { SettingsGroup, SettingsRow, Toggle } from "./SettingsControls.tsx";
+import { accountRequest } from "../lib/accountsApi.ts";
 
 const existingCheckId = (args: string[]) => `existing:${JSON.stringify(args)}`;
 
@@ -45,6 +47,11 @@ export function FactoryProjectSettings({ project, overview, machineId, machines,
     return () => { live = false; };
   }, [checkout?.machine_id, checkout?.path]);
   return <section className="factory-section"><h3>{section === "checkout" ? t("Verify Machine checkout") : t("Project execution settings")}</h3>
+    {section === "execution" && <SettingsGroup title={t("Implementation PR")}>
+      <SettingsRow label={t("Publish implementation PRs automatically")} description={t("Only accepted Assignments with current checks and independent reviews are published. Merge approval remains manual.")}>
+        <Toggle label={t("Publish implementation PRs automatically")} checked={project.auto_publish_pr === true} disabled={busy} onChange={enabled => void perform(async () => { await accountRequest(`/projects/${project.id}/configure`, { auto_publish_pr: enabled }); })} />
+      </SettingsRow>
+    </SettingsGroup>}
     {section === "execution" && <form className="factory-form" onSubmit={event => {
       event.preventDefault(); if (!selectedHost) return;
       void perform(async () => { await factoryRequest(`/projects/${project.id}/configure`, { provider, machine_id: selectedHost, permission_mode: mode, context_target_tokens: target, delivery_policy: milestone, delivery_branch: deliveryBranch, ...(presetTouched.current ? { execution_preset: preset } : {}), ...(data || checksTouched ? { checks: choices.filter(c => selected.includes(c.id)).map(c => c.args) } : {}), ...(!project.workflow_instructions?.trim() ? { workflow_instructions: MATT_PROJECT_WORKFLOW } : {}) }); });

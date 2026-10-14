@@ -6,6 +6,8 @@ import { realpathSync } from "node:fs";
 import type { FactoryProvider, FactoryRun, HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 import { agentManifests, agentPrompt, agentStart, HerdrError, sessionSnapshot, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 import { readAgentModelCatalog } from "./agent-model-catalog.ts";
+import { currentAccountEnvironment } from "./account-execution.ts";
+import { FactoryError } from "./factory-host.ts";
 import type { AgentExecutionPreset } from "../shared/agent-models.ts";
 
 export interface FactoryNative {
@@ -18,6 +20,7 @@ export interface FactoryNative {
   paneState?: (paneId: string) => Promise<HerdrPane | null>;
   closeWorkspace: typeof workspaceClose;
   prompt: typeof agentPrompt;
+  pushBranch: (scope: { cwd: string; repository: string; branch: string; head: string }) => Promise<void>;
 }
 const execute = promisify(execFile);
 /** Only a complete observation can release a closed native context's ownership. */
@@ -36,6 +39,11 @@ export function factoryWorkspaceGone(snapshot: SessionSnapshot, owned: Pick<Fact
 export const factoryNative: FactoryNative = {
   modelCatalog: readAgentModelCatalog,
   createWorkspace: workspaceCreate, snapshot: sessionSnapshot, closeWorkspace: workspaceClose, prompt: agentPrompt,
+  pushBranch: async ({ cwd, repository, branch, head }) => {
+    try {
+      await execute("git", ["-C", cwd, "-c", "push.followTags=false", "-c", "core.hooksPath=/dev/null", "push", "--porcelain", `https://github.com/${repository}.git`, `${head}:refs/heads/${branch}`], { env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_") && !/^(GH_|GITHUB_)/.test(key))), ...currentAccountEnvironment(), GIT_TERMINAL_PROMPT: "0" }, timeout: 10000, maxBuffer: 128 * 1024 });
+    } catch { throw new FactoryError("publication_upload_uncertain", "Branch publication is unconfirmed; reconcile before trying again", 409); }
+  },
   startAgent: async (options, socketPath) => {
     const deadline = Date.now() + 10_000;
     for (;;) {

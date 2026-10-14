@@ -14,6 +14,7 @@ import { FactoryWorkflowPanel } from "./FactoryWorkflowPanel.tsx";
 import { FactoryArtifactPreview } from "./FactoryArtifactPreview.tsx";
 import { FactoryReviewPanel } from "./FactoryReviewPanel.tsx";
 import { FactoryExecutionPanel } from "./FactoryExecutionPanel.tsx";
+import { FactoryPublicationPanel } from "./FactoryPublicationPanel.tsx";
 import { FactoryRetrospectivePanel } from "./FactoryRetrospectivePanel.tsx";
 import { AssignmentActions } from "./AssignmentActions.tsx";
 import { useFactoryCapabilities } from "../lib/useFactoryCapabilities.ts";
@@ -171,6 +172,7 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
         </div><p className="factory-context">{effectiveProvider} · {machines.find((machine) => machine.id === effectiveMachine)?.name ?? effectiveMachine} · {checkout?.path ?? t("No verified checkout")}</p>
       </section>
       <AssignmentActions preset={preset} onPresetChange={setPreset} key={detail.implementation.id} detail={detail} project={selectedProject} machineId={effectiveMachine} machineName={machines.find(m=>m.id===effectiveMachine)?.name??effectiveMachine} provider={effectiveProvider??"codex"} busy={busy} perform={perform} onOpenPane={onOpenPane} capabilities={execution.capabilities} problem={execution.problem} onCapabilities={execution.apply} />
+      <FactoryPublicationPanel key={detail.implementation.id} detail={detail} busy={busy} perform={perform} />
       {detail.implementation.project_id && <FactoryIssueBatches key={detail.implementation.id} implementationId={detail.implementation.id} projectId={detail.implementation.project_id} busy={busy} perform={perform} />}
       <details className="factory-section"><summary>{t("Advanced controls")}</summary>
         <div className="factory-filters">

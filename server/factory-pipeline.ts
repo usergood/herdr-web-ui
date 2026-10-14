@@ -156,7 +156,7 @@ export class FactoryPipeline {
     this.store.put("approvals", approval, run.implementation_id);
     // Release native ownership explicitly, while retaining Git and all evidence.
     const stopped = await this.runtime.stopRun(id, { summary: `${issueApprovalId ? "Trusted issue implementation verified" : "Owner accepted implementation"} at ${current.head}` });
-    const completed: FactoryRun = { ...stopped, condition: "completed" };
+    const completed: FactoryRun = { ...stopped, condition: "completed", accepted_result: { head: current.head, workspace_hash: current.workspace_hash, check_id: check.id, review_ids: ["standards", "spec"].map(axis => reviews.filter(entry => entry.axis === axis).at(-1)!.id), question_revision: this.workflow.questionRevision(run.implementation_id) } };
     this.store.put("runs", completed, run.implementation_id);
     const implementation = this.store.get<Implementation>("implementations", run.implementation_id)!;
     if (run.action === "work" || run.action === "implement-spec") {

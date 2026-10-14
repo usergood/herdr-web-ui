@@ -1492,4 +1492,10 @@ export const ZH: Record<string, string> = {
   "Waiting for verified dependencies": "等待依赖项验证",
   "Issue batch publication incomplete": "议题批量发布未完成",
   "Waiting for verification": "等待验证",
+  "Implementation PR": "实现 PR",
+  "Publish PR": "发布 PR",
+  "Reconcile PR publication": "核对 PR 发布结果",
+  "Publication needs reconciliation": "发布结果需要核对",
+  "Publish implementation PRs automatically": "自动发布实现 PR",
+  "Only accepted Assignments with current checks and independent reviews are published. Merge approval remains manual.": "仅发布已接受且通过当前检查和独立评审的任务。合并仍需手动批准。",
 };

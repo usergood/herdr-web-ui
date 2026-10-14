@@ -1488,4 +1488,10 @@ export const KO: Record<string, string> = {
   "Waiting for verified dependencies": "검증된 의존 항목 대기 중",
   "Issue batch publication incomplete": "이슈 일괄 게시 미완료",
   "Waiting for verification": "검증 대기 중",
+  "Implementation PR": "구현 PR",
+  "Publish PR": "PR 게시",
+  "Reconcile PR publication": "PR 게시 확인",
+  "Publication needs reconciliation": "게시 결과 확인 필요",
+  "Publish implementation PRs automatically": "구현 PR 자동 게시",
+  "Only accepted Assignments with current checks and independent reviews are published. Merge approval remains manual.": "최신 검사와 독립 검토를 통과한 승인된 작업만 게시됩니다. 병합은 계속 수동 승인이 필요합니다.",
 };

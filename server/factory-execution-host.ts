@@ -4,7 +4,8 @@ import { projectWorkflowPrompt } from "./factory-project-policy.ts";
 import { writePrivateFile } from "./factory-files.ts";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
-import type { FactoryCapabilities, FactoryOutput, FactoryRun } from "../shared/protocol.ts";
+import type { FactoryCapabilities, FactoryOutput, FactoryRun, ProjectCheckout } from "../shared/protocol.ts";
+import { captureReview } from "./factory-review.ts";
 import { HerdrError } from "./herdr/client.ts";
 import { paneRead, paneScrollInfo } from "./herdr/client.ts";
 import { claudeInputDraft, noteSubmitted, viewportShowsLive } from "./prompt.ts";
@@ -26,6 +27,7 @@ import type { MachineAccounts } from "./accounts.ts";
 import { withAccountEnvironment } from "./account-execution.ts";
 import { stagePlanningDocuments } from "./factory-planning-docs.ts";
 import { prepareFactoryPrompt } from "./factory-prompt.ts";
+import { publicationGitHub } from "./factory-publication-github.ts";
 
 function providerProofId(provider: string, snapshot?: AccountBindingSnapshot | null): string {
   const profile = snapshot?.profiles.find((entry) => entry.service === provider);
@@ -49,6 +51,26 @@ export class FactoryExecutionHost {
     const prepared = this.store.get<{ id: string; path: string }>("host_skills", "default"); this.preparedPath = prepared?.path ?? null;
   }
   discover(path: string) { return discoverProject(path, this.native, this.accounts?.discoveryHome); }
+  async publication(request: import("../shared/factory-publication.ts").PublicationHostRequest): Promise<unknown> {
+    if (!this.accounts || this.stopped || existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("publication_disabled", "Publication is unavailable on this bridge", 409);
+    const p = request.publication;
+    if (!p || typeof p.run_id !== "string" || !p.account_snapshot || !Array.isArray(p.account_snapshot.profiles) || !["lookup", "branch", "push", "create"].includes(request.action)) throw new FactoryError("invalid_publication", "Select a scoped implementation publication");
+    const run = this.store.get<{ run: FactoryRun }>("host_leases", p?.run_id)?.run;
+    if (!run?.worktree || run.branch !== p.branch || run.base !== p.base || run.implementation_id !== p.implementation_id) throw new FactoryError("publication_scope_changed", "Publication must belong to this Run's retained branch", 409);
+    const frozen = (run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot?.profiles.find(profile => profile.service === "github");
+    if (frozen && JSON.stringify(p.account_snapshot.profiles.find(profile => profile.service === "github")) !== JSON.stringify(frozen)) throw new FactoryError("account_scope_mismatch", "Keep this Run's frozen GitHub account", 409);
+    return publicationGitHub(this.accounts, request, async () => {
+      if (!["completed", "cancelled"].includes(run.condition) || !factoryWorkspaceGone(await this.native.snapshot(), run, `saurons-eye-run-${run.id}`)) throw new FactoryError("publication_active", "Confirm that owned native work has stopped before publishing", 409);
+      const checkout = await inspectCheckout(run.worktree!);
+      const discovered = await this.discover(run.worktree!);
+      if (checkout.repository !== (run.manifest as { checkout: ProjectCheckout }).checkout.repository || discovered.github.repository?.toLowerCase() !== p.repository.toLowerCase() || checkout.branch !== p.branch || checkout.head !== p.head || (await captureReview(run.worktree!, p.base, "workspace")).files.length) throw new FactoryError("publication_scope_changed", "The reviewed repository, branch or diff changed", 409);
+      // Git URL rewrites could send an explicit GitHub URL to an unrelated remote.
+      const config = await git(run.worktree!, ["config", "--list"]);
+      if (/^url\..*\.(?:insteadof|pushinsteadof)=/im.test(config)) throw new FactoryError("publication_routing_changed", "Remove Git URL rewrite routing before scoped publication", 409);
+      const environment = await this.accounts!.environment(p.account_snapshot, true, run.worktree!);
+      await withAccountEnvironment(environment, () => this.native.pushBranch({ cwd: run.worktree!, repository: p.repository, branch: p.branch, head: p.head }));
+    });
+  }
   async modelCatalog(provider: import("../shared/factory.ts").FactoryProvider, path: string, repository: string, snapshot?: AccountBindingSnapshot | null) {
     if (this.stopped || existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Native model reads are disabled on a stopped or restored bridge", 409);
     const checkout = await inspectCheckout(path);

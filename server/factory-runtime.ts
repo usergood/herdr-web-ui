@@ -41,6 +41,9 @@ export class FactoryRuntime {
   async deliveryRead(machineId: string, request: import("../shared/factory-delivery.ts").DeliveryReadRequest): Promise<unknown> {
     return machineId === "local" ? readDeliveryGitHub(this.accounts, request) : this.remote(machineId, "/delivery-read", request);
   }
+  async publication(machineId: string, request: import("../shared/factory-publication.ts").PublicationHostRequest): Promise<unknown> {
+    return machineId === "local" ? this.host.publication(request) : this.remote(machineId, "/publication", request);
+  }
   async discoverAccounts(machineId: string, path?: string): Promise<import("../shared/accounts.ts").NativeAccountDiscovery> { return machineId === "local" ? this.accounts.discoverNative(path) : this.remote(machineId, "/accounts/discovery" + (path ? `?path=${encodeURIComponent(path)}` : "")); }
   async importAccount(machineId: string, body: Record<string, unknown>): Promise<AccountProfile> { return machineId === "local" ? this.accounts.importNative(body) : this.remote(machineId, "/accounts/import", body); }
   async accountOverview(machineId: string): Promise<AccountOverview> {

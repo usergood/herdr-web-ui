@@ -33,6 +33,7 @@ import { sameOrigin } from "./machine-security.ts";
 import { parseModelSelection, resolveModelSelection } from "./agent-model-selection.ts";
 import { projectFactoryBoard } from "../shared/factory-board.ts";
 import { ProjectQueue } from "./project-queue.ts";
+import { FactoryPublication } from "./factory-publication.ts";
 
 const providers: FactoryProvider[] = ["codex", "claude", "opencode"];
 const initialSettings: FactorySettings = { provider: "codex", max_implementations: 6, max_agents: 6, max_builds: 2, max_artifact_bytes: 25 * 1024 * 1024, max_storage_bytes: 2 * 1024 * 1024 * 1024, skills_path: null };
@@ -52,6 +53,7 @@ export class FactoryService {
   private readonly accounts: MachineAccounts;
   private readonly github: ProjectGitHub;
   private readonly delivery: FactoryMergeDelivery;
+  private readonly publication: FactoryPublication;
   private readonly queue: ProjectQueue;
   private readonly discards = new Map<string, Promise<Implementation>>();
   private readonly issueBatches: GitHubIssueBatches;
@@ -74,6 +76,7 @@ export class FactoryService {
     });
     this.retrospectives = new FactoryRetrospectives(this.store);
     this.delivery = new FactoryMergeDelivery(this.store, this.runtime, id => this.retainHandoff(id));
+    this.publication = new FactoryPublication(this.store, this.runtime, this.workflow, this.delivery);
     this.github = new ProjectGitHub(this.store, this.accounts, (machineId, path) => this.runtime.discover(machineId, path), scheduleTiming, source => this.runtime.pauseIssueWork(source), async projectId => {
       for (const idea of this.store.list<Implementation>("implementations")) {
         if (idea.project_id === projectId && idea.delivery && !idea.archived_at && !idea.discard_requested_at && idea.stage !== "done") await this.delivery.sync(idea.id, idea.delivery.revision);
@@ -92,7 +95,7 @@ export class FactoryService {
       if (this.stopped) return;
       for (const run of this.store.list<FactoryRun>("runs")) {
         if ((run.manifest as { project?: FactoryProject }).project?.id !== projectId) continue;
-        try { await this.pipeline.completeReadyIssue(run.id); }
+        try { await this.pipeline.completeReadyIssue(run.id); await this.publication.automatic(run.id); }
         catch { /* Stale evidence or uncertain ownership retains the implementing slot. */ }
       }
       if (this.stopped) return;
@@ -430,6 +433,10 @@ export class FactoryService {
         if (request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Use delivery controls from this app");
         return jsonResponse(await readDeliveryGitHub(this.accounts, await this.body(request) as unknown as import("../shared/factory-delivery.ts").DeliveryReadRequest));
       }
+      if (url.pathname === "/api/factory-host/publication" && request.method === "POST") {
+        if (request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Use publication controls from this app");
+        return jsonResponse(await this.executionHost.publication(await this.body(request) as unknown as import("../shared/factory-publication.ts").PublicationHostRequest));
+      }
       if (url.pathname === "/api/factory/reference-template" && request.method === "GET") return jsonResponse(projectReferenceTemplate);
       const referencePrepare = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/references\/prepare$/.exec(url.pathname);
       if (referencePrepare && request.method === "POST") { const body = await this.body(request); if (typeof body.machine_id !== "string") throw new FactoryError("invalid_machine", "Select an execution Machine"); return jsonResponse(await this.runtime.prepareReferences(referencePrepare[1]!, body.machine_id, body.expected_revision)); }
@@ -521,10 +528,19 @@ export class FactoryService {
       if (retroRoute && request.method === "POST") return jsonResponse(this.retrospectives.create(retroRoute[1]!, await this.body(request)), 201);
       const retroApproval = /^\/api\/factory\/retrospectives\/([a-zA-Z0-9-]+)\/approve$/.exec(url.pathname);
       if (retroApproval && request.method === "POST") return jsonResponse(this.retrospectives.approve(retroApproval[1]!, await this.body(request)));
+      const publicationRoute = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/publication(?:\/(publish|reconcile))?$/.exec(url.pathname);
+      if (publicationRoute) {
+        if (request.method === "GET" && !publicationRoute[2]) return jsonResponse(await this.publication.overview(publicationRoute[1]!));
+        if (request.method !== "POST" || !sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Use publication controls from this app");
+        if (publicationRoute[2] === "reconcile") return jsonResponse(await this.publication.reconcile(publicationRoute[1]!));
+        if (publicationRoute[2] === "publish") return jsonResponse(await this.publication.publish(publicationRoute[1]!, (await this.body(request)).head));
+        throw new FactoryError("not_found", "Select Publish PR or reconcile its receipt", 404);
+      }
       const pipelineRoute = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/(workers|checks|accept)$/.exec(url.pathname);
       if (pipelineRoute && request.method === "POST") {
         const body = await this.body(request);
-        return jsonResponse(pipelineRoute[2] === "workers" ? await this.pipeline.startWorker(pipelineRoute[1]!, body) : pipelineRoute[2] === "checks" ? await this.pipeline.check(pipelineRoute[1]!) : await this.pipeline.accept(pipelineRoute[1]!, body));
+        if (pipelineRoute[2] === "accept") { const accepted = await this.pipeline.accept(pipelineRoute[1]!, body); await this.publication.automatic(accepted.id); return jsonResponse(accepted); }
+        return jsonResponse(pipelineRoute[2] === "workers" ? await this.pipeline.startWorker(pipelineRoute[1]!, body) : await this.pipeline.check(pipelineRoute[1]!));
       }
       const workerRoute = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/workers\/([a-zA-Z0-9-]+)\/(refresh|reconcile|check|integrate|stop|review-evidence)$/.exec(url.pathname);
       const checkReconcile = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/checks\/([a-zA-Z0-9-]+)\/reconcile$/.exec(url.pathname);
@@ -571,6 +587,11 @@ export class FactoryService {
           return jsonResponse(checkout, 201);
         }
         const next = { ...project, updated_at: new Date().toISOString() };
+        if (body.auto_publish_pr !== undefined) {
+          if (!sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Use publication controls from this app");
+          if (typeof body.auto_publish_pr !== "boolean") throw new FactoryError("invalid_publication_policy", "Choose whether this Project may publish implementation PRs automatically");
+          next.auto_publish_pr = body.auto_publish_pr;
+        }
         if (body.delivery_policy !== undefined) { if (body.delivery_policy !== "merge" && body.delivery_policy !== "release") throw new FactoryError("invalid_delivery_policy", "Choose verified merge or containing release"); next.delivery_policy = body.delivery_policy; }
         if (body.delivery_branch !== undefined) {
           if (typeof body.delivery_branch !== "string" || !body.delivery_branch || body.delivery_branch.length > 200 || !/^(?![./-])(?!.*(?:\.\.|@\{|\/\/|[\x00-\x20\x7f~^:?*\[\\]))(?!.*(?:\/$|\.$|\.lock(?:\/|$)))[^\s]+$/.test(body.delivery_branch) || body.delivery_branch.split("/").some(part => part.startsWith("."))) throw new FactoryError("invalid_delivery_branch", "Enter a valid delivery branch");
@@ -740,7 +761,7 @@ export class FactoryService {
         if (typeof body.name !== "string" || !body.name.trim() || body.name.length > 200 || typeof body.path !== "string" || !providers.includes(body.provider as FactoryProvider) || !["app", "github", "gitlab", "local"].includes(String(body.tracker))) return badRequest("invalid_project", "Enter a name, checkout, provider and tracker");
         if (typeof body.machine_id !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(body.machine_id) || !this.registeredMachine(body.machine_id)) throw new FactoryError("invalid_machine", "Select an execution Machine");
         const inspected = await this.runtime.inspect(body.machine_id, body.path);
-        const project: FactoryProject = { ...this.store.record(), name: body.name.trim(), repository: inspected.repository, provider: body.provider as FactoryProvider, machine_id: body.machine_id, tracker: body.tracker as FactoryProject["tracker"], tracker_reference: typeof body.tracker_reference === "string" ? body.tracker_reference : "", delivery_policy: "merge", delivery_branch: inspected.branch === "HEAD" ? "main" : inspected.branch };
+        const project: FactoryProject = { ...this.store.record(), name: body.name.trim(), repository: inspected.repository, provider: body.provider as FactoryProvider, machine_id: body.machine_id, tracker: body.tracker as FactoryProject["tracker"], tracker_reference: typeof body.tracker_reference === "string" ? body.tracker_reference : "", auto_publish_pr: false, delivery_policy: "merge", delivery_branch: inspected.branch === "HEAD" ? "main" : inspected.branch };
         let guidance: Implementation | null = null;
         if (body.guided_setup === true) {
           const detected = await this.runtime.discover(project.machine_id, inspected.path);
@@ -859,5 +880,5 @@ export class FactoryService {
       return httpError(404, "not_found", "Unknown factory endpoint");
     } catch (error) { return error instanceof FactoryError ? httpError(error.status, error.code, error.message) : error instanceof SyntaxError ? badRequest("invalid_json", "Enter valid JSON") : errorResponse(error); }
   }
-  stop(): void { if (this.stopped) return; this.stopped = true; this.pipeline.stop(); this.continuation.stop(); this.github.stop(); this.accounts.stop(); this.runtime.stop(); this.store.close(); }
+  stop(): void { if (this.stopped) return; this.stopped = true; this.publication.stop(); this.pipeline.stop(); this.continuation.stop(); this.github.stop(); this.accounts.stop(); this.runtime.stop(); this.store.close(); }
 }
