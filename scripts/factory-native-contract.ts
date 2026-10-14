@@ -72,9 +72,9 @@ async function journey(): Promise<void> {
       await api(`/api/factory/runs/${run.id}/send-answers`, { revision: detail.question_context?.revision ?? detail.question_revision, idempotency_key: crypto.randomUUID() });
     }
     // These are explicit fixture-owner controls, the same manual actions exposed by the UI.
-    for (const worker of detail.workers.filter((worker) => worker.role === "implementer" && ["needs_you", "disconnected"].includes(worker.condition))) {
+    for (const worker of detail.workers.filter((worker) => worker.role === "implementer" && ["ready", "needs_you", "disconnected"].includes(worker.condition))) {
       const observed = await api<FactoryWorker>(`/api/factory/runs/${run.id}/workers/${worker.id}/reconcile`, {});
-      if (observed.condition !== "needs_you" || !observed.waiting_reason?.includes("ready")) continue;
+      if (observed.condition !== "ready" && (observed.condition !== "needs_you" || !observed.waiting_reason?.includes("ready"))) continue;
       await api(`/api/factory/runs/${run.id}/workers/${worker.id}/refresh`, {});
       const checked = await api<FactoryCheck>(`/api/factory/runs/${run.id}/workers/${worker.id}/check`, {});
       if (checked.condition !== "passed") throw new Error("Genuine candidate checks failed");
@@ -84,7 +84,7 @@ async function journey(): Promise<void> {
     const candidate = detail.workers.filter((worker) => worker.role === "implementer" && worker.condition === "completed").at(-1);
     if (candidate?.head && !detail.workers.some((worker) => worker.role === "implementer" && !["completed", "cancelled", "failed"].includes(worker.condition))) {
       for (const role of ["standards", "spec"] as const) if (!detail.workers.some((worker) => worker.role === role && worker.base === candidate.head && !["cancelled", "failed"].includes(worker.condition))) await api(`/api/factory/runs/${run.id}/workers`, { role, idempotency_key: `owner-${role}-${candidate.head}` });
-      for (const worker of detail.workers.filter((worker) => worker.role !== "implementer" && worker.condition === "needs_you")) {
+      for (const worker of detail.workers.filter((worker) => worker.role !== "implementer" && ["ready", "needs_you"].includes(worker.condition))) {
         try { await api(`/api/factory/runs/${run.id}/workers/${worker.id}/review-evidence`, {}); }
         catch (error) { if (!(error instanceof Error) || !error.message.includes("409: review_evidence_required")) throw error; }
       }

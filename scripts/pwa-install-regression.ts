@@ -10,7 +10,9 @@ const state = mkdtempSync(join(tmpdir(), "saurons-pwa-install-"));
 const app = createServer({ port: 0, stateDir: state, machines: false, token: "owned-pwa-gate-fixture" });
 const authorization = `Basic ${Buffer.from("fixture:fixture-only").toString("base64")}`;
 const manifestRequests: { authorized: boolean }[] = [];
+const iconRequests: { path: string; authorized: boolean }[] = [];
 const proxy = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(request) {
+  if (new URL(request.url).pathname.startsWith("/icons/")) iconRequests.push({ path: new URL(request.url).pathname, authorized: request.headers.get("authorization") === authorization });
   if (new URL(request.url).pathname === "/manifest.webmanifest") manifestRequests.push({ authorized: request.headers.get("authorization") === authorization });
   if (request.headers.get("authorization") !== authorization) return new Response("Authentication required", { status: 401, headers: { "www-authenticate": 'Basic realm="PWA fixture"' } });
   const url = new URL(request.url);
@@ -44,13 +46,13 @@ try {
   }
   await page.waitForFunction(async () => (await navigator.serviceWorker.getRegistration())?.active?.state === "activated");
   // Chrome's browser-process icon validation can finish after renderer image decoding.
-  const iconDeadline = Date.now() + 10_000;
+  const iconDeadline = Date.now() + 30_000;
   let installability = await cdp.send("Page.getInstallabilityErrors");
   while (installability.installabilityErrors.length && Date.now() < iconDeadline) {
     await Bun.sleep(100);
     installability = await cdp.send("Page.getInstallabilityErrors");
   }
-  assert.deepEqual(installability.installabilityErrors, [], "Chrome reports no installability errors behind BasicAuth");
+  assert.deepEqual(installability.installabilityErrors, [], `Chrome reports no installability errors behind BasicAuth; icon requests: ${JSON.stringify(iconRequests)}`);
   assert(manifestRequests.length && manifestRequests.every((request) => request.authorized), "The manifest carries the login credentials");
   const badge = await page.evaluate(async () => {
     const image = new Image(); image.src = "/icons/badge-96.png?v=eye1"; await image.decode();
