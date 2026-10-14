@@ -25,6 +25,7 @@ import { projectReferenceTemplate } from "../shared/project-references.ts";
 import { MachineAccounts } from "./accounts.ts";
 import type { AccountTools } from "./account-tools.ts";
 import { ProjectGitHub } from "./github-project.ts";
+import { GitHubIssueBatches } from "./github-issue-batches.ts";
 import { sameOrigin } from "./machine-security.ts";
 import { parseModelSelection, resolveModelSelection } from "./agent-model-selection.ts";
 import { projectFactoryBoard } from "../shared/factory-board.ts";
@@ -48,6 +49,7 @@ export class FactoryService {
   private readonly accounts: MachineAccounts;
   private readonly github: ProjectGitHub;
   private readonly queue: ProjectQueue;
+  private readonly issueBatches: GitHubIssueBatches;
   private stopped = false;
   constructor(stateDir: string, private readonly skillsPath: string | null = null, native: Partial<FactoryNative> = {}, endpoint: MachineEndpoint = () => undefined, publicUrl: string | null = null, accountTools: AccountTools = {}, private readonly registeredMachine: (id: string) => boolean = (id) => id === "local" || !!endpoint(id), accountDiscoveryHome?: string, scheduleTiming?: import("./project-schedules.ts").ProjectScheduleTiming) {
     this.accounts = new MachineAccounts(stateDir, accountTools, false, accountDiscoveryHome);
@@ -66,6 +68,7 @@ export class FactoryService {
     this.retrospectives = new FactoryRetrospectives(this.store);
     this.github = new ProjectGitHub(this.store, this.accounts, (machineId, path) => this.runtime.discover(machineId, path), scheduleTiming);
     this.queue = new ProjectQueue(this.store, () => this.settings(), id => this.github.overview(id));
+    this.issueBatches = this.github.issueBatches;
   }
   settings(): FactorySettings { return this.store.get<{ id: string; value: FactorySettings }>("settings", "default")?.value ?? { ...initialSettings, skills_path: this.skillsPath }; }
   private activeWork(id: string): boolean {
@@ -113,7 +116,7 @@ export class FactoryService {
   }
   async handleAgent(request: Request, url: URL): Promise<Response> {
     try {
-      const route = /^\/api\/factory-agent\/([a-zA-Z0-9-]+)\/(contract|question|sync-answers|consume|worker|checks|artifact|specification|tickets|proposal|ticket\/[a-zA-Z0-9-]+|worker\/[a-zA-Z0-9-]+\/[a-z-]+)$/.exec(url.pathname);
+      const route = /^\/api\/factory-agent\/([a-zA-Z0-9-]+)\/(contract|question|sync-answers|consume|worker|checks|artifact|specification|tickets|proposal|issue-batch|ticket\/[a-zA-Z0-9-]+|worker\/[a-zA-Z0-9-]+\/[a-z-]+)$/.exec(url.pathname);
       if (!route) throw new FactoryError("not_found", "Unknown scoped tracker operation", 404);
       if (!this.agentAuthenticated(request, url)) throw new FactoryError("unauthorized", "Use this Run's scoped tracker credential", 401);
       const run = this.store.get<FactoryRun>("runs", route[1]!);
@@ -128,6 +131,11 @@ export class FactoryService {
       }
       if (request.method !== "POST" || request.headers.get("x-herdr-factory") !== "1") throw new FactoryError("invalid_operation", "Use an explicit scoped tracker operation", 400);
       const body = await this.body(request, action === "artifact" ? Math.ceil(this.settings().max_artifact_bytes / 3) * 4 + 64 * 1024 : 512 * 1024);
+      if (action === "issue-batch" && ["grill-me", "grill-with-docs", "to-spec", "to-tickets"].includes(run.action)) {
+        const project = (run.manifest as { project?: FactoryProject }).project;
+        if (!project || this.store.get<Implementation>("implementations", run.implementation_id)?.project_id !== project.id) throw new FactoryError("issue_batch_scope_changed", "The planning Run's Project scope changed", 409);
+        return jsonResponse(this.issueBatches.propose(run.implementation_id, { ...body, run_id: run.id } as unknown as import("../shared/issue-batches.ts").IssueBatchProposal), 201);
+      }
       if (action === "specification" && run.action === "to-spec") return jsonResponse(this.workflow.mutate(run.implementation_id, "specifications", body), 201);
       if (action === "tickets" && run.action === "to-tickets") return jsonResponse(this.workflow.mutate(run.implementation_id, "tickets", body), 201);
       if (action === "proposal" && run.action === "retro") {
@@ -240,6 +248,18 @@ export class FactoryService {
         if (request.method !== "POST" || !sameOrigin(request)) return httpError(403, "invalid_origin", "Use Retry from this app");
         await this.runtime.reconcileCapacity();
         return jsonResponse(this.queue.retry(retryRoute[1]!, await this.body(request)));
+      }
+      const issueBatchAction = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/issue-batches\/([a-zA-Z0-9-]+)\/(review|publish)$/.exec(url.pathname);
+      if (issueBatchAction) {
+        if (request.method !== "POST" || !sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Review and publish issue batches from this app");
+        const proof = await this.body(request) as unknown as import("../shared/issue-batches.ts").IssueBatchAction;
+        return jsonResponse(issueBatchAction[3] === "review" ? await this.issueBatches.review(issueBatchAction[1]!, issueBatchAction[2]!, proof, url.origin) : await this.issueBatches.publish(issueBatchAction[1]!, issueBatchAction[2]!, proof));
+      }
+      const issueBatches = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/issue-batches$/.exec(url.pathname);
+      if (issueBatches) {
+        if (request.method === "GET") return jsonResponse(this.issueBatches.overview(issueBatches[1]!));
+        if (request.method === "POST" && sameOrigin(request)) return jsonResponse(this.issueBatches.propose(issueBatches[1]!, await this.body(request) as unknown as import("../shared/issue-batches.ts").IssueBatchProposal), 201);
+        return httpError(403, "invalid_origin", "Use issue batch controls from this app");
       }
       if (url.pathname === "/api/factory-host/pane-state" && request.method === "POST") {
         const body = await this.body(request); if (typeof body.pane_id !== "string" || (!body.pane_id || body.pane_id.length > 200 || /[\0\r\n]/.test(body.pane_id))) throw new FactoryError("invalid_pane", "Select a native pane");

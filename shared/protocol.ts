@@ -1267,6 +1267,8 @@ export interface FactoryRequests {
   project_schedule: import("./project-schedules.ts").ProjectScheduleConfiguration;
   project_sync: { job: import("./project-schedules.ts").ProjectSyncJob; result_id?: string };
   github_action: { head: string; base: string; policy_revision: string };
+  issue_batch_proposal: import("./issue-batches.ts").IssueBatchProposal;
+  issue_batch_action: import("./issue-batches.ts").IssueBatchAction;
   implementation: { title: string; description: string; project_id?: string | null };
   configure: { project_id?: string | null; provider?: import("./factory.ts").FactoryProvider | null; machine_id?: string | null };
   complete_work: { run_id: string };
@@ -1313,6 +1315,18 @@ export type FactoryRequestBody = FactoryRequests[keyof FactoryRequests];
  * POST /api/factory/implementations/:id/retry ({run_id}) -> ProjectQueueOverview;
  * authorizes one replacement for the current failed attempt without dispatching. */
 export type { ProjectQueueConfiguration, ProjectQueueOverview } from "./project-queue.ts";
+/** GET /api/factory/implementations/:id/issue-batches -> IssueBatchesOverview.
+ * POST .../issue-batches -> IssueBatch, 201; IssueBatchProposal retains a whole proposed
+ * deliverable graph without remote mutations. Revision changes invalidate prior review.
+ * POST .../issue-batches/:batch_id/review -> IssueBatch; IssueBatchAction binds owner review
+ * to the batch, Project policy, repository and account. Requires same-origin and machine header.
+ * POST .../issue-batches/:batch_id/publish -> IssueBatch; an explicit owner action against
+ * the reviewed revision, same-origin and x-herdr-machine: 1. Never runs on chat completion.
+ * POST /api/factory-agent/:run_id/issue-batch -> IssueBatch, 201; IssueBatchProposal,
+ * scoped planning Runs may retain draft proposals for their frozen Project only.
+ * The scoped credential grants neither review nor publication.
+ */
+export type { IssueBatch, IssueBatchProposal, IssueBatchesOverview, PlannedIssue } from "./issue-batches.ts";
 /** GET /api/factory/projects/:id/github -> ProjectGitHubOverview.
  * GET .../github/schedules -> ProjectSchedulesOverview; built-in defaults preserve saved polling.
  * POST .../github/schedules/configure -> ProjectSchedulesOverview; ProjectScheduleConfiguration,

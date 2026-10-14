@@ -14,7 +14,7 @@ function reasonLabel(reason: string, t: ReturnType<typeof useT>): string {
     case "retry_required": return t("Owner Retry required");
     case "awaiting_delivery": return t("Awaiting merge");
     case "dependency_unverified": return t("Waiting for verified dependencies");
-    case "publication_incomplete": return t("Issue batch publication incomplete");
+    case "batch_incomplete": return t("Issue batch publication incomplete");
     case "start_planning": case "planning_required": return t("Start planning explicitly from Inbox.");
     case "approval_required": return t("Approval of this issue revision is required.");
     case "automatic_implementation_disabled": return t("Automatic implementation is disabled for this Project.");

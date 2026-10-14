@@ -6,9 +6,30 @@ import { join } from "node:path";
 import { createServer } from "./index.ts";
 import { githubScheduleFixture } from "./github-schedules.fixture.ts";
 import { factoryDeliveryFixture } from "./factory-delivery.fixture.ts";
+import { batchProposal, githubIssueBatchFixture } from "./github-issue-batches.fixture.ts";
 import { herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 
 describe("Project queue through the public API", () => {
+  it("holds every issue from an incomplete publication batch across restart", async () => {
+    const f = await githubIssueBatchFixture();
+    try {
+      writeFileSync(f.responses, JSON.stringify({ fail_label_number: 102 }));
+      const policy = (await f.request(f.githubRoute + "/configure", { ...f.policy, auto_implement: true })).body;
+      const batch = (await f.request(f.route, batchProposal)).body;
+      const proof = { revision: batch.revision, policy_revision: policy.revision };
+      await f.request(`${f.route}/${batch.id}/review`, proof);
+      expect((await f.request(`${f.route}/${batch.id}/publish`, proof)).body.condition).toBe("held");
+      const source = (await f.request(f.githubRoute)).body.sources.find((source: { number: number }) => source.number === 101);
+      const route = f.githubRoute.replace(/\/github$/, "/queue");
+      const inspect = () => f.request(route);
+      let queue = (await inspect()).body;
+      expect(queue.next_implementation_id).toBeNull();
+      expect(queue.items.find((item: { implementation_id: string }) => item.implementation_id === source.implementation_id).reasons).toContain("batch_incomplete");
+      f.restart(); queue = (await inspect()).body;
+      expect(queue.next_implementation_id).toBeNull();
+      expect(queue.items.find((item: { implementation_id: string }) => item.implementation_id === source.implementation_id).reasons).toContain("batch_incomplete");
+    } finally { f.close(); }
+  });
   it("releases verified implementation capacity while holding the Assignment for delivery", async () => {
     const f = await factoryDeliveryFixture(true, true);
     try {
