@@ -11,8 +11,6 @@
  */
 export const ZH: Record<string, string> = {
   "Delivery milestone": "交付完成条件",
-  "Verified merge": "已验证的合并",
-  "Containing release": "包含更改的发布版本",
   "Delivery branch": "交付目标分支",
   "Delivery settings apply to new Assignments. Started Assignments keep their frozen scope.": "交付设置适用于新任务。已启动的任务保留其已确定的范围。",
   "Interrupted": "已中断",

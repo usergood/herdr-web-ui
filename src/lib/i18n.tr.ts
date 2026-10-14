@@ -8,8 +8,6 @@
  */
 export const TR: Record<string, string> = {
   "Delivery milestone": "Teslimat tamamlanma koşulu",
-  "Verified merge": "Doğrulanmış birleştirme",
-  "Containing release": "Değişiklikleri içeren sürüm",
   "Delivery branch": "Teslimat dalı",
   "Delivery settings apply to new Assignments. Started Assignments keep their frozen scope.": "Teslimat ayarları yeni Görevlere uygulanır. Başlatılmış Görevler sabit kapsamlarını korur.",
   "Interrupted": "Kesintiye uğradı",

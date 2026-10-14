@@ -7,8 +7,6 @@
  */
 export const KO: Record<string, string> = {
   "Delivery milestone": "전달 완료 기준",
-  "Verified merge": "검증된 병합",
-  "Containing release": "변경 사항을 포함한 릴리스",
   "Delivery branch": "전달 대상 브랜치",
   "Delivery settings apply to new Assignments. Started Assignments keep their frozen scope.": "전달 설정은 새 과제에 적용됩니다. 시작된 과제는 확정된 범위를 유지합니다.",
   "Interrupted": "중단됨",

@@ -9,8 +9,6 @@
  */
 export const JA: Record<string, string> = {
   "Delivery milestone": "納品の完了条件",
-  "Verified merge": "検証済みのマージ",
-  "Containing release": "変更を含むリリース",
   "Delivery branch": "納品先ブランチ",
   "Delivery settings apply to new Assignments. Started Assignments keep their frozen scope.": "納品設定は新しい課題に適用されます。開始済みの課題は確定した範囲を維持します。",
   "Interrupted": "中断",
