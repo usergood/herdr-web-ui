@@ -124,7 +124,7 @@ export class FactoryContinuation {
     try {
       const run = await this.runtime.reconcile(runId);
       if (this.stopped) return;
-      if (run.condition === "working") { this.retry(runId); return; }
+      if (["working", "needs_you", "blocked"].includes(run.condition)) { this.retry(runId); return; }
       if (run.condition !== "ready") return;
       this.validate(record.implementation_id, record.body);
       if (record.scope_hash !== this.scopeHash(record.implementation_id)) throw new FactoryError("scope_changed", "Project settings or the approved scope changed during verification; inspect them before continuing", 409);

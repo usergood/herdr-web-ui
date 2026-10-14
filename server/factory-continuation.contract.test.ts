@@ -95,7 +95,7 @@ describe("continuing approved workflow steps", () => {
     } finally { app.stop(); proxy.stop(); await host.close(); rmSync(state, { recursive: true, force: true }); }
   }, 60_000);
 
-  it.each([false, true])("observes remote verification readiness and fences changed checkout configuration (%s)", async (changeCheckout) => {
+  it.each([[false, false], [true, false], [false, true]])("observes remote readiness and fences checkout changes (changed: %s, prompt: %s)", async (changeCheckout, nativePrompt) => {
     const host = await fixture("owned-continuation-host");
     const state = mkdtempSync(join(tmpdir(), "remote-continuation-"));
     let verificationRequests = 0;
@@ -126,6 +126,18 @@ describe("continuing approved workflow steps", () => {
       await request(`${prefix}/questions/${question.id}/answer`, { revision: question.revision, answer: "Explicit owned fixture answer" });
       const contract = await host.agent(run, "contract").then(r => r.json());
       expect((await host.agent(run, "consume", { revision: contract.question_revision })).status).toBe(200);
+      if (nativePrompt) {
+        await herdrRpc("pane.report_agent", { pane_id: run.pane_id, source: "manual", agent: "codex", state: "blocked" });
+        const deadline = Date.now() + 3_000;
+        let blocked = false;
+        do {
+          const detail = await request(prefix).then(r => r.json());
+          blocked = detail.runs.some((entry: FactoryRun) => entry.id === run.id && entry.condition === "needs_you");
+          if (blocked) break;
+          await Bun.sleep(50);
+        } while (Date.now() < deadline);
+        expect(blocked).toBe(true);
+      }
       if (changeCheckout) {
         const other = join(state, "other-checkout");
         execFileSync("git", ["clone", "--quiet", host.repo, other], { stdio: "ignore" });

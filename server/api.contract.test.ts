@@ -1874,6 +1874,9 @@ describe("workspace and discovery endpoints", () => {
   });
 
   it("creates, edits, searches, inspects, and closes an owned workspace", async () => {
+    // CI's CHECK_DIR is inside ignored .ci/. Give this fixture its own Git boundary
+    // so a parent's ignore rules cannot hide the file the endpoint should discover.
+    expect(Bun.spawnSync(["git", "init", "-q", directory], { stdout: "ignore", stderr: "ignore" }).exitCode).toBe(0);
     writeFileSync(filePath, "mention fixture");
     // the dialog sends null for "not given" (agent: null = shell only): nulls must read as absent
     const create = await fetch(`${base()}/api/workspace/create`, {

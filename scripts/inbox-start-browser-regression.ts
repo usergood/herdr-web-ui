@@ -53,7 +53,7 @@ try {
     await workflow.getByRole("button",{name:"Continue with available context",exact:true}).click();
     const launched=page.waitForResponse(r=>r.url().endsWith("/continue")&&r.request().method()==="POST");
     await workflow.getByRole("button",{name:"Continue workflow",exact:true}).click();
-    const response=await launched;const run=await response.json();assert.equal(response.status(),202,JSON.stringify(run));await workflow.waitFor({state:"hidden"});return run;
+    const response=await launched;const run=await response.json();assert.equal(response.status(),202,JSON.stringify(run));try{await workflow.waitFor({state:"hidden"});}catch{throw new Error(`Workflow did not open ${run.action} (${run.condition}): ${JSON.stringify(await workflow.getByRole("alert").allTextContents())}`);}return run;
   };
   await openWorkflow();
   const answer=workflow.getByRole("textbox",{name:"Your answer",exact:true});
@@ -87,7 +87,7 @@ try {
   await shot("inbox-workflow-desktop.png");await page.setViewportSize({width:390,height:844});
   assert(await workflow.evaluate(el=>el.scrollWidth<=el.clientWidth),"Workflow must fit a phone");
   await shot("inbox-workflow-mobile.png");await page.setViewportSize({width:1440,height:1000});
-  await page.keyboard.press("Escape");await workflow.waitFor({state:"hidden"});
+  await workflow.locator("button[aria-label=\"Close\"]:enabled").waitFor();await page.keyboard.press("Escape");await workflow.waitFor({state:"hidden"});
   const actual=await page.request.get(`http://localhost:${app.port}/api/factory/providers?machine_id=local&implementation_id=${planningId}`).then(r=>r.json());assert.equal(actual.providers.find((p:any)=>p.provider==="codex").factory_ready,false);
   await page.goto(`http://localhost:${app.port}/#factory/${planningId}`);const steps=page.getByRole("region",{name:"Next step",exact:true});
   const head=execFileSync("git",["rev-parse","HEAD"],{cwd:repo,encoding:"utf8"}).trim();const now=new Date().toISOString();const reviewId=crypto.randomUUID();
