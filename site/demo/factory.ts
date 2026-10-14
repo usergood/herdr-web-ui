@@ -89,7 +89,7 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
     const overview: ProjectSchedulesOverview = { schedules: [
       { job: "github_sync", enabled: false, cadence: "interval", interval_minutes: policy?.poll_minutes ?? 15, local_time: "03:00", time_zone: "America/Mexico_City", revision: null, next_execution: null, condition: "idle", failure_count: 0, retry_at: null },
       { job: "upstream_sync", enabled: false, cadence: "daily", interval_minutes: 1440, local_time: "03:00", time_zone: "America/Mexico_City", revision: null, next_execution: null, condition: "idle", failure_count: 0, retry_at: null },
-    ], results: [] };
+    ], results: [], upstream: { repository: policy?.upstream_repository ?? null, detected: null, active: null, candidate: null } };
     return json(overview);
   }
   if (/^\/api\/factory\/projects\/[^/]+\/github\/issues\/\d+\/approve$/.test(path)) return failure("demo_only", "Issue readiness needs verified GitHub evidence on a real connection server.");

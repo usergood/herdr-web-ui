@@ -31,6 +31,8 @@ if (endpoint === "graphql") {
 const result = endpoint === "user" ? { login: "fictional-owner", id: 1042 }
   : endpoint === "graphql" && args.some(arg => arg.includes("issue(number:")) ? { data: { repository: { issue: { comments: { nodes: data.comments ?? [], pageInfo: { hasNextPage: false, endCursor: null } } } } } }
   : endpoint === "graphql" ? { data: { repository: { pullRequests: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } }
+  : endpoint?.includes("/releases?") ? data.release_pages?.[endpoint.split("page=").at(-1)] ?? (endpoint.endsWith("page=1") ? data.releases ?? [] : [])
+  : endpoint?.includes("/commits/") ? { sha: data.release_heads?.[decodeURIComponent(endpoint.split("/commits/")[1])] }
   : endpoint?.includes("/issues?") ? (endpoint.includes("page=1&") ? data.issues ?? [] : [])
   : endpoint?.includes("/issues/") ? data.issues?.find(issue => endpoint.endsWith("/" + issue.number)) : endpoint === "repos/fictional/schedules" ? { full_name: "fictional/schedules", default_branch: "main" } : {};
 process.stdout.write(JSON.stringify(result));

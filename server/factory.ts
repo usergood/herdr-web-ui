@@ -75,6 +75,7 @@ export class FactoryService {
       for (const idea of this.store.list<Implementation>("implementations")) {
         if (idea.project_id === projectId && idea.delivery && !idea.archived_at && !idea.discard_requested_at && idea.stage !== "done") await this.delivery.sync(idea.id, idea.delivery.revision);
       }
+      this.github.upstream.reconcile(this.store.get<FactoryProject>("projects", projectId)!);
     });
     this.queue = new ProjectQueue(this.store, () => this.settings(), id => this.github.overview(id));
     this.issueBatches = this.github.issueBatches;
@@ -124,6 +125,7 @@ export class FactoryService {
     if (this.activeWork(id)) return current;
     const next: Implementation = { ...current, stage: "done", outcome: "discarded", updated_at: new Date().toISOString() };
     this.store.put("implementations", next); this.store.event(id, "assignment_discarded", { evidence_retained: true });
+    if (next.project_id) this.github.upstream.reconcile(this.store.get<FactoryProject>("projects", next.project_id)!);
     return next;
   }
   private projectActive(id: string): boolean {
@@ -742,7 +744,9 @@ export class FactoryService {
         if (request.method === "GET" && !deliveryRoute[2]) return jsonResponse(idea.delivery ?? null);
         if (request.method !== "POST" || !sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Use delivery controls from this app");
         const body = await this.body(request);
-        return jsonResponse(deliveryRoute[2] ? await this.delivery.sync(idea.id, body.expected_revision) : await this.delivery.link(idea.id, body as unknown as import("../shared/factory.ts").AssignmentDeliveryConfiguration));
+        const result = deliveryRoute[2] ? await this.delivery.sync(idea.id, body.expected_revision) : await this.delivery.link(idea.id, body as unknown as import("../shared/factory.ts").AssignmentDeliveryConfiguration);
+        if (deliveryRoute[2] && idea.project_id) this.github.upstream.reconcile(this.store.get<FactoryProject>("projects", idea.project_id)!);
+        return jsonResponse(result);
       }
       const discardRoute = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/discard$/.exec(url.pathname);
       if (discardRoute && request.method === "POST") {

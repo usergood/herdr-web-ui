@@ -8,6 +8,15 @@
  * in English. Placeholders in braces keep their English names.
  */
 export const JA: Record<string, string> = {
+  "Upstream repository (owner/name)": "アップストリームのリポジトリ（所有者/名前）",
+  "Upstream releases": "アップストリームのリリース",
+  "Upstream releases enter Inbox for planning.": "アップストリームのリリースは計画のため受信箱に追加されます。",
+  "Detected release: {tag}": "検出したリリース: {tag}",
+  "Active update: {tag}": "進行中の更新: {tag}",
+  "Next release: {tag}": "次のリリース: {tag}",
+  "No release detected": "検出したリリースなし",
+  "No active update": "進行中の更新なし",
+  "No next release": "次のリリースなし",
   "Reconcile Discard": "破棄を再確認",
   "Discard pending": "破棄待ち",
   "Discard Assignment": "アサインメントを破棄",

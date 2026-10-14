@@ -6,6 +6,15 @@
  * braces keep their English names.
  */
 export const KO: Record<string, string> = {
+  "Upstream repository (owner/name)": "업스트림 저장소 (소유자/이름)",
+  "Upstream releases": "업스트림 릴리스",
+  "Upstream releases enter Inbox for planning.": "업스트림 릴리스는 계획을 위해 받은 편지함에 추가됩니다.",
+  "Detected release: {tag}": "감지된 릴리스: {tag}",
+  "Active update: {tag}": "진행 중인 업데이트: {tag}",
+  "Next release: {tag}": "다음 릴리스: {tag}",
+  "No release detected": "감지된 릴리스 없음",
+  "No active update": "진행 중인 업데이트 없음",
+  "No next release": "다음 릴리스 없음",
   "Reconcile Discard": "폐기 상태 확인",
   "Discard pending": "폐기 대기 중",
   "Discard Assignment": "과제 폐기",

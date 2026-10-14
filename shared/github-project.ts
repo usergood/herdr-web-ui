@@ -8,6 +8,7 @@ export interface ProjectGitHubPolicy extends FactoryRecord {
   trusted_reviewers: string[]; required_checks: string[]; review_context: string; poll_minutes: number;
   /** Omitted fields on older records inherit defaults; these gates never follow PR merge policy. */
   triage_labels?: ProjectTriageLabels; auto_implement?: boolean; trusted_issue_approvers?: string[];
+  upstream_repository?: string | null;
 }
 export interface GitHubConnection<T> { nodes: T[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } }
 export interface ProjectPullRequest {

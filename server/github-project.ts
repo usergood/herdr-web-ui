@@ -12,6 +12,7 @@ import type { ProjectSchedulesOverview, ProjectScheduleConfiguration, ProjectSyn
 import { nextProjectSync, validateProjectSchedule, type ProjectScheduleTiming, type StoredProjectSchedule } from "./project-schedules.ts";
 import { PROJECT_TRIAGE_ROLES, type IssueReadinessReason, type ProjectTriageLabels, type ProjectIssuePlan, type ProjectIssueApproval, type ProjectIssueApprovalRequest } from "../shared/github-project.ts";
 import { GitHubIssueBatches } from "./github-issue-batches.ts";
+import { UpstreamReleases } from "./upstream-releases.ts";
 
 const pullFields = `number id title body url state isDraft headRefOid baseRefOid headRefName baseRefName author { login } mergeStateStatus reviewDecision headRepository { nameWithOwner } viewerCanUpdate
 reviews(first:100) { nodes { id state body submittedAt author { login } commit { oid } } pageInfo { hasNextPage endCursor } }
@@ -25,12 +26,14 @@ export interface Issue { number: number; node_id: string; title: string; body: s
 /** Project-scoped metadata and guarded mutation. Never executes foreign PR code. */
 export class ProjectGitHub {
   readonly issueBatches: GitHubIssueBatches;
+  readonly upstream: UpstreamReleases;
   private readonly busy = new Set<string>();
   private stopped = false;
   private readonly stopPolling: () => void;
   private readonly now: () => number;
   constructor(private readonly store: FactoryStore, private readonly accounts: MachineAccounts, private readonly discover?: (machineId: string, path: string) => Promise<import("../shared/project-setup.ts").ProjectDiscovery>, timing: ProjectScheduleTiming = {}, private readonly pauseIssueWork?: (source: ProjectGitHubSource) => Promise<void>, private readonly observeDelivery?: (projectId: string) => Promise<void>) {
     this.now = timing.now ?? Date.now;
+    this.upstream = new UpstreamReleases(this.store);
     this.issueBatches = new GitHubIssueBatches(this.store, async (id, revision, operation) => this.locked(id, async () => {
       const policy = this.store.get<ProjectGitHubPolicy>("github_policies", id);
       if (!policy || policy.revision !== revision) throw new FactoryError("github_policy_changed", "Refresh the Project policy before reviewing publication", 409);
@@ -74,7 +77,7 @@ export class ProjectGitHub {
       if (!saved) return schedule;
       const { id: _, project_id: __, ...publicSchedule } = saved;
       return publicSchedule;
-    }), results: this.store.list<ProjectSyncResult>("project_sync_results", id) };
+    }), results: this.store.list<ProjectSyncResult>("project_sync_results", id), upstream: this.upstream.overview(id, policy?.upstream_repository ?? null) };
   }
   async configureSchedule(id: string, value: ProjectScheduleConfiguration): Promise<ProjectSchedulesOverview> {
     return this.locked(id, async () => {
@@ -147,6 +150,8 @@ export class ProjectGitHub {
     return this.locked(id, async () => {
       const project = this.project(id); const prior = this.store.get<ProjectGitHubPolicy>("github_policies", id);
       const projectScope = this.projectScope(id);
+      const upstream = value.upstream_repository === undefined ? prior?.upstream_repository ?? null : value.upstream_repository;
+      if (upstream !== null && (typeof upstream !== "string" || upstream.length > 200 || !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(upstream))) throw new FactoryError("invalid_github_policy", "Select an upstream repository as owner/name");
       if (value.expected_revision !== (prior?.revision ?? null)) throw new FactoryError("github_policy_changed", "Refresh the Project GitHub settings", 409);
       if (!/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(value.repository ?? "") || typeof value.account_profile_id !== "string" || !Number.isInteger(value.poll_minutes) || value.poll_minutes < 5 || value.poll_minutes > 1440 || typeof value.review_context !== "string" || value.review_context.length > 30_000) throw new FactoryError("invalid_github_policy", "Select a repository, account and bounded polling interval");
       const checkout = this.store.list<ProjectCheckout>("checkouts", id).find((item) => item.machine_id === "local");
@@ -174,8 +179,11 @@ export class ProjectGitHub {
       }
       const { expected_revision: _, ...configuration } = value;
       if (this.projectScope(id) !== projectScope) throw new FactoryError("account_scope_changed", "The Project changed during GitHub configuration", 409);
-      const policy: ProjectGitHubPolicy = { ...(prior ?? this.store.record()), ...configuration, triage_labels: triageLabels, auto_implement: autoImplement, trusted_issue_approvers: trustedIssueApprovers, id, project_id: id, revision: randomUUID(), project_scope: this.projectScope(id), updated_at: new Date().toISOString() };
-      this.store.put("github_policies", policy, id); this.store.put("github_sync", { id, last_sync: null, next_sync: this.now() + value.poll_minutes * 60_000, problem: null });
+      const policy: ProjectGitHubPolicy = { ...(prior ?? this.store.record()), ...configuration, upstream_repository: upstream, triage_labels: triageLabels, auto_implement: autoImplement, trusted_issue_approvers: trustedIssueApprovers, id, project_id: id, revision: randomUUID(), project_scope: this.projectScope(id), updated_at: new Date().toISOString() };
+      this.store.db.transaction(() => {
+        this.upstream.configure(id, upstream);
+        this.store.put("github_policies", policy, id); this.store.put("github_sync", { id, last_sync: null, next_sync: this.now() + value.poll_minutes * 60_000, problem: null });
+      })();
       const savedSchedule = this.store.get<StoredProjectSchedule>("project_schedules", `${id}:github_sync`);
       if (savedSchedule) {
         const changed = savedSchedule.enabled !== value.sync_enabled || savedSchedule.interval_minutes !== value.poll_minutes;
@@ -513,7 +521,12 @@ export class ProjectGitHub {
       })();
       try {
         if (job === "github_sync") await this.synchronize(id, trigger === "reconcile");
-        else throw new FactoryError("upstream_sync_unavailable", "Upstream release discovery is not available yet", 409);
+        else {
+          const policy = this.store.get<ProjectGitHubPolicy>("github_policies", id);
+          if (!policy?.upstream_repository) throw new FactoryError("upstream_not_configured", "Configure the Project GitHub account and upstream repository", 409);
+          const scope = await this.scope(policy);
+          await this.upstream.synchronize(this.project(id), policy.upstream_repository, path => this.api(policy, scope, path));
+        }
         if (this.stopped) throw new FactoryError("sync_uncertain", "The server stopped before the synchronization receipt", 409);
         this.store.db.transaction(() => {
           this.store.put("project_sync_results", { ...result, condition: "succeeded", finished_at: new Date(this.now()).toISOString() }, id);

@@ -1350,7 +1350,8 @@ export type { ProjectQueueConfiguration, ProjectQueueOverview } from "./project-
  */
 export type { IssueBatch, IssueBatchProposal, IssueBatchesOverview, PlannedIssue } from "./issue-batches.ts";
 /** GET /api/factory/projects/:id/github -> ProjectGitHubOverview.
- * GET .../github/schedules -> ProjectSchedulesOverview; built-in defaults preserve saved polling.
+ * GET .../github/schedules -> ProjectSchedulesOverview; built-in defaults preserve saved polling;
+ * upstream includes detected/active/candidate release identities and fixed commit revisions.
  * POST .../github/schedules/configure -> ProjectSchedulesOverview; ProjectScheduleConfiguration,
  * revision-bound enable/disable and wall time, same origin and x-herdr-machine: 1.
  * POST .../github/schedules/run ({job}) -> ProjectSchedulesOverview; shares sync ownership.
@@ -1358,7 +1359,8 @@ export type { IssueBatch, IssueBatchProposal, IssueBatchesOverview, PlannedIssue
  * refreshes interrupted synchronization without replaying remote mutations.
  * POST .../github/settings ({account_profile_id}) -> ProjectGitHubSettings;
  * detected repository, collaborators and branch checks, without enabling automation.
- * POST .../github/configure -> ProjectGitHubPolicy, uses ProjectGitHubConfiguration.
+ * POST .../github/configure -> ProjectGitHubPolicy, uses ProjectGitHubConfiguration;
+ * optional upstream_repository selects release discovery without enabling its schedule or implementation.
  * Includes canonical triage-label overrides, default-off auto_implement and trusted_issue_approvers.
  * POST .../github/sync -> ProjectGitHubOverview; imports owned issue/fix records and applies opted-in policies.
  * Issue sources retain scope, resolved triage roles, eligibility reasons and revision-bound plan approval.
@@ -1376,6 +1378,7 @@ export type { IssueBatch, IssueBatchProposal, IssueBatchesOverview, PlannedIssue
  */
 export type { ProjectGitHubOverview, ProjectGitHubPolicy, ProjectGitHubConfiguration, ProjectGitHubPull, ProjectGitHubSource, ProjectGitHubMutation, ProjectGitHubFiles, ProjectIssuePlan, ProjectIssueApproval, ProjectIssueApprovalRequest, ProjectIssueReadiness } from "./github-project.ts";
 export type { ProjectSyncJob, ProjectSyncSchedule, ProjectSyncResult, ProjectSchedulesOverview, ProjectScheduleConfiguration } from "./project-schedules.ts";
+export type { UpstreamRelease, ProjectUpstreamOverview } from "./upstream-releases.ts";
 export interface FactoryBatchReceipt {
   id: string; created_at: string; updated_at: string; implementation_id: string;
   run_id: string; snapshot_id: string; key: string; signature: string;

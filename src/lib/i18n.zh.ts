@@ -10,6 +10,15 @@
  * Placeholders in braces keep their English names.
  */
 export const ZH: Record<string, string> = {
+  "Upstream repository (owner/name)": "上游仓库（所有者/名称）",
+  "Upstream releases": "上游发布",
+  "Upstream releases enter Inbox for planning.": "上游发布会进入收件箱以供规划。",
+  "Detected release: {tag}": "检测到的发布：{tag}",
+  "Active update: {tag}": "进行中的更新：{tag}",
+  "Next release: {tag}": "下一个发布：{tag}",
+  "No release detected": "未检测到发布",
+  "No active update": "没有进行中的更新",
+  "No next release": "没有下一个发布",
   "Reconcile Discard": "核对放弃状态",
   "Discard pending": "等待放弃确认",
   "Discard Assignment": "放弃任务",
