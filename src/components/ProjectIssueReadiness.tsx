@@ -19,7 +19,7 @@ export function ProjectIssueReadiness({ source, policyRevision, route, busy, per
   const t = useT();
   const [plan, setPlan] = useState<ProjectIssuePlan>(source.readiness?.approval?.plan ?? { acceptance_criteria: "", dependencies: [], testing_seams: [], planning_decisions: [] });
   const [problem, setProblem] = useState("");
-  const reasons: Record<IssueReadinessReason, string> = { start_planning: t("Start planning explicitly from Inbox."), human_only: t("This issue requires human implementation."), wontfix: t("This issue will not be actioned."), conflicting_triage: t("Correct conflicting triage labels."), approval_required: t("Approval of this issue revision is required."), automatic_implementation_disabled: t("Automatic implementation is disabled for this Project."), issue_closed: t("This issue is closed.") };
+  const reasons: Record<IssueReadinessReason, string> = { start_planning: t("Start planning explicitly from Inbox."), human_only: t("This issue requires human implementation."), wontfix: t("This issue will not be actioned."), conflicting_triage: t("Correct conflicting triage labels."), approval_required: t("Approval of this issue revision is required."), automatic_implementation_disabled: t("Automatic implementation is disabled for this Project."), issue_closed: t("This issue is closed."), batch_incomplete: t("The whole batch is held until every issue and dependency link is confirmed.") };
   return <section className="factory-section project-issue-readiness" role="region" aria-label={t("Issue #{number}", { number: source.number })}>
     <h4><a href={source.url} target="_blank" rel="noreferrer">#{source.number} · {source.issue?.title}</a></h4>
     <p>{source.triage_roles?.join(" · ")}</p>
