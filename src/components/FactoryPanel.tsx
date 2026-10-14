@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { ArrowDown, ArrowUp, ArrowLeft, Archive, Paperclip, Plus, RefreshCw } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowLeft, Archive, MessageSquarePlus, Paperclip, Plus, RefreshCw, Settings } from "lucide-react";
 import type { FactoryBoardItem, FactoryBoardLane, FactoryDetail, FactoryOverview, FactoryProvider, FactoryStage, Implementation, RunCondition, SpecificationVersion } from "../../shared/protocol.ts";
 import type { AgentModelSelection } from "../../shared/agent-models.ts";
 import type { Machine } from "../../shared/machines.ts";
@@ -19,6 +19,7 @@ import { useFactoryCapabilities } from "../lib/useFactoryCapabilities.ts";
 import { FactoryBoardStatus } from "./FactoryBoardStatus.tsx";
 import { FactoryRunHistory } from "./FactoryRunHistory.tsx";
 import { factoryConditionLabel } from "../lib/factoryPresentation.ts";
+import type { ProjectView } from "../lib/projectNavigation.ts";
 import "./FactoryPanel.css";
 
 const lanes: FactoryBoardLane[] = ["inbox", "queued", "running", "needs_you", "done"];
@@ -31,7 +32,7 @@ function stageLabel(stage: FactoryStage, t: ReturnType<typeof useT>): string {
 function selectedFromUrl(): string | null { const match = /^#factory\/([a-zA-Z0-9-]+)$/.exec(location.hash); return match?.[1] ?? null; }
 type PlannedTicket = { key: string; title: string; acceptance: string; dependencies: string[] };
 
-export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = null, allAssignments = false, onChoose }: { machines: Machine[]; onOpenPane: (machineId: string, paneId: string) => void; selectedId?: string | null; projectId?: string | null; allAssignments?: boolean; onChoose?: (id: string | null) => void }) {
+export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = null, allAssignments = false, onChoose, onNavigate }: { machines: Machine[]; onOpenPane: (machineId: string, paneId: string) => void; selectedId?: string | null; projectId?: string | null; allAssignments?: boolean; onChoose?: (id: string | null) => void; onNavigate?: (view: ProjectView) => void }) {
   const t = useT();
   const [overview, setOverview] = useState<FactoryOverview | null>(null);
   const [selected, setSelected] = useState<string | null>(() => selectedId === undefined ? selectedFromUrl() : selectedId);
@@ -53,6 +54,8 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
   const [source, setSource] = useState<{ id: string; content: string } | null>(null);
   const selection = useRef(selected); selection.current = selected;
   const generation = useRef(0);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const fileInput = useRef<HTMLInputElement>(null);
   function boardLane(item: Implementation): FactoryBoardLane {
     return overview?.board?.find(entry => entry.implementation_id === item.id)?.lane ?? ({ inbox: "inbox", specifying: "needs_you", ready: "queued", running: "running", review: "needs_you", done: "done" } as const)[item.stage];
@@ -97,6 +100,7 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
   const prefix = selected ? `/implementations/${selected}` : "";
   const currentSpec: SpecificationVersion | undefined = detail?.specifications.at(-1);
   const selectedProject = overview?.projects.find((project) => project.id === detail?.implementation.project_id);
+  const boardProject = overview?.projects.find((project) => project.id === projectId);
   const effectiveProvider = detail?.implementation.provider ?? selectedProject?.provider ?? overview?.settings.provider;
   const effectiveMachine = detail?.implementation.machine_id ?? selectedProject?.machine_id ?? "local";
   const [preset, setPreset] = useState<AgentModelSelection>({ model: null, reasoning: null });
@@ -109,6 +113,7 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
   async function capture(event: FormEvent): Promise<void> {
     event.preventDefault(); await perform(async () => {
       const idea = await factoryRequest<Implementation>("/implementations", { title, description: notes, project_id: projectId });
+      if (!mounted.current) return;
       setTitle(""); setNotes(""); choose(idea.id);
     });
   }
@@ -122,7 +127,14 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
   }
 
   return <OpenFileContext.Provider value={null}><section className="factory-panel" aria-label={t("Factory")}>
-    <div className="factory-heading"><h1>{selected ? selectedProject?.name ?? t("Assignments") : projectId ? overview?.projects.find((p) => p.id === projectId)?.name : allAssignments ? t("Assignments") : t("Inbox")}</h1><button className="btn factory-button" onClick={() => choose(null)}><ArrowLeft aria-hidden="true" />{selected || allAssignments ? t("Assignments") : t("Inbox")}</button><button className="icon-button" aria-label={t("Refresh factory")} disabled={busy} onClick={() => void perform(refresh)}><RefreshCw /></button></div>
+    <div className="factory-heading"><h1>{selected ? selectedProject?.name ?? t("Assignments") : boardProject ? boardProject.name : allAssignments ? t("Assignments") : t("Inbox")}</h1><div className="factory-heading-actions">
+      {!selected && allAssignments && boardProject && <>
+        <button className="btn factory-button" aria-label={t("Project settings for {name}", { name: boardProject.name })} onClick={() => onNavigate?.({ kind: "project-settings", id: boardProject.id })}><Settings aria-hidden="true" />{t("Settings")}</button>
+        <button className="btn btn-primary factory-button" onClick={() => onNavigate?.({ kind: "project-inbox", id: boardProject.id })}><MessageSquarePlus aria-hidden="true" />{t("Add message")}</button>
+      </>}
+      {(selected || !allAssignments || !projectId) && <button className="btn factory-button" onClick={() => selected ? choose(null) : onNavigate?.(projectId ? { kind: "project", id: projectId } : { kind: allAssignments ? "inbox" : "assignments" })}><ArrowLeft aria-hidden="true" />{selected || !allAssignments ? t("Assignments") : t("Inbox")}</button>}
+      <button className="icon-button" aria-label={t("Refresh factory")} disabled={busy} onClick={() => void perform(refresh)}><RefreshCw aria-hidden="true" /></button>
+    </div></div>
     {error && <p role="alert" className="error-state">{error}</p>}
     {busy && <p role="status">{t("Saving…")}</p>}
     {!overview && <p role="status">{t("Loading…")}</p>}
@@ -131,9 +143,9 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
       {!allAssignments && <form className="factory-form factory-capture" onSubmit={(event) => void capture(event)}>
         <label>{t("Idea title")}<input className="input factory-input" value={title} onChange={(event) => setTitle(event.target.value)} required maxLength={200} /></label>
         <label>{t("Idea notes")}<textarea className="input factory-input" value={notes} onChange={(event) => setNotes(event.target.value)} maxLength={100_000} /></label>
-        <button className="btn btn-primary" disabled={busy}>{t("Capture idea")}</button>
+        <button className="btn btn-primary factory-button" disabled={busy}>{t("Capture idea")}</button>
       </form>}
-      <button className="btn" aria-pressed={showArchived} onClick={() => setShowArchived(!showArchived)}>{t("Archived tasks")}</button>
+      <button className="btn factory-button" aria-pressed={showArchived} onClick={() => setShowArchived(!showArchived)}>{t("Archived tasks")}</button>
       <div className="factory-filters">
         <label>{t("Run condition")}<select className="select factory-input" value={conditionFilter} onChange={(event) => setConditionFilter(event.target.value)}><option value="all">{t("All conditions")}</option>{["needs_you", "blocked", "disconnected", "interrupted", "working", "ready", "completed", "cancelled", "failed"].map((condition) => <option key={condition} value={condition}>{factoryConditionLabel(condition as RunCondition, t)}</option>)}</select></label>
         {!projectId && <label>{t("Project")}<select className="select factory-input" value={projectFilter} disabled={!!projectId} onChange={(event) => setProjectFilter(event.target.value)}><option value="all">{t("All Projects")}</option><option value="unassigned">{t("Unassigned")}</option>{overview.projects.filter((p) => !p.removed_at).map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>}

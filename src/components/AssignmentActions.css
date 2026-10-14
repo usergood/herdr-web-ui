@@ -1,3 +1,7 @@
 .assignment-actions .factory-actions { align-items: center; }
 .assignment-actions .factory-actions svg { width: var(--icon-size); height: var(--icon-size); flex: none; }
 .assignment-proposal { display: grid; gap: var(--space-3); }
+@media (max-width: 640px) {
+  .assignment-actions > .factory-form { margin-bottom: var(--space-3); }
+  .assignment-actions .factory-actions { align-items: stretch; }
+}

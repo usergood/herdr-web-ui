@@ -66,7 +66,8 @@ try {
   await mixedRow.press("Alt+ArrowUp"); const moved = await moveReceipt;
   assert.equal(moved.status(), 200); assert.equal(moved.request().postDataJSON().insert_index, nativeOrder.indexOf(sibling.workspace.workspace_id));
   const unrelated = await page.request.post(`http://localhost:${app.port}/api/factory/implementations`, { headers: { "x-herdr-factory": "1" }, data: { title: "Global idea outside this Project", description: "Owned scope fixture" } }); assert.equal(unrelated.status(), 201);
-  await page.locator(".project-navigation").getByRole("button", { name: "Inbox chat", exact: true }).click();
+  await page.locator(".project-navigation").getByRole("button", { name: "Browser Project", exact: true }).click();
+  await page.getByRole("button", { name: "Add message", exact: true }).click();
   assert.equal(await page.locator(".factory-panel").getByRole("button", { name: "Global idea outside this Project", exact: true }).count(), 0);
   assert.equal(await page.locator(".tab-strip").count(), 0);
   await page.getByText("Factory settings and recovery", { exact: true }).click();
@@ -129,7 +130,8 @@ try {
   await page.getByRole("button", { name: "Restore chat", exact: true }).click();
   await page.locator(".project-navigation").getByRole("button", { name: /Project native chat/ }).waitFor();
   await page.getByRole("button", { name: "Close settings", exact: true }).click();
-  await page.locator(".project-navigation").getByRole("button", { name: "Project settings for Browser Project", exact: true }).click();
+  await page.locator(".project-navigation").getByRole("button", { name: "Browser Project", exact: true }).click();
+  await page.getByRole("button", { name: "Project settings for Browser Project", exact: true }).click();
   await page.getByRole("textbox", { name: "Project name", exact: true }).fill("Renamed Project");
   await page.getByRole("button", { name: "Rename", exact: true }).click();
   await page.locator(".project-navigation").getByRole("button", { name: "Renamed Project", exact: true }).waitFor();
@@ -140,7 +142,7 @@ try {
   await page.getByRole("button", { name: "Restore", exact: true }).click();
   await page.locator(".project-navigation").getByRole("button", { name: "Renamed Project", exact: true }).waitFor();
   await page.getByRole("button", { name: "Close settings", exact: true }).click();
-  await page.locator(".project-navigation").getByRole("button", { name: "Inbox", exact: true }).click();
+  await page.getByRole("banner").getByRole("button", { name: "Inbox", exact: true }).click();
   assert.equal(await page.locator(".tab-strip").count(), 0);
   await page.getByRole("button", { name: "Global idea outside this Project", exact: true }).waitFor();
   await shot("global-inbox-desktop.png");
@@ -156,7 +158,7 @@ try {
   await page.getByRole("textbox", { name: "Specification text", exact: true }).fill("Keep this unassigned specification reachable.");
   await page.getByRole("button", { name: "Save new revision", exact: true }).click();
   await page.locator(".factory-detail").getByText("Specifying", { exact: true }).first().waitFor();
-  await page.locator(".project-navigation").getByRole("button", { name: "Assignments", exact: true }).click();
+  await page.locator(".factory-panel").getByRole("button", { name: "Assignments", exact: true }).click();
   await page.getByRole("button", { name: "Retained browser research", exact: true }).click();
   await page.getByRole("heading", { name: "Retained browser research", exact: true }).waitFor();
   await page.getByText("Advanced controls", { exact: true }).click();
@@ -185,13 +187,15 @@ try {
   }
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "Open workspace list", exact: true }).click();
-  await page.locator(".project-navigation").getByRole("button", { name: "Inbox chat", exact: true }).click();
+  await page.locator(".project-navigation").getByRole("button", { name: "Renamed Project", exact: true }).click();
+  await page.getByRole("button", { name: "Add message", exact: true }).click();
   await page.getByRole("heading", { name: "Renamed Project", exact: true, level: 1 }).waitFor();
   await page.getByRole("button", { name: "Project scoped idea", exact: true }).waitFor();
   assert.equal(await page.locator(".factory-panel").getByRole("button", { name: "Global idea outside this Project", exact: true }).count(), 0);
   assert.equal(await page.locator(".tab-strip").count(), 0);
   await shot("project-inbox-mobile.png");
   await page.getByRole("button", { name: "Open workspace list", exact: true }).click();
+  await page.locator(".project-navigation").getByRole("button", { name: "Renamed Project", exact: true }).click();
   await page.getByRole("button", { name: "Project settings for Renamed Project", exact: true }).click();
   await page.getByRole("tab", { name: "Workflow", exact: true }).click();
   await page.getByRole("combobox", { name: "Context handoff target", exact: true }).selectOption("200000");
