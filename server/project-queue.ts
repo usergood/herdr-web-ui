@@ -40,7 +40,7 @@ export class ProjectQueue {
       const problem = ownerStopped ? "Automatic implementation was stopped. Start another attempt explicitly." : hold?.approval_id === source?.readiness?.approval?.id ? hold?.problem ?? null : null;
       if (problem) reasons.push("admission_held");
       if (ownerStopped) reasons.push("implementation_stopped");
-      if (["implementation_complete", "pr_open", "merged", "released"].includes(idea.outcome) || idea.delivery && ["merged", "released"].includes(idea.delivery.condition)) reasons.push("awaiting_delivery");
+      if (["implementation_complete", "pr_open", "merged", "released"].includes(idea.outcome) || idea.delivery && ["merged", "released"].includes(idea.delivery.condition) || this.store.list<import("../shared/factory.ts").FactoryEvent>("events", idea.id).some(event => event.kind === "historical_completion_reconciled")) reasons.push("awaiting_delivery");
       if (source?.readiness?.approval?.plan.dependencies.length) {
         try { this.prerequisites(idea.id); } catch { reasons.push("dependency_unverified"); }
       }
