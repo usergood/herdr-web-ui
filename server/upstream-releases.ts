@@ -25,6 +25,7 @@ export class UpstreamReleases {
     this.store.put<StoredUpstream>("upstream_releases", { id: projectId, repository, detected: null, active: null, candidate: null, offered: state.offered }, projectId);
   }
   reconcile(project: FactoryProject): void {
+    if (project.removed_at) return;
     const state = this.store.get<StoredUpstream>("upstream_releases", project.id);
     if (!state?.active) return;
     const idea = this.store.get<Implementation>("implementations", state.active.implementation_id);

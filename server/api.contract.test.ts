@@ -623,6 +623,27 @@ describe("Upstream release discovery", () => {
       expect((await f.request("")).body.implementations).toHaveLength(1);
     } finally { f.close(); }
   });
+  it("retains a follow-up without creating work inside a removed Project", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      await f.request(f.route + "/configure", { ...f.policy, upstream_repository: "fictional/upstream" });
+      const check = async (id: number) => {
+        writeFileSync(f.responses, JSON.stringify({ releases: [{ id, tag_name: `v${id}`, draft: false, published_at: `2026-10-${id}T09:00:00Z` }], release_heads: { [`v${id}`]: id.toString(16).repeat(40) } }));
+        return (await f.request(f.route + "/schedules/run", { job: "upstream_sync" })).body.upstream;
+      };
+      const first = (await check(11)).active;
+      await check(12);
+      const projectRoute = `/projects/${f.route.split("/")[2]}`;
+      expect((await f.request(projectRoute + "/remove", {})).status).toBe(200);
+      await f.request(`/implementations/${first.implementation_id}/discard`, {});
+      f.restart();
+      expect((await f.request("")).body.implementations).toHaveLength(1);
+      expect((await f.request(projectRoute + "/restore", {})).status).toBe(200);
+      f.restart(); f.restart();
+      expect((await f.request(f.route + "/schedules")).body.upstream.active.release.release_id).toBe("12");
+      expect((await f.request("")).body.implementations).toHaveLength(2);
+    } finally { f.close(); }
+  });
 });
 
 describe("Project schedules", () => {
