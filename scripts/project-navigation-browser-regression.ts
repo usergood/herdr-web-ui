@@ -16,10 +16,12 @@ for (const args of [["init", "-b", "main"], ["add", "."], ["-c", "user.name=Fixt
   execFileSync("git", args, { cwd: repo, stdio: "ignore" });
 }
 const host = createServer({ port: 0, stateDir: join(root, "host-state"), token: "owned-navigation-host", machines: false, factory: { accountDiscoveryHome: root, native: {
+  version: async () => "owned-navigation-cli",
   modelCatalog: async provider => ({ protocol: 1, provider, models: [{ id: "owned-remote-model", name: "Owned remote model", reasoning: [], default_reasoning: null }], problem: null }),
 } } });
 const app = createServer({ port: 0, stateDir: join(root, "state"), factory: { accountDiscoveryHome: root,
   machineEndpoint: id => id === "navigation-remote" ? { url: `http://localhost:${host.port}`, token: "owned-navigation-host" } : undefined, native: {
+  version: async () => "owned-navigation-cli",
   modelCatalog: async provider => ({ protocol: 1, provider, models: [{ id: "owned-model", name: "Owned model with a long readable name for a narrow phone screen", reasoning: [], default_reasoning: null }], problem: null }),
 } } });
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
@@ -183,11 +185,16 @@ try {
   await page.getByRole("button", { name: "Add message", exact: true }).click();
   await page.getByRole("textbox", { name: "Idea title", exact: true }).fill("Remote navigation idea");
   const remoteCatalog = page.waitForRequest(request => request.url().endsWith("/api/factory/model-catalog") && request.method() === "POST");
+  const remoteProviders = page.waitForResponse(response => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/factory/providers" && url.searchParams.get("machine_id") === "navigation-remote";
+  });
   await page.getByRole("button", { name: "Capture idea", exact: true }).click();
   const catalogRequest = (await remoteCatalog).postDataJSON();
   assert.equal(catalogRequest.project_id, otherProject.id);
   assert.equal(catalogRequest.machine_id, "navigation-remote", "Project capture retains its owning Machine across navigation");
   await page.getByRole("combobox", { name: "Model", exact: true }).selectOption("owned-remote-model");
+  await (await remoteProviders).finished();
   assert.deepEqual(errors, []);
   console.log("Project navigation browser: desktop and 390px/320px touch navigation, keyboard Settings/capture, readable controls, global Inbox, delayed capture and remote Machine identity");
 } finally {
