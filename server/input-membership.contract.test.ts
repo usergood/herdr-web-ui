@@ -67,6 +67,7 @@ async function pane(label: string): Promise<string> {
     "workspace.create", { label: `herdr-web-ui-test-${label}`, cwd: root, focus: false },
   );
   workspaces.push(created.workspace.workspace_id);
+  await until(async () => (await screen(created.root_pane.pane_id)).trim().length > 0, "the owned shell to show its prompt");
   return created.root_pane.pane_id;
 }
 

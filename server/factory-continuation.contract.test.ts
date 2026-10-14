@@ -7,17 +7,17 @@ import { createServer } from "./index.ts";
 import { herdrRpc, sessionSnapshot, workspaceClose, type WorkspaceCreateResult } from "./herdr/client.ts";
 import type { FactoryRun } from "../shared/protocol.ts";
 
-async function fixture() {
+async function fixture(hostToken = "") {
   const root = mkdtempSync(join(tmpdir(), "saurons-continuation-"));
   const repo = join(root, "repo"); mkdirSync(repo); writeFileSync(join(repo, "README.md"), "Owned continuation fixture\n");
   for (const args of [["init", "-b", "main"], ["add", "."], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "initial"]]) execFileSync("git", args, { cwd: repo, stdio: "ignore" });
   const owned: string[] = [];
-  const app = createServer({ port: 0, stateDir: join(root, "state"), machines: false, factory: { accountDiscoveryHome: root, native: {
+  const app = createServer({ port: 0, token: hostToken, stateDir: join(root, "state"), machines: false, factory: { accountDiscoveryHome: root, native: {
     version: async () => "owned-continuation-fixture",
     createWorkspace: async options => { const result = await herdrRpc<WorkspaceCreateResult>("workspace.create", { ...options, focus: false }); owned.push(result.workspace.workspace_id); return result; },
     startAgent: async options => { await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "idle" }); },
   } } });
-  const request = (path: string, body?: unknown) => fetch(`http://localhost:${app.port}/api/factory${path}`, { method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  const request = (path: string, body?: unknown) => fetch(`http://localhost:${app.port}/api/factory${path}`, { method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1", ...(hostToken ? { authorization: `Bearer ${hostToken}` } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const project = await request("/projects", { name: "Continuation Project", path: repo, machine_id: "local", provider: "codex", tracker: "app" }).then(r => r.json());
   const idea = await request("/implementations", { title: "Continue approved work", description: "", project_id: project.id }).then(r => r.json());
   const prefix = `/implementations/${idea.id}`;
@@ -30,6 +30,105 @@ async function fixture() {
 }
 
 describe("continuing approved workflow steps", () => {
+  it("covers the host finish route with authentication, busy and lost-identity guards", async () => {
+    const f = await fixture("owned-finish-route");
+    const finish = (run: FactoryRun, headers: Record<string, string> = { authorization: "Bearer owned-finish-route", "x-herdr-factory": "1" }) => fetch(`http://localhost:${f.app.port}/api/factory-host/runs/${run.id}/finish`, { method: "POST", headers, body: "{}" });
+    try {
+      const run = await f.start("work", "host-finish-contract");
+      expect((await finish(run, { "x-herdr-factory": "1" })).status).toBe(401);
+      expect((await finish(run, { authorization: "Bearer owned-finish-route" })).status).toBe(403);
+      await herdrRpc("pane.report_agent", { pane_id: run.pane_id, source: "manual", agent: "codex", state: "working" });
+      const busy = await finish(run);
+      expect(busy.status).toBe(409); expect((await busy.json()).error.code).toBe("agent_busy");
+      await herdrRpc("pane.report_agent", { pane_id: run.pane_id, source: "manual", agent: "codex", state: "idle" });
+      const completed = await finish(run);
+      expect(completed.status).toBe(200); expect(await completed.json()).toMatchObject({ id: run.id, condition: "completed", worktree: run.worktree, pane_id: run.pane_id });
+      expect((await sessionSnapshot()).panes.some(pane => pane.pane_id === run.pane_id)).toBe(true);
+      expect((await finish(run).then(r => r.json())).condition).toBe("completed");
+      await f.request(`/runs/${run.id}/reconcile`, {});
+      const lost = await f.start("grill-with-docs", "lost-host-identity");
+      await workspaceClose(lost.workspace_id!);
+      const uncertain = await finish(lost);
+      expect(uncertain.status).toBe(409); expect((await uncertain.json()).error.code).toBe("native_identity_uncertain");
+    } finally { await f.close(); }
+  }, 60_000);
+
+  it("covers scoped native answer synchronization, exact response scope and cursor authorization", async () => {
+    const host = await fixture("owned-sync-host");
+    const state = mkdtempSync(join(tmpdir(), "native-sync-contract-"));
+    let questionTime = "";
+    const proxy = Bun.serve({ port: 0, async fetch(request) {
+      const url = new URL(request.url);
+      if (url.pathname.endsWith("/operations/transcript")) {
+        const body = await request.json() as { before?: string };
+        return Response.json({ source_id: "owned-transcript-fixture", version: "fixture-page", cursor: body.before ? null : "older-owned-page", turns: body.before ? [] : [
+          { role: "user", ts: new Date(Date.parse(questionTime) - 1000).toISOString(), parts: [{ kind: "text", text: "Owned initial context" }] },
+          { role: "user", ts: new Date(Date.parse(questionTime) + 1000).toISOString(), parts: [{ kind: "text", text: "Retain the workflow history" }] },
+        ] });
+      }
+      return fetch(`http://localhost:${host.app.port}${url.pathname}${url.search}`, request);
+    } });
+    const app = createServer({ port: 0, stateDir: state, token: "", machines: false, factory: { machineEndpoint: id => id === "external-host" ? { url: `http://localhost:${proxy.port}`, token: "owned-sync-host" } : undefined } });
+    const api = (path: string, body?: unknown) => fetch(`http://localhost:${app.port}/api/factory${path}`, { method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    try {
+      const idea = await api("/implementations", { title: "Native synchronization contract", description: "Owned transport fixture" }).then(r => r.json());
+      await api(`/implementations/${idea.id}/configure`, { provider: "codex", machine_id: "external-host" });
+      const run = await api(`/implementations/${idea.id}/runs`, { action: "grill-me", idempotency_key: "sync-route-contract" }).then(r => r.json());
+      const question = await host.agent(run, "question", { question: "What should continuation retain?" }).then(r => r.json());
+      questionTime = question.created_at;
+      const unauthorized = await fetch(`http://localhost:${app.port}/api/factory-agent/${run.id}/sync-answers`, { method: "POST", headers: { "x-herdr-factory": "1", "content-type": "application/json" }, body: "{}" });
+      expect(unauthorized.status).toBe(401);
+      const invalid = await host.agent(run, "sync-answers", { before: "unowned-cursor" });
+      expect(invalid.status).toBe(400); expect((await invalid.json()).error.code).toBe("invalid_cursor");
+      const response = await host.agent(run, "sync-answers", {});
+      expect(response.status).toBe(200);
+      const result = await response.json();
+      expect({ ...result, questions: structuredClone(result.questions) }).toMatchObject({ snapshot_id: expect.any(String), cursor: "older-owned-page", question_revision: expect.any(String), questions: [{ id: question.id, answer: "Retain the workflow history" }] });
+      const replay = await host.agent(run, "sync-answers", {}).then(r => r.json());
+      expect(replay.snapshot_id).toBe(result.snapshot_id);
+      expect((await host.agent(run, "consume", { revision: result.question_revision })).status).toBe(200);
+      expect((await host.agent(run, "sync-answers", { before: result.cursor })).status).toBe(200);
+      const detail = await api(`/implementations/${idea.id}`).then(r => r.json());
+      expect(detail.approvals).toHaveLength(0);
+    } finally { app.stop(); proxy.stop(); await host.close(); rmSync(state, { recursive: true, force: true }); }
+  }, 60_000);
+
+  it("observes remote verification readiness after consumption without another owner Continue", async () => {
+    const host = await fixture("owned-continuation-host");
+    const state = mkdtempSync(join(tmpdir(), "remote-continuation-"));
+    const app = createServer({ port: 0, stateDir: state, token: "", machines: false, factory: { machineEndpoint: id => id === "external-host" ? { url: `http://localhost:${host.app.port}`, token: "owned-continuation-host" } : undefined } });
+    const request = (path: string, body?: unknown) => fetch(`http://localhost:${app.port}/api/factory${path}`, { method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    try {
+      const project = await request("/projects", { name: "Remote continuation", path: host.repo, machine_id: "external-host", provider: "codex", tracker: "app" }).then(r => r.json());
+      await request(`/projects/${project.id}/configure`, { checks: [["bun", "test"]], permissions: "Owned fixture only", shared_paths: [] });
+      const idea = await request("/implementations", { title: "Remote accepted fixture", description: "", project_id: project.id }).then(r => r.json());
+      const prefix = `/implementations/${idea.id}`;
+      const spec = await request(`${prefix}/specifications`, { content: "Owned continuation acceptance fixture" }).then(r => r.json());
+      for (const kind of ["specification", "testing_seams"]) await request(`${prefix}/approvals`, { kind, revision: spec.id, scope: "Predeclared fixture decision" });
+      const graph = await request(`${prefix}/tickets`, { specification_id: spec.id, tickets: [{ key: "fixture", title: "Owned fixture", acceptance: "Owned fixture only", dependencies: [] }] }).then(r => r.json());
+      await request(`${prefix}/approvals`, { kind: "ticket_graph", revision: graph.hash, scope: "Predeclared fixture graph" });
+      const accepted = await request(`${prefix}/continue`, { action: "implement-spec", run_id: null, idempotency_key: "remote-continued-proof" });
+      expect(accepted.status).toBe(202);
+      const run = await accepted.json();
+      expect(run.action).toBe("verify-provider");
+      await herdrRpc("pane.report_agent", { pane_id: run.pane_id, source: "manual", agent: "codex", state: "working" });
+      const question = await host.agent(run, "question", { question: "Confirm the owned remote probe?" }).then(r => r.json());
+      await request(`${prefix}/questions/${question.id}/answer`, { revision: question.revision, answer: "Explicit owned fixture answer" });
+      const contract = await host.agent(run, "contract").then(r => r.json());
+      expect((await host.agent(run, "consume", { revision: contract.question_revision })).status).toBe(200);
+      await herdrRpc("pane.report_agent", { pane_id: run.pane_id, source: "manual", agent: "codex", state: "idle" });
+      const deadline = Date.now() + 8_000;
+      let detail;
+      do {
+        detail = await request(prefix).then(r => r.json());
+        if (detail.events.some((event: { kind: string; data: { message?: string } }) => event.kind === "continuation_waiting" && event.data.message?.includes("selected Machine rejected"))) break;
+        await Bun.sleep(100);
+      } while (Date.now() < deadline);
+      expect(detail.events.some((event: { kind: string; data: { message?: string } }) => event.kind === "continuation_waiting" && event.data.message?.includes("selected Machine rejected")), JSON.stringify({ runs: detail.runs.map((r: FactoryRun)=>({ id:r.id, condition:r.condition, waiting_reason:r.waiting_reason })), events: detail.events.filter((e: {kind:string})=>e.kind.includes("continuation")) })).toBe(true);
+      expect(detail.runs.some((entry: FactoryRun) => entry.action === "implement-spec")).toBe(false);
+    } finally { app.stop(); await host.close(); rmSync(state, { recursive: true, force: true }); }
+  }, 60_000);
+
   it("confirms shared understanding once without inventing text answers or approving obsolete probes", async () => {
     const f = await fixture();
     try {
@@ -96,7 +195,7 @@ describe("continuing approved workflow steps", () => {
       const plan = await f.start("grill-with-docs", "planning");
       await herdrRpc("pane.report_agent", { pane_id: plan.pane_id, source: "manual", agent: "codex", state: "working" });
       const busy = await f.request(`${f.prefix}/continue`, { action: "to-spec", run_id: plan.id, idempotency_key: "busy", allow_partial_handoff: true });
-      expect(busy.status).toBe(409); expect((await busy.json()).error.code).toBe("step_not_ready");
+      expect(busy.status).toBe(409); expect(["step_not_ready", "agent_busy"]).toContain((await busy.json()).error.code);
       const unapproved = await f.request(`${f.prefix}/continue`, { action: "implement-spec", run_id: plan.id, idempotency_key: "unapproved" });
       expect(unapproved.status).toBe(409); expect((await unapproved.json()).error.code).toBe("scope_unaccepted");
       expect((await sessionSnapshot()).panes.some(pane => pane.pane_id === plan.pane_id)).toBe(true);

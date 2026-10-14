@@ -27,6 +27,9 @@ export class FactoryWorkflow {
   retainNativeAnswers(run: FactoryRun, snapshot: NativeConversationSnapshot, latestPage: boolean): void {
     const questions = this.store.list<FactoryQuestion>("questions", run.implementation_id)
       .filter(question => question.run_id === run.id).sort((a, b) => a.created_at.localeCompare(b.created_at));
+    // A chronological interval does not identify which overlapping question the
+    // owner is answering. Keep every such reply pending for an explicit decision.
+    if (questions.filter(question => question.answer === null).length !== 1) return;
     const turns = snapshot.turns.filter(turn => turn.ts !== null && Number.isFinite(Date.parse(turn.ts)));
     const userTurns = snapshot.turns.filter(turn => turn.role === "user" && turn.parts.some(part => part.kind === "text") && turn.parts.every(part => part.kind === "text" || part.kind === "image"));
     if (userTurns.some(turn => turn.ts === null || !Number.isFinite(Date.parse(turn.ts)))) return;

@@ -9,15 +9,36 @@ interface Continuation {
   body: Record<string, unknown>; origin: string; scope_hash: string; run_id: string | null;
   condition: "starting" | "verifying" | "started" | "failed";
   problem: string | null;
+  verification_deadline?: number;
 }
 
 /** One explicit owner Continue retains the handoff and advances an approved scope. */
 export class FactoryContinuation {
   private readonly pending = new Map<string, Promise<FactoryRun>>();
   private readonly verifying = new Set<string>();
+  private readonly retries = new Map<string, ReturnType<typeof setTimeout>>();
   private stopped = false;
-  stop(): void { this.stopped = true; }
-  constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly runtime: FactoryRuntime, private readonly retain: (id: string, allowPartial: boolean) => Promise<void>) {}
+  stop(): void { this.stopped = true; for (const timer of this.retries.values()) clearTimeout(timer); this.retries.clear(); }
+  constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly runtime: FactoryRuntime, private readonly retain: (id: string, allowPartial: boolean) => Promise<void>) {
+    for (const record of this.store.list<Continuation>("workflow_continuations")) if (record.condition === "verifying" && record.run_id) this.retry(record.run_id);
+  }
+
+  /** Remote readiness has no local collector event. Observe accepted identity only;
+   * never redispatch a probe, and leave ownership intact when the deadline expires. */
+  private retry(runId: string): void {
+    if (this.stopped || this.retries.has(runId)) return;
+    const record = this.store.list<Continuation>("workflow_continuations").find(entry => entry.condition === "verifying" && entry.run_id === runId);
+    if (!record) return;
+    const deadline = record.verification_deadline ?? Date.now() + 600_000;
+    if (deadline <= Date.now()) {
+      const problem = "Native verification did not finish within ten minutes; inspect its retained evidence before continuing";
+      this.store.put("workflow_continuations", { ...record, condition: "failed", problem }, record.implementation_id);
+      this.store.event(record.implementation_id, "continuation_waiting", { run_id: runId, message: problem }); return;
+    }
+    this.store.put("workflow_continuations", { ...record, verification_deadline: deadline }, record.implementation_id);
+    const timer = setTimeout(() => { this.retries.delete(runId); void this.verified(runId); }, Math.min(2_000, deadline - Date.now()));
+    timer.unref(); this.retries.set(runId, timer);
+  }
 
   start(id: string, body: Record<string, unknown>, origin: string): Promise<FactoryRun> {
     if (this.stopped) return Promise.reject(new FactoryError("stopping", "The bridge is stopping; retain the current workflow", 409));
@@ -94,12 +115,15 @@ export class FactoryContinuation {
   /** Collector/consumption events may complete a probe only under retained owner intent. */
   async verified(runId: string): Promise<void> {
     if (this.stopped || this.verifying.has(runId)) return;
+    const retry = this.retries.get(runId); if (retry) clearTimeout(retry); this.retries.delete(runId);
     const record = this.store.list<Continuation>("workflow_continuations").find(entry => entry.condition === "verifying" && entry.run_id === runId);
     if (!record) return;
     this.verifying.add(runId);
     try {
       const run = await this.runtime.reconcile(runId);
-      if (this.stopped || run.condition !== "ready") return;
+      if (this.stopped) return;
+      if (run.condition === "working") { this.retry(runId); return; }
+      if (run.condition !== "ready") return;
       this.validate(record.implementation_id, record.body);
       if (record.scope_hash !== this.scopeHash(record.implementation_id)) throw new FactoryError("scope_changed", "Project settings or the approved scope changed during verification; inspect them before continuing", 409);
       await this.runtime.verifyProvider(run);
@@ -117,7 +141,9 @@ export class FactoryContinuation {
       if (this.stopped) return;
       const waiting = error instanceof FactoryError && ["verification_round_required", "native_evidence_required", "agent_busy"].includes(error.code);
       this.store.put("workflow_continuations", { ...record, condition: waiting ? "verifying" : "failed", problem: error instanceof FactoryError ? error.message : "Verification continuation needs reconciliation" }, record.implementation_id);
-      this.store.event(record.implementation_id, "continuation_waiting", { run_id: runId, message: error instanceof FactoryError ? error.message : "Verification continuation needs reconciliation" });
+      const message = error instanceof FactoryError ? error.message : "Verification continuation needs reconciliation";
+      if (record.problem !== message) this.store.event(record.implementation_id, "continuation_waiting", { run_id: runId, message });
+      if (error instanceof FactoryError && ["native_evidence_required", "agent_busy"].includes(error.code)) this.retry(runId);
     } finally { this.verifying.delete(runId); }
   }
 }

@@ -52,4 +52,16 @@ describe("verified native answer retention", () => {
       expect(f.store.list("approvals")).toHaveLength(0);
     } finally { f.close(); }
   });
+
+  it("keeps replies pending when two unanswered questions overlap", () => {
+    const f = fixture();
+    try {
+      f.question("database", 1); f.question("automatic-start", 2);
+      const snapshot = f.snapshot([3]);
+      snapshot.turns[0]!.parts = [{ kind: "text", text: "For the database question, use SQLite" }];
+      f.workflow.retainNativeAnswers(f.run, snapshot, true);
+      expect(f.store.get<FactoryQuestion>("questions", "database")?.answer).toBeNull();
+      expect(f.store.get<FactoryQuestion>("questions", "automatic-start")?.answer).toBeNull();
+    } finally { f.close(); }
+  });
 });

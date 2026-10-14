@@ -6,8 +6,9 @@ import { herdrRpc, paneRead, sessionSnapshot, workspaceClose, workspaceCreate } 
 
 /** Its own XDG config isolates the global plugin registry as well as the owned herdr panes. */
 it("herdr loads the Phone setup entrypoint and keeps its QR and code visible in a pane", async () => {
-  // the session socket lives under root: macOS's temp dir is too deep for a socket path (104 bytes)
-  const root = mkdtempSync(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "herdr-phone-pane-"));
+  // This fixture owns a second session; keep its socket tree short even when the
+  // check runner supplies a nested private TMPDIR (macOS allows only 104 bytes).
+  const root = mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "herdr-phone-pane-"));
   const source = join(import.meta.dir, "..");
   const config = join(root, "config");
   const plugin = join(root, "plugin");
