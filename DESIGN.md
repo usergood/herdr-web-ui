@@ -1209,6 +1209,8 @@ One set for both themes: the card is island black wherever it shows.
 - A linked native chat exposes **Workflow** in its header. A focus-trapped modal/sheet
   keeps questions, proposals and approvals over that chat. Closing restores focus;
   mobile actions stack at full width with touch-target heights.
+- Workflow retains keyboard ownership and unsaved answers. Global shortcuts wait
+  until it closes, except Settings, which owns focus and Escape while open above it.
 - Continue retains a resting step’s chat and handoff while starting its approved
   successor. Actual approvals remain visible; a missing native proof starts a
   verification prerequisite instead of leaving implementation silently disabled.

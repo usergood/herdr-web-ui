@@ -58,6 +58,14 @@ try {
   await openWorkflow();
   const answer=workflow.getByRole("textbox",{name:"Your answer",exact:true});
   await answer.fill("Keep this unsaved answer");
+  await page.keyboard.press("Control+Shift+O");
+  await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>resolve())));
+  assert.equal(await page.getByRole("dialog",{name:"New workspace",exact:true}).count(),0,"Workflow must keep workspace shortcuts from opening a hidden focus trap");
+  assert(await answer.evaluate(el=>el===document.activeElement),"Workspace shortcuts must preserve Workflow focus");
+  await page.keyboard.press("Control+Shift+K");
+  await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>resolve())));
+  assert.equal(await page.getByRole("dialog",{name:"Command palette",exact:true}).count(),0,"Workflow must retain keyboard ownership until Settings is explicitly opened");
+  assert(await answer.evaluate(el=>el===document.activeElement),"Workflow keeps focus and the unsaved answer");
   await page.keyboard.press("Control+Shift+Comma");
   const settings=page.getByRole("dialog",{name:"Settings",exact:true});await settings.waitFor();
   await page.keyboard.press("Escape");await settings.waitFor({state:"hidden"});

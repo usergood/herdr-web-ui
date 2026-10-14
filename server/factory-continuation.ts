@@ -54,7 +54,7 @@ export class FactoryContinuation {
     const checkout = project ? this.store.list<ProjectCheckout>("checkouts", project.id).find(entry => entry.machine_id === (idea.machine_id ?? project.machine_id)) : null;
     const checkoutScope = checkout ? { path: checkout.path, repository: checkout.repository, head: checkout.head, branch: checkout.branch, instructions: checkout.instructions.map(entry => ({ path: entry.path, hash: entry.hash })) } : null;
     const spec = this.workflow.specification(id);
-    return hash(JSON.stringify({ assignment: { title: idea.title, description: idea.description, project_id: idea.project_id, provider: idea.provider, machine_id: idea.machine_id, archived_at: idea.archived_at }, project: projectScope, checkout: checkoutScope, specification: spec?.hash ?? null, graph: this.workflow.graphHash(id) }));
+    return hash(JSON.stringify({ assignment: { title: idea.title, description: idea.description, project_id: idea.project_id, provider: idea.provider, machine_id: idea.machine_id, archived_at: idea.archived_at }, project: projectScope, checkout: checkoutScope, specification: spec?.hash ?? null, graph: this.workflow.graphHash(id), question_revision: this.workflow.questionRevision(id) }));
   }
   private validate(id: string, body: Record<string, unknown>): void {
     if (!["grill-with-docs", "to-spec", "to-tickets", "implement-spec", "verify-provider"].includes(String(body.action)) || typeof body.idempotency_key !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.idempotency_key) || body.run_id !== null && typeof body.run_id !== "string" || body.allow_partial_handoff !== undefined && typeof body.allow_partial_handoff !== "boolean") throw new FactoryError("invalid_continuation", "Select the displayed next step with its current Run and request key");
@@ -72,8 +72,9 @@ export class FactoryContinuation {
     }
     if (body.action === "implement-spec" && (!this.workflow.tickets(id).length || !this.workflow.approved(id, "ticket_graph", this.workflow.graphHash(id)))) throw new FactoryError("scope_unaccepted", "Approve the current Ticket graph before continuing", 409);
   }
-  private validateScope(id: string, expected: string): void {
-    if (expected !== this.scopeHash(id)) throw new FactoryError("scope_changed", "Project settings or the approved scope changed during verification; inspect them before continuing", 409);
+  private validateScope(id: string, expected: string, body: Record<string, unknown>): void {
+    if (expected !== this.scopeHash(id)) throw new FactoryError("scope_changed", "Project settings or the approved scope changed; inspect them before continuing", 409);
+    this.validate(id, body);
   }
   private async advance(id: string, body: Record<string, unknown>, origin: string): Promise<FactoryRun> {
     const signature = hash(JSON.stringify(body));
@@ -99,11 +100,11 @@ export class FactoryContinuation {
     }
     // Capture immutable owner intent before any native side effect. A lost response
     // can return the same accepted Run; an uncertain start never blindly retries.
-    this.validateScope(id, scopeHash);
+    this.validateScope(id, scopeHash, body);
     const record: Continuation = { id: this.store.record().id, implementation_id: id, key: String(body.idempotency_key), signature, body, origin, scope_hash: scopeHash, run_id: null, condition: "starting", problem: null };
     this.store.put("workflow_continuations", record, id);
     try {
-      const run = await this.runtime.start(id, { ...body, action }, origin, { validateScope: () => this.validateScope(id, record.scope_hash), ...(source && !["completed", "cancelled", "failed"].includes(source.condition) ? { runId: source.id, finish: async () => {
+      const run = await this.runtime.start(id, { ...body, action }, origin, { validateScope: () => this.validateScope(id, record.scope_hash, body), ...(source && !["completed", "cancelled", "failed"].includes(source.condition) ? { runId: source.id, finish: async () => {
         const observed = await this.runtime.reconcile(source.id);
         if (observed.condition !== "ready") throw new FactoryError("step_not_ready", observed.waiting_reason ?? "The current step is still working; continue when its proposal is ready", 409);
         await this.retain(source.id, body.allow_partial_handoff === true);
@@ -132,12 +133,12 @@ export class FactoryContinuation {
       if (["working", "needs_you", "blocked"].includes(run.condition)) { this.retry(runId); return; }
       if (run.condition !== "ready") return;
       this.validate(record.implementation_id, record.body);
-      this.validateScope(record.implementation_id, record.scope_hash);
+      this.validateScope(record.implementation_id, record.scope_hash, record.body);
       await this.runtime.verifyProvider(run);
       if (this.stopped) return;
-      this.validateScope(record.implementation_id, record.scope_hash);
+      this.validateScope(record.implementation_id, record.scope_hash, record.body);
       // All evidence and approvals are still checked by normal factory admission.
-      const next = await this.runtime.start(record.implementation_id, { ...record.body, idempotency_key: `${record.key.slice(0, 110)}-verified` }, record.origin, { runId, validateScope: () => this.validateScope(record.implementation_id, record.scope_hash), finish: async () => {
+      const next = await this.runtime.start(record.implementation_id, { ...record.body, idempotency_key: `${record.key.slice(0, 110)}-verified` }, record.origin, { runId, validateScope: () => this.validateScope(record.implementation_id, record.scope_hash, record.body), finish: async () => {
         await this.retain(runId, false);
         await this.runtime.finishStep(runId);
       } });

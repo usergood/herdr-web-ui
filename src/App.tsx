@@ -43,7 +43,7 @@ import { rosterPanes } from "./lib/dagPane.ts";
 import { carryPaneRecords, paneMovedTo, paneMovePending, paneMovesVersion, recordPaneMove, subscribePaneMoves } from "./lib/paneMove.ts";
 import { SnapshotRequests } from "./lib/snapshotRequests.ts";
 import { alertPrefs, useSettings } from "./lib/settings.ts";
-import { useShortcuts } from "./lib/shortcuts.ts";
+import { useShortcuts, type ShortcutId } from "./lib/shortcuts.ts";
 import { useMediaQuery } from "./lib/useMediaQuery.ts";
 import { PaneLenses } from "./lib/paneLens.ts";
 import { paneContextPress } from "./lib/paneCanvas.ts";
@@ -84,6 +84,7 @@ import { paneDrag } from "./lib/paneDrag.ts";
 import { SplitDropPreview } from "./components/SplitDropPreview.tsx";
 
 const APP_TITLE = "Saurons eye";
+const WORKFLOW_SHORTCUTS: ReadonlySet<ShortcutId> = new Set(["settings"]);
 /** how soon after a key press a focus counts as the user's own (lastKeyAtRef) */
 const KEY_FOCUS_MS = 1000;
 const POLL_MS = 5000;
@@ -1275,7 +1276,7 @@ export function App() {
     [selectPane, selectedPaneId, selectedMachineId, setView, view, updateSettings, resolvedTheme, canSignOut, lock, bellVisible, bell.run, enableNotifications, load, layoutRefused, lenses],
   );
 
-  useShortcuts(actions, locked === false);
+  useShortcuts(actions, locked === false, workflowAssignmentId ? WORKFLOW_SHORTCUTS : undefined);
 
   // The header's More menu: what used to be three buttons of its own. Each item is there under
   // the condition its button had. At phone width the palette's button gives its room to the
