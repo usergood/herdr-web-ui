@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ArrowDown, ArrowUp, ArrowLeft, Archive, Paperclip, Plus, RefreshCw } from "lucide-react";
-import type { FactoryDetail, FactoryOverview, FactoryProvider, FactoryStage, Implementation, SpecificationVersion } from "../../shared/protocol.ts";
+import type { FactoryBoardItem, FactoryBoardLane, FactoryDetail, FactoryOverview, FactoryProvider, FactoryStage, Implementation, RunCondition, SpecificationVersion } from "../../shared/protocol.ts";
 import type { AgentModelSelection } from "../../shared/agent-models.ts";
 import type { Machine } from "../../shared/machines.ts";
 import { factoryDetail, factoryOverview, factoryRequest } from "../lib/factoryApi.ts";
@@ -16,9 +16,15 @@ import { FactoryExecutionPanel } from "./FactoryExecutionPanel.tsx";
 import { FactoryRetrospectivePanel } from "./FactoryRetrospectivePanel.tsx";
 import { AssignmentActions } from "./AssignmentActions.tsx";
 import { useFactoryCapabilities } from "../lib/useFactoryCapabilities.ts";
+import { FactoryBoardStatus } from "./FactoryBoardStatus.tsx";
+import { FactoryRunHistory } from "./FactoryRunHistory.tsx";
+import { factoryConditionLabel } from "../lib/factoryPresentation.ts";
 import "./FactoryPanel.css";
 
-const stages: FactoryStage[] = ["inbox", "specifying", "ready", "running", "review", "done"];
+const lanes: FactoryBoardLane[] = ["inbox", "queued", "running", "needs_you", "done"];
+function laneLabel(lane: FactoryBoardLane, t: ReturnType<typeof useT>): string {
+  switch (lane) { case "inbox": return t("Inbox"); case "queued": return t("Queued"); case "running": return t("Running"); case "needs_you": return t("Needs you"); case "done": return t("Done"); }
+}
 function stageLabel(stage: FactoryStage, t: ReturnType<typeof useT>): string {
   switch (stage) { case "inbox": return t("Inbox"); case "specifying": return t("Specifying"); case "ready": return t("Ready"); case "running": return t("Running"); case "review": return t("Review"); case "done": return t("Done"); }
 }
@@ -48,6 +54,15 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
   const selection = useRef(selected); selection.current = selected;
   const generation = useRef(0);
   const fileInput = useRef<HTMLInputElement>(null);
+  function boardLane(item: Implementation): FactoryBoardLane {
+    return overview?.board?.find(entry => entry.implementation_id === item.id)?.lane ?? ({ inbox: "inbox", specifying: "needs_you", ready: "queued", running: "running", review: "needs_you", done: "done" } as const)[item.stage];
+  }
+  function boardItem(item: Implementation): FactoryBoardItem {
+    const projected = overview?.board?.find(entry => entry.implementation_id === item.id);
+    if (projected) return projected;
+    const legacy = overview?.activity.find(entry => entry.implementation_id === item.id);
+    return { implementation_id: item.id, lane: boardLane(item), activity: legacy ? ["work", "implement-spec", "apply-retro"].includes(legacy.action) ? "implementing" : legacy.action === "verify-provider" ? "validating" : "specifying" : null, condition: legacy?.condition ?? null, run_id: legacy?.run_id ?? null, busy: !!legacy && ["working", "accepted", "disconnected"].includes(legacy.condition), waiting_reason: legacy?.waiting_reason ?? null, ticket_progress: legacy && legacy.total_tickets > 0 ? { completed: legacy.completed_tickets, total: legacy.total_tickets } : null };
+  }
 
   async function refresh(): Promise<void> {
     const current = ++generation.current; const id = selection.current;
@@ -120,21 +135,21 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
       </form>}
       <button className="btn" aria-pressed={showArchived} onClick={() => setShowArchived(!showArchived)}>{t("Archived tasks")}</button>
       <div className="factory-filters">
-        <label>{t("Run condition")}<select className="select factory-input" value={conditionFilter} onChange={(event) => setConditionFilter(event.target.value)}><option value="all">{t("All conditions")}</option>{["needs_you", "blocked", "disconnected", "interrupted", "working", "ready", "completed", "cancelled", "failed"].map((condition) => <option key={condition} value={condition}>{condition}</option>)}</select></label>
+        <label>{t("Run condition")}<select className="select factory-input" value={conditionFilter} onChange={(event) => setConditionFilter(event.target.value)}><option value="all">{t("All conditions")}</option>{["needs_you", "blocked", "disconnected", "interrupted", "working", "ready", "completed", "cancelled", "failed"].map((condition) => <option key={condition} value={condition}>{factoryConditionLabel(condition as RunCondition, t)}</option>)}</select></label>
         {!projectId && <label>{t("Project")}<select className="select factory-input" value={projectFilter} disabled={!!projectId} onChange={(event) => setProjectFilter(event.target.value)}><option value="all">{t("All Projects")}</option><option value="unassigned">{t("Unassigned")}</option>{overview.projects.filter((p) => !p.removed_at).map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>}
         <label>{t("Provider")}<select className="select factory-input" value={providerFilter} onChange={(event) => setProviderFilter(event.target.value)}><option value="all">{t("All providers")}</option><option>codex</option><option>claude</option><option>opencode</option></select></label>
         <label>{t("Machine")}<select className="select factory-input" value={machineFilter} onChange={(event) => setMachineFilter(event.target.value)}><option value="all">{t("All Machines")}</option>{machines.map((machine) => <option key={machine.id} value={machine.id}>{machine.name}</option>)}</select></label>
       </div>
-      <div className={`factory-board${showArchived || allAssignments ? "" : " factory-inbox-board"}`}>{(showArchived || allAssignments ? stages : ["inbox"] as FactoryStage[]).map((stage) => <section className="factory-lane" key={stage} aria-label={stageLabel(stage, t)}><h2>{stageLabel(stage, t)}</h2>
-        {overview.implementations.filter((item) => item.stage === stage && (showArchived ? !!item.archived_at : !item.archived_at) && (conditionFilter === "all" || overview.activity.some((activity) => activity.implementation_id === item.id && activity.condition === conditionFilter)) && (projectFilter === "all" || (item.project_id ?? "unassigned") === projectFilter) && (providerFilter === "all" || (item.provider ?? overview.projects.find((project) => project.id === item.project_id)?.provider ?? overview.settings.provider) === providerFilter) && (machineFilter === "all" || (item.machine_id ?? overview.projects.find((project) => project.id === item.project_id)?.machine_id ?? "local") === machineFilter)).map((item) => <article className="factory-card" key={item.id} draggable onDragStart={(event) => event.dataTransfer.setData("application/x-saurons-eye-card", item.id)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const id = event.dataTransfer.getData("application/x-saurons-eye-card"); if (overview.implementations.some((entry) => entry.id === id) && id !== item.id) void perform(async () => { await factoryRequest(`/implementations/${id}/order`, { before_id: item.id }); }); }}>
+      <div className={`factory-board${showArchived || allAssignments ? "" : " factory-inbox-board"}`}>{(showArchived || allAssignments ? lanes : ["inbox"] as FactoryBoardLane[]).map((lane) => <section className="factory-lane" key={lane} aria-label={laneLabel(lane, t)}><h2>{laneLabel(lane, t)}</h2>
+        {overview.implementations.filter((item) => boardLane(item) === lane && (showArchived ? !!item.archived_at : !item.archived_at) && (conditionFilter === "all" || boardItem(item).condition === conditionFilter) && (projectFilter === "all" || (item.project_id ?? "unassigned") === projectFilter) && (providerFilter === "all" || (item.provider ?? overview.projects.find((project) => project.id === item.project_id)?.provider ?? overview.settings.provider) === providerFilter) && (machineFilter === "all" || (item.machine_id ?? overview.projects.find((project) => project.id === item.project_id)?.machine_id ?? "local") === machineFilter)).map((item) => <article className="factory-card" key={item.id} draggable onDragStart={(event) => event.dataTransfer.setData("application/x-saurons-eye-card", item.id)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const id = event.dataTransfer.getData("application/x-saurons-eye-card"); if (overview.implementations.some((entry) => entry.id === id) && id !== item.id) void perform(async () => { await factoryRequest(`/implementations/${id}/order`, { before_id: item.id }); }); }}>
           <button className="factory-card-title" onClick={() => choose(item.id)}>{item.title}</button><p>{overview.projects.find((project) => project.id === item.project_id)?.name ?? t("Unassigned")}</p><small>{item.provider ?? overview.projects.find((project) => project.id === item.project_id)?.provider ?? overview.settings.provider} · {machines.find((machine) => machine.id === (item.machine_id ?? overview.projects.find((project) => project.id === item.project_id)?.machine_id))?.name ?? item.machine_id ?? overview.projects.find((project) => project.id === item.project_id)?.machine_id ?? t("Unassigned")}</small><time>{new Date(item.updated_at).toLocaleString()}</time>
-          {overview.activity.filter((activity) => activity.implementation_id === item.id).map((activity) => <p key={activity.run_id}>{activity.action} · {activity.condition} · {activity.completed_tickets}/{activity.total_tickets}{activity.waiting_reason && <span role="status"> · {activity.waiting_reason}</span>}</p>)}
+          <FactoryBoardStatus state={boardItem(item)} />
           <div className="factory-card-order"><button className="icon-button" aria-label={t("Move earlier")} onClick={() => void perform(async () => { await factoryRequest(`/implementations/${item.id}/order`, { direction: -1 }); })}><ArrowUp /></button><button className="icon-button" aria-label={t("Move later")} onClick={() => void perform(async () => { await factoryRequest(`/implementations/${item.id}/order`, { direction: 1 }); })}><ArrowDown /></button></div>
         </article>)}
       </section>)}</div>
     </>}
     {selected && detail && overview && <div className="factory-detail">
-      <section className="factory-section"><div className="project-assignment-heading"><h2>{detail.implementation.title}</h2>{(detail.implementation.stage === "done" || detail.implementation.archived_at) && <button className="btn" disabled={busy} onClick={() => void perform(async () => { await factoryRequest(`${prefix}/${detail.implementation.archived_at ? "restore" : "archive"}`, {}); })}><Archive />{detail.implementation.archived_at ? t("Restore") : t("Archive task")}</button>}</div><p>{stageLabel(detail.implementation.stage, t)}</p>
+      <section className="factory-section"><div className="project-assignment-heading"><h2>{detail.implementation.title}</h2>{(detail.implementation.stage === "done" || detail.implementation.archived_at) && <button className="btn" disabled={busy} onClick={() => void perform(async () => { await factoryRequest(`${prefix}/${detail.implementation.archived_at ? "restore" : "archive"}`, {}); })}><Archive />{detail.implementation.archived_at ? t("Restore") : t("Archive task")}</button>}</div><p>{detail.board ? laneLabel(detail.board.lane, t) : stageLabel(detail.implementation.stage, t)}</p>{detail.board && <FactoryBoardStatus state={detail.board} />}
         {detail.implementation.description && <Markdown>{detail.implementation.description}</Markdown>}
         <div className="factory-filters">
           <label>{t("Project")}<select className="select factory-input" value={detail.implementation.project_id ?? ""} disabled={busy} onChange={(event) => void perform(async () => { await factoryRequest(`${prefix}/configure`, { project_id: event.target.value || null }); })}><option value="">{t("Unassigned")}</option>{overview.projects.filter((p) => !p.removed_at).map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
@@ -148,6 +163,7 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
         </div>
       <FactoryWorkflowPanel preset={preset} detail={detail} machineId={effectiveMachine} provider={effectiveProvider ?? "codex"} busy={busy} perform={perform} showQuestions={false} capabilities={execution.capabilities} problem={execution.problem} onCapabilities={execution.apply} />
       <FactoryExecutionPanel detail={detail} project={selectedProject} busy={busy} perform={perform} onOpenPane={onOpenPane} />
+      <FactoryRunHistory runs={detail.runs} />
       <section className="factory-section"><h3>{t("Notes")}</h3><label>{t("Chat")}<select className="select factory-input" value={chatId} onChange={(event) => setSelectedChat(event.target.value)}>{detail.chats.map((chat) => <option key={chat.id} value={chat.id}>{chat.title}</option>)}</select></label><form className="factory-form" onSubmit={(event) => { event.preventDefault(); void perform(async () => { const chat = await factoryRequest<{ id: string }>(`${prefix}/chats`, { title: chatTitle }); setSelectedChat(chat.id); setChatTitle(""); }); }}><label>{t("Chat title")}<input className="input factory-input" required maxLength={200} value={chatTitle} onChange={(event) => setChatTitle(event.target.value)} /></label><button className="btn factory-button" disabled={busy}>{t("New chat")}</button></form>{detail.messages.filter((message) => message.chat_id === chatId).map((message) => <article className="factory-message" key={message.id}><small>{message.role} · {new Date(message.created_at).toLocaleString()}</small><Markdown>{message.content}</Markdown></article>)}
         <form className="factory-form" onSubmit={(event) => { event.preventDefault(); void perform(async () => { await factoryRequest(`${prefix}/messages`, { chat_id: chatId, role: "owner", content: note }); setNote(""); }); }}><label>{t("New note")}<textarea className="input factory-input" value={note} onChange={(event) => setNote(event.target.value)} required maxLength={100_000} /></label><button className="btn factory-button" disabled={busy}>{t("Save note")}</button></form>
       </section>

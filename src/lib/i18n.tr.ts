@@ -7,6 +7,21 @@
  * keep their English names.
  */
 export const TR: Record<string, string> = {
+  "Interrupted": "Kesintiye uğradı",
+  "Stopped attempt": "Durdurulan deneme",
+  "Finished attempt": "Tamamlanan deneme",
+  "Past attempts": "Önceki denemeler",
+  "Awaiting checks": "Kontroller bekleniyor",
+  "Awaiting release": "Sürüm bekleniyor",
+  "Awaiting merge": "Birleştirme bekleniyor",
+  "Researching": "Araştırılıyor",
+  "Setting up": "Kuruluyor",
+  "Reflecting": "Değerlendiriliyor",
+  "Implementing": "Uygulanıyor",
+  "Validating": "Doğrulanıyor",
+  "Reviewing": "İnceleniyor",
+  "Tickets: {completed}/{total}": "Biletler: {completed}/{total}",
+  "Queued": "Sırada",
   "Continue workflow": "İş akışına devam et",
   "Native verification will run before implementation.": "Uygulamadan önce yerel doğrulama çalıştırılacak.",
   "Review and continue from this chat. Finished steps keep their history.": "Bu sohbetten inceleyip devam edin. Tamamlanan adımların geçmişi korunur.",

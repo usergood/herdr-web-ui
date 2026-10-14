@@ -9,7 +9,7 @@
 .factory-form fieldset { display: grid; gap: var(--space-3); border: var(--hairline) solid var(--border); border-radius: var(--radius-lg); padding: var(--space-3); min-width: 0; }
 .factory-capture { margin-bottom: var(--space-4); }
 .factory-filters { margin: var(--space-3) 0; }
-.factory-board { display: grid; grid-template-columns: repeat(6, minmax(12rem, 1fr)); gap: var(--space-3); overflow-x: auto; margin-top: var(--space-4); }
+.factory-board { display: grid; grid-template-columns: repeat(5, minmax(12rem, 1fr)); gap: var(--space-3); overflow-x: auto; margin-top: var(--space-4); }
 .factory-lane { padding: var(--space-3); background: var(--bg); border-radius: var(--radius-lg); min-height: 12rem; }
 .factory-lane h2 { font-size: var(--fs-sm); color: var(--text-dim); margin-bottom: var(--space-3); }
 .factory-card { padding: var(--space-3); margin-bottom: var(--space-3); background: var(--bg-elevated); border: var(--hairline) solid var(--border); border-radius: var(--radius-lg); }

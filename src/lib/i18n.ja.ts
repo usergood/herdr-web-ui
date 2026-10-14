@@ -8,6 +8,21 @@
  * in English. Placeholders in braces keep their English names.
  */
 export const JA: Record<string, string> = {
+  "Interrupted": "中断",
+  "Stopped attempt": "停止した試行",
+  "Finished attempt": "完了した試行",
+  "Past attempts": "過去の試行",
+  "Awaiting checks": "チェック待ち",
+  "Awaiting release": "リリース待ち",
+  "Awaiting merge": "マージ待ち",
+  "Researching": "調査中",
+  "Setting up": "設定中",
+  "Reflecting": "振り返り中",
+  "Implementing": "実装中",
+  "Validating": "検証中",
+  "Reviewing": "レビュー中",
+  "Tickets: {completed}/{total}": "チケット: {completed}/{total}",
+  "Queued": "待機中",
   "Continue workflow": "ワークフローを続行",
   "Native verification will run before implementation.": "実装の前にネイティブ検証を実行します。",
   "Review and continue from this chat. Finished steps keep their history.": "このチャットで確認して続行してください。完了したステップの履歴は保持されます。",

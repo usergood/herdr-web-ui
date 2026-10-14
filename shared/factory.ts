@@ -3,6 +3,14 @@ import type { ConversationTurn } from "./protocol.ts";
 import type { ProjectAccountBindings } from "./accounts.ts";
 export type FactoryProvider = "codex" | "claude" | "opencode";
 export type FactoryStage = "inbox" | "specifying" | "ready" | "running" | "review" | "done";
+export type FactoryBoardLane = "inbox" | "queued" | "running" | "needs_you" | "done";
+export type FactoryActivity = "specifying" | "implementing" | "validating" | "reviewing" | "researching" | "setting_up" | "reflecting" | "awaiting_checks" | "awaiting_release" | "awaiting_merge";
+/** A current projection; persisted stages, Runs and events remain historical records. */
+export interface FactoryBoardItem {
+  implementation_id: string; lane: FactoryBoardLane; activity: FactoryActivity | null;
+  condition: RunCondition | null; run_id: string | null; busy: boolean; waiting_reason: string | null;
+  ticket_progress: { completed: number; total: number } | null;
+}
 export type RunCondition = "accepted" | "working" | "ready" | "needs_you" | "blocked" | "disconnected" | "interrupted" | "failed" | "cancelled" | "completed";
 export type FactoryAction = "work" | "setup" | "grill-me" | "grill-with-docs" | "to-spec" | "to-tickets" | "implement-spec" | "retro" | "apply-retro" | "verify-provider";
 export interface FactoryRecord { id: string; created_at: string; updated_at: string }
@@ -79,6 +87,8 @@ export interface FactorySettings {
   max_artifact_bytes: number; max_storage_bytes: number; skills_path: string | null;
 }
 export interface FactoryDetail {
+  /** Absent on older bridges. */
+  board?: FactoryBoardItem;
   graph_hash: string; question_revision: string;
   /** Current decision scope; full historical questions remain in questions below. */
   question_context?: { revision: string; questions: FactoryQuestion[]; run_id: string | null };
@@ -101,6 +111,7 @@ export interface FactoryPaneLink {
 }
 export interface FactoryPaneArchive extends FactoryRecord { machine_id: string; pane_id: string; terminal_id?: string; session_ref?: string | null; title?: string; archived_at: string | null }
 export interface FactoryOverview { pane_links?: FactoryPaneLink[]; pane_archives?: FactoryPaneArchive[] }
+export interface FactoryOverview { /** Absent on older bridges. */ board?: FactoryBoardItem[] }
 export interface FactoryProviderCapability { provider: FactoryProvider; version: string | null; installed: boolean; skills_verified: boolean; factory_ready: boolean; reasons: string[] }
 export interface FactoryCapabilities { providers: FactoryProviderCapability[]; skill_manifest: { commit: string; hash: string; file_count: number } | null; factory_host_protocol: 1; project_reference_protocol?: 1; account_profile_protocol?: 1 }
 export interface FactoryOutput { name: string; media_type: string; hash: string; size: number }

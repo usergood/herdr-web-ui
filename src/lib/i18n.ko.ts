@@ -6,6 +6,21 @@
  * braces keep their English names.
  */
 export const KO: Record<string, string> = {
+  "Interrupted": "중단됨",
+  "Stopped attempt": "중지된 시도",
+  "Finished attempt": "완료된 시도",
+  "Past attempts": "이전 시도",
+  "Awaiting checks": "검증 대기 중",
+  "Awaiting release": "릴리스 대기 중",
+  "Awaiting merge": "병합 대기 중",
+  "Researching": "조사 중",
+  "Setting up": "설정 중",
+  "Reflecting": "회고 중",
+  "Implementing": "구현 중",
+  "Validating": "검증 중",
+  "Reviewing": "검토 중",
+  "Tickets: {completed}/{total}": "티켓: {completed}/{total}",
+  "Queued": "대기 중",
   "Continue workflow": "워크플로 계속",
   "Native verification will run before implementation.": "구현 전에 네이티브 검증이 실행됩니다.",
   "Review and continue from this chat. Finished steps keep their history.": "이 채팅에서 검토하고 계속하세요. 완료된 단계의 기록은 보존됩니다.",

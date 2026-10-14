@@ -10,6 +10,21 @@
  * Placeholders in braces keep their English names.
  */
 export const ZH: Record<string, string> = {
+  "Interrupted": "已中断",
+  "Stopped attempt": "已停止的尝试",
+  "Finished attempt": "已完成的尝试",
+  "Past attempts": "历史尝试",
+  "Awaiting checks": "等待检查",
+  "Awaiting release": "等待发布",
+  "Awaiting merge": "等待合并",
+  "Researching": "研究中",
+  "Setting up": "设置中",
+  "Reflecting": "复盘中",
+  "Implementing": "实现中",
+  "Validating": "验证中",
+  "Reviewing": "审查中",
+  "Tickets: {completed}/{total}": "工单：{completed}/{total}",
+  "Queued": "排队中",
   "Continue workflow": "继续工作流程",
   "Native verification will run before implementation.": "实施前将运行原生验证。",
   "Review and continue from this chat. Finished steps keep their history.": "在此聊天中审阅并继续。已完成步骤的历史记录会保留。",

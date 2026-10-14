@@ -19,6 +19,29 @@ import { handleMachineRequest } from "./machine-api.ts";
 import type { MachineManager } from "./machines.ts";
 import { TailnetIdentitySource } from "./tailscale.ts";
 import { forgetTranscriptState } from "./conversation.ts";
+import type { FactoryAction, FactoryRun } from "../shared/factory.ts";
+import type { FactoryNative } from "./factory-native.ts";
+
+async function factoryBoardFixture(native: Partial<FactoryNative> = {}) {
+  const state = mkdtempSync(join(tmpdir(), "saurons-eye-board-live-")); const repo = join(state, "repo");
+  mkdirSync(repo); writeFileSync(join(repo, "README.md"), "Owned board fixture\n");
+  for (const args of [["init", "-b", "main"], ["add", "."], ["-c", "user.name=Board fixture", "-c", "user.email=board@example.invalid", "commit", "-m", "initial"]]) expect(Bun.spawnSync(["git", ...args], { cwd: repo }).exitCode).toBe(0);
+  const workspaces: string[] = [];
+  const app = createServer({ port: 0, token: "", stateDir: state, machines: false, factory: { accountDiscoveryHome: state, native: {
+    version: async () => "owned-board-fixture",
+    createWorkspace: async options => { const result = await herdrRpc<import("./herdr/client.ts").WorkspaceCreateResult>("workspace.create", { ...options, focus: false }); workspaces.push(result.workspace.workspace_id); return result; },
+    startAgent: async options => { await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "working" }); },
+    ...native,
+  } } });
+  const request = async (path: string, body?: unknown) => {
+    const response = await fetch(`http://localhost:${app.port}/api/factory${path}`, { method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const result = await response.json(); if (!response.ok) throw new Error(`${path}: ${response.status} ${JSON.stringify(result)}`); return result;
+  };
+  const project = await request("/projects", { name: "Board Project", path: repo, provider: "codex", machine_id: "local", tracker: "app" });
+  const idea = await request("/implementations", { title: "Observable board activity", description: "", project_id: project.id });
+  const prefix = `/implementations/${idea.id}`;
+  return { app, request, prefix, start: (action: FactoryAction = "work") => request(`${prefix}/runs`, { action, idempotency_key: `board-${action}` }) as Promise<FactoryRun>, close: async () => { app.stop(); for (const id of workspaces) await workspaceClose(id).catch(() => {}); rmSync(state, { recursive: true, force: true }); } };
+}
 
 /**
  * Contract test for herdr-web-ui's HTTP + WS surface.
@@ -139,6 +162,130 @@ describe("HTML file previews", () => {
 });
 
 describe("factory records", () => {
+  it("projects an untouched Assignment into Inbox without empty Ticket progress", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-eye-board-"));
+    const app = createServer({ port: 0, token: "", stateDir: state, machines: false, factory: { accountDiscoveryHome: state } });
+    try {
+      const idea = await fetch(`http://localhost:${app.port}/api/factory/implementations`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify({ title: "Unselected idea", description: "Retain the owner's idea" }) }).then(r => r.json());
+      const overview = await fetch(`http://localhost:${app.port}/api/factory?navigation=1`).then(r => r.json());
+      expect(overview.board).toEqual([{ implementation_id: idea.id, lane: "inbox", activity: null, condition: null, run_id: null, busy: false, waiting_reason: null, ticket_progress: null }]);
+      const detail = await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then(r => r.json());
+      expect(detail.board).toEqual(overview.board[0]);
+      expect(detail.implementation.stage).toBe("inbox");
+      expect(detail.messages[0].content).toBe("Retain the owner's idea");
+      await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}/questions`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify({ question: "Choose the public behavior before starting" }) });
+      const asked = await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then(r => r.json());
+      expect(asked.board).toMatchObject({ lane: "needs_you", condition: "needs_you", busy: false, waiting_reason: "Choose the public behavior before starting", run_id: null });
+    } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+  it("queues an approved Ticket graph with meaningful zero-completed progress", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-eye-board-plan-"));
+    const app = createServer({ port: 0, token: "", stateDir: state, machines: false, factory: { accountDiscoveryHome: state } });
+    const request = (path: string, body?: unknown) => fetch(`http://localhost:${app.port}/api/factory${path}`, { method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }).then(r => r.json());
+    try {
+      const idea = await request("/implementations", { title: "Approved bounded work", description: "" });
+      const prefix = `/implementations/${idea.id}`;
+      const specification = await request(`${prefix}/specifications`, { content: "Two independently observable behaviors" });
+      expect((await request(prefix)).board).toMatchObject({ lane: "needs_you", activity: "specifying", busy: false, run_id: null });
+      await request(`${prefix}/approvals`, { kind: "specification", revision: specification.id, scope: "Owned fixture scope" });
+      const graph = await request(`${prefix}/tickets`, { specification_id: specification.id, tickets: [{ key: "first", title: "First behavior", acceptance: "First public outcome", dependencies: [] }, { key: "second", title: "Second behavior", acceptance: "Second public outcome", dependencies: [] }] });
+      await request(`${prefix}/approvals`, { kind: "ticket_graph", revision: graph.hash, scope: "Owned fixture graph" });
+      const detail = await request(prefix);
+      expect(detail.board).toMatchObject({ lane: "queued", activity: null, busy: false, ticket_progress: { completed: 0, total: 2 } });
+      expect((await request("")).board.find((entry: { implementation_id: string }) => entry.implementation_id === idea.id)).toEqual(detail.board);
+      expect(detail.implementation.stage).toBe("ready");
+      expect(detail.events.some((event: { kind: string }) => event.kind === "specification_created")).toBe(true);
+    } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+  it.each([["to-spec", "specifying"], ["work", "implementing"], ["verify-provider", "validating"]] as const)("shows %s as Running with readable %s activity", async (action, activity) => {
+    const f = await factoryBoardFixture();
+    try {
+      const run = await f.start(action);
+      expect((await f.request(f.prefix)).board).toMatchObject({ lane: "running", activity, condition: "working", run_id: run.id, busy: true, ticket_progress: null });
+    } finally { await f.close(); }
+  }, 30_000);
+  it("keeps connection recovery Running and exposes unresolved interruption as Needs you", async () => {
+    let unavailable = false;
+    const f = await factoryBoardFixture({ snapshot: async () => { if (unavailable) throw new Error("Owned connection is recovering"); return sessionSnapshot(); } });
+    try {
+      const run = await f.start();
+      unavailable = true;
+      await f.request(`/runs/${run.id}/reconcile`, {});
+      expect((await f.request(f.prefix)).board).toMatchObject({ lane: "running", activity: "implementing", condition: "disconnected", busy: true });
+      unavailable = false;
+      await herdrRpc("pane.report_agent", { pane_id: run.pane_id, source: "manual", agent: "claude", state: "idle" });
+      await f.request(`/runs/${run.id}/reconcile`, {});
+      expect((await f.request(f.prefix)).board).toMatchObject({ lane: "needs_you", activity: "implementing", condition: "interrupted", busy: false, waiting_reason: expect.any(String) });
+    } finally { await f.close(); }
+  }, 30_000);
+  it("keeps Reviewing visible in Needs you while another independent worker continues", async () => {
+    const f = await factoryBoardFixture();
+    try {
+      const run = await f.start();
+      const first = await f.request(`/runs/${run.id}/workers`, { role: "standards", idempotency_key: "board-standards" });
+      await f.request(`/runs/${run.id}/workers`, { role: "spec", idempotency_key: "board-spec" });
+      await herdrRpc("pane.report_agent", { pane_id: first.pane_id, source: "manual", agent: "codex", state: "blocked" });
+      await f.request(`/runs/${run.id}/workers/${first.id}/reconcile`, {});
+      const detail = await f.request(f.prefix);
+      expect(detail.board).toMatchObject({ lane: "needs_you", activity: "reviewing", condition: "needs_you", busy: true, waiting_reason: expect.any(String) });
+      expect(detail.workers.some((worker: { role: string; condition: string }) => worker.role === "spec" && worker.condition === "working")).toBe(true);
+      expect((await f.request("")).board.find((entry: { implementation_id: string }) => entry.implementation_id === detail.implementation.id)).toEqual(detail.board);
+    } finally { await f.close(); }
+  }, 30_000);
+  it("shows a resting planning checkpoint in Needs you and retains earlier attempts after continuing", async () => {
+    const f = await factoryBoardFixture();
+    try {
+      const first = await f.start("grill-with-docs");
+      await herdrRpc("pane.report_agent", { pane_id: first.pane_id, source: "manual", agent: "codex", state: "idle" });
+      await f.request(`/runs/${first.id}/reconcile`, {});
+      expect((await f.request(f.prefix)).board).toMatchObject({ lane: "needs_you", activity: "specifying", condition: "ready", busy: false });
+      await f.request(`${f.prefix}/continue`, { action: "to-spec", run_id: first.id, idempotency_key: "board-continue", allow_partial_handoff: true });
+      const detail = await f.request(f.prefix);
+      expect(detail.board).toMatchObject({ lane: "running", activity: "specifying", busy: true });
+      expect(detail.runs).toHaveLength(2);
+      expect(detail.runs[0]).toMatchObject({ id: first.id, action: "grill-with-docs", condition: "completed" });
+    } finally { await f.close(); }
+  }, 30_000);
+  it("projects completed work into Done while retaining its Run and completion history", async () => {
+    const f = await factoryBoardFixture();
+    try {
+      const run = await f.start();
+      await herdrRpc("pane.report_agent", { pane_id: run.pane_id, source: "manual", agent: "codex", state: "idle" });
+      await f.request(`${f.prefix}/complete-work`, { run_id: run.id });
+      const detail = await f.request(f.prefix);
+      expect(detail.board).toMatchObject({ lane: "done", activity: null, busy: false, run_id: run.id });
+      expect(detail.runs[0].id).toBe(run.id);
+      expect(detail.events.some((event: { kind: string }) => event.kind === "direct_work_completed")).toBe(true);
+    } finally { await f.close(); }
+  }, 30_000);
+  it("shows resting implementation as Awaiting checks without busy activity", async () => {
+    const f = await factoryBoardFixture();
+    try {
+      const run = await f.start();
+      await herdrRpc("pane.report_agent", { pane_id: run.pane_id, source: "manual", agent: "codex", state: "idle" });
+      await f.request(`/runs/${run.id}/reconcile`, {});
+      expect((await f.request(f.prefix)).board).toMatchObject({ lane: "running", activity: "awaiting_checks", busy: false, condition: "ready" });
+    } finally { await f.close(); }
+  }, 30_000);
+  it("shows Validating while owned checks execute and needs attention when they fail", async () => {
+    let release!: () => void; let entered!: () => void;
+    const reached = new Promise<void>(resolve => entered = resolve);
+    const gate = new Promise<void>(resolve => release = resolve);
+    const tool = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch() { entered(); await gate; return new Response("Owned failing check", { status: 500 }); } });
+    const f = await factoryBoardFixture(); let pending: Promise<unknown> | undefined;
+    try {
+      const detail = await f.request(f.prefix);
+      await f.request(`/projects/${detail.implementation.project_id}/configure`, { checks: [[process.execPath, "-e", `const response = await fetch('http://127.0.0.1:${tool.port}'); process.exit(response.ok ? 0 : 1);`]] });
+      const run = await f.start();
+      await herdrRpc("pane.report_agent", { pane_id: run.pane_id, source: "manual", agent: "codex", state: "idle" });
+      await f.request(`/runs/${run.id}/reconcile`, {});
+      pending = f.request(`/runs/${run.id}/checks`, {});
+      await Promise.race([reached, new Promise((_, reject) => setTimeout(() => reject(new Error("Owned check never reached the fixture")), 5000))]);
+      expect((await f.request(f.prefix)).board).toMatchObject({ lane: "running", activity: "validating", busy: true });
+      release(); await pending;
+      expect((await f.request(f.prefix)).board).toMatchObject({ lane: "needs_you", activity: "validating", busy: false, condition: "failed" });
+    } finally { release(); await pending?.catch(() => {}); tool.stop(true); await f.close(); }
+  }, 30_000);
   it("persists a global six-task limit and validates its supported range", async () => {
     const state = mkdtempSync(join(tmpdir(), "saurons-capacity-settings-"));
     let app = createServer({ port: 0, stateDir: state, machines: false });
