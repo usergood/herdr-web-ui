@@ -9,6 +9,7 @@ import type { Machine } from "../../shared/machines.ts";
 import type { AccountProfile, AccountService } from "../../shared/accounts.ts";
 import type { ProjectGitHubOverview, ProjectGitHubPolicy } from "../../shared/github-project.ts";
 import { fictionalGitHubPull } from "./github-fixtures.ts";
+import type { ProjectSchedulesOverview } from "../../shared/project-schedules.ts";
 
 const storageKey = "saurons-eye:demo-factory";
 const details = new Map<string, FactoryDetail>();
@@ -53,6 +54,18 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
     if (body.archived && (pane?.terminal_id !== body.terminal_id || pane && nativeSessionRef(pane) !== body.session_ref)) return failure("pane_identity_changed", "Refresh the native chat");
     const next = { ...(previous ?? record()), ...(body.archived && pane ? { terminal_id: pane.terminal_id, session_ref: nativeSessionRef(pane), title: pane.label || pane.title || pane.pane_id } : {}), machine_id: String(body.machine_id), pane_id: String(body.pane_id), archived_at: body.archived ? new Date().toISOString() : null };
     paneArchives = [...paneArchives.filter((a) => a.id !== previous?.id), next]; save(); return json(next);
+  }
+  const schedulesRoute = /^\/api\/factory\/projects\/([^/]+)\/github\/schedules(?:\/(configure|run|reconcile))?$/.exec(path);
+  if (schedulesRoute) {
+    const id = schedulesRoute[1]!;
+    if (!projects.some(project => project.id === id)) return failure("not_found", "Fictional Project not found", 404);
+    if (method !== "GET" || schedulesRoute[2]) return failure("demo_only", "Scheduled synchronization needs a real connection server. The demo enables no recurring jobs.");
+    const policy = githubViews.get(id)?.policy;
+    const overview: ProjectSchedulesOverview = { schedules: [
+      { job: "github_sync", enabled: false, cadence: "interval", interval_minutes: policy?.poll_minutes ?? 15, local_time: "03:00", time_zone: "America/Mexico_City", revision: null, next_execution: null, condition: "idle", failure_count: 0, retry_at: null },
+      { job: "upstream_sync", enabled: false, cadence: "daily", interval_minutes: 1440, local_time: "03:00", time_zone: "America/Mexico_City", revision: null, next_execution: null, condition: "idle", failure_count: 0, retry_at: null },
+    ], results: [] };
+    return json(overview);
   }
   const githubRoute = /^\/api\/factory\/projects\/([^/]+)\/github(?:\/(configure|sync)|\/pulls\/(\d+)\/(merge|update|rerequest|import|files))?$/.exec(path);
   if (githubRoute) {

@@ -8,6 +8,8 @@ import type { ProjectGitHubConfiguration, ProjectGitHubFiles, ProjectGitHubMutat
 import { FactoryStore } from "./factory-store.ts";
 import { FactoryError, hash } from "./factory-host.ts";
 import { MachineAccounts } from "./accounts.ts";
+import type { ProjectSchedulesOverview, ProjectScheduleConfiguration, ProjectSyncJob, ProjectSyncResult } from "../shared/project-schedules.ts";
+import { nextProjectSync, validateProjectSchedule, type ProjectScheduleTiming, type StoredProjectSchedule } from "./project-schedules.ts";
 
 const pullFields = `number id title body url state isDraft headRefOid baseRefOid headRefName baseRefName author { login } mergeStateStatus reviewDecision headRepository { nameWithOwner } viewerCanUpdate
 reviews(first:100) { nodes { id state body submittedAt author { login } commit { oid } } pageInfo { hasNextPage endCursor } }
@@ -22,15 +24,64 @@ interface Issue { number: number; node_id: string; title: string; body: string |
 export class ProjectGitHub {
   private readonly busy = new Set<string>();
   private stopped = false;
-  private readonly timer: ReturnType<typeof setInterval>;
-  constructor(private readonly store: FactoryStore, private readonly accounts: MachineAccounts, private readonly discover?: (machineId: string, path: string) => Promise<import("../shared/project-setup.ts").ProjectDiscovery>) {
-    this.timer = setInterval(() => { void this.poll(); }, 10_000); this.timer.unref();
+  private readonly stopPolling: () => void;
+  private readonly now: () => number;
+  constructor(private readonly store: FactoryStore, private readonly accounts: MachineAccounts, private readonly discover?: (machineId: string, path: string) => Promise<import("../shared/project-setup.ts").ProjectDiscovery>, timing: ProjectScheduleTiming = {}) {
+    this.now = timing.now ?? Date.now;
+    this.retainUncertainAttempts();
+    if (timing.subscribe) this.stopPolling = timing.subscribe(() => this.poll());
+    else { const timer = setInterval(() => { void this.poll(); }, 10_000); timer.unref(); this.stopPolling = () => clearInterval(timer); }
   }
-  stop(): void { this.stopped = true; clearInterval(this.timer); }
+  stop(): void { this.stopped = true; this.stopPolling(); }
+  private retainUncertainAttempts(): void {
+    this.store.db.transaction(() => {
+      for (const schedule of this.store.list<StoredProjectSchedule>("project_schedules")) {
+        if (schedule.condition !== "running") continue;
+        this.store.put("project_schedules", { ...schedule, condition: "uncertain", retry_at: null, next_execution: null }, schedule.project_id);
+        for (const result of this.store.list<ProjectSyncResult>("project_sync_results", schedule.project_id)) {
+          if (result.job === schedule.job && result.condition === "running") this.store.put("project_sync_results", { ...result, condition: "uncertain", problem: "The synchronization receipt was interrupted. Reconcile before running again." }, schedule.project_id);
+        }
+      }
+    })();
+  }
   overview(id: string): ProjectGitHubOverview {
     this.project(id);
     const state = this.store.get<SyncState>("github_sync", id);
     return { policy: this.store.get("github_policies", id), pulls: this.store.list("github_pulls", id), sources: this.store.list("github_sources", id), mutations: this.store.list("github_mutations", id), last_sync: state?.last_sync ?? null, problem: state?.problem ?? null };
+  }
+  schedules(id: string): ProjectSchedulesOverview {
+    this.project(id);
+    const policy = this.store.get<ProjectGitHubPolicy>("github_policies", id);
+    const state = this.store.get<SyncState>("github_sync", id);
+    const defaults: ProjectSchedulesOverview["schedules"] = [
+      { job: "github_sync", enabled: policy?.sync_enabled ?? false, cadence: "interval", interval_minutes: policy?.poll_minutes ?? 15, local_time: "03:00", time_zone: "America/Mexico_City", revision: null, next_execution: policy?.sync_enabled ? new Date(state?.next_sync ?? this.now()).toISOString() : null, condition: "idle", failure_count: 0, retry_at: null },
+      { job: "upstream_sync", enabled: false, cadence: "daily", interval_minutes: 1440, local_time: "03:00", time_zone: "America/Mexico_City", revision: null, next_execution: null, condition: "idle", failure_count: 0, retry_at: null },
+    ];
+    return { schedules: defaults.map(schedule => {
+      const saved = this.store.get<StoredProjectSchedule>("project_schedules", `${id}:${schedule.job}`);
+      if (!saved) return schedule;
+      const { id: _, project_id: __, ...publicSchedule } = saved;
+      return publicSchedule;
+    }), results: this.store.list<ProjectSyncResult>("project_sync_results", id) };
+  }
+  async configureSchedule(id: string, value: ProjectScheduleConfiguration): Promise<ProjectSchedulesOverview> {
+    return this.locked(id, async () => {
+      this.project(id); validateProjectSchedule(value);
+      const prior = this.schedules(id).schedules.find(s => s.job === value.job)!;
+      if (value.expected_revision !== prior.revision) throw new FactoryError("schedule_changed", "Refresh the Project schedule before saving", 409);
+      const { job, enabled, cadence, interval_minutes, local_time, time_zone } = value;
+      const schedule: StoredProjectSchedule = { job, enabled, cadence, interval_minutes, local_time, time_zone, id: `${id}:${value.job}`, project_id: id, revision: randomUUID(), next_execution: null, condition: prior.condition, failure_count: prior.failure_count, retry_at: prior.retry_at };
+      schedule.next_execution = schedule.condition === "idle" ? nextProjectSync(schedule, this.now()) : schedule.enabled && schedule.condition === "failed" ? schedule.retry_at : null;
+      this.store.db.transaction(() => {
+        this.store.put("project_schedules", schedule, id);
+        if (value.job === "github_sync") {
+          const policy = this.store.get<ProjectGitHubPolicy>("github_policies", id);
+          if (!policy && value.enabled) throw new FactoryError("github_not_configured", "Configure Project GitHub synchronization", 409);
+          if (policy) this.store.put("github_policies", { ...policy, sync_enabled: value.enabled, poll_minutes: value.interval_minutes, revision: randomUUID() }, id);
+        }
+      })();
+      return this.schedules(id);
+    });
   }
   private project(id: string): FactoryProject {
     const project = this.store.get<FactoryProject>("projects", id);
@@ -105,7 +156,14 @@ export class ProjectGitHub {
       const { expected_revision: _, ...configuration } = value;
       if (this.projectScope(id) !== projectScope) throw new FactoryError("account_scope_changed", "The Project changed during GitHub configuration", 409);
       const policy: ProjectGitHubPolicy = { ...(prior ?? this.store.record()), ...configuration, id, project_id: id, revision: randomUUID(), project_scope: this.projectScope(id), updated_at: new Date().toISOString() };
-      this.store.put("github_policies", policy, id); this.store.put("github_sync", { id, last_sync: null, next_sync: Date.now() + value.poll_minutes * 60_000, problem: null });
+      this.store.put("github_policies", policy, id); this.store.put("github_sync", { id, last_sync: null, next_sync: this.now() + value.poll_minutes * 60_000, problem: null });
+      const savedSchedule = this.store.get<StoredProjectSchedule>("project_schedules", `${id}:github_sync`);
+      if (savedSchedule) {
+        const changed = savedSchedule.enabled !== value.sync_enabled || savedSchedule.interval_minutes !== value.poll_minutes;
+        const schedule = { ...savedSchedule, enabled: value.sync_enabled, interval_minutes: value.poll_minutes, revision: changed ? randomUUID() : savedSchedule.revision };
+        schedule.next_execution = !schedule.enabled ? null : schedule.condition === "idle" ? changed ? nextProjectSync(schedule, this.now()) : schedule.next_execution : schedule.condition === "failed" ? schedule.retry_at : null;
+        this.store.put("project_schedules", schedule, id);
+      }
       this.store.event(null, "github_policy_configured", { project_id: id, revision: policy.revision }); return policy;
     });
   }
@@ -281,7 +339,50 @@ export class ProjectGitHub {
     });
   }
   async sync(id: string): Promise<ProjectGitHubOverview> {
+    await this.runSchedule(id, "github_sync", "manual");
+    return this.overview(id);
+  }
+  async runSchedule(id: string, job: ProjectSyncJob, trigger: ProjectSyncResult["trigger"] = "manual", resultId?: string): Promise<ProjectSchedulesOverview> {
     return this.locked(id, async () => {
+      const schedule = this.schedules(id).schedules.find(s => s.job === job);
+      if (!schedule) throw new FactoryError("invalid_schedule", "Select a built-in synchronization job");
+      if (trigger === "scheduled" && (!schedule.enabled || !schedule.next_execution || Date.parse(schedule.next_execution) > this.now() || schedule.condition === "running" || schedule.condition === "uncertain")) return this.schedules(id);
+      const uncertain = schedule.condition === "uncertain" ? this.schedules(id).results.filter(r => r.job === job && r.condition === "uncertain").at(-1) : undefined;
+      if (schedule.condition === "uncertain" && (trigger !== "reconcile" || !uncertain || resultId !== uncertain.id)) throw new FactoryError("sync_uncertain", "Reconcile the interrupted synchronization before running again", 409);
+      if (trigger === "reconcile" && (schedule.condition !== "uncertain" || !uncertain || resultId !== uncertain.id)) throw new FactoryError("sync_result_changed", "Refresh the interrupted synchronization result", 409);
+      if (job === "github_sync" && !this.store.get("github_policies", id)) throw new FactoryError("github_not_configured", "Configure Project GitHub synchronization", 409);
+      const result: ProjectSyncResult = { id: randomUUID(), job, trigger, condition: "running", started_at: new Date(this.now()).toISOString(), finished_at: null, problem: null };
+      this.store.db.transaction(() => {
+        this.store.put("project_sync_results", result, id);
+        this.store.put<StoredProjectSchedule>("project_schedules", { ...schedule, id: `${id}:${job}`, project_id: id, condition: "running", next_execution: nextProjectSync(schedule, this.now()), retry_at: null }, id);
+      })();
+      try {
+        if (job === "github_sync") await this.synchronize(id, trigger === "reconcile");
+        else throw new FactoryError("upstream_sync_unavailable", "Upstream release discovery is not available yet", 409);
+        if (this.stopped) throw new FactoryError("sync_uncertain", "The server stopped before the synchronization receipt", 409);
+        this.store.db.transaction(() => {
+          this.store.put("project_sync_results", { ...result, condition: "succeeded", finished_at: new Date(this.now()).toISOString() }, id);
+          if (uncertain) for (const interrupted of this.store.list<ProjectSyncResult>("project_sync_results", id)) {
+            if (interrupted.job === job && interrupted.condition === "uncertain") this.store.put("project_sync_results", { ...interrupted, condition: "reconciled", finished_at: new Date(this.now()).toISOString(), problem: null }, id);
+          }
+          this.store.put<StoredProjectSchedule>("project_schedules", { ...schedule, id: `${id}:${job}`, project_id: id, condition: "idle", failure_count: 0, retry_at: null, next_execution: nextProjectSync(schedule, this.now()) }, id);
+        })();
+        return this.schedules(id);
+      } catch (error) {
+        if (!this.stopped) {
+          const failureCount = schedule.failure_count + 1;
+          const unresolved = trigger === "reconcile" || this.store.list<ProjectGitHubMutation>("github_mutations", id).some(m => m.condition !== "confirmed");
+          const retryAt = !unresolved && failureCount <= 3 ? new Date(this.now() + 60_000 * 2 ** (failureCount - 1)).toISOString() : null;
+          this.store.db.transaction(() => {
+            this.store.put("project_sync_results", { ...result, condition: unresolved ? "uncertain" : "failed", finished_at: new Date(this.now()).toISOString(), problem: error instanceof FactoryError ? error.message : "Project synchronization failed" }, id);
+            this.store.put<StoredProjectSchedule>("project_schedules", { ...schedule, id: `${id}:${job}`, project_id: id, condition: unresolved ? "uncertain" : "failed", failure_count: failureCount, retry_at: retryAt, next_execution: schedule.enabled ? retryAt : null }, id);
+          })();
+        }
+        throw error;
+      }
+    });
+  }
+  private async synchronize(id: string, readOnly = false): Promise<ProjectGitHubOverview> {
       const policy = this.store.get<ProjectGitHubPolicy>("github_policies", id);
       if (!policy) throw new FactoryError("github_not_configured", "Configure Project GitHub synchronization", 409);
       try {
@@ -299,26 +400,31 @@ export class ProjectGitHub {
           this.store.put<ProjectGitHubPull>("github_pulls", { ...(previous ?? this.store.record()), project_id: id, pull, blockers: this.blockers(pull, policy), observed_at: new Date().toISOString(), fix_implementation_id: fix?.implementation_id ?? previous?.fix_implementation_id ?? null }, id);
           const proof = { head: pull.headRefOid, base: pull.baseRefOid, policy_revision: policy.revision };
           const own = pull.author?.login.toLowerCase() === scope.profiles[0]!.identity.login?.toLowerCase();
+          if (readOnly) continue;
           if (policy.auto_update && own && pull.mergeStateStatus === "BEHIND") await this.mutate(policy, scope, pull.number, "update", proof);
           else if (policy.auto_merge && !this.blockers(pull, policy).length) await this.mutate(policy, scope, pull.number, "merge", proof);
           else if (own && previous?.fix_implementation_id && previous.pull.headRefOid !== pull.headRefOid && this.store.get<Implementation>("implementations", previous.fix_implementation_id)?.outcome === "implementation_complete" && this.opinions(pull).some((review) => review.state === "CHANGES_REQUESTED" && review.commit?.oid !== pull.headRefOid) && !pull.reviewRequests.nodes.length) await this.mutate(policy, scope, pull.number, "rerequest", proof);
         }
         for (const item of this.store.list<ProjectGitHubPull>("github_pulls", id)) if (!pulls.some((pull) => pull.id === item.pull.id)) this.store.remove("github_pulls", item.id);
-        this.store.put<SyncState>("github_sync", { id, last_sync: new Date().toISOString(), next_sync: Date.now() + policy.poll_minutes * 60_000, problem: null });
+        if (readOnly && this.store.list<ProjectGitHubMutation>("github_mutations", id).some(m => m.condition !== "confirmed")) throw new FactoryError("github_mutation_uncertain", "Inspect the retained GitHub mutation before releasing synchronization ownership", 409);
+        this.store.put<SyncState>("github_sync", { id, last_sync: new Date(this.now()).toISOString(), next_sync: this.now() + policy.poll_minutes * 60_000, problem: null });
         return this.overview(id);
       } catch (error) {
-        if (!this.stopped) this.store.put<SyncState>("github_sync", { id, last_sync: this.store.get<SyncState>("github_sync", id)?.last_sync ?? null, next_sync: Date.now() + Math.max(policy.poll_minutes, 15) * 60_000, problem: error instanceof FactoryError ? error.message : "GitHub synchronization failed" });
+        if (!this.stopped) this.store.put<SyncState>("github_sync", { id, last_sync: this.store.get<SyncState>("github_sync", id)?.last_sync ?? null, next_sync: this.now() + Math.max(policy.poll_minutes, 15) * 60_000, problem: error instanceof FactoryError ? error.message : "GitHub synchronization failed" });
         throw error;
       }
-    });
   }
   private async poll(): Promise<void> {
     if (this.stopped) return;
-    for (const policy of this.store.list<ProjectGitHubPolicy>("github_policies")) {
+    const projects = new Set([...this.store.list<ProjectGitHubPolicy>("github_policies").map(p => p.id), ...this.store.list<StoredProjectSchedule>("project_schedules").map(s => s.project_id)]);
+    for (const id of projects) {
       if (this.stopped) break;
-      if (this.store.get<FactoryProject>("projects", policy.id)?.removed_at) continue;
-      if (policy.sync_enabled && !this.busy.has(policy.id) && (this.store.get<SyncState>("github_sync", policy.id)?.next_sync ?? 0) <= Date.now()) {
-        try { await this.sync(policy.id); } catch { /* Durable problem and backoff are visible through the owner API. */ }
+      if (this.store.get<FactoryProject>("projects", id)?.removed_at) continue;
+      for (const schedule of this.schedules(id).schedules) {
+        if (this.stopped) break;
+        if (schedule.enabled && schedule.next_execution && Date.parse(schedule.next_execution) <= this.now() && !this.busy.has(id)) {
+          try { await this.runSchedule(id, schedule.job, "scheduled"); } catch { /* Durable results are visible through the owner API. */ }
+        }
       }
     }
   }

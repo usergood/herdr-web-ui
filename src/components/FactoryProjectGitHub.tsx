@@ -7,6 +7,7 @@ import { useT } from "../lib/i18n.ts";
 import { accountRequest } from "../lib/accountsApi.ts";
 import { factoryRequest } from "../lib/factoryApi.ts";
 import { NativeAccountImport } from "./NativeAccountImport.tsx";
+import { ProjectSyncSchedules } from "./ProjectSyncSchedules.tsx";
 import "./FactoryProjectGitHub.css";
 
 export function FactoryProjectGitHub({ project, busy, perform, checkoutPath, checkout, machineName }: { project: FactoryProject; busy: boolean; perform: (action: () => Promise<void>) => Promise<void>; checkoutPath?: string; checkout?: { machine_id: string; path: string }; machineName?: string }) {
@@ -18,7 +19,7 @@ export function FactoryProjectGitHub({ project, busy, perform, checkoutPath, che
   const [notice, setNotice] = useState("");
   const [diffs, setDiffs] = useState<Record<number, ProjectGitHubFiles>>({});
   const epoch = useRef(0);
-  const [form, setForm] = useState<ProjectGitHubConfiguration>({ expected_revision: null, repository: "", account_profile_id: "", sync_enabled: false, import_issues: false, import_fixes: false, auto_update: false, auto_merge: false, trusted_reviewers: [], required_checks: [], review_context: "Review against the repository's coding standards, domain language and accepted scope.", poll_minutes: 5 });
+  const [form, setForm] = useState<ProjectGitHubConfiguration>({ expected_revision: null, repository: "", account_profile_id: "", sync_enabled: false, import_issues: false, import_fixes: false, auto_update: false, auto_merge: false, trusted_reviewers: [], required_checks: [], review_context: "Review against the repository's coding standards, domain language and accepted scope.", poll_minutes: 15 });
   async function refresh() { const id = epoch.current; const next = await factoryRequest<ProjectGitHubOverview>(route); if (id === epoch.current) setView(next); return next; }
   async function reloadAccounts() { const id = epoch.current; const next = await accountRequest<AccountOverview>("/machines/local/accounts"); if (id === epoch.current) setAccounts(next); return next; }
   useEffect(() => {
@@ -73,6 +74,7 @@ export function FactoryProjectGitHub({ project, busy, perform, checkoutPath, che
       <button className="btn" disabled={busy || !ready || !form.repository}>{t("Save Project settings")}</button>
     </form>
     <NativeAccountImport machineId="local" path={checkoutPath} busy={busy} perform={perform} onImported={profile => { const id = epoch.current; setForm(current => ({ ...current, account_profile_id: profile.id })); void reloadAccounts().catch(error => { if (id === epoch.current) setProblem(error.message); }); }} />
+    <ProjectSyncSchedules projectId={project.id} configured={!!view?.policy} busy={busy} perform={perform} onSaved={async () => { const next = await refresh(); if (next.policy) setForm(current => ({ ...current, expected_revision: next.policy!.revision, sync_enabled: next.policy!.sync_enabled, poll_minutes: next.policy!.poll_minutes })); }} />
     <button type="button" className="btn" disabled={busy || !view?.policy} onClick={() => void perform(async () => { setView(await accountRequest<ProjectGitHubOverview>(route + "/sync", {})); })}>{t("Sync GitHub")}</button>
     {view?.problem && <p role="alert">{view.problem}</p>}
     {view?.last_sync && <p>{new Date(view.last_sync).toLocaleString()}</p>}
