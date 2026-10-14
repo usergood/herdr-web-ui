@@ -1,4 +1,4 @@
-import type { FactoryProject, FactoryRun, Implementation } from "../shared/protocol.ts";
+import type { FactoryProject, FactoryRun, Implementation, ProjectCheckout } from "../shared/protocol.ts";
 import { FactoryError, hash } from "./factory-host.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { FactoryWorkflow } from "./factory-workflow.ts";
@@ -51,8 +51,10 @@ export class FactoryContinuation {
     const idea = this.store.get<Implementation>("implementations", id)!;
     const project = idea.project_id ? this.store.get<FactoryProject>("projects", idea.project_id) : null;
     const { updated_at: updated, created_at: created, ...projectScope } = project ?? { updated_at: "", created_at: "" };
+    const checkout = project ? this.store.list<ProjectCheckout>("checkouts", project.id).find(entry => entry.machine_id === (idea.machine_id ?? project.machine_id)) : null;
+    const checkoutScope = checkout ? { path: checkout.path, repository: checkout.repository, head: checkout.head, branch: checkout.branch, instructions: checkout.instructions.map(entry => ({ path: entry.path, hash: entry.hash })) } : null;
     const spec = this.workflow.specification(id);
-    return hash(JSON.stringify({ assignment: { title: idea.title, description: idea.description, project_id: idea.project_id, provider: idea.provider, machine_id: idea.machine_id, archived_at: idea.archived_at }, project: projectScope, specification: spec?.hash ?? null, graph: this.workflow.graphHash(id) }));
+    return hash(JSON.stringify({ assignment: { title: idea.title, description: idea.description, project_id: idea.project_id, provider: idea.provider, machine_id: idea.machine_id, archived_at: idea.archived_at }, project: projectScope, checkout: checkoutScope, specification: spec?.hash ?? null, graph: this.workflow.graphHash(id) }));
   }
   private validate(id: string, body: Record<string, unknown>): void {
     if (!["grill-with-docs", "to-spec", "to-tickets", "implement-spec", "verify-provider"].includes(String(body.action)) || typeof body.idempotency_key !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.idempotency_key) || body.run_id !== null && typeof body.run_id !== "string" || body.allow_partial_handoff !== undefined && typeof body.allow_partial_handoff !== "boolean") throw new FactoryError("invalid_continuation", "Select the displayed next step with its current Run and request key");

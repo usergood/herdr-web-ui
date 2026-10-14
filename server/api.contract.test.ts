@@ -1891,9 +1891,17 @@ describe("workspace and discovery endpoints", () => {
     expect(commands.status).toBe(200);
     expect(await commands.json()).toEqual({ commands: [] });
 
-    const files = await fetch(`${base()}/api/pane/files?pane_id=${encodeURIComponent(paneId)}&q=${encodeURIComponent(fileName)}&limit=5`);
-    expect(files.status).toBe(200);
-    expect(((await files.json()) as { files: string[] }).files).toContain(fileName);
+    // The new shell's foreground cwd can briefly still name its launching process.
+    const deadline = Date.now() + 5_000;
+    let files: string[] = [];
+    do {
+      const response = await fetch(`${base()}/api/pane/files?pane_id=${encodeURIComponent(paneId)}&q=${encodeURIComponent(fileName)}&limit=5`);
+      expect(response.status).toBe(200);
+      files = ((await response.json()) as { files: string[] }).files;
+      if (files.includes(fileName)) break;
+      await Bun.sleep(25);
+    } while (Date.now() < deadline);
+    expect(files).toContain(fileName);
 
     const prompt = await fetch(`${base()}/api/pane/prompt?pane_id=${encodeURIComponent(paneId)}`);
     expect(prompt.status).toBe(200);

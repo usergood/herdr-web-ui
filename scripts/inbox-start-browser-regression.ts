@@ -56,6 +56,13 @@ try {
     const response=await launched;const run=await response.json();assert.equal(response.status(),202,JSON.stringify(run));await workflow.waitFor({state:"hidden"});return run;
   };
   await openWorkflow();
+  const answer=workflow.getByRole("textbox",{name:"Your answer",exact:true});
+  await answer.fill("Keep this unsaved answer");
+  await page.keyboard.press("Control+Shift+Comma");
+  const settings=page.getByRole("dialog",{name:"Settings",exact:true});await settings.waitFor();
+  await page.keyboard.press("Escape");await settings.waitFor({state:"hidden"});
+  assert(await workflow.isVisible(),"Settings must own Escape without closing Workflow");
+  assert.equal(await answer.inputValue(),"Keep this unsaved answer");
   await workflow.getByRole("textbox",{name:"Your answer",exact:true}).fill("The receipt selected by the owner.");await workflow.getByRole("button",{name:"Save answer",exact:true}).click();
   await workflow.getByRole("button",{name:"Confirm shared understanding",exact:true}).click();
   const specRun=await continueStep();assert.equal(specRun.action,"to-spec");

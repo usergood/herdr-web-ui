@@ -103,7 +103,8 @@ describe("typing into a pane held by another connection", () => {
 
     const typed = "key-bar-arrow-with-nothing-attached";
     keyBar.send({ type: "input", pane_id: unheld, text: typed });
-    await until(async () => (await screen(unheld)).includes(typed), "the typed text to reach the pane");
+    await until(async () => keyBar.errors().length > 0 || (await screen(unheld)).includes(typed), "the typed text or an explicit rejection to reach the pane");
     expect(keyBar.errors()).toEqual([]);
+    expect(await screen(unheld)).toContain(typed);
   });
 });

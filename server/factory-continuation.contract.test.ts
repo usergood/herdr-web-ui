@@ -93,7 +93,7 @@ describe("continuing approved workflow steps", () => {
     } finally { app.stop(); proxy.stop(); await host.close(); rmSync(state, { recursive: true, force: true }); }
   }, 60_000);
 
-  it("observes remote verification readiness after consumption without another owner Continue", async () => {
+  it.each([false, true])("observes remote verification readiness and fences changed checkout configuration (%s)", async (changeCheckout) => {
     const host = await fixture("owned-continuation-host");
     const state = mkdtempSync(join(tmpdir(), "remote-continuation-"));
     const app = createServer({ port: 0, stateDir: state, token: "", machines: false, factory: { machineEndpoint: id => id === "external-host" ? { url: `http://localhost:${host.app.port}`, token: "owned-continuation-host" } : undefined } });
@@ -116,15 +116,22 @@ describe("continuing approved workflow steps", () => {
       await request(`${prefix}/questions/${question.id}/answer`, { revision: question.revision, answer: "Explicit owned fixture answer" });
       const contract = await host.agent(run, "contract").then(r => r.json());
       expect((await host.agent(run, "consume", { revision: contract.question_revision })).status).toBe(200);
+      if (changeCheckout) {
+        const other = join(state, "other-checkout");
+        execFileSync("git", ["clone", "--quiet", host.repo, other], { stdio: "ignore" });
+        const changed = await request(`/projects/${project.id}/checkouts`, { machine_id: "external-host", path: other });
+        expect(changed.status).toBe(201);
+      }
       await herdrRpc("pane.report_agent", { pane_id: run.pane_id, source: "manual", agent: "codex", state: "idle" });
+      const expectedProblem = changeCheckout ? "Project settings or the approved scope changed" : "selected Machine rejected";
       const deadline = Date.now() + 8_000;
       let detail;
       do {
         detail = await request(prefix).then(r => r.json());
-        if (detail.events.some((event: { kind: string; data: { message?: string } }) => event.kind === "continuation_waiting" && event.data.message?.includes("selected Machine rejected"))) break;
+        if (detail.events.some((event: { kind: string; data: { message?: string } }) => event.kind === "continuation_waiting" && event.data.message?.includes(expectedProblem))) break;
         await Bun.sleep(100);
       } while (Date.now() < deadline);
-      expect(detail.events.some((event: { kind: string; data: { message?: string } }) => event.kind === "continuation_waiting" && event.data.message?.includes("selected Machine rejected")), JSON.stringify({ runs: detail.runs.map((r: FactoryRun)=>({ id:r.id, condition:r.condition, waiting_reason:r.waiting_reason })), events: detail.events.filter((e: {kind:string})=>e.kind.includes("continuation")) })).toBe(true);
+      expect(detail.events.some((event: { kind: string; data: { message?: string } }) => event.kind === "continuation_waiting" && event.data.message?.includes(expectedProblem)), JSON.stringify({ runs: detail.runs.map((r: FactoryRun)=>({ id:r.id, condition:r.condition, waiting_reason:r.waiting_reason })), events: detail.events.filter((e: {kind:string})=>e.kind.includes("continuation")) })).toBe(true);
       expect(detail.runs.some((entry: FactoryRun) => entry.action === "implement-spec")).toBe(false);
     } finally { app.stop(); await host.close(); rmSync(state, { recursive: true, force: true }); }
   }, 60_000);

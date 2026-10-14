@@ -12,7 +12,7 @@ import { AssignmentActions } from "./AssignmentActions.tsx";
 import "./AssignmentWorkflowDialog.css";
 
 /** Decisions and continuation stay available over the selected native chat. */
-export function AssignmentWorkflowDialog({ assignmentId, overview, machines, onClose, onOpenPane }: { assignmentId: string; overview: FactoryOverview; machines: Machine[]; onClose: () => void; onOpenPane: (machineId: string, paneId: string) => void }) {
+export function AssignmentWorkflowDialog({ assignmentId, overview, machines, onClose, onOpenPane, keyboardActive = true }: { assignmentId: string; overview: FactoryOverview; machines: Machine[]; onClose: () => void; onOpenPane: (machineId: string, paneId: string) => void; keyboardActive?: boolean }) {
   const t = useT(); const surface = useFocusTrap<HTMLElement>(true);
   const [detail, setDetail] = useState<FactoryDetail | null>(null);
   const [busy, setBusy] = useState(false); const [error, setError] = useState<string | null>(null);
@@ -27,7 +27,7 @@ export function AssignmentWorkflowDialog({ assignmentId, overview, machines, onC
   const provider = detail?.implementation.provider ?? project?.provider ?? overview.settings.provider;
   const machineId = detail?.implementation.machine_id ?? project?.machine_id ?? "local";
   const capabilities = useFactoryCapabilities(machineId, detail?.implementation.id ?? null, JSON.stringify(project?.account_bindings?.[machineId] ?? {}));
-  useSheetSwipe(surface, busy ? null : onClose);
+  useSheetSwipe(surface, busy || !keyboardActive ? null : onClose);
   useEffect(() => { setPreset(project?.execution_preset ?? { model: null, reasoning: null }); }, [project?.id, project?.execution_preset?.model, project?.execution_preset?.reasoning]);
   useEffect(() => {
     let live = true; let timer: ReturnType<typeof setTimeout>;
@@ -35,9 +35,10 @@ export function AssignmentWorkflowDialog({ assignmentId, overview, machines, onC
     void read(); return () => { live = false; generation.current++; clearTimeout(timer); };
   }, [refresh, busy]);
   useEffect(() => {
+    if (!keyboardActive) return;
     const escape = (event: KeyboardEvent) => { if (busy || event.key !== "Escape" || event.isComposing || nativeModalOver(surface.current)) return; event.preventDefault(); event.stopPropagation(); onClose(); };
     window.addEventListener("keydown", escape); return () => window.removeEventListener("keydown", escape);
-  }, [onClose, busy]);
+  }, [onClose, busy, keyboardActive]);
   async function perform(action: () => Promise<void>) {
     if (busy) return; setBusy(true); setError(null);
     try { await action(); await refresh(); } catch (failure) { setError(failure instanceof Error ? failure.message : String(failure)); await refresh().catch(() => {}); } finally { setBusy(false); }

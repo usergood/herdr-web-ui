@@ -4,5 +4,5 @@
 .assignment-workflow-body .factory-actions { flex-wrap: wrap; }
 @media (max-width: 640px) {
   .assignment-workflow-body .factory-actions { flex-direction: column; align-items: stretch; }
-  .assignment-workflow-body .factory-actions > .btn { width: 100%; min-height: var(--touch-target); }
+  .assignment-workflow-dialog { --control-h: var(--touch-target); }
 }
