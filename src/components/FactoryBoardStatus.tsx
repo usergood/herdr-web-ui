@@ -14,6 +14,7 @@ export function FactoryBoardStatus({ state }: { state: FactoryBoardItem }) {
     case "awaiting_checks": label = t("Awaiting checks"); Icon = Clock; break;
     case "awaiting_release": label = t("Awaiting release"); Icon = Clock; break;
     case "awaiting_merge": label = t("Awaiting merge"); Icon = GitPullRequest; break;
+    case "discard_pending": label = t("Discard pending"); Icon = Clock; break;
     case "researching": label = t("Researching"); Icon = BookOpen; break;
     case "setting_up": label = t("Setting up"); Icon = Settings; break;
     case "reflecting": label = t("Reflecting"); Icon = History; break;

@@ -18,7 +18,7 @@ function normalized(path: string): string {
   const value = path.replaceAll("\\", "/").replace(/\/+$/, "") || "/";
   return /^[A-Za-z]:\//.test(value) ? value.toLowerCase() : value;
 }
-export interface ProjectPane { machine: Machine; pane: HerdrPane; projectId: string; link: FactoryPaneLink | null; archived: boolean }
+export interface ProjectPane { machine: Machine; pane: HerdrPane; projectId: string; link: FactoryPaneLink | null; archived: boolean; finished: boolean }
 /** Explicit factory provenance also covers isolated worktrees outside the checkout. */
 export function projectPanes(overview: FactoryOverview, machines: Machine[]): ProjectPane[] {
   const projects = new Map(overview.projects.filter((p) => !p.removed_at).map((p) => [p.id, p]));
@@ -32,7 +32,7 @@ export function projectPanes(overview: FactoryOverview, machines: Machine[]): Pr
     const checkout = overview.checkouts.filter((c) => projects.has(c.project_id) && c.machine_id === machine.id && (cwd === normalized(c.path) || (normalized(c.path) === "/" ? cwd.startsWith("/") : cwd.startsWith(`${normalized(c.path)}/`)))).sort((a, b) => b.path.length - a.path.length)[0];
     const linkedProjectId = link?.project_id === undefined ? assignment?.project_id : link.project_id;
     const projectId = linkedProjectId && projects.has(linkedProjectId) ? linkedProjectId : checkout?.project_id;
-    return projectId ? [{ machine, pane, projectId, link: linkedProjectId === projectId ? link : null, archived: !!assignment?.archived_at || archives.has(key) }] : [];
+    return projectId ? [{ machine, pane, projectId, link: linkedProjectId === projectId ? link : null, archived: !!assignment?.archived_at || archives.has(key), finished: !!assignment && overview.board?.some(item => item.implementation_id === assignment.id && item.sidebar_hidden === true) === true }] : [];
   }));
 }
 

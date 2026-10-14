@@ -8,6 +8,11 @@
  * in English. Placeholders in braces keep their English names.
  */
 export const JA: Record<string, string> = {
+  "Reconcile Discard": "破棄を再確認",
+  "Discard pending": "破棄待ち",
+  "Discard Assignment": "アサインメントを破棄",
+  "Discarded": "破棄済み",
+  "Discard stops owned work and retains chats, artifacts and branches.": "破棄すると関連する作業を停止し、チャット、成果物、ブランチを保持します。",
   "Issue scope paused": "課題範囲の作業を一時停止しました",
   "Issue scope pause pending": "課題範囲の作業の一時停止待ち",
   "Accepted issue scope": "承認済みの課題範囲",

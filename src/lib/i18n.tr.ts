@@ -7,6 +7,11 @@
  * keep their English names.
  */
 export const TR: Record<string, string> = {
+  "Reconcile Discard": "Vazgeçmeyi doğrula",
+  "Discard pending": "Vazgeçme bekliyor",
+  "Discard Assignment": "Atamadan vazgeç",
+  "Discarded": "Vazgeçildi",
+  "Discard stops owned work and retains chats, artifacts and branches.": "Vazgeçmek, atamaya ait çalışmayı durdurur; sohbetleri, çıktıları ve dalları korur.",
   "Issue scope paused": "Konu kapsamı duraklatıldı",
   "Issue scope pause pending": "Konu kapsamı duraklatma bekleniyor",
   "Accepted issue scope": "Onaylanan konu kapsamı",
