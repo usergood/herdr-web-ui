@@ -234,11 +234,11 @@ export class FactoryService {
   async handle(request: Request, url: URL): Promise<Response> {
     try {
       if (request.method !== "GET" && request.headers.get("x-herdr-factory") !== "1") return httpError(403, "invalid_origin", "Use factory controls from this app");
-      const issueBatchAction = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/issue-batches\/([a-zA-Z0-9-]+)\/(review|publish)$/.exec(url.pathname);
+      const issueBatchAction = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/issue-batches\/([a-zA-Z0-9-]+)\/(review|publish|resume)$/.exec(url.pathname);
       if (issueBatchAction) {
         if (request.method !== "POST" || !sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Review and publish issue batches from this app");
         const proof = await this.body(request) as unknown as import("../shared/issue-batches.ts").IssueBatchAction;
-        return jsonResponse(issueBatchAction[3] === "review" ? await this.issueBatches.review(issueBatchAction[1]!, issueBatchAction[2]!, proof, url.origin) : await this.issueBatches.publish(issueBatchAction[1]!, issueBatchAction[2]!, proof));
+        return jsonResponse(issueBatchAction[3] === "review" ? await this.issueBatches.review(issueBatchAction[1]!, issueBatchAction[2]!, proof, url.origin) : issueBatchAction[3] === "resume" ? await this.issueBatches.resume(issueBatchAction[1]!, issueBatchAction[2]!, proof) : await this.issueBatches.publish(issueBatchAction[1]!, issueBatchAction[2]!, proof));
       }
       const issueBatches = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/issue-batches$/.exec(url.pathname);
       if (issueBatches) {

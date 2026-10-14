@@ -38,13 +38,19 @@ export class GitHubIssueBatches {
     });
   }
   async publish(id: string, batchId: string, proof: IssueBatchAction): Promise<IssueBatch> {
+    return this.deliver(id, batchId, proof, false);
+  }
+  async resume(id: string, batchId: string, proof: IssueBatchAction): Promise<IssueBatch> {
+    return this.deliver(id, batchId, proof, true);
+  }
+  private async deliver(id: string, batchId: string, proof: IssueBatchAction, resume: boolean): Promise<IssueBatch> {
     const batch = this.batch(id, batchId, proof);
     if (batch.review?.revision !== batch.revision || batch.review.policy_revision !== proof.policy_revision) throw new FactoryError("issue_batch_review_required", "Review this exact batch and Project policy before publishing", 409);
     if (batch.condition === "confirmed") return batch;
-    if (batch.intents.length) throw new FactoryError("issue_batch_uncertain", "Reconcile the retained publication intents before retrying", 409);
+    if (batch.intents.length && !resume) throw new FactoryError("issue_batch_uncertain", "Reconcile the retained publication intents before retrying", 409);
     return this.withPolicy(batch.project_id, proof.policy_revision, async ({ policy, api, importIssue }) => {
       const latest = this.batch(id, batchId, proof);
-      if (latest.intents.length || latest.review?.reviewed_at !== batch.review?.reviewed_at) throw new FactoryError("issue_batch_changed", "The publication scope changed", 409);
+      if (latest.updated_at !== batch.updated_at || latest.review?.reviewed_at !== batch.review?.reviewed_at) throw new FactoryError("issue_batch_changed", "The publication scope changed", 409);
       if (batch.review!.repository !== policy.repository || batch.review!.account_profile_id !== policy.account_profile_id || batch.review!.project_scope !== policy.project_scope || this.assignment(id).project_id !== policy.id) throw new FactoryError("issue_batch_scope_changed", "Review this batch for the current Project repository and account", 409);
       const path = `repos/${policy.repository}/issues`;
       const save = () => { batch.updated_at = new Date().toISOString(); return this.store.put("github_issue_batches", batch, id); };
@@ -68,9 +74,55 @@ export class GitHubIssueBatches {
           intent.condition = "uncertain"; intent.problem = error instanceof FactoryError ? error.message : "Inspect GitHub before retrying this publication"; save(); throw error;
         }
       };
+      const confirm = (item: PlannedIssue, action: IssueBatch["intents"][number]["action"], number: number) => {
+        for (const intent of batch.intents.filter(intent => intent.item_key === item.key && intent.action === action)) {
+          intent.condition = "confirmed"; intent.issue_number = number; intent.problem = null;
+        }
+        save();
+      };
       batch.condition = "publishing"; save();
       try {
+        if (resume && batch.intents.length) {
+          const inventory: Issue[] = [];
+          for (let page = 1; page <= 100; page++) {
+            const issues = await api(`${path}?state=all&per_page=30&page=${page}&sort=updated&direction=desc`);
+            if (!Array.isArray(issues)) throw new FactoryError("github_invalid_response", "GitHub did not confirm a complete publication inventory", 409);
+            inventory.push(...issues);
+            if (issues.length < 30) break;
+            if (page === 100) throw new FactoryError("github_inventory_limit", "Reconcile the publication within the bounded issue inventory", 409);
+          }
+          for (const item of batch.items) {
+            const marker = `<!-- saurons-eye-batch:${batch.id}:${batch.revision}:${item.key} -->`;
+            const matches = inventory.filter(issue => typeof issue.body === "string" && issue.body.includes(marker));
+            const identity = batch.issues.find(issue => issue.key === item.key);
+            const intents = batch.intents.filter(intent => intent.item_key === item.key && intent.action === "create");
+            if (matches.length > 1 || (identity || intents.length) && matches.length !== 1) throw new FactoryError("github_creation_uncertain", "Confirm one GitHub issue for each retained batch item; do not recreate uncertain issues", 409);
+            if (!matches.length) continue;
+            const issue = matches[0]!;
+            if (identity && (identity.number !== issue.number || identity.external_id !== issue.node_id) || intents.some(intent => intent.issue_number !== null && intent.issue_number !== issue.number)) throw new FactoryError("github_issue_unconfirmed", "The retained publication identity changed", 409);
+            const source = retain(item, issue);
+            if (!identity) batch.issues.push({ key: item.key, number: issue.number, external_id: issue.node_id, url: issue.html_url, implementation_id: source.implementation_id, links_confirmed: false });
+            confirm(item, "create", issue.number);
+          }
+          for (const item of batch.items) {
+            const identity = batch.issues.find(issue => issue.key === item.key);
+            if (!identity) continue;
+            const issue = inventory.find(issue => issue.number === identity.number)!;
+            const linked = item.dependencies.every(dep => batch.issues.some(issue => issue.key === dep.key));
+            if (issue.body !== this.issueBody(batch, item, false) && (!linked || issue.body !== this.issueBody(batch, item, true))) throw new FactoryError("github_issue_changed", "Restore the reviewed issue scope and dependency links before resuming publication", 409);
+            const label = policy.triage_labels?.[item.ready_for_agent ? "ready-for-agent" : "needs-triage"] || (item.ready_for_agent ? "ready-for-agent" : "needs-triage");
+            const labeled = batch.intents.some(intent => intent.item_key === item.key && intent.action === "label" && intent.condition === "confirmed");
+            if ((issue.labels?.length || labeled) && (issue.labels?.length !== 1 || issue.labels[0]?.name !== label)) throw new FactoryError("github_issue_changed", "Restore the reviewed triage label before resuming publication", 409);
+          }
+        }
         for (const item of batch.items) {
+          const identity = batch.issues.find(issue => issue.key === item.key);
+          if (identity) {
+            const issue = await api(`${path}/${identity.number}`) as Issue;
+            retain(item, issue);
+            if (issue.node_id !== identity.external_id) throw new FactoryError("github_issue_unconfirmed", "The retained issue identity changed", 409);
+            continue;
+          }
           const issue = await mutate(item, "create", null, ["-f", "title=" + item.title, "-f", "body=" + this.issueBody(batch, item, false)]);
           const source = retain(item, issue);
           batch.issues.push({ key: item.key, number: issue.number, external_id: issue.node_id, url: issue.html_url, implementation_id: source.implementation_id, links_confirmed: false }); save();
@@ -78,17 +130,23 @@ export class GitHubIssueBatches {
         for (const item of batch.items) {
           const identity = batch.issues.find(issue => issue.key === item.key)!;
           const body = this.issueBody(batch, item, true);
-          await mutate(item, "link", identity.number, ["-f", "body=" + body]);
+          const current = await api(`${path}/${identity.number}`) as Issue;
+          if (current.node_id !== identity.external_id || ![body, this.issueBody(batch, item, false)].includes(current.body ?? "")) throw new FactoryError("github_issue_changed", "Restore the reviewed issue scope before resuming publication", 409);
+          if (current.body !== body) await mutate(item, "link", identity.number, ["-f", "body=" + body]);
           const observed = await api(`${path}/${identity.number}`) as Issue;
           if (observed.node_id !== identity.external_id || observed.body !== body) throw new FactoryError("github_links_unconfirmed", "Confirm the complete published dependency links before dispatch", 409);
-          retain(item, observed); identity.links_confirmed = true; save();
+          retain(item, observed); identity.links_confirmed = true; confirm(item, "link", identity.number);
         }
         for (const item of batch.items) {
           const identity = batch.issues.find(issue => issue.key === item.key)!;
           const label = policy.triage_labels?.[item.ready_for_agent ? "ready-for-agent" : "needs-triage"] || (item.ready_for_agent ? "ready-for-agent" : "needs-triage");
-          const issue = await mutate(item, "label", identity.number, ["-f", "labels[]=" + label]);
+          const current = await api(`${path}/${identity.number}`) as Issue;
+          retain(item, current);
+          if (current.node_id !== identity.external_id || current.body !== this.issueBody(batch, item, true) || current.labels?.length && (current.labels.length !== 1 || current.labels[0]?.name !== label)) throw new FactoryError("github_issue_changed", "Restore the reviewed scope and triage label before resuming publication", 409);
+          const issue = current.labels?.length === 1 && current.labels[0]?.name === label ? current : await mutate(item, "label", identity.number, ["-f", "labels[]=" + label]);
           if (issue.node_id !== identity.external_id || issue.body !== this.issueBody(batch, item, true) || issue.labels?.length !== 1 || issue.labels[0]?.name !== label) throw new FactoryError("github_issue_unconfirmed", "Confirm the reviewed scope and readiness label before dispatch", 409);
           const source = retain(item, issue);
+          confirm(item, "label", identity.number);
           if (item.ready_for_agent) {
             const plan = { ...item.plan, dependencies: [...item.plan.dependencies, ...item.dependencies.map(dep => ({ repository: policy.repository, issue_number: batch.issues.find(issue => issue.key === dep.key)!.number, requires: dep.requires }))] };
             const approval: ProjectIssueApproval = { ...this.store.record(), source_id: source.id, issue_revision: source.revision, policy_revision: policy.revision, actor: "owner", origin: "owner", evidence_id: batch.id, plan };
