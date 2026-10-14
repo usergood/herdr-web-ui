@@ -252,6 +252,16 @@ export class ProjectGitHub {
     const roles = PROJECT_TRIAGE_ROLES.filter(role => labels.some(label => label.toLowerCase() === (policy.triage_labels?.[role] || role).toLowerCase()));
     const reasons: IssueReadinessReason[] = issue.state !== "open" ? ["issue_closed"] : roles.length > 1 ? ["conflicting_triage"] : roles[0] === "ready-for-human" ? ["human_only"] : roles[0] === "wontfix" ? ["wontfix"] : roles[0] === "ready-for-agent" ? ["approval_required"] : ["start_planning"];
     const next: ProjectGitHubSource = { ...source, repository: policy.repository, issue: snapshot, triage_roles: roles, readiness: { eligible: false, reasons, approval: null } };
+    // An ordinary sync can discover a created issue before publication receives its
+    // receipt. Bind that import to its retained local plan so approval cannot bypass
+    // the whole-batch dispatch barrier.
+    for (const batch of this.store.list<import("../shared/issue-batches.ts").IssueBatch>("github_issue_batches")) {
+      if (batch.project_id !== policy.id || batch.review?.repository !== policy.repository) continue;
+      const item = batch.items.find(item => snapshot.body.includes(`<!-- saurons-eye-batch:${batch.id}:${batch.revision}:${item.key} -->`));
+      if (!item) continue;
+      next.publication_batch_id = batch.id; next.batch_item_key = item.key; next.originating_plan_id = batch.implementation_id;
+      break;
+    }
     this.store.put("github_sources", next, policy.id);
     await this.pauseIssueWork?.(this.issueReadiness(next, policy));
     return next;

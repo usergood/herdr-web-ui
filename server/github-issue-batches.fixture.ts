@@ -16,10 +16,13 @@ if (endpoint === "user") result = { login: "fictional-owner", id: 1042 };
 else if (endpoint === "repos/fictional/schedules") result = { full_name: "fictional/schedules" };
 else if (endpoint === "repos/fictional/schedules/issues" && method === "POST") {
   const number = 101 + (data.issues?.length ?? 0);
+  if (data.fail_create_number === number) { process.stderr.write("Owned fixture has no creation receipt"); process.exit(1); }
   result = { number, node_id: "fictional-batch-" + number, title: field("title"), body: field("body"), html_url: "https://github.com/fictional/schedules/issues/" + number, state: "open", labels: [] };
   data.issues = [...data.issues ?? [], result]; writeFileSync(path, JSON.stringify(data));
+  if (data.lose_create_receipt_number === number) { process.stderr.write("Owned fixture lost the creation receipt"); process.exit(1); }
 } else if (/issues\\/\\d+$/.test(endpoint)) {
   result = data.issues?.find(issue => endpoint.endsWith("/" + issue.number));
+  if (method === "PATCH" && field("body") !== undefined && data.fail_link_number === result.number) { process.stderr.write("Owned fixture did not receive the dependency links"); process.exit(1); }
   if (method === "PATCH" && field("labels[]") !== undefined && data.fail_label_number === result.number) { process.stderr.write("Owned fixture lost the label receipt"); process.exit(1); }
   if (method === "PATCH") {
     if (field("body") !== undefined) result.body = field("body");
@@ -28,6 +31,7 @@ else if (endpoint === "repos/fictional/schedules/issues" && method === "POST") {
       if (data.drift_after_label === result.number) data.issues[0].body = "Unreviewed acceptance and missing plan links";
     }
     writeFileSync(path, JSON.stringify(data));
+    if (field("labels[]") !== undefined && data.lose_label_receipt_number === result.number) { process.stderr.write("Owned fixture lost the applied label receipt"); process.exit(1); }
   }
 } else if (endpoint?.includes("/issues?")) result = endpoint.includes("page=1&") ? data.issues ?? [] : [];
 else if (endpoint === "graphql" && args.some(arg => arg.includes("issue(number:"))) result = { data: { repository: { issue: { comments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } };

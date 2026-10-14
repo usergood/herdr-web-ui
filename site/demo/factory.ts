@@ -74,7 +74,7 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
     return json(overview);
   }
   if (/^\/api\/factory\/projects\/[^/]+\/github\/issues\/\d+\/approve$/.test(path)) return failure("demo_only", "Issue readiness needs verified GitHub evidence on a real connection server.");
-  const issueBatchesRoute = /^\/api\/factory\/implementations\/([^/]+)\/issue-batches(?:\/([^/]+)\/(review|publish))?$/.exec(path);
+  const issueBatchesRoute = /^\/api\/factory\/implementations\/([^/]+)\/issue-batches(?:\/([^/]+)\/(review|publish|resume))?$/.exec(path);
   if (issueBatchesRoute) {
     const detail = details.get(issueBatchesRoute[1]!);
     if (!detail?.implementation.project_id) return failure("project_required", "Select a fictional Project for the plan");

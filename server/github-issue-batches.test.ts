@@ -1,10 +1,168 @@
 import { afterEach, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { batchProposal, githubIssueBatchFixture } from "./github-issue-batches.fixture.ts";
 
 const fixtures: Awaited<ReturnType<typeof githubIssueBatchFixture>>[] = [];
 afterEach(() => { for (const fixture of fixtures.splice(0)) fixture.close(); });
 async function fixture() { const f = await githubIssueBatchFixture(); fixtures.push(f); return f; }
+
+test("the owner resumes a partial publication after restart without creating another issue", async () => {
+  const f = await fixture();
+  writeFileSync(f.responses, JSON.stringify({ fail_label_number: 102 }));
+  const policy = (await f.request(f.githubRoute + "/configure", { ...f.policy, auto_implement: true })).body;
+  const batch = (await f.request(f.route, batchProposal)).body;
+  const proof = { revision: batch.revision, policy_revision: policy.revision };
+  await f.request(`${f.route}/${batch.id}/review`, proof);
+  const held = (await f.request(`${f.route}/${batch.id}/publish`, proof)).body;
+  expect(held.condition).toBe("held");
+  f.restart();
+  const remote = JSON.parse(readFileSync(f.responses, "utf8"));
+  delete remote.fail_label_number;
+  writeFileSync(f.responses, JSON.stringify(remote));
+  const resumed = await f.request(`${f.route}/${batch.id}/resume`, proof);
+  expect(resumed.status).toBe(200);
+  expect(resumed.body.condition).toBe("confirmed");
+  expect(resumed.body.dispatch_ready).toBe(true);
+  expect(resumed.body.issues).toEqual(held.issues);
+  expect(resumed.body.intents.every((intent: { condition: string }) => intent.condition === "confirmed")).toBe(true);
+  expect(f.calls().filter(args => args.includes("POST"))).toHaveLength(2);
+  expect((await f.request(f.githubRoute)).body.sources.every((source: { readiness: { eligible: boolean } }) => source.readiness.eligible)).toBe(true);
+});
+
+test("a lost creation receipt is reconciled to the same batch item before the remaining issue is created", async () => {
+  const f = await fixture();
+  writeFileSync(f.responses, JSON.stringify({ lose_create_receipt_number: 101 }));
+  const policy = (await f.request(f.githubRoute + "/configure", { ...f.policy, auto_implement: true })).body;
+  const batch = (await f.request(f.route, batchProposal)).body;
+  const proof = { revision: batch.revision, policy_revision: policy.revision };
+  await f.request(`${f.route}/${batch.id}/review`, proof);
+  const held = (await f.request(`${f.route}/${batch.id}/publish`, proof)).body;
+  expect(held.condition).toBe("held");
+  expect(held.issues).toEqual([]);
+  f.restart();
+  const resumed = (await f.request(`${f.route}/${batch.id}/resume`, proof)).body;
+  expect(resumed.condition).toBe("confirmed");
+  expect(resumed.issues.map((issue: { key: string; number: number }) => [issue.key, issue.number])).toEqual([["notes", 101], ["history", 102]]);
+  expect(f.calls().filter(args => args.includes("POST"))).toHaveLength(2);
+  expect((await f.request(f.githubRoute)).body.sources).toHaveLength(2);
+});
+
+test("ordinary import retains the batch hold for an issue whose creation receipt was lost", async () => {
+  const f = await fixture();
+  writeFileSync(f.responses, JSON.stringify({ lose_create_receipt_number: 101 }));
+  const policy = (await f.request(f.githubRoute + "/configure", { ...f.policy, auto_implement: true })).body;
+  const batch = (await f.request(f.route, batchProposal)).body;
+  const proof = { revision: batch.revision, policy_revision: policy.revision };
+  await f.request(`${f.route}/${batch.id}/review`, proof);
+  await f.request(`${f.route}/${batch.id}/publish`, proof);
+  f.restart();
+  const remote = JSON.parse(readFileSync(f.responses, "utf8"));
+  remote.issues[0].labels = [{ name: "ready-for-agent" }];
+  writeFileSync(f.responses, JSON.stringify(remote));
+  await f.request(f.githubRoute + "/sync", {});
+  const imported = (await f.request(f.githubRoute)).body.sources[0];
+  expect(imported.publication_batch_id).toBe(batch.id);
+  expect(imported.batch_item_key).toBe("notes");
+  const approved = (await f.request(`${f.githubRoute}/issues/101/approve`, { policy_revision: policy.revision, issue_revision: imported.revision, plan: batchProposal.items[0]!.plan })).body;
+  expect(approved.sources[0].readiness.eligible).toBe(false);
+  expect(approved.sources[0].readiness.reasons).toContain("batch_incomplete");
+  const resumed = (await f.request(`${f.route}/${batch.id}/resume`, proof)).body;
+  expect(resumed.condition).toBe("confirmed");
+  expect(resumed.issues.find((issue: { key: string }) => issue.key === "notes").implementation_id).toBe(imported.implementation_id);
+  expect((await f.request(f.githubRoute)).body.sources).toHaveLength(2);
+  expect((await f.request(`/implementations/${imported.implementation_id}`)).body.runs).toEqual([]);
+});
+
+test("resuming publication preserves a conflicting remote triage decision and holds the whole batch", async () => {
+  const f = await fixture();
+  writeFileSync(f.responses, JSON.stringify({ fail_label_number: 102 }));
+  const policy = (await f.request(f.githubRoute + "/configure", { ...f.policy, auto_implement: true })).body;
+  const batch = (await f.request(f.route, batchProposal)).body;
+  const proof = { revision: batch.revision, policy_revision: policy.revision };
+  await f.request(`${f.route}/${batch.id}/review`, proof);
+  await f.request(`${f.route}/${batch.id}/publish`, proof);
+  const remote = JSON.parse(readFileSync(f.responses, "utf8"));
+  delete remote.fail_label_number;
+  remote.issues[0].labels = [{ name: "wontfix" }];
+  writeFileSync(f.responses, JSON.stringify(remote));
+  const mutations = f.calls().filter(args => args.includes("POST") || args.includes("PATCH"));
+  const resumed = (await f.request(`${f.route}/${batch.id}/resume`, proof)).body;
+  expect(resumed.condition).toBe("held");
+  expect(resumed.dispatch_ready).toBe(false);
+  expect(resumed.problem).toContain("triage");
+  expect(f.calls().filter(args => args.includes("POST") || args.includes("PATCH"))).toEqual(mutations);
+  const sources = (await f.request(f.githubRoute)).body.sources;
+  expect(sources.every((source: { readiness: { reasons: string[] } }) => source.readiness.reasons.includes("batch_incomplete"))).toBe(true);
+});
+
+test("resume repairs missing dependency links and reconciles an applied label whose receipt was lost", async () => {
+  const f = await fixture();
+  writeFileSync(f.responses, JSON.stringify({ fail_link_number: 102, lose_label_receipt_number: 101 }));
+  const policy = (await f.request(f.githubRoute + "/configure", { ...f.policy, auto_implement: true })).body;
+  const batch = (await f.request(f.route, batchProposal)).body;
+  const proof = { revision: batch.revision, policy_revision: policy.revision };
+  await f.request(`${f.route}/${batch.id}/review`, proof);
+  const held = (await f.request(`${f.route}/${batch.id}/publish`, proof)).body;
+  expect(held.issues.map((issue: { links_confirmed: boolean }) => issue.links_confirmed)).toEqual([true, false]);
+  const remote = JSON.parse(readFileSync(f.responses, "utf8")); delete remote.fail_link_number;
+  writeFileSync(f.responses, JSON.stringify(remote));
+  const partial = (await f.request(`${f.route}/${batch.id}/resume`, proof)).body;
+  expect(partial.condition).toBe("held");
+  expect(partial.dispatch_ready).toBe(false);
+  expect(partial.issues.every((issue: { links_confirmed: boolean }) => issue.links_confirmed)).toBe(true);
+  const sources = (await f.request(f.githubRoute)).body.sources;
+  expect(sources.every((source: { readiness: { reasons: string[] } }) => source.readiness.reasons.includes("batch_incomplete"))).toBe(true);
+  f.restart();
+  const resumed = (await f.request(`${f.route}/${batch.id}/resume`, proof)).body;
+  expect(resumed.condition).toBe("confirmed");
+  expect(resumed.issues.map((issue: { number: number }) => issue.number)).toEqual([101, 102]);
+  expect(f.calls().filter(args => args.includes("POST"))).toHaveLength(2);
+  expect(f.calls().filter(args => args.includes("PATCH") && args.includes("repos/fictional/schedules/issues/101") && args.some(arg => arg.startsWith("labels[]=")))).toHaveLength(1);
+  const history = (await f.request(f.githubRoute)).body.sources.find((source: { number: number }) => source.number === 102);
+  expect(history.readiness.approval.plan.dependencies).toEqual([{ repository: "fictional/schedules", issue_number: 101, requires: "merge" }]);
+});
+
+test("an unconfirmed creation stays held without replay or extending its reviewed proposal", async () => {
+  const f = await fixture();
+  writeFileSync(f.responses, JSON.stringify({ fail_create_number: 101 }));
+  const policy = (await f.request(f.githubRoute + "/configure", f.policy)).body;
+  const batch = (await f.request(f.route, batchProposal)).body;
+  const proof = { revision: batch.revision, policy_revision: policy.revision };
+  await f.request(`${f.route}/${batch.id}/review`, proof);
+  await f.request(`${f.route}/${batch.id}/publish`, proof);
+  f.restart();
+  writeFileSync(f.responses, "{}");
+  const resumed = (await f.request(`${f.route}/${batch.id}/resume`, proof)).body;
+  expect(resumed.condition).toBe("held");
+  expect(resumed.dispatch_ready).toBe(false);
+  expect(resumed.problem).toContain("do not recreate uncertain issues");
+  expect(f.calls().filter(args => args.includes("POST"))).toHaveLength(1);
+  const changed = await f.request(f.route, { ...batchProposal, batch_id: batch.id, expected_revision: batch.revision, items: [...batchProposal.items, { ...batchProposal.items[0]!, key: "extra", title: "Unreviewed work" }] });
+  expect(changed.status).toBe(409);
+  expect(changed.body.error.code).toBe("issue_batch_started");
+  expect((await f.request(f.route)).body.batches[0].items).toEqual(batchProposal.items);
+  expect((await f.request(`${f.route}/${batch.id}/review`, proof)).body.error.code).toBe("issue_batch_started");
+});
+
+test("ambiguous remote identities hold the batch without duplicating or deleting its successful issues", async () => {
+  const f = await fixture();
+  writeFileSync(f.responses, JSON.stringify({ lose_create_receipt_number: 101 }));
+  const policy = (await f.request(f.githubRoute + "/configure", f.policy)).body;
+  const batch = (await f.request(f.route, batchProposal)).body;
+  const proof = { revision: batch.revision, policy_revision: policy.revision };
+  await f.request(`${f.route}/${batch.id}/review`, proof);
+  await f.request(`${f.route}/${batch.id}/publish`, proof);
+  const remote = JSON.parse(readFileSync(f.responses, "utf8"));
+  remote.issues.push({ ...remote.issues[0], number: 102, node_id: "fictional-ambiguous-102", html_url: "https://github.com/fictional/schedules/issues/102" });
+  writeFileSync(f.responses, JSON.stringify(remote));
+  f.restart();
+  const mutations = f.calls().filter(args => args.includes("POST") || args.includes("PATCH") || args.includes("DELETE"));
+  const resumed = (await f.request(`${f.route}/${batch.id}/resume`, proof)).body;
+  expect(resumed.condition).toBe("held");
+  expect(resumed.dispatch_ready).toBe(false);
+  expect(resumed.problem).toContain("Confirm one GitHub issue");
+  expect(f.calls().filter(args => args.includes("POST") || args.includes("PATCH") || args.includes("DELETE"))).toEqual(mutations);
+});
 
 test("a planning proposal retains the whole deliverable graph for review without writing to GitHub", async () => {
   const f = await fixture();

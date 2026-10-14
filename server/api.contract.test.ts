@@ -240,24 +240,29 @@ describe("GitHub planned issue batch publication", () => {
     } finally { await f.close(); }
   });
 
-  it("requires origin and owner mutation headers for reviewing and publishing the exact batch", async () => {
+  it("requires origin and owner mutation headers for reviewing, publishing and resuming the exact batch", async () => {
     const f = await githubIssueBatchFixture();
     try {
       const policy = (await f.request(f.githubRoute + "/configure", f.policy)).body;
       const batch = (await f.request(f.route, batchProposal)).body;
       const proof = { revision: batch.revision, policy_revision: policy.revision };
       const endpoint = f.origin() + "/api/factory" + f.route + "/" + batch.id;
-      for (const action of ["review", "publish"]) {
+      for (const action of ["review", "publish", "resume"]) {
         for (const headers of [{ "content-type": "application/json", "x-herdr-factory": "1" }, { ...f.headers, origin: "https://fictional-other.invalid" }]) {
           const response = await fetch(`${endpoint}/${action}`, { method: "POST", headers, body: JSON.stringify(proof) });
           expect(response.status).toBe(403); expect((await response.json()).error.code).toBe("invalid_origin");
         }
       }
       expect((await f.request(`${f.route}/${batch.id}/publish`, proof)).body.error.code).toBe("issue_batch_review_required");
+      expect((await f.request(`${f.route}/${batch.id}/resume`, proof)).body.error.code).toBe("issue_batch_review_required");
       expect(f.calls().some(args => args.includes("POST") || args.includes("PATCH"))).toBe(false);
       expect((await f.request(`${f.route}/${batch.id}/review`, proof)).status).toBe(200);
       const published = await f.request(`${f.route}/${batch.id}/publish`, proof);
       expect(published.status).toBe(200); expect(published.body.condition).toBe("confirmed");
+      const before = f.calls().length;
+      const resumed = await f.request(`${f.route}/${batch.id}/resume`, proof);
+      expect(resumed.status).toBe(200); expect(resumed.body).toEqual(published.body);
+      expect(f.calls()).toHaveLength(before);
     } finally { f.close(); }
   });
 });
