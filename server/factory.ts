@@ -46,6 +46,7 @@ export class FactoryService {
   private readonly references: FactoryReferences;
   private readonly accounts: MachineAccounts;
   private readonly github: ProjectGitHub;
+  private readonly discards = new Map<string, Promise<Implementation>>();
   private stopped = false;
   constructor(stateDir: string, private readonly skillsPath: string | null = null, native: Partial<FactoryNative> = {}, endpoint: MachineEndpoint = () => undefined, publicUrl: string | null = null, accountTools: AccountTools = {}, private readonly registeredMachine: (id: string) => boolean = (id) => id === "local" || !!endpoint(id), accountDiscoveryHome?: string, scheduleTiming?: import("./project-schedules.ts").ProjectScheduleTiming) {
     this.accounts = new MachineAccounts(stateDir, accountTools, false, accountDiscoveryHome);
@@ -67,7 +68,49 @@ export class FactoryService {
   settings(): FactorySettings { return this.store.get<{ id: string; value: FactorySettings }>("settings", "default")?.value ?? { ...initialSettings, skills_path: this.skillsPath }; }
   private activeWork(id: string): boolean {
     const runs = this.store.list<FactoryRun>("runs", id); const ids = new Set(runs.map((run) => run.id));
-    return runs.some((run) => !["completed", "failed", "cancelled"].includes(run.condition)) || this.store.list<import("../shared/factory.ts").FactoryWorker>("workers").some((worker) => ids.has(worker.run_id) && !["completed", "failed", "cancelled"].includes(worker.condition));
+    return runs.some((run) => !["completed", "failed", "cancelled"].includes(run.condition)) || this.store.list<import("../shared/factory.ts").FactoryWorker>("workers").some((worker) => ids.has(worker.run_id) && !["completed", "failed", "cancelled"].includes(worker.condition)) || this.store.list<import("../shared/factory.ts").FactoryCheck>("checks").some(check => ids.has(check.run_id) && ["working", "interrupted"].includes(check.condition));
+  }
+  private async discard(id: string): Promise<Implementation> {
+    const pending = this.discards.get(id);
+    if (pending) return pending;
+    const idea = this.store.get<Implementation>("implementations", id);
+    if (!idea) throw new FactoryError("not_found", "Assignment not found", 404);
+    if (idea.outcome === "discarded" && !this.activeWork(id)) return idea;
+    if (!idea.discard_requested_at) {
+      this.store.put("implementations", { ...idea, discard_requested_at: new Date().toISOString() });
+      this.store.event(id, "assignment_discard_requested", { evidence_retained: true });
+    }
+    const operation = this.stopDiscardedWork(id);
+    this.discards.set(id, operation);
+    try { return await operation; } finally { this.discards.delete(id); }
+  }
+  private async stopDiscardedWork(id: string): Promise<Implementation> {
+    for (const run of this.store.list<FactoryRun>("runs", id)) {
+      if (["completed", "cancelled", "failed"].includes(run.condition) && !this.store.list<import("../shared/factory.ts").FactoryWorker>("workers", run.id).some(worker => !["completed", "cancelled", "failed"].includes(worker.condition)) && !this.store.list<import("../shared/factory.ts").FactoryCheck>("checks", run.id).some(check => ["working", "interrupted"].includes(check.condition))) continue;
+      await this.retainHandoff(run.id);
+      let stopConfirmed = false;
+      try { await this.runtime.stopRun(run.id, { summary: "Owner discarded this Assignment" }); stopConfirmed = true; }
+      catch {
+        const current = this.store.get<FactoryRun>("runs", run.id)!;
+        if (!["completed", "cancelled", "failed"].includes(current.condition)) this.store.put("runs", { ...current, condition: "disconnected", waiting_reason: "Discard pending: native stop is unconfirmed; ownership is retained" }, id);
+        for (const worker of this.store.list<import("../shared/factory.ts").FactoryWorker>("workers", run.id)) if (!["completed", "cancelled", "failed"].includes(worker.condition)) this.store.put("workers", { ...worker, condition: "disconnected", waiting_reason: "Discard pending: child stop is unconfirmed; ownership is retained" }, run.id);
+      }
+      for (const check of this.store.list<import("../shared/factory.ts").FactoryCheck>("checks", run.id)) {
+        if (!["working", "interrupted"].includes(check.condition)) continue;
+        try { await this.pipeline.reconcileCheck(run.id, check.id); }
+        catch { /* An unobserved build keeps its reservation and Discard pending. */ }
+      }
+      for (const worker of this.store.list<import("../shared/factory.ts").FactoryWorker>("workers", run.id)) {
+        if (!stopConfirmed || ["completed", "cancelled", "failed"].includes(worker.condition)) continue;
+        try { await this.pipeline.workerAction(run.id, worker.id, "reconcile"); }
+        catch { /* A missing child receipt retains ownership until its identity is observed. */ }
+      }
+    }
+    const current = this.store.get<Implementation>("implementations", id)!;
+    if (this.activeWork(id)) return current;
+    const next: Implementation = { ...current, stage: "done", outcome: "discarded", updated_at: new Date().toISOString() };
+    this.store.put("implementations", next); this.store.event(id, "assignment_discarded", { evidence_retained: true });
+    return next;
   }
   private projectActive(id: string): boolean {
     const runs = this.store.list<FactoryRun>("runs").filter((run) => (run.manifest as { project?: FactoryProject })?.project?.id === id);
@@ -642,6 +685,10 @@ export class FactoryService {
         this.store.db.transaction(() => { this.store.put("projects", project); this.store.put("checkouts", checkout, project.id); if (guidance) { this.store.put("implementations", guidance); const chat: FactoryChat = { ...this.store.record(), implementation_id: guidance.id, title: "Setup" }; this.store.put("chats", chat, guidance.id); } this.store.event(null, "project_registered", { project_id: project.id, checkout_id: checkout.id }); })();
         return jsonResponse(project, 201);
       }
+      const discardRoute = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/discard$/.exec(url.pathname);
+      if (discardRoute && request.method === "POST") {
+        await this.body(request); return jsonResponse(await this.discard(discardRoute[1]!));
+      }
       const completionEvidence = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/completion-evidence$/.exec(url.pathname);
       if (completionEvidence && request.method === "GET") {
         if (!this.store.get("implementations", completionEvidence[1]!)) throw new FactoryError("not_found", "Assignment not found", 404);
@@ -653,17 +700,18 @@ export class FactoryService {
         const idea = this.store.get<Implementation>("implementations", id);
         const run = this.store.list<FactoryRun>("runs", id).at(-1);
         if (!idea || !run || run.id !== body.run_id || run.action !== "work" || !run.workspace_id || !run.pane_id) throw new FactoryError("direct_work_required", "Select this Assignment's latest direct work session before marking it done", 409);
+        if (idea.discard_requested_at || idea.outcome === "discarded") throw new FactoryError("assignment_discarded", "This Assignment was discarded or is waiting for its owned work to stop", 409);
         if (idea.stage === "done" && !this.activeWork(id)) return jsonResponse(idea);
         const evidence = await new FactoryDelivery(this.store, this.runtime).inspect(id);
         if (evidence.repository_changes !== "none" || !evidence.quiescent) throw new FactoryError(evidence.repository_changes === "changes" ? "repository_delivery_required" : "completion_evidence_required", evidence.reason!, 409);
-        const scope = hash(JSON.stringify({project_id:idea.project_id,provider:idea.provider,machine_id:idea.machine_id,archived_at:idea.archived_at}));
+        const scope = hash(JSON.stringify({project_id:idea.project_id,provider:idea.provider,machine_id:idea.machine_id,archived_at:idea.archived_at,discard_requested_at:idea.discard_requested_at}));
         await this.retainHandoff(run.id);
         if (!["completed", "cancelled", "failed"].includes(this.store.get<FactoryRun>("runs", run.id)!.condition)) await this.runtime.finishStep(run.id);
         const finalEvidence = await new FactoryDelivery(this.store, this.runtime).inspect(id);
         if (finalEvidence.repository_changes !== "none" || !finalEvidence.quiescent) throw new FactoryError(finalEvidence.repository_changes === "changes" ? "repository_delivery_required" : "completion_evidence_required", finalEvidence.reason!, 409);
         return jsonResponse(this.store.db.transaction(() => {
           const current = this.store.get<Implementation>("implementations", id)!;
-          if (this.store.list<FactoryRun>("runs", id).at(-1)?.id !== run.id || this.activeWork(id) || hash(JSON.stringify({project_id:current.project_id,provider:current.provider,machine_id:current.machine_id,archived_at:current.archived_at})) !== scope) throw new FactoryError("scope_changed", "The Assignment changed during completion; refresh it before continuing", 409);
+          if (this.store.list<FactoryRun>("runs", id).at(-1)?.id !== run.id || this.activeWork(id) || hash(JSON.stringify({project_id:current.project_id,provider:current.provider,machine_id:current.machine_id,archived_at:current.archived_at,discard_requested_at:current.discard_requested_at})) !== scope) throw new FactoryError("scope_changed", "The Assignment changed during completion; refresh it before continuing", 409);
           const next: Implementation = {...current,stage:"done",outcome:"research_accepted",updated_at:new Date().toISOString()};
           this.store.put("implementations",next);this.store.event(id,"direct_work_completed",{run_id:run.id,owner_accepted:true});return next;
         })());

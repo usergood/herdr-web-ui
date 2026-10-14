@@ -6,6 +6,11 @@
  * braces keep their English names.
  */
 export const KO: Record<string, string> = {
+  "Reconcile Discard": "폐기 상태 확인",
+  "Discard pending": "폐기 대기 중",
+  "Discard Assignment": "과제 폐기",
+  "Discarded": "폐기됨",
+  "Discard stops owned work and retains chats, artifacts and branches.": "폐기하면 이 과제의 작업을 중지하고 채팅, 산출물, 브랜치는 보존합니다.",
   "Delivery milestone": "전달 완료 기준",
   "Delivery branch": "전달 대상 브랜치",
   "Delivery settings apply to new Assignments. Started Assignments keep their frozen scope.": "전달 설정은 새 과제에 적용됩니다. 시작된 과제는 확정된 범위를 유지합니다.",

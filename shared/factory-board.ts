@@ -13,6 +13,14 @@ export function factoryRunActivity(action: FactoryAction): FactoryActivity {
 /** Shared presentation policy for the bridge and fictional browser demo. */
 export function projectFactoryBoard(implementation: Implementation, context: { tickets?: FactoryTicket[]; runs?: FactoryRun[]; workers?: FactoryWorker[]; checks?: FactoryCheck[]; questions?: FactoryQuestion[] } = {}): FactoryBoardItem {
   const tickets = context.tickets ?? [];
+  const runIds = new Set(context.runs?.map(entry => entry.id));
+  const quiescent = !(context.runs ?? []).some(entry => !["completed", "cancelled", "failed"].includes(entry.condition))
+    && !(context.workers ?? []).some(entry => runIds.has(entry.run_id) && !["completed", "cancelled", "failed"].includes(entry.condition))
+    && !(context.checks ?? []).some(entry => runIds.has(entry.run_id) && ["working", "interrupted"].includes(entry.condition));
+  if (implementation.discard_requested_at || implementation.stage === "done" && ["research_accepted", "merged", "released", "discarded"].includes(implementation.outcome) && quiescent) {
+    const finished = implementation.stage === "done" && quiescent;
+    return { implementation_id: implementation.id, lane: finished ? "done" : "needs_you", activity: finished ? null : "discard_pending", condition: finished ? null : "needs_you", run_id: context.runs?.at(-1)?.id ?? null, busy: false, waiting_reason: finished ? null : "Owned work must be confirmed stopped before this Assignment can be discarded. Reconnect its Machine and reconcile Discard.", ticket_progress: tickets.length ? { completed: tickets.filter(ticket => ticket.status === "done").length, total: tickets.length } : null, sidebar_hidden: finished };
+  }
   const run = context.runs?.at(-1);
   const workers = (context.workers ?? []).filter(worker => worker.run_id === run?.id);
   const check = context.checks?.filter(entry => entry.run_id === run?.id).at(-1);

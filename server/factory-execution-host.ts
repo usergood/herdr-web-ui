@@ -9,7 +9,7 @@ import { HerdrError } from "./herdr/client.ts";
 import { paneRead, paneScrollInfo } from "./herdr/client.ts";
 import { claudeInputDraft, noteSubmitted, viewportShowsLive } from "./prompt.ts";
 import { FactoryError, git, hash, inspectCheckout, withinRoot } from "./factory-host.ts";
-import { factoryPaneResting, factoryAgentArguments, factoryNative, type FactoryNative } from "./factory-native.ts";
+import { factoryPaneResting, factoryWorkspaceGone, factoryAgentArguments, factoryNative, type FactoryNative } from "./factory-native.ts";
 import { materializeSkills, provisionFactoryAgent, provisionSkills, verifySkills, type SkillManifest } from "./factory-skills.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { paneConversation } from "./conversation.ts";
@@ -310,9 +310,10 @@ export class FactoryExecutionHost {
     if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Native control is disabled on a restored copy", 409);
     const lease = this.store.get<{ id: string; signature: string; run: FactoryRun }>("host_leases", id);
     if (!lease) throw new FactoryError("native_identity_uncertain", "This host has no owned lease to stop", 409);
-    if (["cancelled", "completed", "failed"].includes(lease.run.condition)) return lease.run;
+    if (["cancelled", "completed", "failed"].includes(lease.run.condition)) { await this.worktrees.stopChecks(id); await this.worktrees.stopWorkers(id); return lease.run; }
     const run = lease.run;
     this.store.put("host_leases", { ...lease, closing: true });
+    await this.worktrees.stopChecks(id);
     const snapshot = await this.native.snapshot();
     const workspace = snapshot.workspaces.find((entry) => entry.workspace_id === run.workspace_id);
     const pane = snapshot.panes.find((entry) => entry.pane_id === run.pane_id);
@@ -331,9 +332,12 @@ export class FactoryExecutionHost {
       && !snapshot.workspaces.some(entry => entry.label === `saurons-eye-run-${id}`)
       && !snapshot.panes.some(entry => !entry.cwd && !entry.foreground_cwd || couldOwnDirectory(entry.cwd) || couldOwnDirectory(entry.foreground_cwd));
     if (!alreadyClosed && (!workspace || workspace.label !== `saurons-eye-run-${id}` || !pane?.cwd || realpathSync(pane.cwd) !== run.worktree)) throw new FactoryError("native_identity_uncertain", "Verify the recorded native identity before stopping it; ownership is retained", 409);
-    await this.worktrees.stopWorkers(id);
+    let childFailure: unknown;
+    try { await this.worktrees.stopWorkers(id); } catch (error) { childFailure = error; }
     if (!alreadyClosed) await this.native.closeWorkspace(workspace!.workspace_id);
+    if (!factoryWorkspaceGone(await this.native.snapshot(), run, `saurons-eye-run-${id}`)) throw new FactoryError("native_stop_uncertain", "The native Run has not been confirmed stopped; ownership is retained", 409);
     await this.worktrees.stopChecks(id);
+    if (childFailure) throw childFailure;
     const stopped: FactoryRun = { ...run, condition: "cancelled", waiting_reason: null, updated_at: new Date().toISOString() };
     this.store.put("host_leases", { ...lease, closing: true, run: stopped }); return stopped;
   }

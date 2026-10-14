@@ -7,6 +7,11 @@
  * keep their English names.
  */
 export const TR: Record<string, string> = {
+  "Reconcile Discard": "Vazgeçmeyi doğrula",
+  "Discard pending": "Vazgeçme bekliyor",
+  "Discard Assignment": "Atamadan vazgeç",
+  "Discarded": "Vazgeçildi",
+  "Discard stops owned work and retains chats, artifacts and branches.": "Vazgeçmek, atamaya ait çalışmayı durdurur; sohbetleri, çıktıları ve dalları korur.",
   "Delivery milestone": "Teslimat tamamlanma koşulu",
   "Delivery branch": "Teslimat dalı",
   "Delivery settings apply to new Assignments. Started Assignments keep their frozen scope.": "Teslimat ayarları yeni Görevlere uygulanır. Başlatılmış Görevler sabit kapsamlarını korur.",

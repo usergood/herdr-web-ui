@@ -1,8 +1,9 @@
 import { execFile } from "node:child_process";
 import type { AgentPermissionMode } from "../shared/agent-permissions.ts";
 import { promisify } from "node:util";
-import { dirname, join } from "node:path";
-import type { FactoryProvider, HerdrPane } from "../shared/protocol.ts";
+import { dirname, join, relative, isAbsolute, resolve } from "node:path";
+import { realpathSync } from "node:fs";
+import type { FactoryProvider, FactoryRun, HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 import { agentManifests, agentPrompt, agentStart, HerdrError, sessionSnapshot, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 import { readAgentModelCatalog } from "./agent-model-catalog.ts";
 import type { AgentExecutionPreset } from "../shared/agent-models.ts";
@@ -19,6 +20,19 @@ export interface FactoryNative {
   prompt: typeof agentPrompt;
 }
 const execute = promisify(execFile);
+/** Only a complete observation can release a closed native context's ownership. */
+export function factoryWorkspaceGone(snapshot: SessionSnapshot, owned: Pick<FactoryRun, "worktree" | "workspace_id" | "pane_id">, label: string): boolean {
+  if (!owned.worktree || !owned.workspace_id || !owned.pane_id) return false;
+  try { if (realpathSync(owned.worktree) !== owned.worktree) return false; } catch { return false; }
+  const couldOwn = (cwd: string | null | undefined): boolean => {
+    if (!cwd) return false;
+    const within = (path: string) => { const offset = relative(owned.worktree!, path); return !offset || offset !== ".." && !offset.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) && !isAbsolute(offset); };
+    if (within(resolve(cwd))) return true;
+    try { return within(realpathSync(cwd)); } catch { return true; }
+  };
+  return !snapshot.workspaces.some(entry => entry.workspace_id === owned.workspace_id || entry.label === label)
+    && !snapshot.panes.some(entry => entry.pane_id === owned.pane_id || entry.workspace_id === owned.workspace_id || !entry.cwd && !entry.foreground_cwd || couldOwn(entry.cwd) || couldOwn(entry.foreground_cwd));
+}
 export const factoryNative: FactoryNative = {
   modelCatalog: readAgentModelCatalog,
   createWorkspace: workspaceCreate, snapshot: sessionSnapshot, closeWorkspace: workspaceClose, prompt: agentPrompt,
