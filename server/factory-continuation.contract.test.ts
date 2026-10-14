@@ -6,8 +6,9 @@ import { join } from "node:path";
 import { createServer } from "./index.ts";
 import { herdrRpc, sessionSnapshot, workspaceClose, type WorkspaceCreateResult } from "./herdr/client.ts";
 import type { FactoryRun } from "../shared/protocol.ts";
+import type { FactoryNative } from "./factory-native.ts";
 
-async function fixture(hostToken = "") {
+async function fixture(hostToken = "", overrides: Partial<FactoryNative> = {}) {
   const root = mkdtempSync(join(tmpdir(), "saurons-continuation-"));
   const repo = join(root, "repo"); mkdirSync(repo); writeFileSync(join(repo, "README.md"), "Owned continuation fixture\n");
   for (const args of [["init", "-b", "main"], ["add", "."], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "initial"]]) execFileSync("git", args, { cwd: repo, stdio: "ignore" });
@@ -16,6 +17,7 @@ async function fixture(hostToken = "") {
     version: async () => "owned-continuation-fixture",
     createWorkspace: async options => { const result = await herdrRpc<WorkspaceCreateResult>("workspace.create", { ...options, focus: false }); owned.push(result.workspace.workspace_id); return result; },
     startAgent: async options => { await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "idle" }); },
+    ...overrides,
   } } });
   const request = (path: string, body?: unknown) => fetch(`http://localhost:${app.port}/api/factory${path}`, { method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1", ...(hostToken ? { authorization: `Bearer ${hostToken}` } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const project = await request("/projects", { name: "Continuation Project", path: repo, machine_id: "local", provider: "codex", tracker: "app" }).then(r => r.json());
@@ -30,6 +32,53 @@ async function fixture(hostToken = "") {
 }
 
 describe("continuing approved workflow steps", () => {
+  it("sends answered context to a decorated finished turn but refuses background work", async () => {
+    let prompted = 0; let background = false;
+    const f = await fixture("", {
+      snapshot: async () => { const s = await sessionSnapshot(); return { ...s, panes: s.panes.map(pane => pane.agent === "codex" ? { ...pane, agent_status: "unknown" } : pane) }; },
+      paneState: async id => { const pane = (await sessionSnapshot()).panes.find(p => p.pane_id === id); return pane ? { ...pane, agent_status: "done", background_tasks: background ? 1 : 0 } : null; },
+      prompt: async () => { prompted++; },
+    });
+    try {
+      const run = await f.start("grill-with-docs", "decorated-answer-delivery");
+      const question = await f.agent(run, "question", { question: "Which scope?" }).then(r => r.json());
+      await f.request(`${f.prefix}/questions/${question.id}/answer`, { revision: question.revision, answer: "The retained approved scope" });
+      let detail = await f.request(f.prefix).then(r => r.json());
+      const sent = await f.request(`/runs/${run.id}/send-answers`, { revision: detail.question_revision, idempotency_key: "decorated-done" }).then(r => r.json());
+      expect(sent.condition).toBe("sent"); expect(prompted).toBe(1);
+      const replay = await f.request(`/runs/${run.id}/send-answers`, { revision: detail.question_revision, idempotency_key: "decorated-done" }).then(r => r.json());
+      expect(replay.id).toBe(sent.id); expect(prompted).toBe(1);
+      background = true;
+      const next = await f.agent(run, "question", { question: "Confirm the next scope?" }).then(r => r.json());
+      await f.request(`${f.prefix}/questions/${next.id}/answer`, { revision: next.revision, answer: "This explicit fixture answer" });
+      detail = await f.request(f.prefix).then(r => r.json());
+      const blocked = await f.request(`/runs/${run.id}/send-answers`, { revision: detail.question_revision, idempotency_key: "background-blocked" }).then(r => r.json());
+      expect(blocked.condition).toBe("blocked"); expect(prompted).toBe(1);
+    } finally { await f.close(); }
+  }, 60_000);
+
+  it("rejects a checkout changed during asynchronous handoff before successor admission", async () => {
+    let armed = false; let reads = 0; let release!: () => void; let entered!: () => void;
+    const waiting = new Promise<void>(resolve => entered = resolve);
+    const gate = new Promise<void>(resolve => release = resolve);
+    const f = await fixture("", { snapshot: async () => { if (armed && ++reads === 2) { entered(); await gate; } return sessionSnapshot(); } });
+    try {
+      const run = await f.start("work", "handoff-checkout-race");
+      armed = true;
+      const continued = f.request(`${f.prefix}/continue`, { action: "grill-with-docs", run_id: run.id, idempotency_key: "handoff-guard", allow_partial_handoff: true });
+      await Promise.race([waiting, new Promise((_, reject) => setTimeout(() => reject(new Error("Handoff observation did not reach the fixture gate")), 5_000))]);
+      const other = f.repo + "-replacement";
+      execFileSync("git", ["clone", "--quiet", f.repo, other], { stdio: "ignore" });
+      const detail = await f.request(f.prefix).then(r => r.json());
+      const configured = await f.request(`/projects/${detail.implementation.project_id}/checkouts`, { machine_id: "local", path: other });
+      expect(configured.status).toBe(201);
+      release();
+      const response = await continued;
+      expect(response.status).toBe(409); expect((await response.json()).error.code).toBe("scope_changed");
+      expect((await f.request(f.prefix).then(r => r.json())).runs).toHaveLength(1);
+    } finally { release(); await f.close(); }
+  }, 60_000);
+
   it("covers the host finish route with authentication, busy and lost-identity guards", async () => {
     const f = await fixture("owned-finish-route");
     const finish = (run: FactoryRun, headers: Record<string, string> = { authorization: "Bearer owned-finish-route", "x-herdr-factory": "1" }) => fetch(`http://localhost:${f.app.port}/api/factory-host/runs/${run.id}/finish`, { method: "POST", headers, body: "{}" });

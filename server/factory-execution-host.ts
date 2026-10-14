@@ -371,7 +371,7 @@ export class FactoryExecutionHost {
     const pane = snapshot.panes.find((entry) => entry.pane_id === run.pane_id);
     const workspace = snapshot.workspaces.find((entry) => entry.workspace_id === run.workspace_id);
     if (!pane?.cwd || realpathSync(pane.cwd) !== run.worktree || workspace?.label !== `saurons-eye-run-${id}` || pane.agent !== run.provider) throw new FactoryError("native_identity_changed", "The native Run identity changed; reconcile before sending", 409);
-    if (!["idle", "done"].includes(pane.agent_status)) throw new FactoryError("agent_busy", "The native agent is working or waiting for a prompt answer; retain the draft and send explicitly when ready", 409);
+    if (!await factoryPaneResting(this.native, pane, run.provider)) throw new FactoryError("agent_busy", "The native agent is working or waiting for a prompt answer; retain the draft and send explicitly when ready", 409);
     if (run.provider === "claude") {
       const before = (await paneRead({ paneId: run.pane_id!, source: "detection", format: "text" })).text;
       const scrollBefore = await paneScrollInfo(run.pane_id!);
