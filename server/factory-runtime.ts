@@ -26,7 +26,8 @@ const actions: FactoryAction[] = ["work", "setup", "grill-me", "grill-with-docs"
 export class FactoryRuntime {
   private readonly dispatches = new Map<string, Promise<FactoryRun>>();
   private stopped = false;
-  constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly host: FactoryExecutionHost, private readonly endpoint: MachineEndpoint, private readonly readArtifact: (record: FactoryArtifact) => Buffer, private readonly publicUrl: string | null, private readonly references: FactoryReferences, private readonly accounts: MachineAccounts, private readonly issueScope: (implementationId: string) => ProjectIssueExecutionScope | null = () => null, private readonly prepareIssueScope: (implementationId: string) => Promise<void> = async () => {}) {}
+  constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly host: FactoryExecutionHost, private readonly endpoint: MachineEndpoint, private readonly readArtifact: (record: FactoryArtifact) => Buffer, private readonly publicUrl: string | null, private readonly references: FactoryReferences, private readonly accounts: MachineAccounts, private readonly projectAdmission: (id: string, continuing?: boolean) => void, private readonly consumeRetry: (id: string, nextRunId: string) => void, private readonly issueScope: (implementationId: string) => ProjectIssueExecutionScope | null = () => null, private readonly prepareIssueScope: (implementationId: string) => Promise<void> = async () => {}) {}
+  assertProjectCapacity(run: FactoryRun): void { if (["work", "implement-spec"].includes(run.action)) this.projectAdmission(run.implementation_id, true); }
   async discover(machineId: string, path: string): Promise<import("../shared/project-setup.ts").ProjectDiscovery> { return machineId === "local" ? this.host.discover(path) : this.remote(machineId, "/project-discovery", { path }); }
   async modelCatalog(machineId: string, provider: FactoryProvider, path: string, repository: string, snapshot?: AccountBindingSnapshot | null): Promise<import("../shared/agent-models.ts").AgentModelCatalog> {
     const result = machineId === "local" ? await this.host.modelCatalog(provider, path, repository, snapshot) : await this.remote<import("../shared/agent-models.ts").AgentModelCatalog>(machineId, "/model-catalog", { provider, path, repository, account_snapshot: snapshot } satisfies FactoryHostRequests["model_catalog"]);
@@ -228,6 +229,10 @@ export class FactoryRuntime {
       if (owned.some((entry) => entry.implementation_id === id)) throw new FactoryError("implementation_owned", "An existing or uncertain Run still owns this Implementation", 409);
       const capacity = factoryCapacity(this.store);
       if (capacity.implementations.size >= this.settings().max_implementations || capacity.agents >= this.settings().max_agents) throw new FactoryError("capacity_exhausted", "Global execution capacity is in use; start manually after capacity is released", 409);
+      if (["work", "implement-spec"].includes(action)) {
+        this.projectAdmission(id);
+        if (capacity.builds >= this.settings().max_builds) throw new FactoryError("build_capacity_exhausted", "Global build capacity is reserved, including uncertain builds", 409);
+      }
       const selectedImplementation = this.store.get<Implementation>("implementations", id)!;
       if (!selectedImplementation.delivery_scope) {
         implementation = { ...selectedImplementation, delivery_scope: { milestone: project?.delivery_policy ?? "merge", repository: project?.repository ?? null, branch: project?.delivery_branch ?? inspected?.branch ?? null, base: inspected?.head ?? null, github_repository: deliveryRepository } };
@@ -237,6 +242,7 @@ export class FactoryRuntime {
       record.manifest = { ...(record.manifest as object), execution_preset: executionPreset, project_references: projectReferences, account_snapshot: accountSnapshot };
       if (issueScope) record.manifest = { ...(record.manifest as object), issue_scope: issueScope };
       if (projectReferences) this.references.freeze(projectReferences.project_id);
+      if (["work", "implement-spec"].includes(action)) this.consumeRetry(id, record.id);
       this.store.put("runs", record, id); this.store.event(id, "dispatch_accepted", { run_id: record.id, action }); return { run: record, accepted: true };
     }).immediate();
     const accepted = run;
@@ -302,9 +308,9 @@ export class FactoryRuntime {
   }
   /** Refresh capacity from owned native identities, including remote and resting chats. */
   async reconcileCapacity(): Promise<void> {
-    const runs = this.store.list<FactoryRun>("runs").filter(run => !run.scope_pause && activeConditions.has(run.condition) && run.pane_id && run.worktree && (run.machine_id !== "local" || run.condition === "ready"));
+    const runs = this.store.list<FactoryRun>("runs").filter(run => !run.scope_pause && activeConditions.has(run.condition) && !this.dispatches.has(run.id));
     await Promise.all(runs.map(run => this.reconcile(run.id)));
-    const workers = this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers").filter(worker => activeConditions.has(worker.condition) && worker.pane_id && worker.worktree && (worker.condition === "ready" || this.store.get<FactoryRun>("runs", worker.run_id)?.machine_id !== "local"));
+    const workers = this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers").filter(worker => activeConditions.has(worker.condition));
     await Promise.all(workers.map(async worker => {
       const run = this.store.get<FactoryRun>("runs", worker.run_id);
       if (!run || run.scope_pause) return;
@@ -314,6 +320,17 @@ export class FactoryRuntime {
         if (!["accepted", "working", "ready", "needs_you", "blocked", "disconnected", "interrupted", "failed", "cancelled", "completed"].includes(next.condition) || next.id !== worker.id || next.run_id !== run.id || next.ticket_id !== worker.ticket_id || next.role !== worker.role || next.base !== worker.base || next.worktree !== worker.worktree || next.branch !== worker.branch || next.pane_id !== worker.pane_id || next.workspace_id !== worker.workspace_id) throw new FactoryError("worker_identity_changed", "The observed worker identity changed", 409);
       } catch { next = { ...worker, condition: "disconnected", waiting_reason: "Worker observation is uncertain; capacity remains reserved" }; }
       if (JSON.stringify(this.store.get("workers", worker.id)) === JSON.stringify(worker)) this.store.put("workers", next, run.id);
+    }));
+    const checks = this.store.list<import("../shared/protocol.ts").FactoryCheck>("checks").filter(check => ["working", "interrupted"].includes(check.condition));
+    await Promise.all(checks.map(async check => {
+      const run = this.store.get<FactoryRun>("runs", check.run_id);
+      if (!run) return;
+      let next = check;
+      try {
+        next = await this.operation(run, "check-reconcile", { check_id: check.id });
+        if (next.id !== check.id || next.run_id !== check.run_id || next.worker_id !== check.worker_id || !["working", "interrupted", "passed", "failed"].includes(next.condition)) throw new FactoryError("check_identity_changed", "The observed check identity changed", 409);
+      } catch { next = { ...check, condition: "interrupted" }; }
+      if (!this.stopped && JSON.stringify(this.store.get("checks", check.id)) === JSON.stringify(check)) this.store.put("checks", next, run.id);
     }));
   }
   async reconcile(runId: string): Promise<FactoryRun> {

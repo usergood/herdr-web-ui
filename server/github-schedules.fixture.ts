@@ -6,7 +6,8 @@ import { createServer } from "./index.ts";
 import type { FactoryNative } from "./factory-native.ts";
 
 /** Owned native GitHub responses, exercised only through the server's HTTP surface. */
-export async function githubScheduleFixture(native: Partial<FactoryNative> = {}) {
+export async function githubScheduleFixture(input: Partial<FactoryNative> | { native: Partial<FactoryNative> } = {}) {
+  const native = "native" in input ? input.native : input;
   const root = mkdtempSync(join(tmpdir(), "saurons-schedules-"));
   const repo = join(root, "repo");
   execFileSync("git", ["init", "-b", "main", repo], { stdio: "ignore" });

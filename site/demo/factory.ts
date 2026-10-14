@@ -10,6 +10,7 @@ import type { AccountProfile, AccountService } from "../../shared/accounts.ts";
 import type { ProjectGitHubOverview, ProjectGitHubPolicy } from "../../shared/github-project.ts";
 import { fictionalGitHubPull } from "./github-fixtures.ts";
 import type { ProjectSchedulesOverview } from "../../shared/project-schedules.ts";
+import type { ProjectQueueOverview } from "../../shared/project-queue.ts";
 
 const storageKey = "saurons-eye:demo-factory";
 const details = new Map<string, FactoryDetail>();
@@ -20,12 +21,14 @@ let referenceVersions: ProjectReference[] = []; let referenceHeads: string[] = [
 let paneArchives: import("../../shared/factory.ts").FactoryPaneArchive[] = [];
 const accountProfiles: AccountProfile[] = [];
 const githubViews = new Map<string, ProjectGitHubOverview>();
+const queuePolicies = new Map<string, { revision: string; max_implementations: number; paused: boolean }>();
 function record(): FactoryRecord { const now = new Date().toISOString(); return { id: crypto.randomUUID(), created_at: now, updated_at: now }; }
 function json(body: unknown, status = 200): Response { return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } }); }
 function failure(code: string, message: string, status = 409): Response { return json({ error: { code, message } }, status); }
-function save(): void { try { localStorage.setItem(storageKey, JSON.stringify({ details: [...details], projects, checkouts, settings, blobs: [...blobs], referenceVersions, referenceHeads, paneArchives })); } catch { /* demo storage can be blocked or full; records remain in this page */ } }
+function save(): void { try { localStorage.setItem(storageKey, JSON.stringify({ details: [...details], projects, checkouts, settings, blobs: [...blobs], referenceVersions, referenceHeads, paneArchives, queuePolicies: [...queuePolicies] })); } catch { /* demo storage can be blocked or full; records remain in this page */ } }
 try {
   const raw = localStorage.getItem(storageKey);
+  if (raw) for (const [id, policy] of JSON.parse(raw).queuePolicies ?? []) queuePolicies.set(id, policy);
   if (raw) { const saved = JSON.parse(raw); if (Array.isArray(saved.details)) for (const [id, detail] of saved.details) details.set(id, { workers: [], checks: [], review_evidence: [], frontier: [], retrospectives: [], native_snapshots: [], ...detail }); referenceVersions = saved.referenceVersions ?? []; referenceHeads = saved.referenceHeads ?? []; paneArchives = saved.paneArchives ?? []; projects = saved.projects ?? []; checkouts = saved.checkouts ?? []; settings = saved.settings ?? settings; if (Array.isArray(saved.blobs)) for (const [id, content] of saved.blobs) blobs.set(id, content); }
 } catch { /* fictional fixtures do not depend on persistent storage */ }
 function capture(title: string, description: string): Implementation {
@@ -43,6 +46,22 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
     return method === "GET" ? json(details.get(id)?.implementation.delivery ?? null) : failure("demo_unavailable", "Verifying PR delivery requires a real repository and selected GitHub account", 409);
   }
   if (path === "/api/factory-host/delivery-read") return failure("demo_unavailable", "GitHub delivery evidence is unavailable in the fictional demo", 409);
+  if (/^\/api\/factory\/implementations\/[^/]+\/retry$/.test(path)) return failure("demo_only", "Retry requires an observed failed attempt on a real connection server.");
+  const queueRoute = /^\/api\/factory\/projects\/([^/]+)\/queue(?:\/(configure))?$/.exec(path);
+  if (queueRoute) {
+    const id = queueRoute[1]!;
+    if (!projects.some(project => project.id === id)) return failure("not_found", "Fictional Project not found", 404);
+    let policy = queuePolicies.get(id);
+    const maximum = Math.min(settings.max_implementations, settings.max_agents, settings.max_builds);
+    if (method === "POST" && queueRoute[2] === "configure") {
+      if (body.expected_revision !== (policy?.revision ?? null)) return failure("queue_changed", "Refresh the fictional queue");
+      if (!Number.isSafeInteger(body.max_implementations) || Number(body.max_implementations) < 1 || Number(body.max_implementations) > maximum && body.max_implementations !== (policy?.max_implementations ?? 1) || typeof body.paused !== "boolean") return failure("invalid_queue", "Select a Project limit within the global limits", 400);
+      policy = { revision: crypto.randomUUID(), max_implementations: Number(body.max_implementations), paused: body.paused };
+      queuePolicies.set(id, policy); save();
+    } else if (method !== "GET" || queueRoute[2]) return failure("invalid_operation", "Select a fictional queue operation", 400);
+    const view: ProjectQueueOverview = { project_id: id, revision: policy?.revision ?? null, max_implementations: policy?.max_implementations ?? 1, effective_limit: Math.min(policy?.max_implementations ?? 1, maximum), paused: policy?.paused ?? false, next_implementation_id: null, capacity: { project_implementations: 0, implementations: 0, agents: 0, builds: 0, max_implementations: settings.max_implementations, max_agents: settings.max_agents, max_builds: settings.max_builds }, items: [...details.values()].map(detail => detail.implementation).filter(idea => idea.project_id === id && !idea.archived_at && idea.stage !== "done").sort((a, b) => a.position - b.position).map(idea => ({ implementation_id: idea.id, title: idea.title, priority: idea.position, eligible: false, reasons: ["planning_required", ...(policy?.paused ? ["queue_paused"] : [])], failed_run_id: null })) };
+    return json(view);
+  }
   if (/^\/api\/factory\/implementations\/[^/]+\/completion-evidence$/.test(path)) return json({ repository_changes: "unknown", quiescent: false, reason: "The fictional demo cannot verify repository changes or native ownership.", checked_at: new Date().toISOString() });
   if (/^\/api\/factory-agent\/[^/]+\/sync-answers$/.test(path)) return failure("demo_unavailable", "Native answer synchronization needs a real agent conversation");
   if (method === "POST" && (/^\/api\/factory\/implementations\/[^/]+\/continue$/.test(path) || /^\/api\/factory-host\/runs\/[^/]+\/finish$/.test(path))) return failure("demo_unavailable", "Workflow continuation needs a real execution Machine; the demo keeps fictional records only");
