@@ -24,6 +24,37 @@ test("an owner links verified delivery PRs and repository work finishes only aft
   } finally { await f.close(); }
 });
 
+test("an explicit Discard keeps its outcome when the owner later synchronizes linked merged PR evidence", async () => {
+  const f = await factoryMergeFixture();
+  try {
+    const linked = await f.request(f.prefix + "/delivery", f.links).then(r => r.json());
+    expect((await f.request(f.prefix + "/discard", {})).status).toBe(200);
+    const response = await f.request(f.prefix + "/delivery/sync", { expected_revision: linked.revision });
+    expect(response.status).toBe(409);
+    expect((await response.json()).error.code).toBe("assignment_discarded");
+    const detail = await f.request(f.prefix).then(r => r.json());
+    expect(detail.implementation.outcome).toBe("discarded");
+    expect(detail.board.lane).toBe("done");
+  } finally { await f.close(); }
+});
+
+test("Project GitHub synchronization stays available while a linked Assignment's Discard awaits a confirmed stop", async () => {
+  const f = await factoryMergeFixture(false, "merge", true, { closeWorkspace: async () => { throw new Error("Owned stop receipt unavailable"); } });
+  try {
+    f.data.graphql = { data: { repository: { pullRequests: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } }; f.respond();
+    await f.request(f.prefix + "/delivery", f.links);
+    const route = `/projects/${f.project.id}/github`;
+    expect((await f.request(route + "/configure", { expected_revision: null, repository: "fictional/project", account_profile_id: f.profile.id, sync_enabled: false, import_issues: false, import_fixes: false, auto_update: false, auto_merge: false, trusted_reviewers: [], required_checks: [], review_context: "", poll_minutes: 15 })).status).toBe(200);
+    const discarded = await f.request(f.prefix + "/discard", {}).then(r => r.json());
+    expect(discarded.discard_requested_at).toBeTruthy();
+    expect(discarded.outcome).not.toBe("discarded");
+    expect((await f.request(route + "/sync", {})).status).toBe(200);
+    const detail = await f.request(f.prefix).then(r => r.json());
+    expect(detail.implementation.outcome).toBe("none");
+    expect(detail.board).toMatchObject({ lane: "needs_you", activity: "discard_pending" });
+  } finally { await f.close(); }
+});
+
 test("the owner can correct a missing GitHub remote while retaining the original repository baseline and delivery branch", async () => {
   const f = await factoryMergeFixture(false, "merge", false);
   try {

@@ -71,7 +71,7 @@ export class FactoryService {
     this.delivery = new FactoryMergeDelivery(this.store, this.runtime, id => this.retainHandoff(id));
     this.github = new ProjectGitHub(this.store, this.accounts, (machineId, path) => this.runtime.discover(machineId, path), scheduleTiming, source => this.runtime.pauseIssueWork(source), async projectId => {
       for (const idea of this.store.list<Implementation>("implementations")) {
-        if (idea.project_id === projectId && idea.delivery && !idea.archived_at && idea.stage !== "done") await this.delivery.sync(idea.id, idea.delivery.revision);
+        if (idea.project_id === projectId && idea.delivery && !idea.archived_at && !idea.discard_requested_at && idea.stage !== "done") await this.delivery.sync(idea.id, idea.delivery.revision);
       }
     });
     this.issueBatches = this.github.issueBatches;

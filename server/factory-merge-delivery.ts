@@ -76,6 +76,7 @@ export class FactoryMergeDelivery {
   async sync(id: string, revision: unknown): Promise<AssignmentDelivery> {
     return this.locked(id, async () => {
       let idea = this.idea(id);
+      if (idea.discard_requested_at || idea.outcome === "discarded") throw new FactoryError("assignment_discarded", "This Assignment was discarded or is waiting for its owned work to stop", 409);
       const linked = idea.delivery;
       if (!linked) {
         await new FactoryDelivery(this.store, this.runtime).inspect(id);
