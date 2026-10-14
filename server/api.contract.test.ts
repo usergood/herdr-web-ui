@@ -19,6 +19,7 @@ import { handleMachineRequest } from "./machine-api.ts";
 import type { MachineManager } from "./machines.ts";
 import { TailnetIdentitySource } from "./tailscale.ts";
 import { forgetTranscriptState } from "./conversation.ts";
+import { githubScheduleFixture } from "./github-schedules.fixture.ts";
 
 /**
  * Contract test for herdr-web-ui's HTTP + WS surface.
@@ -41,6 +42,164 @@ afterAll(() => {
 });
 
 const base = () => `http://localhost:${server.port}`;
+
+describe("Project schedules", () => {
+  it("offers disabled built-in defaults without enabling GitHub policy", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      const response = await f.request(f.route + "/schedules");
+      expect(response.status).toBe(200);
+      expect(response.body.schedules).toMatchObject([
+        { job: "github_sync", enabled: false, cadence: "interval", interval_minutes: 15, time_zone: "America/Mexico_City", next_execution: null },
+        { job: "upstream_sync", enabled: false, cadence: "daily", local_time: "03:00", time_zone: "America/Mexico_City", next_execution: null },
+      ]);
+      expect((await f.request(f.route)).body.policy).toBeNull();
+    } finally { f.close(); }
+  });
+  it("preserves existing polling and saves a daily due time in the selected time zone across restart", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      expect((await f.request(f.route + "/configure", { ...f.policy, poll_minutes: 30 })).status).toBe(200);
+      expect((await f.request(f.route + "/schedules")).body.schedules[0].interval_minutes).toBe(30);
+      const saved = await f.request(f.route + "/schedules/configure", { job: "upstream_sync", expected_revision: null, enabled: true, cadence: "daily", interval_minutes: 1440, local_time: "03:00", time_zone: "America/Mexico_City" });
+      expect(saved.status).toBe(200);
+      expect(saved.body.schedules[1]).toMatchObject({ enabled: true, time_zone: "America/Mexico_City", next_execution: "2026-10-14T09:00:00.000Z" });
+      f.restart();
+      expect((await f.request(f.route + "/schedules")).body).toEqual(saved.body);
+      expect((await f.request(f.route)).body.policy).toMatchObject({ sync_enabled: false, poll_minutes: 30 });
+    } finally { f.close(); }
+  });
+  it("performs one overdue catch-up and shares result ownership with Run now", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      await f.request(f.route + "/configure", f.policy);
+      const configured = await f.request(f.route + "/schedules/configure", { job: "github_sync", expected_revision: null, enabled: true, cadence: "interval", interval_minutes: 15, local_time: "03:00", time_zone: "America/Mexico_City" });
+      expect(configured.status).toBe(200);
+      f.advance("2026-10-17T08:59:00Z"); f.restart();
+      await f.tick(); await f.tick();
+      const caughtUp = (await f.request(f.route + "/schedules")).body;
+      expect(caughtUp.results).toMatchObject([{ job: "github_sync", trigger: "scheduled", condition: "succeeded" }]);
+      expect(caughtUp.schedules[0].next_execution).toBe("2026-10-17T09:14:00.000Z");
+      expect(f.calls().filter(args => args[1] === "graphql")).toHaveLength(1);
+      expect((await f.request(f.route + "/sync", {})).status).toBe(200);
+      expect((await f.request(f.route + "/schedules")).body.results).toMatchObject([
+        { trigger: "scheduled", condition: "succeeded" }, { trigger: "manual", condition: "succeeded" },
+      ]);
+    } finally { f.close(); }
+  });
+  it("shows bounded retry backoff and requires an explicit sync after retries are exhausted", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      await f.request(f.route + "/configure", f.policy);
+      await f.request(f.route + "/schedules/configure", { job: "github_sync", expected_revision: null, enabled: true, cadence: "interval", interval_minutes: 15, local_time: "03:00", time_zone: "America/Mexico_City" });
+      writeFileSync(f.responses, JSON.stringify({ fail: true }));
+      f.advance("2026-10-14T09:14:00Z"); await f.tick();
+      const failed = (await f.request(f.route + "/schedules")).body;
+      expect(failed.schedules[0]).toMatchObject({ condition: "failed", failure_count: 1, retry_at: "2026-10-14T09:15:00.000Z", next_execution: "2026-10-14T09:15:00.000Z" });
+      expect(failed.results[0]).toMatchObject({ condition: "failed", problem: expect.any(String) });
+      await f.tick(); expect(f.calls().filter(args => args[1] === "graphql")).toHaveLength(1);
+      for (const time of ["09:15", "09:17", "09:21"]) { f.advance(`2026-10-14T${time}:00Z`); await f.tick(); }
+      expect((await f.request(f.route + "/schedules")).body.schedules[0]).toMatchObject({ failure_count: 4, retry_at: null, next_execution: null });
+      f.advance("2026-10-15T09:22:00Z"); f.restart(); await f.tick();
+      expect(f.calls().filter(args => args[1] === "graphql")).toHaveLength(4);
+      writeFileSync(f.responses, "{}"); expect((await f.request(f.route + "/sync", {})).status).toBe(200);
+      expect((await f.request(f.route + "/schedules")).body.schedules[0]).toMatchObject({ condition: "idle", failure_count: 0, retry_at: null, next_execution: "2026-10-15T09:37:00.000Z" });
+    } finally { f.close(); }
+  });
+  it("retains an interrupted sync's ownership until explicit reconciliation and never overlaps Run now", async () => {
+    const f = await githubScheduleFixture(); let pending: Promise<void> | undefined;
+    try {
+      await f.request(f.route + "/configure", f.policy);
+      await f.request(f.route + "/schedules/configure", { job: "github_sync", expected_revision: null, enabled: true, cadence: "interval", interval_minutes: 15, local_time: "03:00", time_zone: "America/Mexico_City" });
+      writeFileSync(f.responses, JSON.stringify({ pause: true }));
+      f.advance("2026-10-14T09:14:00Z"); pending = f.tick();
+      const deadline = Date.now() + 5000;
+      while (!existsSync(join(f.root, "reading")) && Date.now() < deadline) await Bun.sleep(10);
+      expect(existsSync(join(f.root, "reading"))).toBe(true);
+      const running = (await f.request(f.route + "/schedules")).body;
+      expect(running.schedules[0].condition).toBe("running");
+      expect((await f.request(f.route + "/sync", {})).status).toBe(409);
+      await f.tick(); expect(f.calls().filter(args => args[1] === "graphql")).toHaveLength(1);
+      f.restart(); writeFileSync(join(f.root, "continue"), "continue"); await pending;
+      const interrupted = (await f.request(f.route + "/schedules")).body;
+      expect(interrupted.schedules[0]).toMatchObject({ condition: "uncertain", next_execution: null });
+      expect(interrupted.results[0].condition).toBe("uncertain");
+      f.advance("2026-10-15T09:14:00Z"); await f.tick();
+      expect((await f.request(f.route + "/sync", {})).status).toBe(409);
+      expect(f.calls().filter(args => args[1] === "graphql")).toHaveLength(1);
+      const reconciled = await f.request(f.route + "/schedules/reconcile", { job: "github_sync", result_id: running.results[0].id });
+      expect(reconciled.status).toBe(200);
+      expect(reconciled.body.schedules[0]).toMatchObject({ condition: "idle", next_execution: "2026-10-15T09:29:00.000Z" });
+      expect(reconciled.body.results).toMatchObject([{ condition: "reconciled" }, { trigger: "reconcile", condition: "succeeded" }]);
+    } finally { writeFileSync(join(f.root, "continue"), "continue"); await pending; f.close(); }
+  });
+  it("keeps legacy GitHub controls and saved schedules consistent when the owner explicitly disables polling", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      await f.request(f.route + "/configure", f.policy);
+      await f.request(f.route + "/schedules/configure", { job: "github_sync", expected_revision: null, enabled: true, cadence: "interval", interval_minutes: 15, local_time: "03:00", time_zone: "America/Mexico_City" });
+      const policy = (await f.request(f.route)).body.policy;
+      expect((await f.request(f.route + "/configure", { ...f.policy, expected_revision: policy.revision, poll_minutes: 60, sync_enabled: false })).status).toBe(200);
+      expect((await f.request(f.route + "/schedules")).body.schedules[0]).toMatchObject({ enabled: false, interval_minutes: 60, next_execution: null });
+      f.advance("2026-10-17T08:59:00Z"); await f.tick();
+      expect(f.calls().filter(args => args[1] === "graphql")).toHaveLength(0);
+    } finally { f.close(); }
+  });
+  it("runs daily sync once per local date across a daylight-saving repeated hour", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      await f.request(f.route + "/configure", f.policy); f.advance("2026-11-01T05:29:00Z");
+      const response = await f.request(f.route + "/schedules/configure", { job: "github_sync", expected_revision: null, enabled: true, cadence: "daily", interval_minutes: 15, local_time: "01:30", time_zone: "America/New_York" });
+      expect(response.body.schedules[0].next_execution).toBe("2026-11-01T05:30:00.000Z");
+      f.advance("2026-11-01T05:30:00Z"); await f.tick();
+      expect((await f.request(f.route + "/schedules")).body.schedules[0].next_execution).toBe("2026-11-02T06:30:00.000Z");
+      f.advance("2026-11-01T06:30:00Z"); await f.tick();
+      expect(f.calls().filter(args => args[1] === "graphql")).toHaveLength(1);
+    } finally { f.close(); }
+  });
+  it("rejects stale, invalid and foreign-origin schedule changes without enabling any job", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      const value = { job: "upstream_sync", expected_revision: null, enabled: false, cadence: "daily", interval_minutes: 1440, local_time: "03:00", time_zone: "America/Mexico_City" };
+      for (const invalid of [{ time_zone: "fictional/invalid" }, { local_time: "24:00" }, { interval_minutes: 0 }, { job: "shell" }, { enabled: "true" }]) {
+        const response = await f.request(f.route + "/schedules/configure", { ...value, ...invalid });
+        expect(response.status).toBe(400); expect(response.body.error.code).toBe("invalid_schedule");
+      }
+      expect((await f.request(f.route + "/schedules/configure", value)).status).toBe(200);
+      expect((await f.request(f.route + "/schedules/configure", { ...value, enabled: true })).status).toBe(409);
+      for (const action of ["configure", "run", "reconcile"]) {
+        const response = await fetch(f.origin() + "/api/factory" + f.route + "/schedules/" + action, { method: "POST", headers: { ...f.headers, origin: "https://fictional-foreign.invalid" }, body: JSON.stringify(value) });
+        expect(response.status).toBe(403); expect((await response.json()).error.code).toBe("invalid_origin");
+      }
+      expect((await f.request(f.route + "/schedules")).body.schedules.every((schedule: { enabled: boolean }) => !schedule.enabled)).toBe(true);
+    } finally { f.close(); }
+  });
+  it("keeps failed reconciliation uncertain through settings edits and clears only verified recovery", async () => {
+    const f = await githubScheduleFixture(); let pending: Promise<void> | undefined;
+    try {
+      await f.request(f.route + "/configure", { ...f.policy, sync_enabled: true });
+      writeFileSync(f.responses, JSON.stringify({ pause: true })); f.advance("2026-10-14T09:04:00Z"); pending = f.tick();
+      const deadline = Date.now() + 5000;
+      while (!existsSync(join(f.root, "reading")) && Date.now() < deadline) await Bun.sleep(10);
+      expect(existsSync(join(f.root, "reading"))).toBe(true);
+      f.restart(); writeFileSync(join(f.root, "continue"), "continue"); await pending;
+      const first = (await f.request(f.route + "/schedules")).body;
+      const oldResult = first.results.at(-1).id;
+      writeFileSync(f.responses, JSON.stringify({ fail: true }));
+      expect((await f.request(f.route + "/schedules/reconcile", { job: "github_sync", result_id: oldResult })).status).toBe(409);
+      const schedule = (await f.request(f.route + "/schedules")).body.schedules[0];
+      expect((await f.request(f.route + "/schedules/configure", { ...schedule, expected_revision: schedule.revision, enabled: false })).status).toBe(200);
+      expect((await f.request(f.route + "/schedules")).body.schedules[0]).toMatchObject({ condition: "uncertain", retry_at: null, next_execution: null });
+      expect((await f.request(f.route + "/schedules/reconcile", { job: "github_sync", result_id: oldResult })).status).toBe(409);
+      writeFileSync(f.responses, "{}");
+      const latestResult = (await f.request(f.route + "/schedules")).body.results.at(-1).id;
+      const recovered = await f.request(f.route + "/schedules/reconcile", { job: "github_sync", result_id: latestResult });
+      expect(recovered.status).toBe(200);
+      expect(recovered.body.results.map((result: { condition: string }) => result.condition)).toEqual(["reconciled", "reconciled", "succeeded"]);
+    } finally { writeFileSync(join(f.root, "continue"), "continue"); await pending; f.close(); }
+  });
+
+});
 
 describe("shared browser preferences", () => {
   it("requires owner controls and a scoped request for workflow continuation", async () => {
