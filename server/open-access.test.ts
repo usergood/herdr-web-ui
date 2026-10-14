@@ -23,7 +23,7 @@ describe("this PC, with no token and no configuration", () => {
   beforeAll(() => {
     forgetAuthAttempts();
     rejectionListeners = process.listenerCount("unhandledRejection");
-    server = createServer({ port: 0, stateDir: root });
+    server = createServer({ port: 0, stateDir: root, token: "" });
     base = `http://127.0.0.1:${server.port}`;
   });
   afterAll(() => server.stop());
@@ -52,7 +52,7 @@ describe("a paired watch device", () => {
     const devices = new DeviceStore(root);
     const paired = devices.pair(devices.startPairing().code, "Watch", "watch")!;
     cookie = `herdr_web_device=${encodeURIComponent(paired.token)}`;
-    server = createServer({ port: 0, stateDir: root });
+    server = createServer({ port: 0, stateDir: root, token: "" });
     base = `http://127.0.0.1:${server.port}`;
   });
   afterAll(() => server.stop());

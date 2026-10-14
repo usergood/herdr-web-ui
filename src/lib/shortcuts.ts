@@ -144,7 +144,7 @@ export function formatKeys(keys: readonly string[]): string[] {
   return keys.map((key) => (key === "Mod" ? mod : key));
 }
 
-export function useShortcuts(actions: AppActions, enabled: boolean): void {
+export function useShortcuts(actions: AppActions, enabled: boolean, allowed?: ReadonlySet<ShortcutId>): void {
   const { settings } = useSettings();
   useEffect(() => {
     if (!enabled) return;
@@ -154,6 +154,7 @@ export function useShortcuts(actions: AppActions, enabled: boolean): void {
       if (shortcut === null) return;
       if (event.key.startsWith("Arrow") && keepsArrowsForText(event.target)) return;
       event.preventDefault();
+      if (allowed && !allowed.has(shortcut)) return;
       switch (shortcut) {
         case "palette":
           actions.openPalette();
@@ -189,5 +190,5 @@ export function useShortcuts(actions: AppActions, enabled: boolean): void {
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [actions, enabled, settings.shortcutOverrides]);
+  }, [actions, enabled, allowed, settings.shortcutOverrides]);
 }

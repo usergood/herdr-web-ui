@@ -27,7 +27,7 @@ for await(const line of createInterface({input:process.stdin})){
  else process.exit(17);
 }
 `);chmodSync(join(bin,provider),0o700);
-  const program=join(root,"server.ts");writeFileSync(program,`import {createServer} from ${JSON.stringify(join(import.meta.dir,"index.ts"))};const app=createServer({port:0,stateDir:${JSON.stringify(join(root,"state"))},machines:false,factory:{accountDiscoveryHome:${JSON.stringify(root)}}});console.log(JSON.stringify({port:app.port}));`);
+  const program=join(root,"server.ts");writeFileSync(program,`import {createServer} from ${JSON.stringify(join(import.meta.dir,"index.ts"))};const app=createServer({port:0,token:"",stateDir:${JSON.stringify(join(root,"state"))},machines:false,factory:{accountDiscoveryHome:${JSON.stringify(root)}}});console.log(JSON.stringify({port:app.port}));`);
   const child=Bun.spawn([process.execPath,program],{cwd:repo,env:{...process.env,PATH:bin+":"+process.env.PATH,HERDR_SOCKET:join(root,"absent.sock"),HERDR_SOCKET_PATH:join(root,"absent.sock")},stdout:"pipe",stderr:"ignore"});
   const reader=child.stdout.getReader();let text="";
   try{

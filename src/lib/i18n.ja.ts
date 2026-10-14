@@ -8,6 +8,9 @@
  * in English. Placeholders in braces keep their English names.
  */
 export const JA: Record<string, string> = {
+  "Continue workflow": "ワークフローを続行",
+  "Native verification will run before implementation.": "実装の前にネイティブ検証を実行します。",
+  "Review and continue from this chat. Finished steps keep their history.": "このチャットで確認して続行してください。完了したステップの履歴は保持されます。",
   "Finished chats release capacity. Waiting for input or disconnected work still counts.": "終了したチャットは実行枠を解放します。入力待ちや切断中の作業は引き続き数えます。",
   "Launch model": "起動時のモデル",
   "Launch reasoning": "起動時の推論レベル",
@@ -1336,7 +1339,6 @@ export const JA: Record<string, string> = {
   "Choose a Project to start work or plan implementation.": "作業を開始するか実装を計画するプロジェクトを選択してください。",
   "Install or sign in to this Project's agent on its Machine, then try again.": "プロジェクトのマシンでエージェントをインストールするかログインして、再試行してください。",
   "The agent did not start. Open advanced controls to inspect the retained attempt.": "エージェントを開始できませんでした。詳細な操作を開いて保存された試行を確認してください。",
-  "Answer questions in the agent chat. Finish this step when its proposal is ready, then review it here.": "エージェントのチャットで質問に答えてください。提案ができたらこのステップを終了し、ここで確認してください。",
   "Plan implementation starts Grill with docs: discuss the idea, approve a specification, then plan Tickets.": "実装の計画は Grill with docs から始まります。アイデアを話し合い、仕様を承認してからチケットを計画します。",
   "New workspaces use the latest commit. Local changes stay in the original folder.": "新しいワークスペースは最新のコミットを使用します。ローカルの変更は元のフォルダーに残ります。",
   "Mark work done": "作業を完了にする",

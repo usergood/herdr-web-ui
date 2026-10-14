@@ -10,21 +10,28 @@ const state = mkdtempSync(join(tmpdir(), "saurons-pwa-install-"));
 const app = createServer({ port: 0, stateDir: state, machines: false, token: "owned-pwa-gate-fixture" });
 const authorization = `Basic ${Buffer.from("fixture:fixture-only").toString("base64")}`;
 const manifestRequests: { authorized: boolean }[] = [];
+const iconRequests: { path: string; authorized: boolean }[] = [];
 const proxy = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(request) {
+  if (new URL(request.url).pathname.startsWith("/icons/")) iconRequests.push({ path: new URL(request.url).pathname, authorized: request.headers.get("authorization") === authorization });
   if (new URL(request.url).pathname === "/manifest.webmanifest") manifestRequests.push({ authorized: request.headers.get("authorization") === authorization });
   if (request.headers.get("authorization") !== authorization) return new Response("Authentication required", { status: 401, headers: { "www-authenticate": 'Basic realm="PWA fixture"' } });
   const url = new URL(request.url);
   const headers = new Headers(request.headers); headers.delete("authorization");
   const response = await fetch(`http://localhost:${app.port}${url.pathname}${url.search}`, { headers, redirect: "manual" });
   const passed = new Headers(response.headers); passed.delete("content-encoding"); passed.delete("content-length");
-  return new Response(response.body, { status: response.status, headers: passed });
+  // Native URL login supplies install-icon credentials. Keep the fixture app's
+  // relative fetch URLs free of userinfo, which Fetch rejects.
+  const body = url.pathname === "/" ? (await response.text()).replace("<head>", `<head><base href="http://localhost:${proxy.port}/">`) : response.body;
+  return new Response(body, { status: response.status, headers: passed });
 } });
 const context = await chromium.launchPersistentContext(join(state, "chrome-profile"), { executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"], httpCredentials: { username: "fixture", password: "fixture-only" }, viewport: { width: 390, height: 844 } });
 try {
   const origin = `http://localhost:${proxy.port}`;
   const page = await context.newPage(); page.setDefaultTimeout(5000);
   const cdp = await context.newCDPSession(page);
-  await page.goto(origin, { waitUntil: "load" });
+  // The installability icon loader needs native browser authentication too;
+  // page-scoped Playwright challenge handling misses those requests.
+  await page.goto(`http://fixture:fixture-only@localhost:${proxy.port}`, { waitUntil: "load" });
   await page.locator('link[rel="manifest"]').waitFor({ state: "attached" });
   const manifest = await cdp.send("Page.getAppManifest");
   assert(manifest.data && !manifest.errors.some((error) => error.critical), "Chrome can read the manifest behind BasicAuth");
@@ -50,8 +57,8 @@ try {
     await Bun.sleep(100);
     installability = await cdp.send("Page.getInstallabilityErrors");
   }
-  assert.deepEqual(installability.installabilityErrors, [], "Chrome reports no installability errors behind BasicAuth");
-  assert(manifestRequests.length && manifestRequests.every((request) => request.authorized), "The manifest carries the login credentials");
+  assert.deepEqual(installability.installabilityErrors, [], `Chrome reports no installability errors behind BasicAuth; icon requests: ${JSON.stringify(iconRequests)}`);
+  assert(manifestRequests.some((request) => request.authorized), "The manifest carries login credentials after its BasicAuth challenge");
   const badge = await page.evaluate(async () => {
     const image = new Image(); image.src = "/icons/badge-96.png?v=eye1"; await image.decode();
     const canvas = document.createElement("canvas"); canvas.width = 96; canvas.height = 96;

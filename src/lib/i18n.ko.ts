@@ -6,6 +6,9 @@
  * braces keep their English names.
  */
 export const KO: Record<string, string> = {
+  "Continue workflow": "워크플로 계속",
+  "Native verification will run before implementation.": "구현 전에 네이티브 검증이 실행됩니다.",
+  "Review and continue from this chat. Finished steps keep their history.": "이 채팅에서 검토하고 계속하세요. 완료된 단계의 기록은 보존됩니다.",
   "Finished chats release capacity. Waiting for input or disconnected work still counts.": "완료된 채팅은 실행 자리를 반환합니다. 입력 대기 중이거나 연결이 끊긴 작업은 계속 포함됩니다.",
   "Launch model": "시작 모델",
   "Launch reasoning": "시작 추론 수준",
@@ -1334,7 +1337,6 @@ export const KO: Record<string, string> = {
   "Choose a Project to start work or plan implementation.": "작업을 시작하거나 구현을 계획할 프로젝트를 선택하세요.",
   "Install or sign in to this Project's agent on its Machine, then try again.": "프로젝트 머신에서 에이전트를 설치하거나 로그인한 뒤 다시 시도하세요.",
   "The agent did not start. Open advanced controls to inspect the retained attempt.": "에이전트가 시작되지 않았습니다. 고급 제어에서 보관된 시도를 확인하세요.",
-  "Answer questions in the agent chat. Finish this step when its proposal is ready, then review it here.": "에이전트 채팅에서 질문에 답하세요. 제안이 준비되면 이 단계를 마치고 여기서 검토하세요.",
   "Plan implementation starts Grill with docs: discuss the idea, approve a specification, then plan Tickets.": "구현 계획은 Grill with docs로 시작합니다. 아이디어를 논의하고 명세를 승인한 뒤 티켓을 계획하세요.",
   "New workspaces use the latest commit. Local changes stay in the original folder.": "새 작업 공간은 최신 커밋을 사용합니다. 로컬 변경 사항은 원래 폴더에 그대로 남습니다.",
   "Mark work done": "작업 완료 표시",

@@ -14,12 +14,22 @@ export function useFactoryCapabilities(machineId: string, implementationId: stri
     request.current++; setCapabilities(value); setProblem(null);
   }, [key]);
   useEffect(() => {
-    const id = ++request.current; setCapabilities(null); setProblem(null);
+    let live = true; let timer: ReturnType<typeof setTimeout>;
+    setCapabilities(null); setProblem(null);
     if (!implementationId) return;
-    void factoryRequest<FactoryCapabilities>(`/providers?machine_id=${encodeURIComponent(machineId)}&implementation_id=${encodeURIComponent(implementationId)}`).then(value => {
-      if (id === request.current && scope.current === key) setCapabilities(value);
-    }, error => { if (id === request.current && scope.current === key) setProblem(error.detail ?? error.message); });
-    return () => { request.current++; };
+    const read = async () => {
+      const id = ++request.current;
+      try {
+        if (document.visibilityState === "visible") {
+          const value = await factoryRequest<FactoryCapabilities>(`/providers?machine_id=${encodeURIComponent(machineId)}&implementation_id=${encodeURIComponent(implementationId)}`);
+          if (live && id === request.current && scope.current === key) { setCapabilities(value); setProblem(null); }
+        }
+      } catch (error) { if (live && id === request.current && scope.current === key) setProblem(error instanceof Error ? error.message : String(error)); }
+      finally { if (live) { clearTimeout(timer); timer = setTimeout(() => void read(), 10000); } }
+    };
+    const changed = () => { clearTimeout(timer); void read(); };
+    void read(); window.addEventListener("factory-changed", changed); document.addEventListener("visibilitychange", changed);
+    return () => { live = false; request.current++; clearTimeout(timer); window.removeEventListener("factory-changed", changed); document.removeEventListener("visibilitychange", changed); };
   }, [key]);
   return { capabilities, problem, apply };
 }

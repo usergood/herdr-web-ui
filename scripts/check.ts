@@ -138,7 +138,7 @@ export function isolate(base: Record<string, string | undefined>, kept: string |
   const dir = kept ? resolve(kept) : mkdtempSync(join(existsSync("/tmp") ? "/tmp" : tmpdir(), "hwc-"));
   const session = `check-${randomBytes(3).toString("hex")}`;
   const config = join(dir, "config");
-  for (const path of [config, join(dir, "state"), join(dir, "web-state")]) {
+  for (const path of [config, join(dir, "state"), join(dir, "web-state"), join(dir, "tmp")]) {
     mkdirSync(path, { recursive: true, mode: 0o700 });
     const stat = lstatSync(path);
     if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`isolated state path is not a real directory: ${path}`);
@@ -158,6 +158,8 @@ export function isolate(base: Record<string, string | undefined>, kept: string |
   for (const [name, value] of Object.entries(base)) if (value !== undefined && !LIVE_HERDR.includes(name)) env[name] = value;
   Object.assign(env, {
     XDG_CONFIG_HOME: config,
+    // Factory worktrees have long TMPDIR paths; Chromium also creates Unix sockets there.
+    TMPDIR: join(dir, "tmp"),
     HERDR_CONFIG_PATH: writeTestHerdrConfig(join(config, "herdr")),
     [DISPOSABLE_CONFIG_ENV]: config,
     XDG_STATE_HOME: join(dir, "state"),

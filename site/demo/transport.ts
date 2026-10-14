@@ -573,7 +573,7 @@ const PLUGINS: PluginActions[] = [
 
 async function route(url: URL, method: string, init: RequestInit | undefined, input: RequestInfo | URL): Promise<Response> {
   const path = url.pathname;
-  if (path === "/api/factory" || path.startsWith("/api/factory/") || path.startsWith("/api/factory-host/")) return factoryDemo(url, method, method === "GET" ? {} : await bodyOf(init, input), machines);
+  if (path === "/api/factory" || path.startsWith("/api/factory/") || path.startsWith("/api/factory-host/") || path.startsWith("/api/factory-agent/")) return factoryDemo(url, method, method === "GET" ? {} : await bodyOf(init, input), machines);
   const query = url.searchParams;
   const paneId = query.get("pane_id") ?? "";
 

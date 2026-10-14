@@ -10,6 +10,9 @@
  * Placeholders in braces keep their English names.
  */
 export const ZH: Record<string, string> = {
+  "Continue workflow": "继续工作流程",
+  "Native verification will run before implementation.": "实施前将运行原生验证。",
+  "Review and continue from this chat. Finished steps keep their history.": "在此聊天中审阅并继续。已完成步骤的历史记录会保留。",
   "Finished chats release capacity. Waiting for input or disconnected work still counts.": "已结束的聊天会释放名额。等待输入或连接断开的工作仍占用名额。",
   "Launch model": "启动模型",
   "Launch reasoning": "启动推理级别",
@@ -1338,7 +1341,6 @@ export const ZH: Record<string, string> = {
   "Choose a Project to start work or plan implementation.": "选择一个项目以开始工作或规划实现。",
   "Install or sign in to this Project's agent on its Machine, then try again.": "在项目主机上安装智能体或登录，然后重试。",
   "The agent did not start. Open advanced controls to inspect the retained attempt.": "智能体未启动。打开高级控制以检查保留的尝试。",
-  "Answer questions in the agent chat. Finish this step when its proposal is ready, then review it here.": "在智能体聊天中回答问题。提案准备好后完成此步骤，然后在这里审阅。",
   "Plan implementation starts Grill with docs: discuss the idea, approve a specification, then plan Tickets.": "规划实现将启动 Grill with docs：讨论想法、批准规格，然后规划任务单。",
   "New workspaces use the latest commit. Local changes stay in the original folder.": "新工作区使用最新提交。本地更改保留在原文件夹中。",
   "Mark work done": "将工作标记为完成",

@@ -67,12 +67,14 @@ async function pane(label: string): Promise<string> {
     "workspace.create", { label: `herdr-web-ui-test-${label}`, cwd: root, focus: false },
   );
   workspaces.push(created.workspace.workspace_id);
+  await until(async () => (await screen(created.root_pane.pane_id)).trim().length > 0, "the owned shell to show its prompt");
   return created.root_pane.pane_id;
 }
 
 /** What the pane's own screen shows, which is where typed text ends up either way. */
 async function screen(paneId: string): Promise<string> {
-  return (await paneRead({ paneId, source: "visible", format: "text" })).text;
+  // The visible grid may soft-wrap a literal input around a long CI shell prompt.
+  return (await paneRead({ paneId, source: "visible", format: "text" })).text.replace(/\r?\n/g, "");
 }
 
 describe("typing into a pane held by another connection", () => {
@@ -102,7 +104,8 @@ describe("typing into a pane held by another connection", () => {
 
     const typed = "key-bar-arrow-with-nothing-attached";
     keyBar.send({ type: "input", pane_id: unheld, text: typed });
-    await until(async () => (await screen(unheld)).includes(typed), "the typed text to reach the pane");
+    await until(async () => keyBar.errors().length > 0 || (await screen(unheld)).includes(typed), "the typed text or an explicit rejection to reach the pane");
     expect(keyBar.errors()).toEqual([]);
+    expect(await screen(unheld)).toContain(typed);
   });
 });

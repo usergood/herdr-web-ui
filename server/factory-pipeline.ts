@@ -1,5 +1,5 @@
 import { factoryCapacity } from "./factory-capacity.ts";
-import type { FactoryCheck, FactoryProject, FactoryQuestion, FactoryReviewEvidence, FactoryRun, FactorySettings, FactoryTicket, FactoryWorker, Implementation } from "../shared/protocol.ts";
+import type { FactoryCheck, FactoryProject, FactoryReviewEvidence, FactoryRun, FactorySettings, FactoryTicket, FactoryWorker, Implementation } from "../shared/protocol.ts";
 import { FactoryError } from "./factory-host.ts";
 import { FactoryRuntime } from "./factory-runtime.ts";
 import { FactoryStore } from "./factory-store.ts";
@@ -24,7 +24,7 @@ export class FactoryPipeline {
     const run = this.run(id, body.role === "implementer");
     if (!["implementer", "standards", "spec"].includes(String(body.role)) || typeof body.idempotency_key !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.idempotency_key)) throw new FactoryError("invalid_worker", "Select a worker role and explicit request key");
     const role = body.role as FactoryWorker["role"];
-    if (this.store.list<FactoryQuestion>("questions", run.implementation_id).some((question) => question.answer === null)) throw new FactoryError("answers_unready", "Answer pending owner questions before allocating more work", 409);
+    if (this.workflow.questions(run.implementation_id).some((question) => question.answer === null)) throw new FactoryError("answers_unready", "Answer pending owner questions before allocating more work", 409);
     const previous = this.store.list<FactoryWorker & { key: string }>("workers", id).find((worker) => worker.key === body.idempotency_key);
     if (previous) { if (previous.role !== role || role === "implementer" && previous.ticket_id !== body.ticket_id) throw new FactoryError("worker_conflict", "This key already belongs to another worker", 409); return previous; }
     await this.runtime.reconcileCapacity();
@@ -51,7 +51,7 @@ export class FactoryPipeline {
     }).immediate();
     if (!claimed.fresh) return claimed.worker;
     let worker: FactoryWorker;
-    try { worker = await this.runtime.operation(run, "worker", { worker: claimed.worker, context: { manifest: run.manifest, ticket: (run.manifest as { tickets: FactoryTicket[] }).tickets.find((ticket) => ticket.id === claimed.worker.ticket_id), questions: this.store.list<FactoryQuestion>("questions", run.implementation_id), findings: this.store.list<import("../shared/protocol.ts").ReviewComment>("comments", run.implementation_id).filter((comment) => comment.batch_id === claimed.worker.rework_batch_id && claimed.worker.rework_batch_id !== null) } }); }
+    try { worker = await this.runtime.operation(run, "worker", { worker: claimed.worker, context: { manifest: run.manifest, ticket: (run.manifest as { tickets: FactoryTicket[] }).tickets.find((ticket) => ticket.id === claimed.worker.ticket_id), questions: this.workflow.questions(run.implementation_id), findings: this.store.list<import("../shared/protocol.ts").ReviewComment>("comments", run.implementation_id).filter((comment) => comment.batch_id === claimed.worker.rework_batch_id && claimed.worker.rework_batch_id !== null) } }); }
     catch { worker = { ...claimed.worker, condition: "disconnected", waiting_reason: "Worker dispatch is uncertain; preserve its reservation and reconcile" }; }
     if (worker.id !== claimed.worker.id || worker.run_id !== run.id || worker.ticket_id !== claimed.worker.ticket_id || worker.role !== role || worker.base !== tip.head) throw new FactoryError("worker_identity_changed", "The Machine returned a different worker identity; preserve the accepted reservation", 409);
     const parent = this.store.get<FactoryRun>("runs", id)!;
@@ -115,7 +115,7 @@ export class FactoryPipeline {
   async integrate(id: string, workerId: string): Promise<FactoryWorker> {
     const run = this.run(id); const worker = this.store.get<FactoryWorker>("workers", workerId);
     if (!worker?.head || worker.run_id !== id || worker.role !== "implementer") throw new FactoryError("worker_not_ready", "Reconcile the worker's integration tip first", 409);
-    const questions = this.store.list<FactoryQuestion>("questions", run.implementation_id);
+    const questions = this.workflow.questions(run.implementation_id);
     if (questions.some((question) => question.answer === null) || questions.length && !this.store.list<{ worker_id: string; revision: string }>("answer_consumption", id).some((receipt) => receipt.worker_id === worker.id && receipt.revision === this.workflow.questionRevision(run.implementation_id))) throw new FactoryError("answers_unconsumed", "The worker must consume the current answered context through its scoped tracker", 409);
     const check = this.store.list<FactoryCheck>("checks", id).filter((entry) => entry.worker_id === workerId).at(-1);
     if (!check || check.condition !== "passed" || check.head !== worker.head) throw new FactoryError("checks_required", "Run fresh checks on the reconciled worker head", 409);

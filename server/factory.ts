@@ -15,6 +15,7 @@ import type { FactoryNative } from "./factory-native.ts";
 import { FactoryExecutionHost } from "./factory-execution-host.ts";
 import { captureReview, FactoryReview } from "./factory-review.ts";
 import { FactoryPipeline } from "./factory-pipeline.ts";
+import { FactoryContinuation } from "./factory-continuation.ts";
 import { FactoryRetrospectives } from "./factory-retrospective.ts";
 import { HerdrError } from "./herdr/client.ts";
 import { factoryTrackerGuide } from "./factory-tracker-client.ts";
@@ -38,6 +39,7 @@ export class FactoryService {
   private readonly review: FactoryReview;
   private readonly executionHost: FactoryExecutionHost;
   private readonly pipeline: FactoryPipeline;
+  private readonly continuation: FactoryContinuation;
   private readonly retrospectives: FactoryRetrospectives;
   private readonly references: FactoryReferences;
   private readonly accounts: MachineAccounts;
@@ -51,6 +53,12 @@ export class FactoryService {
     this.executionHost = new FactoryExecutionHost(this.store, () => this.settings().skills_path, native, this.accounts);
     this.runtime = new FactoryRuntime(this.store, this.workflow, () => this.settings(), this.executionHost, endpoint, (record) => this.artifacts.read(record), publicUrl, this.references, this.accounts); this.review = new FactoryReview(this.store, (machine, path, base, mode) => this.runtime.capture(machine, path, base, mode), (machine, path) => this.runtime.inspect(machine, path));
     this.pipeline = new FactoryPipeline(this.store, this.runtime, this.workflow, () => this.settings(), id => this.retainHandoff(id));
+    this.continuation = new FactoryContinuation(this.store, this.workflow, this.runtime, async (id, allowPartial) => {
+      await this.retainHandoff(id);
+      const events = this.store.list<import("../shared/protocol.ts").FactoryEvent>("events", this.store.get<FactoryRun>("runs", id)!.implementation_id).filter(event => (event.data as { run_id?: string })?.run_id === id);
+      const latest = (kinds: string[]) => events.filter(event => kinds.includes(event.kind)).at(-1)?.kind;
+      if (!allowPartial && (latest(["native_snapshot_unavailable", "planning_handoff_retained"]) === "native_snapshot_unavailable" || latest(["planning_documents_unavailable", "planning_documents_retained"]) === "planning_documents_unavailable")) throw new FactoryError("handoff_incomplete", "Some planning context could not be retained. Review the warning and choose Continue with available context", 409);
+    });
     this.retrospectives = new FactoryRetrospectives(this.store);
     this.github = new ProjectGitHub(this.store, this.accounts, (machineId, path) => this.runtime.discover(machineId, path));
   }
@@ -87,7 +95,9 @@ export class FactoryService {
     const implementation = this.store.get<Implementation>("implementations", id);
     if (!implementation) return null;
     const runs = this.store.list<FactoryRun>("runs", id); const runIds = new Set(runs.map((run) => run.id));
-    return { implementation, graph_hash: this.workflow.graphHash(id), question_revision: this.workflow.questionRevision(id), chats: this.store.list("chats", id), messages: this.store.list("messages", id), specifications: this.store.list("specifications", id), tickets: this.workflow.tickets(id), approvals: this.store.list("approvals", id), questions: this.store.list("questions", id), artifacts: this.store.list("artifacts", id), runs, snapshots: this.store.list("snapshots", id), comments: this.store.list("comments", id), events: this.store.list("events", id), native_snapshots: this.store.list<import("../shared/protocol.ts").NativeConversationSnapshot>("native_snapshots").filter((record) => runIds.has(record.run_id)), workers: this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers").filter((worker) => runIds.has(worker.run_id)), checks: this.store.list<import("../shared/protocol.ts").FactoryCheck>("checks").filter((check) => runIds.has(check.run_id)), review_evidence: this.store.list<import("../shared/protocol.ts").FactoryReviewEvidence>("review_evidence").filter((report) => runIds.has(report.run_id)), retrospectives: implementation.project_id ? this.store.list("retrospectives", implementation.project_id) : [], frontier: runs.at(-1)?.action === "implement-spec" ? this.pipeline.frontier(runs.at(-1)!) : [] };
+    const active = [...runs].reverse().find(run => !["completed", "cancelled", "failed"].includes(run.condition));
+    const questionRunId = active?.action === "verify-provider" ? active.id : undefined;
+    return { implementation, question_context: { run_id: questionRunId ?? null, revision: this.workflow.questionRevision(id, questionRunId), questions: this.workflow.questions(id, questionRunId) }, graph_hash: this.workflow.graphHash(id), question_revision: this.workflow.questionRevision(id), chats: this.store.list("chats", id), messages: this.store.list("messages", id), specifications: this.store.list("specifications", id), tickets: this.workflow.tickets(id), approvals: this.store.list("approvals", id), questions: this.store.list("questions", id), artifacts: this.store.list("artifacts", id), runs, snapshots: this.store.list("snapshots", id), comments: this.store.list("comments", id), events: this.store.list("events", id), native_snapshots: this.store.list<import("../shared/protocol.ts").NativeConversationSnapshot>("native_snapshots").filter((record) => runIds.has(record.run_id)), workers: this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers").filter((worker) => runIds.has(worker.run_id)), checks: this.store.list<import("../shared/protocol.ts").FactoryCheck>("checks").filter((check) => runIds.has(check.run_id)), review_evidence: this.store.list<import("../shared/protocol.ts").FactoryReviewEvidence>("review_evidence").filter((report) => runIds.has(report.run_id)), retrospectives: implementation.project_id ? this.store.list("retrospectives", implementation.project_id) : [], frontier: runs.at(-1)?.action === "implement-spec" ? this.pipeline.frontier(runs.at(-1)!) : [] };
   }
   agentAuthenticated(request: Request, url: URL): boolean {
     const route = /^\/api\/factory-agent\/([a-zA-Z0-9-]+)\//.exec(url.pathname);
@@ -98,14 +108,14 @@ export class FactoryService {
   }
   async handleAgent(request: Request, url: URL): Promise<Response> {
     try {
-      const route = /^\/api\/factory-agent\/([a-zA-Z0-9-]+)\/(contract|question|consume|worker|checks|artifact|specification|tickets|proposal|ticket\/[a-zA-Z0-9-]+|worker\/[a-zA-Z0-9-]+\/[a-z-]+)$/.exec(url.pathname);
+      const route = /^\/api\/factory-agent\/([a-zA-Z0-9-]+)\/(contract|question|sync-answers|consume|worker|checks|artifact|specification|tickets|proposal|ticket\/[a-zA-Z0-9-]+|worker\/[a-zA-Z0-9-]+\/[a-z-]+)$/.exec(url.pathname);
       if (!route) throw new FactoryError("not_found", "Unknown scoped tracker operation", 404);
       if (!this.agentAuthenticated(request, url)) throw new FactoryError("unauthorized", "Use this Run's scoped tracker credential", 401);
       const run = this.store.get<FactoryRun>("runs", route[1]!);
       if (!run || ["completed", "cancelled", "failed"].includes(run.condition)) throw new FactoryError("run_closed", "This Run's control scope has ended", 409);
       if (request.headers.has("origin") && request.headers.get("origin") !== url.origin) throw new FactoryError("invalid_origin", "Use the scoped tracker on its authenticated app origin", 403);
       const action = route[2]!;
-      if (action === "contract" && request.method === "GET") return jsonResponse({ tracker_guide: factoryTrackerGuide, run, workers: this.store.list("workers", run.id), checks: this.store.list("checks", run.id), review_batches: this.store.list("review_batches", run.implementation_id), messages: this.store.list<FactoryMessage>("messages", run.implementation_id).filter((message) => (run.manifest as { context_message_ids?: string[] }).context_message_ids?.includes(message.id)), question_revision: this.workflow.questionRevision(run.implementation_id), questions: this.store.list("questions", run.implementation_id), frontier: run.action === "implement-spec" ? this.pipeline.frontier(run) : [], artifacts: (run.manifest as { artifacts?: FactoryArtifact[] }).artifacts ?? [] });
+      if (action === "contract" && request.method === "GET") return jsonResponse({ tracker_guide: factoryTrackerGuide, run, workers: this.store.list("workers", run.id), checks: this.store.list("checks", run.id), review_batches: this.store.list("review_batches", run.implementation_id), messages: this.store.list<FactoryMessage>("messages", run.implementation_id).filter((message) => (run.manifest as { context_message_ids?: string[] }).context_message_ids?.includes(message.id)), question_revision: this.workflow.questionRevision(run.implementation_id, run.id), questions: this.workflow.questions(run.implementation_id, run.id), frontier: run.action === "implement-spec" ? this.pipeline.frontier(run) : [], artifacts: (run.manifest as { artifacts?: FactoryArtifact[] }).artifacts ?? [] });
       if (action.startsWith("ticket/") && request.method === "GET") {
         const ticket = (run.manifest as { tickets: import("../shared/protocol.ts").FactoryTicket[] }).tickets.find((ticket) => ticket.id === action.slice(7));
         if (!ticket) throw new FactoryError("not_found", "Ticket is outside this Run's frozen graph", 404);
@@ -120,13 +130,20 @@ export class FactoryService {
         return jsonResponse(this.retrospectives.propose(scope.id, body), 201);
       }
       if (action === "question") return jsonResponse(this.workflow.mutate(run.implementation_id, "questions", { ...body, run_id: run.id }), 201);
+      if (action === "sync-answers") {
+        if (body.before !== undefined && typeof body.before !== "string") throw new FactoryError("invalid_cursor", "Use a cursor from this Run's retained native history");
+        const snapshot = await this.retainNative(run.id, body.before as string | undefined);
+        return jsonResponse({ snapshot_id: snapshot.id, cursor: snapshot.cursor, question_revision: this.workflow.questionRevision(run.implementation_id, run.id), questions: this.workflow.questions(run.implementation_id, run.id) } satisfies import("../shared/protocol.ts").FactoryNativeAnswers);
+      }
       if (action === "consume") {
-        const revision = this.workflow.questionRevision(run.implementation_id);
-        const questions = this.store.list<{ answer: string | null }>("questions", run.implementation_id);
+        const revision = this.workflow.questionRevision(run.implementation_id, run.id);
+        const questions = this.workflow.questions(run.implementation_id, run.id);
         if (body.revision !== revision || questions.some((question) => question.answer === null)) throw new FactoryError("answers_unready", "Consume the exact answered question revision", 409);
         if (body.worker_id !== undefined && (!this.store.get<{ run_id: string }>("workers", String(body.worker_id)) || this.store.get<{ run_id: string }>("workers", String(body.worker_id))!.run_id !== run.id)) throw new FactoryError("invalid_worker", "Consume answers for a worker in this Run");
         const receipt = { ...this.store.record(), run_id: run.id, worker_id: body.worker_id ?? null, revision };
-        this.store.put("answer_consumption", receipt, run.id); this.store.event(run.implementation_id, "answers_consumed", receipt); return jsonResponse({ receipt, questions });
+        this.store.put("answer_consumption", receipt, run.id); this.store.event(run.implementation_id, "answers_consumed", receipt);
+        void this.continuation.verified(run.id);
+        return jsonResponse({ receipt, questions });
       }
       if (action === "worker") return jsonResponse(await this.pipeline.startWorker(run.id, body));
       if (action === "checks") return jsonResponse(await this.pipeline.check(run.id));
@@ -144,9 +161,9 @@ export class FactoryService {
     return this.store.db.transaction(() => {
       const snapshots = this.store.list<import("../shared/protocol.ts").NativeConversationSnapshot>("native_snapshots", id);
       const previous = snapshots.find((entry) => entry.source_id === captured.source_id && entry.version === captured.version && entry.cursor === captured.cursor);
-      if (previous) return previous;
+      if (previous) { this.workflow.retainNativeAnswers(run, previous, before === undefined); return previous; }
       const record = { ...this.store.record(), ...captured, run_id: id, sequence: snapshots.filter((entry) => entry.source_id === captured.source_id).length };
-      this.store.put("native_snapshots", record, id); this.store.event(run.implementation_id, "native_snapshot_retained", { snapshot_id: record.id, source_id: record.source_id, sequence: record.sequence, version: record.version }); return record;
+      this.store.put("native_snapshots", record, id); this.store.event(run.implementation_id, "native_snapshot_retained", { snapshot_id: record.id, source_id: record.source_id, sequence: record.sequence, version: record.version }); this.workflow.retainNativeAnswers(run, record, before === undefined); return record;
     }).immediate();
   }
   private async retainHandoff(id: string): Promise<void> {
@@ -194,6 +211,7 @@ export class FactoryService {
       const condition = pending && !ended ? "needs_you" : nextCondition;
       const waiting = pending && !ended ? pending.question : reason;
       if (run.condition !== condition || run.waiting_reason !== waiting) { this.store.put("runs", { ...run, condition, waiting_reason: waiting, updated_at: new Date().toISOString() }, run.implementation_id); this.store.event(run.implementation_id, "native_condition_changed", { run_id: run.id, condition }); }
+      if (condition === "ready" && run.action === "verify-provider") void this.continuation.verified(run.id);
     }
     for (const worker of this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers")) if (worker.pane_id === paneId && ["working", "ready", "needs_you", "blocked"].includes(worker.condition)) {
       const run = this.store.get<FactoryRun>("runs", worker.run_id);
@@ -306,6 +324,8 @@ export class FactoryService {
       }
       const hostStop = /^\/api\/factory-host\/runs\/([a-zA-Z0-9-]+)\/stop$/.exec(url.pathname);
       if (hostStop && request.method === "POST") return jsonResponse(await this.executionHost.stopRun(hostStop[1]!));
+      const hostFinish = /^\/api\/factory-host\/runs\/([a-zA-Z0-9-]+)\/finish$/.exec(url.pathname);
+      if (hostFinish && request.method === "POST") return jsonResponse(await this.executionHost.finishStep(hostFinish[1]!));
       const hostSend = /^\/api\/factory-host\/runs\/([a-zA-Z0-9-]+)\/send$/.exec(url.pathname);
       if (hostSend && request.method === "POST") { const body = await this.body(request); if (typeof body.text !== "string" || body.text.length > 250_000) throw new FactoryError("invalid_input", "Enter a bounded change request"); await this.executionHost.send(hostSend[1]!, body.text, request.signal); return jsonResponse({ ok: true }); }
       const hostOutputs = /^\/api\/factory-host\/runs\/([a-zA-Z0-9-]+)\/artifacts(\/content)?$/.exec(url.pathname);
@@ -476,6 +496,8 @@ export class FactoryService {
       if (resolution && request.method === "POST") return jsonResponse(await this.pipeline.resolveFinding(resolution[1]!, resolution[2]!, await this.body(request)));
       if (batchRoute && request.method === "POST") return jsonResponse(await this.review.requestChanges(batchRoute[1]!, await this.body(request), (run, text) => this.runtime.send(run, text, request.signal)));
       const startRoute = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/runs$/.exec(url.pathname);
+      const continueRoute = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/continue$/.exec(url.pathname);
+      if (continueRoute && request.method === "POST") return jsonResponse(await this.continuation.start(continueRoute[1]!, await this.body(request), url.origin), 202);
       if (startRoute && request.method === "POST") {
         const body = await this.body(request);
         return jsonResponse(await this.runtime.start(startRoute[1]!, body, url.origin), 202);
@@ -493,9 +515,9 @@ export class FactoryService {
       const answerDelivery = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/send-answers$/.exec(url.pathname);
       if (answerDelivery && request.method === "POST") {
         const run = this.store.get<FactoryRun>("runs", answerDelivery[1]!); if (!run) throw new FactoryError("not_found", "Run not found", 404);
-        const body = await this.body(request); const revision = this.workflow.questionRevision(run.implementation_id);
+        const body = await this.body(request); const revision = this.workflow.questionRevision(run.implementation_id, run.id);
         if (typeof body.idempotency_key !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.idempotency_key)) throw new FactoryError("invalid_delivery", "Send answered context with an explicit receipt key");
-        if (body.revision !== revision || this.store.list<{ answer: string | null }>("questions", run.implementation_id).some((question) => question.answer === null)) throw new FactoryError("answers_unready", "Send the current answered question revision explicitly", 409);
+        if (body.revision !== revision || this.workflow.questions(run.implementation_id, run.id).some((question) => question.answer === null)) throw new FactoryError("answers_unready", "Send the current answered question revision explicitly", 409);
         const prior = this.store.list<{ id: string; key: string; revision: string; condition: string }>("answer_deliveries", run.id).find((entry) => entry.key === body.idempotency_key || entry.revision === revision && ["sending", "sent", "uncertain"].includes(entry.condition));
         if (prior) { if (prior.key === body.idempotency_key && prior.revision !== revision) throw new FactoryError("delivery_conflict", "This key belongs to another answered revision", 409); return jsonResponse(prior); }
         const delivery = { ...this.store.record(), run_id: run.id, revision, key: body.idempotency_key, condition: "sending" };
@@ -661,5 +683,5 @@ export class FactoryService {
       return httpError(404, "not_found", "Unknown factory endpoint");
     } catch (error) { return error instanceof FactoryError ? httpError(error.status, error.code, error.message) : error instanceof SyntaxError ? badRequest("invalid_json", "Enter valid JSON") : errorResponse(error); }
   }
-  stop(): void { if (this.stopped) return; this.stopped = true; this.github.stop(); this.accounts.stop(); this.runtime.stop(); this.store.close(); }
+  stop(): void { if (this.stopped) return; this.stopped = true; this.continuation.stop(); this.github.stop(); this.accounts.stop(); this.runtime.stop(); this.store.close(); }
 }

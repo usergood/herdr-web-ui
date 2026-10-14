@@ -43,6 +43,15 @@ afterAll(() => {
 const base = () => `http://localhost:${server.port}`;
 
 describe("shared browser preferences", () => {
+  it("requires owner controls and a scoped request for workflow continuation", async () => {
+    const path = `${base()}/api/factory/implementations/00000000-0000-0000-0000-000000000000/continue`;
+    const denied = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    expect(denied.status).toBe(403);
+    const invalid = await fetch(path, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: "{}" });
+    expect(invalid.status).toBe(400);
+    expect((await invalid.json()).error.code).toBe("invalid_continuation");
+  });
+
   it("keeps unexpected persistence errors opaque", async () => {
     const state = mkdtempSync(join(tmpdir(), "saurons-preferences-error-"));
     const app = createServer({ port: 0, stateDir: state });
@@ -1806,11 +1815,12 @@ describe("workspace and discovery endpoints", () => {
   let paneId: string | null = null;
   const label = `herdr-web-ui-test-${Math.random().toString(36).slice(2)}`;
   const fileName = `${label}-mention.txt`;
-  const filePath = join(tmpdir(), fileName);
+  const directory = mkdtempSync(join(tmpdir(), "herdr-workspace-discovery-"));
+  const filePath = join(directory, fileName);
 
   afterAll(async () => {
     if (workspaceId) await herdrRpc("workspace.close", { workspace_id: workspaceId }).catch(() => undefined);
-    rmSync(filePath, { force: true });
+    rmSync(directory, { recursive: true, force: true });
   });
 
   it("lists agent kinds with required fallbacks sorted by display label", async () => {
@@ -1864,12 +1874,15 @@ describe("workspace and discovery endpoints", () => {
   });
 
   it("creates, edits, searches, inspects, and closes an owned workspace", async () => {
+    // CI's CHECK_DIR is inside ignored .ci/. Give this fixture its own Git boundary
+    // so a parent's ignore rules cannot hide the file the endpoint should discover.
+    expect(Bun.spawnSync(["git", "init", "-q", directory], { stdout: "ignore", stderr: "ignore" }).exitCode).toBe(0);
     writeFileSync(filePath, "mention fixture");
     // the dialog sends null for "not given" (agent: null = shell only): nulls must read as absent
     const create = await fetch(`${base()}/api/workspace/create`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ cwd: tmpdir(), label, agent: null }),
+      body: JSON.stringify({ cwd: directory, label, agent: null }),
     });
     expect(create.status).toBe(200);
     const created = (await create.json()) as WorkspaceCreated;
@@ -1881,9 +1894,23 @@ describe("workspace and discovery endpoints", () => {
     expect(commands.status).toBe(200);
     expect(await commands.json()).toEqual({ commands: [] });
 
-    const files = await fetch(`${base()}/api/pane/files?pane_id=${encodeURIComponent(paneId)}&q=${encodeURIComponent(fileName)}&limit=5`);
-    expect(files.status).toBe(200);
-    expect(((await files.json()) as { files: string[] }).files).toContain(fileName);
+    // The new shell's foreground cwd can briefly still name its launching process.
+    const deadline = Date.now() + 5_000;
+    let files: string[] = [];
+    do {
+      const response = await fetch(`${base()}/api/pane/files?pane_id=${encodeURIComponent(paneId)}&q=${encodeURIComponent(fileName)}&limit=5`);
+      expect(response.status).toBe(200);
+      files = ((await response.json()) as { files: string[] }).files;
+      if (files.includes(fileName)) break;
+      await Bun.sleep(25);
+    } while (Date.now() < deadline);
+    let diagnostic: string | undefined;
+    if (!files.includes(fileName)) {
+      const { snapshot } = await fetch(`${base()}/api/session`).then(response => response.json());
+      const pane = snapshot.panes.find((entry: { pane_id: string }) => entry.pane_id === paneId);
+      diagnostic = JSON.stringify({ directory, fixture: readFileSync(filePath, "utf8"), pane: { cwd: pane?.cwd, foreground_cwd: pane?.foreground_cwd, agent: pane?.agent, agent_status: pane?.agent_status }, files });
+    }
+    expect(files, diagnostic).toContain(fileName);
 
     const prompt = await fetch(`${base()}/api/pane/prompt?pane_id=${encodeURIComponent(paneId)}`);
     expect(prompt.status).toBe(200);
