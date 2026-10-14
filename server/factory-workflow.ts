@@ -113,7 +113,7 @@ export class FactoryWorkflow {
       }
       if (action === "specifications") {
         if (typeof body.content !== "string" || !body.content.trim() || body.content.length > 250_000) throw new FactoryError("invalid_specification", "Enter a bounded specification");
-        const specification: SpecificationVersion = { ...this.store.record(), implementation_id: id, revision: (this.specification(id)?.revision ?? 0) + 1, content: body.content, hash: hash(body.content) };
+        const specification: SpecificationVersion = { ...this.store.record(), implementation_id: id, revision: (this.specification(id)?.revision ?? 0) + 1, content: body.content, hash: hash(body.content), ...(implementation.upstream_update ? { upstream_update: implementation.upstream_update } : {}) };
         this.store.put("specifications", specification, id);
         if (!["running", "review"].includes(implementation.stage)) this.store.put("implementations", { ...implementation, stage: "specifying", updated_at: specification.created_at });
         this.store.event(id, "specification_created", { specification_id: specification.id, revision: specification.revision });

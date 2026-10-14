@@ -27,6 +27,14 @@ const actions: FactoryAction[] = ["work", "setup", "grill-me", "grill-with-docs"
 export class FactoryRuntime {
   private readonly dispatches = new Map<string, Promise<FactoryRun>>();
   private stopped = false;
+  private acceptedUpstream(id: string, implementation: Implementation): void {
+    if (!implementation.upstream_update) return;
+    const specification = this.workflow.specification(id);
+    if (!specification || JSON.stringify(specification.upstream_update) !== JSON.stringify(implementation.upstream_update) || !this.workflow.approved(id, "specification", specification.id) || !this.workflow.approved(id, "testing_seams", specification.id) || !this.workflow.tickets(id).length || !this.workflow.approved(id, "ticket_graph", this.workflow.graphHash(id))) throw new FactoryError("scope_unaccepted", "Accept the upstream release's Specification, testing seams and Ticket graph before preparation", 409);
+    const project = implementation.project_id ? this.store.get<FactoryProject>("projects", implementation.project_id) : null;
+    if (!project?.checks?.length || !project.permissions?.trim()) throw new FactoryError("project_setup_required", "Configure known Project checks and execution permissions before upstream preparation", 409);
+    if (this.workflow.questions(id).some(question => question.answer === null)) throw new FactoryError("answers_unready", "Answer pending owner questions before upstream preparation", 409);
+  }
   constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly host: FactoryExecutionHost, private readonly endpoint: MachineEndpoint, private readonly readArtifact: (record: FactoryArtifact) => Buffer, private readonly publicUrl: string | null, private readonly references: FactoryReferences, private readonly accounts: MachineAccounts, private readonly projectAdmission: (id: string, continuing?: boolean) => void, private readonly consumeRetry: (id: string, nextRunId: string) => void, private readonly issueScope: (implementationId: string) => ProjectIssueExecutionScope | null = () => null, private readonly prepareIssueScope: (implementationId: string) => Promise<void> = async () => {}, private readonly issuePrerequisites: (id: string) => Implementation[] = () => []) {}
   assertProjectCapacity(run: FactoryRun): void { if (["work", "implement-spec"].includes(run.action)) this.projectAdmission(run.implementation_id, true); }
   async discover(machineId: string, path: string): Promise<import("../shared/project-setup.ts").ProjectDiscovery> { return machineId === "local" ? this.host.discover(path) : this.remote(machineId, "/project-discovery", { path }); }
@@ -142,6 +150,7 @@ export class FactoryRuntime {
     const action = body.action as FactoryAction;
     if (["work", "implement-spec"].includes(action)) await this.prepareIssueScope(id);
     const issueScope = ["work", "implement-spec"].includes(action) ? this.issueScope(id) : null;
+    if (["work", "implement-spec"].includes(action) && !issueScope) this.acceptedUpstream(id, implementation);
     if (["work", "implement-spec", "grill-with-docs", "to-tickets", "retro", "apply-retro"].includes(action) && !project) throw new FactoryError("project_required", "Select a Project before starting this action", 409);
     const retrospective = ["retro", "apply-retro"].includes(action) ? this.store.get<import("../shared/protocol.ts").FactoryRetrospective>("retrospectives", String(body.retrospective_id)) : null;
     if (["retro", "apply-retro"].includes(action) && (!retrospective || retrospective.project_id !== project?.id || action === "apply-retro" && !retrospective.approved)) throw new FactoryError("retrospective_scope_required", "Select retained Project evidence and separately approve improvements before applying them", 409);
@@ -193,6 +202,7 @@ export class FactoryRuntime {
       }
     }
     const specification = this.workflow.specification(id); const graphHash = this.workflow.graphHash(id);
+    if (["work", "implement-spec"].includes(action)) this.acceptedUpstream(id, implementation);
     if (action === "to-tickets" || action === "implement-spec") {
       if (!specification || !this.workflow.approved(id, "specification", specification.id) || !this.workflow.approved(id, "testing_seams", specification.id)) throw new FactoryError("scope_unaccepted", "Accept the current specification and testing seams", 409);
     }

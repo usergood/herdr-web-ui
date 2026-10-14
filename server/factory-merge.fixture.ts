@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { factoryDeliveryFixture } from "./factory-delivery.fixture.ts";
+import { approveUpstreamPreparation } from "./upstream-preparation.fixture.ts";
 
 /** Native GitHub responses and calls belong to this fixture, never an owner's account. */
 export async function factoryMergeFixture(remote = false, milestone: "merge" | "release" = "merge", githubInitially = true, native: Partial<import("./factory-native.ts").FactoryNative> = {}, upstream = false) {
@@ -40,6 +41,8 @@ process.stdout.write(JSON.stringify(value));
     if (!configured.ok) throw new Error("Owned upstream configuration failed");
     const response = await f.request(route + "/schedules/run", { job: "upstream_sync" }).then(r => r.json());
     prefix = `/implementations/${response.upstream.active.implementation_id}`;
+    await approveUpstreamPreparation(f.request, prefix);
+    await f.request(`/projects/${f.project.id}/configure`, { checks: [["git", "status", "--porcelain"]], permissions: "Owned upstream fixture only" });
   }
   const run = upstream ? await f.request(prefix + "/runs", { action: "work", idempotency_key: "upstream-work" }).then(r => r.json()) : await f.start();
   const commit = (name: string, content: string) => {

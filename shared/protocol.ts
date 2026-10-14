@@ -1153,6 +1153,7 @@ export const DEFAULT_PORT = 7317;
  * POST /api/factory/artifacts/:id/note (artifact_note) -> FactoryArtifact;
  * POST .../delete (artifact_delete) -> {ok:true}; referenced deleted blobs remain retained.
  * POST /api/factory/implementations/:id/specifications (specification) -> SpecificationVersion, 201;
+ * upstream_update is retained from the detected Assignment release, never caller-selected.
  * POST .../tickets (tickets) -> {hash:string,tickets:FactoryTicket[]}, 201; accepted current revision, acyclic.
  * POST .../approvals (approval) -> FactoryApproval, 201; stale scope=409.
  * POST .../questions (question) -> FactoryQuestion, 201; POST .../questions/:question/answer (answer)

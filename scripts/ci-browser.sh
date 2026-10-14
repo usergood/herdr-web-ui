@@ -67,6 +67,7 @@ run_script scripts/project-setup-browser-regression.ts
 run_script scripts/project-navigation-browser-regression.ts
 run_script scripts/project-schedules-browser-regression.ts
 run_script scripts/upstream-releases-browser-regression.ts
+run_script scripts/upstream-preparation-browser-regression.ts
 run_script scripts/project-queue-browser-regression.ts
 run_script scripts/ready-issues-browser-regression.ts
 run_script scripts/github-readiness-browser-regression.ts

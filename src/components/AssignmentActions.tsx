@@ -8,6 +8,7 @@ import "./AssignmentActions.css";
 import { AgentModelPicker } from "./AgentModelPicker.tsx";
 import type { AgentExecutionPreset, AgentModelSelection } from "../../shared/agent-models.ts";
 import { AssignmentDeliveryPanel } from "./AssignmentDeliveryPanel.tsx";
+import { FactoryUpstreamRelease } from "./FactoryUpstreamRelease.tsx";
 
 export function AssignmentActions({ preset, onPresetChange, detail, project, machineId, machineName, provider, busy, perform, onOpenPane, capabilities, problem, onCapabilities }: { preset: AgentModelSelection; onPresetChange: (value: AgentModelSelection) => void; detail: FactoryDetail; project?: FactoryProject; machineId: string; machineName: string; provider: FactoryProvider; busy: boolean; perform: (action: () => Promise<void>) => Promise<void>; onOpenPane: (machineId: string, paneId: string) => void; capabilities: FactoryCapabilities | null; problem: string | null; onCapabilities: (value: FactoryCapabilities) => void }) {
   const t = useT(); const live = useRef(true);
@@ -94,7 +95,7 @@ export function AssignmentActions({ preset, onPresetChange, detail, project, mac
       {!active && <button className="btn factory-button" disabled={disabled} onClick={()=>void start("verify-provider")}>{t("Start native verification")}</button>}
       {verification && <button className="btn factory-button" disabled={busy} onClick={()=>void perform(async()=>{const result=await factoryRequest<FactoryCapabilities>(`/runs/${verification.id}/verify-provider`,{});if(live.current)onCapabilities(result);})}>{t("Verify native evidence")}</button>}
     </details></div>}
-    {specification && <div className="assignment-proposal"><h3>{t("Specification")}</h3><Markdown>{specification.content}</Markdown><div className="factory-actions">
+    {specification && <div className="assignment-proposal"><h3>{t("Specification")}</h3><FactoryUpstreamRelease release={specification.upstream_update} /><Markdown>{specification.content}</Markdown><div className="factory-actions">
       {!approved("specification", specification.id) && <button className="btn factory-button" disabled={busy} onClick={()=>void approve("specification", specification.id, `Specification ${specification.id}, SHA-256 ${specification.hash}`)}>{t("Accept specification")}</button>}
       {!approved("testing_seams", specification.id) && <button className="btn factory-button" disabled={busy} onClick={()=>void approve("testing_seams", specification.id, `The testing boundaries and validation plan in specification ${specification.id}, SHA-256 ${specification.hash}`)}>{t("Confirm testing seams")}</button>}
     </div></div>}

@@ -1,8 +1,9 @@
 import { useState } from "react";
-import type { FactoryRequestBody, FactoryDetail, FactoryProject } from "../../shared/protocol.ts";
+import type { FactoryRequestBody, FactoryDetail, FactoryProject, Implementation } from "../../shared/protocol.ts";
 import type { ProjectIssueExecutionScope } from "../../shared/github-project.ts";
 import { factoryRequest } from "../lib/factoryApi.ts";
 import { useT } from "../lib/i18n.ts";
+import { FactoryUpstreamRelease } from "./FactoryUpstreamRelease.tsx";
 
 export function FactoryExecutionPanel({ detail, project, busy, perform, onOpenPane }: { detail: FactoryDetail; project?: FactoryProject; busy: boolean; perform: (action: () => Promise<void>) => Promise<void>; onOpenPane: (machineId: string, paneId: string) => void }) {
   const t = useT();
@@ -19,6 +20,7 @@ export function FactoryExecutionPanel({ detail, project, busy, perform, onOpenPa
   return <section className="factory-section">
     <h3>{t("Execution evidence")}</h3>
     <p>{run.branch} · {run.base}</p>
+    <FactoryUpstreamRelease release={(run.manifest as { implementation?: Implementation }).implementation?.upstream_update} />
     {run.scope_pause && <div>
       <p role="status">{run.scope_pause.condition === "paused" ? t("Issue scope paused") : t("Issue scope pause pending")}</p>
       {run.scope_pause.condition !== "paused" && <button className="btn factory-button" disabled={busy} onClick={() => void command("/reconcile")}>{t("Reconcile Run")}</button>}

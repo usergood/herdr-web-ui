@@ -10,6 +10,7 @@
 export const JA: Record<string, string> = {
   "Upstream repository (owner/name)": "アップストリームのリポジトリ（所有者/名前）",
   "Upstream releases": "アップストリームのリリース",
+  "Upstream release": "対象のアップストリームリリース",
   "Upstream releases enter Inbox for planning.": "アップストリームのリリースは計画のため受信箱に追加されます。",
   "Detected release: {tag}": "検出したリリース: {tag}",
   "Active update: {tag}": "進行中の更新: {tag}",

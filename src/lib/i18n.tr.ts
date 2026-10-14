@@ -9,6 +9,7 @@
 export const TR: Record<string, string> = {
   "Upstream repository (owner/name)": "Üst kaynak deposu (sahip/ad)",
   "Upstream releases": "Üst kaynak sürümleri",
+  "Upstream release": "Üst kaynak sürümü",
   "Upstream releases enter Inbox for planning.": "Üst kaynak sürümleri planlama için Gelen Kutusu’na eklenir.",
   "Detected release: {tag}": "Algılanan sürüm: {tag}",
   "Active update: {tag}": "Etkin güncelleme: {tag}",

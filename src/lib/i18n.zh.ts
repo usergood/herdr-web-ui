@@ -12,6 +12,7 @@
 export const ZH: Record<string, string> = {
   "Upstream repository (owner/name)": "上游仓库（所有者/名称）",
   "Upstream releases": "上游发布",
+  "Upstream release": "上游发布版本",
   "Upstream releases enter Inbox for planning.": "上游发布会进入收件箱以供规划。",
   "Detected release: {tag}": "检测到的发布：{tag}",
   "Active update: {tag}": "进行中的更新：{tag}",

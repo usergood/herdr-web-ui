@@ -67,7 +67,11 @@ export interface FactoryMessage extends FactoryRecord {
   content: string; source_id: string | null; sequence: number | null;
 }
 export interface FactoryEvent extends FactoryRecord { implementation_id: string | null; kind: string; data: unknown }
-export interface SpecificationVersion extends FactoryRecord { implementation_id: string; revision: number; content: string; hash: string }
+export interface SpecificationVersion extends FactoryRecord {
+  implementation_id: string; revision: number; content: string; hash: string;
+  /** The detected release this revision proposes to prepare; never a moving candidate. */
+  upstream_update?: import("./upstream-releases.ts").UpstreamRelease;
+}
 export interface FactoryTicket extends FactoryRecord {
   implementation_id: string; specification_id: string; title: string; acceptance: string;
   dependencies: string[]; status: "proposed" | "ready" | "working" | "review" | "done";

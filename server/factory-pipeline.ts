@@ -152,6 +152,7 @@ export class FactoryPipeline {
     const done = this.store.list<FactoryWorker>("workers", id).filter((entry) => entry.role === "implementer" && entry.condition === "completed");
     if (run.action === "implement-spec" && tickets.some((ticket) => !done.some((entry) => entry.ticket_id === ticket.id))) throw new FactoryError("tickets_incomplete", "Integrate every accepted Ticket before completion", 409);
     if (this.store.list<{ run_id: string | null; status: string }>("comments", run.implementation_id).some((entry) => entry.run_id === id && entry.status !== "resolved")) throw new FactoryError("findings_open", "Resolve this Run's retained findings with fresh evidence before acceptance", 409);
+    if (this.workflow.questions(run.implementation_id).some(question => question.answer === null)) throw new FactoryError("answers_unready", "Answer pending owner questions before accepting the prepared implementation", 409);
     const approval = { ...this.store.record(), implementation_id: run.implementation_id, kind: "review", revision: current.head, scope: `Run ${id}; checks ${check.id}; independent Standards and Spec reports`, ...(issueApprovalId ? { source_approval_id: issueApprovalId } : {}) };
     this.store.put("approvals", approval, run.implementation_id);
     // Release native ownership explicitly, while retaining Git and all evidence.
