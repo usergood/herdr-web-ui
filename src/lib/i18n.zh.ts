@@ -10,6 +10,9 @@
  * Placeholders in braces keep their English names.
  */
 export const ZH: Record<string, string> = {
+  "Delivery milestone": "交付完成条件",
+  "Delivery branch": "交付目标分支",
+  "Delivery settings apply to new Assignments. Started Assignments keep their frozen scope.": "交付设置适用于新任务。已启动的任务保留其已确定的范围。",
   "Interrupted": "已中断",
   "Stopped attempt": "已停止的尝试",
   "Finished attempt": "已完成的尝试",
@@ -1375,14 +1378,16 @@ export const ZH: Record<string, string> = {
   "Plan implementation": "规划实现",
   "Advanced controls": "高级控制",
   "Continue in agent chat": "在智能体聊天中继续",
-  "Finish this step": "完成此步骤",
   "Work uses {agent} on {machine} with this Project's settings.": "工作将使用此项目的设置，在 {machine} 上运行 {agent}。",
   "Choose a Project to start work or plan implementation.": "选择一个项目以开始工作或规划实现。",
   "Install or sign in to this Project's agent on its Machine, then try again.": "在项目主机上安装智能体或登录，然后重试。",
   "The agent did not start. Open advanced controls to inspect the retained attempt.": "智能体未启动。打开高级控制以检查保留的尝试。",
   "Plan implementation starts Grill with docs: discuss the idea, approve a specification, then plan Tickets.": "规划实现将启动 Grill with docs：讨论想法、批准规格，然后规划任务单。",
   "New workspaces use the latest commit. Local changes stay in the original folder.": "新工作区使用最新提交。本地更改保留在原文件夹中。",
-  "Mark work done": "将工作标记为完成",
+  "Accept research": "接受研究结果",
+  "Check completion evidence": "检查完成依据",
+  "No repository changes; owned work is quiescent.": "仓库没有更改，所持有的工作均已停止。",
+  "Check repository changes and owned work before accepting research.": "接受研究结果前，请检查仓库更改和所持有的工作。",
   "Start implementation": "开始实现",
   "Automated implementation needs a verified agent skill setup. Direct work and planning are available before verification.": "自动实现需要经过验证的智能体技能配置。验证前仍可直接工作和规划。",
   "Some planning context could not be retained. Check the previous agent chat and documents before starting the next step.": "部分规划上下文未能保留。开始下一步之前，请检查之前的代理聊天和文档。",

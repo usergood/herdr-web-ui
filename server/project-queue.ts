@@ -32,6 +32,7 @@ export class ProjectQueue {
     const items = this.store.list<Implementation>("implementations").filter(idea => idea.project_id === id && !idea.archived_at && idea.stage !== "done").sort((a, b) => a.position - b.position).map(idea => {
       const source = sources.find(entry => entry.implementation_id === idea.id);
       const reasons: string[] = [...(source?.readiness?.reasons ?? ["planning_required"])];
+      if (["implementation_complete", "pr_open", "merged", "released"].includes(idea.outcome)) reasons.push("awaiting_delivery");
       // Unavailable delivery evidence cannot satisfy an approved prerequisite.
       if (source?.readiness?.approval?.plan.dependencies.length) reasons.push("dependency_unverified");
       if (paused) reasons.push("queue_paused");

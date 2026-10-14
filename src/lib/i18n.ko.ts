@@ -6,6 +6,9 @@
  * braces keep their English names.
  */
 export const KO: Record<string, string> = {
+  "Delivery milestone": "전달 완료 기준",
+  "Delivery branch": "전달 대상 브랜치",
+  "Delivery settings apply to new Assignments. Started Assignments keep their frozen scope.": "전달 설정은 새 과제에 적용됩니다. 시작된 과제는 확정된 범위를 유지합니다.",
   "Interrupted": "중단됨",
   "Stopped attempt": "중지된 시도",
   "Finished attempt": "완료된 시도",
@@ -1371,14 +1374,16 @@ export const KO: Record<string, string> = {
   "Plan implementation": "구현 계획",
   "Advanced controls": "고급 제어",
   "Continue in agent chat": "에이전트 채팅에서 계속",
-  "Finish this step": "이 단계 마치기",
   "Work uses {agent} on {machine} with this Project's settings.": "이 프로젝트 설정으로 {machine}의 {agent}를 사용합니다.",
   "Choose a Project to start work or plan implementation.": "작업을 시작하거나 구현을 계획할 프로젝트를 선택하세요.",
   "Install or sign in to this Project's agent on its Machine, then try again.": "프로젝트 머신에서 에이전트를 설치하거나 로그인한 뒤 다시 시도하세요.",
   "The agent did not start. Open advanced controls to inspect the retained attempt.": "에이전트가 시작되지 않았습니다. 고급 제어에서 보관된 시도를 확인하세요.",
   "Plan implementation starts Grill with docs: discuss the idea, approve a specification, then plan Tickets.": "구현 계획은 Grill with docs로 시작합니다. 아이디어를 논의하고 명세를 승인한 뒤 티켓을 계획하세요.",
   "New workspaces use the latest commit. Local changes stay in the original folder.": "새 작업 공간은 최신 커밋을 사용합니다. 로컬 변경 사항은 원래 폴더에 그대로 남습니다.",
-  "Mark work done": "작업 완료 표시",
+  "Accept research": "연구 결과 수락",
+  "Check completion evidence": "완료 근거 확인",
+  "No repository changes; owned work is quiescent.": "저장소 변경 사항이 없으며 소유한 작업이 모두 정지 상태입니다.",
+  "Check repository changes and owned work before accepting research.": "연구 결과를 수락하기 전에 저장소 변경 사항과 소유한 작업을 확인하세요.",
   "Start implementation": "구현 시작",
   "Automated implementation needs a verified agent skill setup. Direct work and planning are available before verification.": "자동 구현에는 검증된 에이전트 스킬 설정이 필요합니다. 검증 전에도 직접 작업과 계획을 시작할 수 있습니다.",
   "Some planning context could not be retained. Check the previous agent chat and documents before starting the next step.": "일부 계획 맥락을 보존하지 못했습니다. 다음 단계를 시작하기 전에 이전 에이전트 채팅과 문서를 확인하세요.",

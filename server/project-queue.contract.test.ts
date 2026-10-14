@@ -5,9 +5,32 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "./index.ts";
 import { githubScheduleFixture } from "./github-schedules.fixture.ts";
+import { factoryDeliveryFixture } from "./factory-delivery.fixture.ts";
 import { herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 
 describe("Project queue through the public API", () => {
+  it("releases verified implementation capacity while holding the Assignment for delivery", async () => {
+    const f = await factoryDeliveryFixture(true, true);
+    try {
+      await f.request(`/projects/${f.project.id}/configure`, { checks: [["git", "status", "--porcelain"]] });
+      const run = await f.start();
+      writeFileSync(join(run.worktree!, "queue-delivery.md"), "Reviewed queue fixture change\n");
+      f.git(["add", "queue-delivery.md"], run.worktree!);
+      f.git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "queue delivery"], run.worktree!);
+      const head = f.git(["rev-parse", "HEAD"], run.worktree!).trim(); f.setReviewHead(head);
+      await f.request(`/runs/${run.id}/checks`, {});
+      for (const role of ["standards", "spec"]) {
+        const worker = await f.request(`/runs/${run.id}/workers`, { role, idempotency_key: `queue-${role}` }).then(response => response.json());
+        await f.request(`/runs/${run.id}/workers/${worker.id}/review-evidence`, {});
+      }
+      expect((await f.request(`/runs/${run.id}/accept`, { head })).status).toBe(200);
+      const queue = await f.request(`/projects/${f.project.id}/queue`).then(response => response.json());
+      expect(queue.capacity.project_implementations).toBe(0);
+      expect(queue.items[0].reasons).toContain("awaiting_delivery");
+      const next = await f.request("/implementations", { title: "Independent work", description: "", project_id: f.project.id }).then(response => response.json());
+      expect((await f.request(`/implementations/${next.id}/runs`, { action: "work", idempotency_key: "independent" })).status).toBe(202);
+    } finally { await f.close(); }
+  }, 60_000);
   it("continues accepted Assignments when their Project limit is tightened and paused", async () => {
     const owned: string[] = [];
     const f = await githubScheduleFixture({ native: {

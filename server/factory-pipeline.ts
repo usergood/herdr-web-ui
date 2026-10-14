@@ -4,6 +4,7 @@ import { FactoryError } from "./factory-host.ts";
 import { FactoryRuntime } from "./factory-runtime.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { FactoryWorkflow } from "./factory-workflow.ts";
+import { FactoryDelivery } from "./factory-delivery.ts";
 
 const owns = (condition: string): boolean => !["completed", "cancelled", "failed"].includes(condition);
 /** Admission reservations cover all native contexts and builds, including uncertain remote work. */
@@ -156,7 +157,10 @@ export class FactoryPipeline {
     const completed: FactoryRun = { ...stopped, condition: "completed" };
     this.store.put("runs", completed, run.implementation_id);
     const implementation = this.store.get<Implementation>("implementations", run.implementation_id)!;
-    if (run.action === "implement-spec") this.store.put("implementations", { ...implementation, stage: "done", outcome: "implementation_complete" });
+    if (run.action === "work" || run.action === "implement-spec") {
+      this.store.put("implementations", { ...implementation, stage: "review", outcome: "implementation_complete" });
+      await new FactoryDelivery(this.store, this.runtime).inspect(run.implementation_id);
+    }
     if (run.action === "apply-retro") {
       const scoped = (run.manifest as { retrospective: import("../shared/protocol.ts").FactoryRetrospective }).retrospective;
       const proposal = this.store.get<import("../shared/protocol.ts").FactoryRetrospective>("retrospectives", scoped.id);

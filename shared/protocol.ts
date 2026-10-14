@@ -1160,8 +1160,10 @@ export const DEFAULT_PORT = 7317;
  * Explicit shared_understanding approval confirms pending confirmation questions atomically
  * and binds to the resulting product question revision. Unanswered text questions still block.
  * POST .../order (order) -> {ok:true}; reordering never dispatches.
- * POST .../complete-work (complete_work) -> Implementation; explicit owner completion of the
- * latest direct-work Run after confirmed native stop, with its worktree retained.
+ * GET .../completion-evidence -> Implementation["completion_evidence"]; freshly checks all
+ * retained Run/worker repositories and ownership. Unavailable Machine evidence stays unknown.
+ * POST .../complete-work (complete_work) -> Implementation; accepts no-change research only
+ * after fresh repository and quiescence evidence; repository changes require PR delivery.
  * POST /api/factory/settings (settings) -> FactorySettings; validated limits and future defaults.
  * POST /api/factory/projects/:id/configure (project_settings) -> FactoryProject;
  * GET /api/factory/projects/:id/references -> ProjectReferenceLibrary; current immutable versions.
@@ -1269,7 +1271,7 @@ export interface FactoryRequests {
   configure: { project_id?: string | null; provider?: import("./factory.ts").FactoryProvider | null; machine_id?: string | null };
   complete_work: { run_id: string };
   project: { name: string; path: string; machine_id: string; provider: import("./factory.ts").FactoryProvider; tracker: import("./factory.ts").FactoryProject["tracker"]; tracker_reference?: string; guided_setup?: boolean; permission_mode?: import("./agent-permissions.ts").AgentPermissionMode; check_ids?: string[]; context_target_tokens?: number; guidance_task?: boolean; github_account_id?: string };
-  project_settings: Partial<Pick<import("./factory.ts").FactoryProject, "name" | "checks" | "setup" | "environment" | "permissions" | "permission_mode" | "execution_preset" | "shared_paths" | "provider" | "machine_id" | "account_bindings" | "workflow_instructions" | "context_target_tokens">>;
+  project_settings: Partial<Pick<import("./factory.ts").FactoryProject, "name" | "checks" | "setup" | "environment" | "permissions" | "permission_mode" | "execution_preset" | "shared_paths" | "provider" | "machine_id" | "account_bindings" | "workflow_instructions" | "context_target_tokens" | "delivery_policy" | "delivery_branch">>;
   project_discovery: { machine_id: string; path: string };
   account_import: { source_id: string; path?: string };
   checkout: { machine_id: string; path: string };
