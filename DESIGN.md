@@ -1205,6 +1205,14 @@ One set for both themes: the card is island black wherever it shows.
   row, and a picked row that leaves hands its place, and the focus, to the row now there (the search
   when none is left). Below 640px the sheet is one fixed height, the chips and footer staying put.
 
+### Assignment workflow
+- A linked native chat exposes **Workflow** in its header. A focus-trapped modal/sheet
+  keeps questions, proposals and approvals over that chat. Closing restores focus;
+  mobile actions stack at full width with touch-target heights.
+- Continue retains a resting step’s chat and handoff while starting its approved
+  successor. Actual approvals remain visible; a missing native proof starts a
+  verification prerequisite instead of leaving implementation silently disabled.
+
 ### Settings dialog
 - A Settings shortcut opened over a file preview places Settings above it (`--z-modal + 2`, one
   above the preview). Settings owns Escape until it closes; the preview keeps its history entry

@@ -42,7 +42,7 @@ export interface FactoryTicket extends FactoryRecord {
   tracker_reference: string | null;
 }
 export interface FactoryApproval extends FactoryRecord { implementation_id: string; kind: "specification" | "testing_seams" | "ticket_graph" | "review" | "shared_understanding"; revision: string; scope: string }
-export interface FactoryQuestion extends FactoryRecord { implementation_id: string; run_id: string | null; question: string; answer: string | null; revision: string }
+export interface FactoryQuestion extends FactoryRecord { implementation_id: string; run_id: string | null; question: string; answer_kind?: "text" | "confirmation"; answer: string | null; revision: string }
 export interface FactoryArtifact extends FactoryRecord {
   implementation_id: string; chat_id: string; name: string; media_type: string;
   hash: string; size: number; version: number; origin: string; note: string;
@@ -80,6 +80,8 @@ export interface FactorySettings {
 }
 export interface FactoryDetail {
   graph_hash: string; question_revision: string;
+  /** Current decision scope; full historical questions remain in questions below. */
+  question_context?: { revision: string; questions: FactoryQuestion[]; run_id: string | null };
   implementation: Implementation; chats: FactoryChat[]; messages: FactoryMessage[];
   specifications: SpecificationVersion[]; tickets: FactoryTicket[]; approvals: FactoryApproval[];
   questions: FactoryQuestion[]; artifacts: FactoryArtifact[]; runs: FactoryRun[];

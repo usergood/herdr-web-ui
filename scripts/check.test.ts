@@ -9,7 +9,8 @@ import { acquire, describeHolders, isolate, lock, maxRuns, needsLock, plan, sani
 
 const made: string[] = [];
 afterEach(() => { for (const path of made.splice(0)) rmSync(path, { recursive: true, force: true }); });
-const scratch = (): string => { const dir = mkdtempSync(join(tmpdir(), "hwc-test-")); made.push(dir); return dir; };
+// These fixtures contain Unix sockets, including inside long factory TMPDIR paths.
+const scratch = (): string => { const dir = mkdtempSync(join(existsSync("/tmp") ? "/tmp" : tmpdir(), "hwc-test-")); made.push(dir); return dir; };
 const git = (cwd: string, ...args: string[]): void => {
   const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
   if (result.status !== 0) throw new Error(result.stderr || `git ${args.join(" ")} failed`);
@@ -41,6 +42,14 @@ describe("plan", () => {
 });
 
 describe("isolate", () => {
+  it("gives socket-using child programs a short private temp directory even inside a factory", () => {
+    const isolated = isolate({ TMPDIR: join(scratch(), "a".repeat(100)) });
+    try {
+      expect(isolated.env["TMPDIR"]).toBe(join(isolated.env["XDG_CONFIG_HOME"]!, "..", "tmp"));
+      expect(existsSync(isolated.env["TMPDIR"]!)).toBe(true);
+    } finally { isolated.remove(); }
+  });
+
   it("points herdr, its plugins and the web UI at one directory of the run's own, under its own session name", () => {
     const first = isolate({ PATH: "/bin", XDG_CONFIG_HOME: "/home/someone/.config" });
     const second = isolate({ PATH: "/bin" });

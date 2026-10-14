@@ -31,14 +31,31 @@ If a start is interrupted, choose **Stop this attempt**, then **Start work** aga
 Stopping preserves its worktree and does not mark the Assignment complete. If a
 native agent is already present, **Continue in agent chat** opens it for inspection.
 
-For planning, answer the agent's questions in its chat or the recorded **Questions**
-form. Confirm shared understanding, then choose **Finish this step** and **Create
-specification**. Read and accept the specification and its testing plan before
-**Plan tickets**. Approve the Ticket graph before **Start implementation**. If the
-provider has not passed native factory verification, the page explains the gate
-and offers the verification round. Reviewing implementation offers **Accept
-reviewed head**; the server still requires fresh checks and independent passing
-Standards and Spec evidence for that exact head.
+For planning, open **Workflow** in the native chat header. This panel contains
+questions, proposals and approvals without navigating away from the chat. Saving
+the last answer sends its recorded context once on that explicit action; uncertain
+delivery remains visible and never retries automatically. Confirm shared
+understanding, accept the specification/testing plan, and approve the Ticket graph.
+Each completed approval advances to the next accepted step. **Continue workflow**
+also advances an already-approved step, retaining the handoff and leaving its
+resting chat open. The Assignment remains unfinished.
+
+**Start implementation** runs any required genuine native verification first,
+rather than remaining disabled with a generic setup message. Verification questions
+belong to that probe; an obsolete probe cannot block a replacement or invalidate
+product understanding. Once the current probe's real answers are consumed and its
+native loading is verified, the recorded implementation intent can continue through
+normal admission. Verification still binds to the Machine, provider version,
+pinned source and account scope. No fixture or client flag can certify a provider.
+
+Continuation verifies resting native identity and refuses working/background work,
+missing approvals, changed scope and uncertain ownership. An ordinary Work attempt
+keeps its branch and changes for review. Finishing its Run does not accept the result
+or mark the Assignment delivered.
+Missing handoff evidence requires **Continue with available context**; the warning
+and retained source remain available. Publication and merge keep their separate
+scope. Reviewing implementation offers **Accept reviewed head**, with fresh checks
+and independent passing Standards and Spec evidence required for that exact head.
 
 Finishing planning retains a text-only native discussion handoff of at most
 50,000 characters and exports changed Markdown documents from the owned worktree

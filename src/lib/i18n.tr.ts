@@ -7,6 +7,9 @@
  * keep their English names.
  */
 export const TR: Record<string, string> = {
+  "Continue workflow": "İş akışına devam et",
+  "Native verification will run before implementation.": "Uygulamadan önce yerel doğrulama çalıştırılacak.",
+  "Review and continue from this chat. Finished steps keep their history.": "Bu sohbetten inceleyip devam edin. Tamamlanan adımların geçmişi korunur.",
   "Finished chats release capacity. Waiting for input or disconnected work still counts.": "Biten sohbetler kapasiteyi serbest bırakır. Girdi bekleyen veya bağlantısı kesilen işler sayılır.",
   "Source": "Kaynak",
   "Launch model": "Başlangıç modeli",
@@ -1289,7 +1292,6 @@ export const TR: Record<string, string> = {
   "Choose a Project to start work or plan implementation.": "Çalışmayı başlatmak veya uygulamayı planlamak için bir proje seçin.",
   "Install or sign in to this Project's agent on its Machine, then try again.": "Projenin makinesinde ajanı yükleyin veya oturum açın, ardından tekrar deneyin.",
   "The agent did not start. Open advanced controls to inspect the retained attempt.": "Ajan başlamadı. Saklanan girişimi incelemek için gelişmiş kontrolleri açın.",
-  "Answer questions in the agent chat. Finish this step when its proposal is ready, then review it here.": "Soruları ajan sohbetinde yanıtlayın. Öneri hazır olduğunda bu adımı bitirip burada inceleyin.",
   "Plan implementation starts Grill with docs: discuss the idea, approve a specification, then plan Tickets.": "Uygulama planı Grill with docs ile başlar: fikri tartışın, belirtimi onaylayın, ardından biletleri planlayın.",
   "New workspaces use the latest commit. Local changes stay in the original folder.": "Yeni çalışma alanları son commit'i kullanır. Yerel değişiklikler özgün klasörde kalır.",
   "Mark work done": "Çalışmayı tamamlandı olarak işaretle",

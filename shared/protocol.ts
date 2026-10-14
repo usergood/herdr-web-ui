@@ -1154,7 +1154,9 @@ export const DEFAULT_PORT = 7317;
  * POST .../tickets (tickets) -> {hash:string,tickets:FactoryTicket[]}, 201; accepted current revision, acyclic.
  * POST .../approvals (approval) -> FactoryApproval, 201; stale scope=409.
  * POST .../questions (question) -> FactoryQuestion, 201; POST .../questions/:question/answer (answer)
- * -> FactoryQuestion; revision-bound, never invents answers.
+ * -> FactoryQuestion; revision-bound, never invents answers. Missing answer_kind means text.
+ * Explicit shared_understanding approval confirms pending confirmation questions atomically
+ * and binds to the resulting product question revision. Unanswered text questions still block.
  * POST .../order (order) -> {ok:true}; reordering never dispatches.
  * POST .../complete-work (complete_work) -> Implementation; explicit owner completion of the
  * latest direct-work Run after confirmed native stop, with its worktree retained.
@@ -1180,6 +1182,9 @@ export const DEFAULT_PORT = 7317;
  * POST /api/factory/projects/:id/accounts/verify -> credential-free AccountBindingSnapshot.
  * POST /api/factory/machines/:id/prepare (empty) -> FactoryCapabilities; pinned private source only.
  * POST /api/factory/implementations/:id/runs (start) -> FactoryRun, 202; scoped idempotent admission.
+ * POST .../continue (continue_workflow) -> FactoryRun, 202; retain a resting step's chat/handoff
+ * and start its approved successor. Implementation may first run genuine native verification
+ * under retained owner intent. Missing approvals are never inferred.
  * Resting Runs/workers are ready: native capacity released, exclusive worktree ownership retained.
  * POST /api/factory/runs/:id/reconcile (empty) -> FactoryRun; observation never redispatches.
  * POST .../stop (stop) -> FactoryRun; verified ownership released, history/work retained.
@@ -1187,6 +1192,8 @@ export const DEFAULT_PORT = 7317;
  * POST .../verify-provider (empty) -> FactoryCapabilities; genuine loading/owner-round evidence required.
  * POST .../import-artifacts (empty) -> FactoryArtifact[], 201; verified outputs retained centrally.
  * POST .../import-conversation (import_conversation) -> NativeConversationSnapshot; immutable native page.
+ * Retaining a verified page saves unambiguous user replies to that Run's text questions;
+ * it preserves existing answers and never grants approval.
  * POST .../send-answers (send_answers) -> FactoryAnswerDelivery; uncertainty never replays.
  * POST .../workers (worker) -> FactoryWorker; frontier/rework and global reservation checked.
  * POST .../workers/:worker/refresh|reconcile|integrate (empty) -> FactoryWorker;
@@ -1213,7 +1220,8 @@ export const DEFAULT_PORT = 7317;
  * POST .../inspect (inspect) -> Omit<ProjectCheckout, id|created_at|updated_at|project_id|machine_id>;
  * POST .../review (review) -> {repository:string,head:string,files:ReviewSnapshot.files};
  * POST .../launch (launch) -> FactoryRun, 202; accepted identity preserved.
- * POST .../runs/:id/reconcile|stop (empty) -> FactoryRun; verify-provider (empty) -> FactoryCapabilities;
+ * POST .../runs/:id/reconcile|stop|finish (empty) -> FactoryRun; finish retains a verified resting chat;
+ * verify-provider (empty) -> FactoryCapabilities;
  * POST .../runs/:id/send (send) -> {ok:true}; GET .../runs/:id/artifacts -> FactoryOutput[];
  * GET .../runs/:id/artifacts/content?name=&hash= -> {content_base64:string}; owned notes only.
  * POST .../runs/:id/operations/:action (operation) -> FactoryWorker (worker/refresh/integrate/reconcile-worker),
@@ -1222,8 +1230,12 @@ export const DEFAULT_PORT = 7317;
  * (transcript), or {head:string,source_id:string,content:string,outcome:passed|failed} (review-evidence).
  * Scoped /api/factory-agent/:run requires that Run's capability; no owner approval or other Run control.
  * GET .../contract -> FactoryAgentContract; GET .../ticket/:id -> FactoryTicket from frozen graph.
+ * Verification questions/revisions belong to that Run; product contracts exclude native probes.
+ * Full question history remains in FactoryDetail.questions; question_context is the active scope.
  * POST .../question -> FactoryQuestion, 201; consume -> {receipt:{id:string,run_id:string,
  * worker_id:string|null,revision:string,created_at:string,updated_at:string},questions:FactoryQuestion[]}.
+ * POST .../sync-answers (sync_answers) -> FactoryNativeAnswers; verified native replies only,
+ * optional older-page cursor from this Run. Ambiguous/missing replies remain pending; no approval.
  * POST .../worker -> FactoryWorker; checks -> FactoryCheck; artifact -> FactoryArtifact, 201;
  * specification -> SpecificationVersion, 201; tickets -> {hash:string,tickets:FactoryTicket[]}, 201;
  * proposal -> FactoryRetrospective, 201. Bodies are FactoryAgentRequests; proposals are action-scoped.
@@ -1267,10 +1279,11 @@ export interface FactoryRequests {
   specification: { content: string };
   tickets: { specification_id: string; tickets: { key: string; title: string; acceptance: string; dependencies: string[] }[] };
   approval: { kind: Exclude<import("./factory.ts").FactoryApproval["kind"], "review">; revision: string; scope: string };
-  question: { question: string; run_id?: string };
+  question: { question: string; run_id?: string; answer_kind?: "text" | "confirmation" };
   answer: { revision: string; answer: string };
   order: { direction: -1 | 1 } | { before_id: string };
   start: { action: import("./factory.ts").FactoryAction; idempotency_key: string; execution_preset?: import("./agent-models.ts").AgentModelSelection; retrospective_id?: string; expected?: { provider: import("./factory.ts").FactoryProvider; machine_id: string; project_id: string | null; specification_id: string | null; graph_hash: string } };
+  continue_workflow: FactoryRequests["start"] & { run_id: string | null; allow_partial_handoff?: boolean };
   stop: { summary?: string };
   import_conversation: { before?: string };
   send_answers: { revision: string; idempotency_key: string };
@@ -1320,12 +1333,19 @@ export interface FactoryAgentContract {
 }
 export interface FactoryAgentRequests {
   question: FactoryRequests["question"];
+  sync_answers: { before?: string };
   consume: { revision: string; worker_id?: string };
   worker: FactoryRequests["worker"];
   artifact: Omit<FactoryRequests["artifact"], "chat_id">;
   specification: FactoryRequests["specification"];
   tickets: FactoryRequests["tickets"];
   proposal: { proposal: string };
+}
+export interface FactoryNativeAnswers {
+  snapshot_id: string;
+  cursor: string | null;
+  question_revision: string;
+  questions: import("./factory.ts").FactoryQuestion[];
 }
 export interface FactoryHostRequests {
   model_catalog: { provider: import("./factory.ts").FactoryProvider; path: string; repository: string; account_snapshot?: import("./accounts.ts").AccountBindingSnapshot | null };

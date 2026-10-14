@@ -291,6 +291,7 @@ export class FactoryExecutionHost {
     const lease = this.store.get<{ id: string; signature: string; run: FactoryRun }>("host_leases", id);
     if (!lease) throw new FactoryError("native_identity_uncertain", "This host has no recorded lease; reconcile ownership before retrying", 409);
     let run = lease.run;
+    if (["completed", "cancelled", "failed"].includes(run.condition)) return run;
     try {
       const snapshot = await this.native.snapshot();
       const matches = snapshot.workspaces.filter((entry) => entry.label === `saurons-eye-run-${run.id}`);
@@ -335,6 +336,27 @@ export class FactoryExecutionHost {
     await this.worktrees.stopChecks(id);
     const stopped: FactoryRun = { ...run, condition: "cancelled", waiting_reason: null, updated_at: new Date().toISOString() };
     this.store.put("host_leases", { ...lease, closing: true, run: stopped }); return stopped;
+  }
+  /** Finish a resting workflow step while keeping its native chat available. */
+  async finishStep(id: string): Promise<FactoryRun> {
+    if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Native control is disabled on a restored copy", 409);
+    const lease = this.store.get<{ id: string; run: FactoryRun; closing?: boolean }>("host_leases", id);
+    if (!lease || !["work", "grill-me", "grill-with-docs", "setup", "to-spec", "to-tickets", "verify-provider"].includes(lease.run.action)) throw new FactoryError("planning_step_required", "Continue a planning or verification step; repository work requires its review controls", 409);
+    if (lease.run.condition === "completed") return lease.run;
+    if (lease.closing || ["cancelled", "failed", "disconnected", "interrupted"].includes(lease.run.condition)) throw new FactoryError("step_uncertain", "Reconcile this step's ownership before continuing", 409);
+    const run = lease.run;
+    const snapshot = await this.native.snapshot();
+    const pane = snapshot.panes.find(entry => entry.pane_id === run.pane_id);
+    const workspace = snapshot.workspaces.find(entry => entry.workspace_id === run.workspace_id);
+    if (!pane?.cwd || !run.worktree || realpathSync(pane.cwd) !== run.worktree || workspace?.label !== `saurons-eye-run-${id}`) throw new FactoryError("native_identity_uncertain", "The recorded chat identity changed; reconcile before continuing", 409);
+    const checkout = run.checkout ? await inspectCheckout(run.worktree) : null;
+    if (checkout && (checkout.repository !== (run.manifest as { checkout?: { repository: string } }).checkout?.repository || checkout.branch !== run.branch)) throw new FactoryError("worktree_changed", "The owned repository or branch changed; reconcile before continuing", 409);
+    if (!await factoryPaneResting(this.native, pane, run.provider)) throw new FactoryError("agent_busy", "The agent is still working or awaiting a prompt answer", 409);
+    if (this.store.list<FactoryWorker>("host_workers").some(worker => worker.run_id === id && !["completed", "cancelled", "failed"].includes(worker.condition)) || this.store.list<FactoryCheck>("host_checks").some(check => check.run_id === id && ["working", "interrupted"].includes(check.condition))) throw new FactoryError("step_owned", "Reconcile this step's workers and builds before continuing", 409);
+    if (hash(JSON.stringify(this.store.get("host_leases", id))) !== hash(JSON.stringify(lease))) throw new FactoryError("step_changed", "The workflow step changed while finishing; refresh its state", 409);
+    const finished: FactoryRun = { ...run, condition: "completed", waiting_reason: null, updated_at: new Date().toISOString() };
+    this.store.put("host_leases", { ...lease, closing: true, run: finished });
+    return finished;
   }
   async send(id: string, text: string, signal: AbortSignal): Promise<void> {
     if (this.sends.has(id)) throw new FactoryError("delivery_busy", "Another selected batch is being delivered; retain this draft", 409);

@@ -1,0 +1,8 @@
+.assignment-workflow-dialog { width: min(var(--content-w), calc(100% - var(--space-4))); max-height: calc(100% - var(--space-4)); display: flex; flex-direction: column; }
+.assignment-workflow-body { padding: var(--space-4); overflow-y: auto; min-height: 0; }
+.assignment-workflow-body .factory-section { margin: 0; }
+.assignment-workflow-body .factory-actions { flex-wrap: wrap; }
+@media (max-width: 640px) {
+  .assignment-workflow-body .factory-actions { flex-direction: column; align-items: stretch; }
+  .assignment-workflow-body .factory-actions > .btn { width: 100%; min-height: var(--touch-target); }
+}

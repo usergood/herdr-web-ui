@@ -84,8 +84,8 @@ export class FactoryRuntime {
     return this.capabilities(machineId);
   }
   async verifyProvider(run: FactoryRun): Promise<HostCapabilities> {
-    const questions = this.store.list<import("../shared/protocol.ts").FactoryQuestion>("questions", run.implementation_id).filter((question) => question.run_id === run.id);
-    const revision = this.workflow.questionRevision(run.implementation_id);
+    const questions = this.workflow.questions(run.implementation_id, run.id);
+    const revision = this.workflow.questionRevision(run.implementation_id, run.id);
     if (!questions.length || questions.some((question) => question.answer === null) || !this.store.list<{ revision: string }>("answer_consumption", run.id).some((receipt) => receipt.revision === revision)) throw new FactoryError("verification_round_required", "Complete a real recorded owner-question round and native consumption before certification", 409);
     return run.machine_id === "local" ? this.host.verifyProvider(run.id) : this.remote(run.machine_id, `/runs/${run.id}/verify-provider`, {});
   }
@@ -102,9 +102,9 @@ export class FactoryRuntime {
   async capture(machineId: string, path: string, base: string, mode: "branch" | "workspace"): Promise<{ repository: string; head: string; files: import("../shared/protocol.ts").ReviewSnapshot["files"] }> {
     return this.remote(machineId, "/review", { path, base, mode });
   }
-  async start(id: string, body: Record<string, unknown>, origin: string): Promise<FactoryRun> {
+  async start(id: string, body: Record<string, unknown>, origin: string, continuation?: { runId: string; finish: () => Promise<void> }): Promise<FactoryRun> {
     if (!actions.includes(body.action as FactoryAction) || typeof body.idempotency_key !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.idempotency_key)) throw new FactoryError("invalid_start", "Select an explicit action with an idempotency key");
-    const implementation = this.store.get<Implementation>("implementations", id);
+    let implementation = this.store.get<Implementation>("implementations", id);
     if (!implementation) throw new FactoryError("not_found", "Implementation not found", 404);
     const previous = this.store.list<FactoryRun>("runs", id).find((run) => run.idempotency_key === body.idempotency_key);
     if (previous) {
@@ -118,10 +118,10 @@ export class FactoryRuntime {
     if (["work", "implement-spec", "grill-with-docs", "to-tickets", "retro", "apply-retro"].includes(action) && !project) throw new FactoryError("project_required", "Select a Project before starting this action", 409);
     const retrospective = ["retro", "apply-retro"].includes(action) ? this.store.get<import("../shared/protocol.ts").FactoryRetrospective>("retrospectives", String(body.retrospective_id)) : null;
     if (["retro", "apply-retro"].includes(action) && (!retrospective || retrospective.project_id !== project?.id || action === "apply-retro" && !retrospective.approved)) throw new FactoryError("retrospective_scope_required", "Select retained Project evidence and separately approve improvements before applying them", 409);
-    if (action === "to-spec" && this.store.list<{ answer: string | null }>("questions", id).length && (!this.workflow.approved(id, "shared_understanding", this.workflow.questionRevision(id)) || this.store.list<{ answer: string | null }>("questions", id).some((question) => question.answer === null))) throw new FactoryError("understanding_unconfirmed", "Answer pending questions and confirm their shared understanding before specification", 409);
+    if (action === "to-spec" && this.workflow.questions(id).length && (!this.workflow.approved(id, "shared_understanding", this.workflow.questionRevision(id)) || this.workflow.questions(id).some((question) => question.answer === null))) throw new FactoryError("understanding_unconfirmed", "Answer pending questions and confirm their shared understanding before specification", 409);
     const machineId = implementation.machine_id ?? project?.machine_id;
     if (!machineId) throw new FactoryError("machine_required", "Select an execution Machine explicitly", 409);
-    if (this.store.list<FactoryRun>("runs", id).some((run) => activeConditions.has(run.condition))) throw new FactoryError("implementation_owned", "An existing or uncertain Run retains ownership; reconcile it before starting another", 409);
+    if (this.store.list<FactoryRun>("runs", id).some((run) => run.id !== continuation?.runId && activeConditions.has(run.condition))) throw new FactoryError("implementation_owned", "An existing or uncertain Run retains ownership; reconcile it before starting another", 409);
     const priorRuns = new Set(this.store.list<FactoryRun>("runs", id).map((run) => run.id));
     if (this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers").some((worker) => priorRuns.has(worker.run_id) && activeConditions.has(worker.condition))) throw new FactoryError("implementation_owned", "An accepted or uncertain child still owns this Implementation; reconcile or stop it before starting another", 409);
     const provider = implementation.provider ?? project?.provider ?? this.settings().provider;
@@ -151,6 +151,23 @@ export class FactoryRuntime {
     const executionPreset = selection.model && inspected ? resolveModelSelection(selection, await this.modelCatalog(machineId, provider, inspected.path, inspected.repository, accountSnapshot)) : selection;
     if (selection.model && !inspected) throw new FactoryError("checkout_required", "Select a Project checkout before choosing a model", 409);
     const specification = this.workflow.specification(id); const graphHash = this.workflow.graphHash(id);
+    if (action === "to-tickets" || action === "implement-spec") {
+      if (!specification || !this.workflow.approved(id, "specification", specification.id) || !this.workflow.approved(id, "testing_seams", specification.id)) throw new FactoryError("scope_unaccepted", "Accept the current specification and testing seams", 409);
+    }
+    if (action === "implement-spec") {
+      if (!this.workflow.tickets(id).length || !this.workflow.approved(id, "ticket_graph", graphHash)) throw new FactoryError("scope_unaccepted", "Accept the current Ticket graph", 409);
+      if (!project?.checks?.length || !project.permissions?.trim()) throw new FactoryError("project_setup_required", "Configure known Project checks and execution permissions before factory admission", 409);
+    }
+    // Validate the next action before releasing the resting predecessor. Retained context
+    // is then included in the new immutable contract, just as with a manual handoff.
+    if (continuation) {
+      await continuation.finish();
+      const current = this.store.get<Implementation>("implementations", id)!;
+      const { updated_at: beforeUpdated, ...beforeScope } = implementation;
+      const { updated_at: afterUpdated, ...afterScope } = current;
+      if (hash(JSON.stringify(beforeScope)) !== hash(JSON.stringify(afterScope))) throw new FactoryError("scope_changed", "The Assignment changed during its handoff; inspect it before continuing", 409);
+      implementation = current;
+    }
     const selectedEvidence = new Set(retrospective?.evidence_ids ?? []);
     const selectedArtifacts = (): FactoryArtifact[] => {
       const captures = this.store.list<{ id: string; artifact_ids: string[] }>("planning_captures");
@@ -262,6 +279,16 @@ export class FactoryRuntime {
     const stopped = this.observed(run, run.machine_id === "local" ? await this.host.stopRun(id) : await this.remote<FactoryRun>(run.machine_id, `/runs/${id}/stop`, {}));
     this.store.db.transaction(() => { this.store.put("runs", stopped, run.implementation_id); this.store.event(run.implementation_id, "run_stopped", { run_id: id, summary: body.summary ?? "Owner stopped this attempt", worktree_retained: true }); })();
     return stopped;
+  }
+  async finishStep(id: string): Promise<FactoryRun> {
+    const run = this.store.get<FactoryRun>("runs", id);
+    if (!run) throw new FactoryError("not_found", "Run not found", 404);
+    if (this.workflow.questions(run.implementation_id, run.id).some(question => question.answer === null)) throw new FactoryError("answers_unready", "Answer this step's pending questions before continuing", 409);
+    if (this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers", id).some(worker => !["completed", "cancelled", "failed"].includes(worker.condition)) || this.store.list<import("../shared/protocol.ts").FactoryCheck>("checks", id).some(check => ["working", "interrupted"].includes(check.condition))) throw new FactoryError("step_owned", "Reconcile owned workers and checks before continuing", 409);
+    const finished = this.observed(run, run.machine_id === "local" ? await this.host.finishStep(id) : await this.remote<FactoryRun>(run.machine_id, `/runs/${id}/finish`, {}));
+    this.store.put("runs", finished, run.implementation_id);
+    this.store.event(run.implementation_id, "workflow_step_finished", { run_id: id, chat_retained: true, review_accepted: false, changes_retained: true });
+    return finished;
   }
   async outputs(run: FactoryRun): Promise<FactoryOutput[]> { return run.machine_id === "local" ? this.host.outputs(run.id) : this.remote(run.machine_id, `/runs/${run.id}/artifacts`); }
   async send(run: FactoryRun, text: string, signal: AbortSignal): Promise<void> { if (run.machine_id === "local") await this.host.send(run.id, text, signal); else await this.remote(run.machine_id, `/runs/${run.id}/send`, { text }, signal); }

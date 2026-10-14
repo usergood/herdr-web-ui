@@ -1,4 +1,4 @@
-import type { FactoryApproval, FactoryQuestion, FactoryRun, FactoryTicket, Implementation, SpecificationVersion } from "../shared/protocol.ts";
+import type { FactoryApproval, FactoryQuestion, FactoryRun, FactoryTicket, Implementation, NativeConversationSnapshot, SpecificationVersion } from "../shared/protocol.ts";
 import { isJsonObject } from "./http.ts";
 import { FactoryError, hash } from "./factory-host.ts";
 import { FactoryStore } from "./factory-store.ts";
@@ -12,9 +12,40 @@ export class FactoryWorkflow {
     return graph && graph.specification_id === this.specification(id)?.id ? graph.tickets : [];
   }
   graphHash(id: string): string { return this.store.get<{ hash: string }>("graphs", id)?.hash ?? hash("[]"); }
-  questionRevision(id: string): string { return hash(JSON.stringify(this.store.list("questions", id))); }
+  /** Native setup probes belong to their own Run, rather than the product decision history. */
+  questions(id: string, runId?: string): FactoryQuestion[] {
+    const run = runId ? this.store.get<FactoryRun>("runs", runId) : null;
+    return this.store.list<FactoryQuestion>("questions", id).filter(question => run?.action === "verify-provider"
+      ? question.run_id === run.id
+      : !question.run_id || this.store.get<FactoryRun>("runs", question.run_id)?.action !== "verify-provider");
+  }
+  questionRevision(id: string, runId?: string): string { return hash(JSON.stringify(this.questions(id, runId))); }
   approved(id: string, kind: FactoryApproval["kind"], revision: string): boolean {
     return this.store.list<FactoryApproval>("approvals", id).some((record) => record.kind === kind && record.revision === revision);
+  }
+  /** Only a verified native page may supply an answer; ambiguous replies stay pending. */
+  retainNativeAnswers(run: FactoryRun, snapshot: NativeConversationSnapshot, latestPage: boolean): void {
+    const questions = this.store.list<FactoryQuestion>("questions", run.implementation_id)
+      .filter(question => question.run_id === run.id).sort((a, b) => a.created_at.localeCompare(b.created_at));
+    const turns = snapshot.turns.filter(turn => turn.ts !== null && Number.isFinite(Date.parse(turn.ts)));
+    const userTurns = snapshot.turns.filter(turn => turn.role === "user" && turn.parts.some(part => part.kind === "text") && turn.parts.every(part => part.kind === "text" || part.kind === "image"));
+    if (userTurns.some(turn => turn.ts === null || !Number.isFinite(Date.parse(turn.ts)))) return;
+    const oldest = turns.reduce((time, turn) => Math.min(time, Date.parse(turn.ts!)), Infinity);
+    const newest = turns.reduce((time, turn) => Math.max(time, Date.parse(turn.ts!)), -Infinity);
+    for (const [index, question] of questions.entries()) {
+      if (question.answer !== null || question.answer_kind === "confirmation") continue;
+      const start = Date.parse(question.created_at);
+      const end = questions[index + 1] ? Date.parse(questions[index + 1]!.created_at) : Infinity;
+      // A page must cover the whole question interval, not just one of several replies.
+      if (!Number.isFinite(start) || end <= start || questions[index - 1]?.created_at === question.created_at || snapshot.cursor && oldest > start || !latestPage && newest < end) continue;
+      const replies = userTurns.filter(turn => Date.parse(turn.ts!) > start && Date.parse(turn.ts!) < end);
+      if (replies.length !== 1) continue;
+      const reply = replies[0]!;
+      const answer = reply.parts.flatMap(part => part.kind === "text" ? [part.text] : []).join("\n").trim();
+      if (!answer || answer.length > 20_000) continue;
+      this.mutate(run.implementation_id, "answer", { question_id: question.id, revision: question.revision, answer });
+      this.store.event(run.implementation_id, "native_question_answered", { question_id: question.id, run_id: run.id, snapshot_id: snapshot.id, source_id: snapshot.source_id, turn_ts: reply.ts });
+    }
   }
   mutate(id: string, action: string, body: Record<string, unknown>): unknown {
     return this.store.db.transaction(() => {
@@ -38,9 +69,10 @@ export class FactoryWorkflow {
       }
       if (action === "questions") {
         if (typeof body.question !== "string" || !body.question.trim() || body.question.length > 20_000) throw new FactoryError("invalid_question", "Enter a bounded owner question");
+        if (body.answer_kind !== undefined && body.answer_kind !== "text" && body.answer_kind !== "confirmation") throw new FactoryError("invalid_question", "Choose a text answer or shared-understanding confirmation");
         const run = typeof body.run_id === "string" ? this.store.get<FactoryRun>("runs", body.run_id) : null;
         if (body.run_id !== undefined && (!run || run.implementation_id !== id)) throw new FactoryError("invalid_run", "Select this Implementation's Run");
-        const question: FactoryQuestion = { ...this.store.record(), implementation_id: id, run_id: run?.id ?? null, question: body.question.trim(), answer: null, revision: this.store.record().id };
+        const question: FactoryQuestion = { ...this.store.record(), implementation_id: id, run_id: run?.id ?? null, question: body.question.trim(), ...(body.answer_kind === undefined ? {} : { answer_kind: body.answer_kind }), answer: null, revision: this.store.record().id };
         this.store.put("questions", question, id); this.store.event(id, "question_asked", question);
         if (run) this.store.put("runs", { ...run, condition: "needs_you", waiting_reason: question.question }, id);
         return question;
@@ -94,10 +126,15 @@ export class FactoryWorkflow {
         const kinds: FactoryApproval["kind"][] = ["specification", "testing_seams", "ticket_graph", "shared_understanding"];
         if (!kinds.includes(body.kind as FactoryApproval["kind"]) || typeof body.revision !== "string" || typeof body.scope !== "string" || !body.scope.trim() || body.scope.length > 20_000) throw new FactoryError("invalid_approval", "Accept an explicit revision and scope");
         const specification = this.specification(id);
-        const revision = body.kind === "ticket_graph" ? this.graphHash(id) : body.kind === "shared_understanding" ? this.questionRevision(id) : specification?.id;
+        let revision = body.kind === "ticket_graph" ? this.graphHash(id) : body.kind === "shared_understanding" ? this.questionRevision(id) : specification?.id;
         if (!revision || body.revision !== revision || body.kind === "ticket_graph" && !this.tickets(id).length) throw new FactoryError("stale_approval", "This decision no longer matches the current revision", 409);
-        if (body.kind === "shared_understanding" && this.store.list<FactoryQuestion>("questions", id).some((question) => question.answer === null)) throw new FactoryError("unanswered_questions", "Answer every pending question before confirming shared understanding", 409);
-        const approval: FactoryApproval = { ...this.store.record(), implementation_id: id, kind: body.kind as FactoryApproval["kind"], revision: body.revision, scope: body.scope.trim() };
+        if (body.kind === "shared_understanding") {
+          const pending = this.questions(id).filter(question => question.answer === null);
+          if (pending.some(question => question.answer_kind !== "confirmation")) throw new FactoryError("unanswered_questions", "Answer every pending question before confirming shared understanding", 409);
+          for (const question of pending) this.mutate(id, "answer", { question_id: question.id, revision: question.revision, answer: "Confirmed" });
+          revision = this.questionRevision(id);
+        }
+        const approval: FactoryApproval = { ...this.store.record(), implementation_id: id, kind: body.kind as FactoryApproval["kind"], revision, scope: body.scope.trim() };
         this.store.put("approvals", approval, id); this.store.event(id, "owner_approved", approval);
         if (approval.kind === "ticket_graph" && !["running", "review"].includes(implementation.stage)) this.store.put("implementations", { ...implementation, stage: "ready", updated_at: approval.created_at });
         return approval;

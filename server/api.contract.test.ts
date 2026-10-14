@@ -43,6 +43,15 @@ afterAll(() => {
 const base = () => `http://localhost:${server.port}`;
 
 describe("shared browser preferences", () => {
+  it("requires owner controls and a scoped request for workflow continuation", async () => {
+    const path = `${base()}/api/factory/implementations/00000000-0000-0000-0000-000000000000/continue`;
+    const denied = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    expect(denied.status).toBe(403);
+    const invalid = await fetch(path, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: "{}" });
+    expect(invalid.status).toBe(400);
+    expect((await invalid.json()).error.code).toBe("invalid_continuation");
+  });
+
   it("keeps unexpected persistence errors opaque", async () => {
     const state = mkdtempSync(join(tmpdir(), "saurons-preferences-error-"));
     const app = createServer({ port: 0, stateDir: state });

@@ -8,6 +8,10 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 ## [Unreleased]
 
 ### Fixed
+- Continue approved planning from the native chat, retain finished chats, and run
+  required verification before implementation. Scope native probe questions separately
+  so an obsolete verification attempt cannot block product work or a replacement probe.
+  Keep check temporary paths short and private inside factory workspaces.
 - Expose global execution limits in Inbox, allow six concurrent tasks, and release capacity
   when a native turn finishes while retaining its open chat and worktree ownership.
   ([#24](https://github.com/usergood/saurons-eye/pull/24) by @usergood)

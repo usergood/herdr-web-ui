@@ -69,7 +69,7 @@ async function journey(): Promise<void> {
     if (pending.length) {
       for (const question of pending) await api(`/api/factory/implementations/${idea.id}/questions/${question.id}/answer`, { revision: question.revision, answer: "This acceptance fixture explicitly confirms the frozen specification, exported-function/Bun testing seams, one Ticket, app-native Other tracker and worktree/check permissions. Use only that scope; preserve the fixture's no-publication boundary." });
       detail = await api<FactoryDetail>(`/api/factory/implementations/${idea.id}`);
-      await api(`/api/factory/runs/${run.id}/send-answers`, { revision: detail.question_revision, idempotency_key: crypto.randomUUID() });
+      await api(`/api/factory/runs/${run.id}/send-answers`, { revision: detail.question_context?.revision ?? detail.question_revision, idempotency_key: crypto.randomUUID() });
     }
     // These are explicit fixture-owner controls, the same manual actions exposed by the UI.
     for (const worker of detail.workers.filter((worker) => worker.role === "implementer" && ["needs_you", "disconnected"].includes(worker.condition))) {
@@ -145,7 +145,7 @@ try {
       if (safe >= 0 && (text.includes(state) || text.includes(".saurons-eye-tracker.mjs"))) await api("/api/pane/prompt/answer", { pane_id: run.pane_id, prompt_id: menu.prompt.id, option_index: safe });
     }
     if (questions.length && questions.every((question) => question.answer !== null) && !sent) {
-      const delivery = await api<{ condition: string }>(`/api/factory/runs/${run.id}/send-answers`, { revision: detail.question_revision, idempotency_key: crypto.randomUUID() });
+      const delivery = await api<{ condition: string }>(`/api/factory/runs/${run.id}/send-answers`, { revision: detail.question_context?.revision ?? detail.question_revision, idempotency_key: crypto.randomUUID() });
       if (delivery.condition === "uncertain" || delivery.condition === "sending") throw new Error("Native answered-context delivery is uncertain; it was not replayed");
       sent = delivery.condition === "sent";
     }

@@ -1,6 +1,6 @@
 import { nativeSessionRef } from "../shared/native-pane.ts";
 import { type CSSProperties, type DragEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Bell, Ellipsis, FolderInput, FolderOpen, Inbox, Link, Lock, Menu, MessageSquare, PanelLeft, Plus, Search, SquareTerminal, X } from "lucide-react";
+import { Bell, Ellipsis, FolderInput, FolderOpen, Inbox, Link, Lock, Menu, MessageSquare, PanelLeft, Plus, Search, SquareTerminal, Workflow, X } from "lucide-react";
 
 import type { AgentStatus, ServerMessage, AccessRefusal, HealthAuth, HerdrPane } from "../shared/protocol.ts";
 import { ApiError, authenticate, fetchHealth, fetchBridgeHealth, fetchMachines, fetchSession, pairDevice, routeMissing, sendTestPush, signOut, splitPane, zoomPane, type HealthInfo } from "./lib/api.ts";
@@ -77,6 +77,7 @@ import { dropletAllows, endedTurn, seedStatuses, showDroplet, trackTurn, type Dr
 import { canPlayAlertSound, playAlertSound, unlockAlertSound, type AlertSoundKind } from "./lib/alertSound.ts";
 import { createAlertTurnPlayer } from "./lib/alertTurns.ts";
 import { FactoryPanel } from "./components/FactoryPanel.tsx";
+import { AssignmentWorkflowDialog } from "./components/AssignmentWorkflowDialog.tsx";
 
 import { dockPane, draggedPane, dropSide, otherSlot, PANE_DRAG_TYPE, sameTarget, slotSide, storedSplit, storeSplit, type SplitSide, type SplitSlot, type SplitState, type SplitTarget } from "./lib/split.ts";
 import { paneDrag } from "./lib/paneDrag.ts";
@@ -252,6 +253,7 @@ export function App() {
   /** the code a scanned QR brought along (`?pair=CODE`), taken off the address at once */
   const [pairCode] = useState(() => takePairCode());
   const [auth, setAuth] = useState<HealthAuth | null>(null);
+  const [workflowAssignmentId, setWorkflowAssignmentId] = useState<string | null>(null);
   const factoryData = useFactoryOverview(locked === false && auth?.role !== "watch");
   const canSignOut = auth?.authenticated === true && (auth.via === "token" || auth.via === "device");
   // a device that is in only because nothing is paired yet still pairs from the QR code's address
@@ -833,6 +835,7 @@ export function App() {
 
 
   const selectedPane = snapshot?.panes.find((pane) => pane.pane_id === selectedPaneId) ?? null;
+  const selectedAssignment = factoryData.overview?.pane_links?.find(link => link.machine_id === selectedMachineId && link.pane_id === selectedPaneId && link.workspace_id === selectedPane?.workspace_id && link.worktree === selectedPane?.cwd);
   const projectRows = factoryData.overview ? projectPanes(factoryData.overview, machines) : [];
   const archivedPaneKeys = factoryData.overview ? projectArchiveKeys(factoryData.overview, machines) : new Set<string>();
   const selectedArchived = !!selectedPaneId && archivedPaneKeys.has(paneStorageId(selectedMachineId, selectedPaneId));
@@ -1431,6 +1434,7 @@ export function App() {
           </div>
         )}
         <div className="header-meta">
+          {!factoryOpen && auth?.role !== "watch" && selectedAssignment && <button type="button" className="btn" aria-label={t("Workflow")} title={t("Workflow")} onClick={() => setWorkflowAssignmentId(selectedAssignment.implementation_id)}><Workflow aria-hidden="true" /><span className="header-desktop-only">{t("Workflow")}</span></button>}
           {!factoryOpen && auth?.role !== "watch" && selectedPane && factoryData.overview && (["idle", "done"].includes(selectedPane.agent_status) || selectedArchived) && <ProjectChatArchive key={`${paneStorageId(selectedMachineId, selectedPane.pane_id)}:${selectedPane.terminal_id}`} machineId={selectedMachineId} paneId={selectedPane.pane_id} terminalId={selectedPane.terminal_id} sessionRef={nativeSessionRef(selectedPane)} archived={selectedArchived} onArchived={() => navigateProject({ kind: "inbox" })} />}
           {!factoryOpen && settings.planButton && selectedPane && selectedMachine?.state === "connected" && (selectedPane as HerdrPane).plan && <PlanButton plan={(selectedPane as HerdrPane).plan!} onOpen={() => setPlanOpen(true)} />}
           {auth?.role !== "watch" && <button type="button" className="btn header-inbox" aria-label={t("Inbox")} title={t("Inbox")} aria-pressed={factoryOpen && factoryRoute.kind === "inbox"} onClick={() => navigateProject({ kind: "inbox" })}><Inbox aria-hidden="true" /><span className="header-desktop-only">{t("Inbox")}</span></button>}
@@ -1658,6 +1662,7 @@ export function App() {
         paneTitle={displayPaneTitle(movingLivePane)} onMoved={(moved) => actions.paneMoved(movingPane.machineId, moved.previous_pane_id, moved.pane.pane_id)}
         onError={(reason) => setLayoutNotice(t("Move failed: {reason}", { reason }))} onClose={() => setMovingPane(null)} /></MachineContext.Provider>}
       {factoryOpen && (factoryRoute.kind === "projects" || factoryRoute.kind === "project-settings") && <ProjectSettingsDialog key={"id" in factoryRoute ? factoryRoute.id : "all"} keyboardActive={!settingsOpen} overview={factoryData.overview} machines={machines} projectId={"id" in factoryRoute ? factoryRoute.id : null} refresh={factoryData.refresh} onProject={(id) => navigateProject(id ? { kind: "project-settings", id } : { kind: "projects" })} onClose={() => navigateProject("id" in factoryRoute ? { kind: "project", id: factoryRoute.id } : { kind: "assignments" })} />}
+      {workflowAssignmentId && factoryData.overview && <AssignmentWorkflowDialog key={workflowAssignmentId} assignmentId={workflowAssignmentId} overview={factoryData.overview} machines={machines} onClose={() => setWorkflowAssignmentId(null)} onOpenPane={(machineId, paneId) => selectTarget(machineId, paneId, "chat")} />}
       <SettingsDialog auth={auth} herdrVersion={health?.herdr?.version ?? null} open={settingsOpen} section={settingsSection} linkPage={settingsLinkPage} linkSection={settingsLinkSection} onPage={onSettingsPage} onClose={closeSettings} actions={actions} updates={updates} onEnableNotifications={enableNotifications} overPreview={viewing !== null || (factoryOpen && (factoryRoute.kind === "projects" || factoryRoute.kind === "project-settings"))} />
       {filesOpen && selectedPane && (
         <FilesDialog start={selectedPane.foreground_cwd ?? selectedPane.cwd ?? ""} viewing={viewing !== null} onOpenFile={viewFile} onClose={() => setFilesOpen(false)} />
