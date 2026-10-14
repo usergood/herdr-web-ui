@@ -19,9 +19,12 @@ const proxy = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(request) {
   const headers = new Headers(request.headers); headers.delete("authorization");
   const response = await fetch(`http://localhost:${app.port}${url.pathname}${url.search}`, { headers, redirect: "manual" });
   const passed = new Headers(response.headers); passed.delete("content-encoding"); passed.delete("content-length");
-  return new Response(response.body, { status: response.status, headers: passed });
+  // Native URL login supplies install-icon credentials. Keep the fixture app's
+  // relative fetch URLs free of userinfo, which Fetch rejects.
+  const body = url.pathname === "/" ? (await response.text()).replace("<head>", `<head><base href="http://localhost:${proxy.port}/">`) : response.body;
+  return new Response(body, { status: response.status, headers: passed });
 } });
-const context = await chromium.launchPersistentContext(join(state, "chrome-profile"), { executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"], viewport: { width: 390, height: 844 } });
+const context = await chromium.launchPersistentContext(join(state, "chrome-profile"), { executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"], httpCredentials: { username: "fixture", password: "fixture-only" }, viewport: { width: 390, height: 844 } });
 try {
   const origin = `http://localhost:${proxy.port}`;
   const page = await context.newPage(); page.setDefaultTimeout(5000);
