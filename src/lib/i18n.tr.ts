@@ -7,6 +7,9 @@
  * keep their English names.
  */
 export const TR: Record<string, string> = {
+  "Issue scope paused": "Konu kapsamı duraklatıldı",
+  "Issue scope pause pending": "Konu kapsamı duraklatma bekleniyor",
+  "Accepted issue scope": "Onaylanan konu kapsamı",
   "Proposed": "Önerildi",
   "Reviewed": "İncelendi",
   "Publishing": "Yayımlanıyor",

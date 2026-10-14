@@ -1191,6 +1191,8 @@ export const DEFAULT_PORT = 7317;
  * under retained owner intent. Missing approvals are never inferred.
  * Resting Runs/workers are ready: native capacity released, exclusive worktree ownership retained.
  * POST /api/factory/runs/:id/reconcile (empty) -> FactoryRun; observation never redispatches.
+ * A revoked issue Run retains scope_pause independently of native status. Reconcile retries its
+ * controlled stop; uncertainty retains owned reservations. A paused attempt never resumes.
  * POST .../stop (stop) -> FactoryRun; verified ownership released, history/work retained.
  * POST .../cleanup (empty) -> FactoryCleanup; only stopped clean owned checkouts removed.
  * POST .../verify-provider (empty) -> FactoryCapabilities; genuine loading/owner-round evidence required.
@@ -1334,6 +1336,10 @@ export type { IssueBatch, IssueBatchProposal, IssueBatchesOverview, PlannedIssue
  * Includes canonical triage-label overrides, default-off auto_implement and trusted_issue_approvers.
  * POST .../github/sync -> ProjectGitHubOverview; imports owned issue/fix records and applies opted-in policies.
  * Issue sources retain scope, resolved triage roles, eligibility reasons and revision-bound plan approval.
+ * An edited/unready revision permanently revokes its approval receipt (revoked_at). Restoring prior
+ * content/labels requires fresh owner approval or a new trusted native comment, never receipt replay.
+ * Implementation admission re-reads native issue scope and freezes issue_scope in the Run manifest;
+ * later drift requests a controlled stop without replacing those instructions or produced evidence.
  * POST .../github/issues/:number/approve -> ProjectGitHubOverview; ProjectIssueApprovalRequest,
  * owner approval of fresh issue_revision and policy_revision with acceptance, dependencies and confirmed
  * planning/testing decisions. Requires same origin, x-herdr-machine: 1 and x-herdr-factory: 1.

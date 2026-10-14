@@ -36,6 +36,15 @@ try {
   await imported.getByRole("button", { name: "Approve this issue revision", exact: true }).click();
   await imported.getByText("Eligible for automatic implementation", { exact: true }).waitFor();
   assert.equal((await f.request("")).body.implementations.length, 1);
+  issue.labels = []; writeFileSync(f.responses, JSON.stringify({ issues: [issue] }));
+  await settings.getByRole("button", { name: "Sync GitHub", exact: true }).click();
+  await imported.getByText("Start planning explicitly from Inbox.", { exact: true }).waitFor();
+  issue.labels = [{ name: "factory-ready" }]; writeFileSync(f.responses, JSON.stringify({ issues: [issue] }));
+  await settings.getByRole("button", { name: "Sync GitHub", exact: true }).click();
+  await imported.getByText("Approval of this issue revision is required.", { exact: true }).waitFor();
+  assert.equal(await imported.getByText("Approved by owner", { exact: true }).count(), 0);
+  await imported.getByRole("button", { name: "Approve this issue revision", exact: true }).click();
+  await imported.getByText("Eligible for automatic implementation", { exact: true }).waitFor();
   await settings.getByRole("button", { name: "Sync GitHub", exact: true }).click();
   await imported.getByText("Eligible for automatic implementation", { exact: true }).waitFor();
   assert.equal((await f.request("")).body.implementations.length, 1);
