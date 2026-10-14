@@ -11,6 +11,7 @@ import { MachineAccounts } from "./accounts.ts";
 import type { ProjectSchedulesOverview, ProjectScheduleConfiguration, ProjectSyncJob, ProjectSyncResult } from "../shared/project-schedules.ts";
 import { nextProjectSync, validateProjectSchedule, type ProjectScheduleTiming, type StoredProjectSchedule } from "./project-schedules.ts";
 import { PROJECT_TRIAGE_ROLES, type IssueReadinessReason, type ProjectTriageLabels, type ProjectIssuePlan, type ProjectIssueApproval, type ProjectIssueApprovalRequest } from "../shared/github-project.ts";
+import { GitHubIssueBatches } from "./github-issue-batches.ts";
 
 const pullFields = `number id title body url state isDraft headRefOid baseRefOid headRefName baseRefName author { login } mergeStateStatus reviewDecision headRepository { nameWithOwner } viewerCanUpdate
 reviews(first:100) { nodes { id state body submittedAt author { login } commit { oid } } pageInfo { hasNextPage endCursor } }
@@ -19,16 +20,25 @@ reviewThreads(first:100) { nodes { id isResolved isOutdated comments(first:100) 
 commits(last:1) { nodes { commit { statusCheckRollup { contexts(first:100) { nodes { ... on CheckRun { name conclusion status } ... on StatusContext { context state } } pageInfo { hasNextPage endCursor } } } } } }
 baseRef { branchProtectionRule { isAdminEnforced requiresApprovingReviews requiredApprovingReviewCount requiresStatusChecks requiresStrictStatusChecks requiresConversationResolution requiredStatusCheckContexts } }`;
 interface SyncState { id: string; last_sync: string | null; next_sync: number; problem: string | null }
-interface Issue { number: number; node_id: string; title: string; body: string | null; html_url: string; state: string; labels?: { name: string }[]; updated_at?: string; pull_request?: unknown }
+export interface Issue { number: number; node_id: string; title: string; body: string | null; html_url: string; state: string; labels?: { name: string }[]; updated_at?: string; pull_request?: unknown }
 
 /** Project-scoped metadata and guarded mutation. Never executes foreign PR code. */
 export class ProjectGitHub {
+  readonly issueBatches: GitHubIssueBatches;
   private readonly busy = new Set<string>();
   private stopped = false;
   private readonly stopPolling: () => void;
   private readonly now: () => number;
   constructor(private readonly store: FactoryStore, private readonly accounts: MachineAccounts, private readonly discover?: (machineId: string, path: string) => Promise<import("../shared/project-setup.ts").ProjectDiscovery>, timing: ProjectScheduleTiming = {}, private readonly pauseIssueWork?: (source: ProjectGitHubSource) => Promise<void>) {
     this.now = timing.now ?? Date.now;
+    this.issueBatches = new GitHubIssueBatches(this.store, async (id, revision, operation) => this.locked(id, async () => {
+      const policy = this.store.get<ProjectGitHubPolicy>("github_policies", id);
+      if (!policy || policy.revision !== revision) throw new FactoryError("github_policy_changed", "Refresh the Project policy before reviewing publication", 409);
+      this.current(policy);
+      const scope = await this.scope(policy);
+      this.current(policy);
+      return operation({ policy, api: (path, extra) => this.api(policy, scope, path, extra), importIssue: issue => { this.validateIssue(issue); return this.importIssue(policy, issue); } });
+    }));
     this.retainUncertainAttempts();
     if (timing.subscribe) this.stopPolling = timing.subscribe(() => this.poll());
     else { const timer = setInterval(() => { void this.poll(); }, 10_000); timer.unref(); this.stopPolling = () => clearInterval(timer); }
@@ -274,6 +284,7 @@ export class ProjectGitHub {
     const approval = this.store.list<ProjectIssueApproval>("github_readiness", source.project_id).filter(item => item.source_id === source.id).at(-1) ?? null;
     const valid = policy && policy.project_scope === this.projectScope(policy.id) && approval?.issue_revision === source.revision && !approval.revoked_at && approval.policy_revision === policy.revision && source.repository?.toLowerCase() === policy.repository.toLowerCase();
     const reasons: IssueReadinessReason[] = source.state !== "open" ? ["issue_closed"] : roles.length > 1 ? ["conflicting_triage"] : roles[0] === "ready-for-human" ? ["human_only"] : roles[0] === "wontfix" ? ["wontfix"] : roles[0] !== "ready-for-agent" ? ["start_planning"] : !valid ? ["approval_required"] : !policy.auto_implement ? ["automatic_implementation_disabled"] : [];
+    if (source.publication_batch_id && this.store.get<import("../shared/issue-batches.ts").IssueBatch>("github_issue_batches", source.publication_batch_id)?.dispatch_ready !== true) reasons.push("batch_incomplete");
     return { ...source, triage_roles: roles, readiness: { eligible: reasons.length === 0, reasons, approval } };
   }
   private plan(value: unknown): ProjectIssuePlan {

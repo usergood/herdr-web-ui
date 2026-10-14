@@ -22,6 +22,7 @@ import { forgetTranscriptState } from "./conversation.ts";
 import type { FactoryAction, FactoryRun } from "../shared/factory.ts";
 import type { FactoryNative } from "./factory-native.ts";
 import { githubScheduleFixture } from "./github-schedules.fixture.ts";
+import { batchProposal, githubIssueBatchFixture } from "./github-issue-batches.fixture.ts";
 import { factoryDeliveryFixture } from "./factory-delivery.fixture.ts";
 
 async function factoryBoardFixture(native: Partial<FactoryNative> = {}) {
@@ -66,6 +67,48 @@ afterAll(() => {
 });
 
 const base = () => `http://localhost:${server.port}`;
+
+describe("GitHub planned issue batch publication", () => {
+  it("retains a scoped planning Run's whole issue proposal without granting remote publication", async () => {
+    let proposalStatus: number | undefined;
+    const f = await factoryBoardFixture({ startAgent: async options => {
+      const cwd = options.args![1]!;
+      const access = JSON.parse(readFileSync(join(cwd, ".saurons-eye-access.json"), "utf8"));
+      const response = await fetch(access.url + "/issue-batch", { method: "POST", headers: { authorization: `Bearer ${access.token}`, "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(batchProposal) });
+      proposalStatus = response.status;
+      expect((await fetch(access.url + "/issue-batch/publish", { method: "POST", headers: { authorization: `Bearer ${access.token}`, "content-type": "application/json", "x-herdr-factory": "1" }, body: "{}" })).status).toBe(404);
+      await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "working" });
+    } });
+    try {
+      const run = await f.start("grill-with-docs");
+      expect(proposalStatus).toBe(201); expect(run.condition).toBe("working");
+      const proposed = await f.request(f.prefix + "/issue-batches");
+      expect(proposed.batches).toHaveLength(1);
+      expect(proposed.batches[0]).toMatchObject({ run_id: run.id, condition: "proposed", dispatch_ready: false, items: batchProposal.items });
+    } finally { await f.close(); }
+  });
+
+  it("requires origin and owner mutation headers for reviewing and publishing the exact batch", async () => {
+    const f = await githubIssueBatchFixture();
+    try {
+      const policy = (await f.request(f.githubRoute + "/configure", f.policy)).body;
+      const batch = (await f.request(f.route, batchProposal)).body;
+      const proof = { revision: batch.revision, policy_revision: policy.revision };
+      const endpoint = f.origin() + "/api/factory" + f.route + "/" + batch.id;
+      for (const action of ["review", "publish"]) {
+        for (const headers of [{ "content-type": "application/json", "x-herdr-factory": "1" }, { ...f.headers, origin: "https://fictional-other.invalid" }]) {
+          const response = await fetch(`${endpoint}/${action}`, { method: "POST", headers, body: JSON.stringify(proof) });
+          expect(response.status).toBe(403); expect((await response.json()).error.code).toBe("invalid_origin");
+        }
+      }
+      expect((await f.request(`${f.route}/${batch.id}/publish`, proof)).body.error.code).toBe("issue_batch_review_required");
+      expect(f.calls().some(args => args.includes("POST") || args.includes("PATCH"))).toBe(false);
+      expect((await f.request(`${f.route}/${batch.id}/review`, proof)).status).toBe(200);
+      const published = await f.request(`${f.route}/${batch.id}/publish`, proof);
+      expect(published.status).toBe(200); expect(published.body.condition).toBe("confirmed");
+    } finally { f.close(); }
+  });
+});
 
 describe("Assignment delivery policy", () => {
   it("rejects invalid delivery branches instead of freezing an undeliverable Assignment scope", async () => {

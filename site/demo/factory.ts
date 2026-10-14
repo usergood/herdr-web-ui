@@ -69,6 +69,15 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
     return json(overview);
   }
   if (/^\/api\/factory\/projects\/[^/]+\/github\/issues\/\d+\/approve$/.test(path)) return failure("demo_only", "Issue readiness needs verified GitHub evidence on a real connection server.");
+  const issueBatchesRoute = /^\/api\/factory\/implementations\/([^/]+)\/issue-batches(?:\/([^/]+)\/(review|publish))?$/.exec(path);
+  if (issueBatchesRoute) {
+    const detail = details.get(issueBatchesRoute[1]!);
+    if (!detail?.implementation.project_id) return failure("project_required", "Select a fictional Project for the plan");
+    // Public reads have an answer on the demo; owner publication needs real scoped GitHub evidence.
+    if (method === "GET" && !issueBatchesRoute[2]) return json({ batches: [] } satisfies import("../../shared/issue-batches.ts").IssueBatchesOverview);
+    return failure("demo_only", "Issue batch proposals, review and publication need a real connection server. The demo publishes no GitHub issues.");
+  }
+  if (/^\/api\/factory-agent\/[^/]+\/issue-batch$/.test(path)) return failure("demo_only", "Planning proposals need a real app-owned Run. The demo grants no publication authority.");
   const githubRoute = /^\/api\/factory\/projects\/([^/]+)\/github(?:\/(configure|sync)|\/pulls\/(\d+)\/(merge|update|rerequest|import|files))?$/.exec(path);
   if (githubRoute) {
     const id = githubRoute[1]!; if (!projects.some((project) => project.id === id)) return failure("not_found", "Fictional Project not found", 404);
