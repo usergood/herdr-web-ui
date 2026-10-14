@@ -1312,12 +1312,18 @@ export type FactoryRequestBody = FactoryRequests[keyof FactoryRequests];
  * POST .../github/settings ({account_profile_id}) -> ProjectGitHubSettings;
  * detected repository, collaborators and branch checks, without enabling automation.
  * POST .../github/configure -> ProjectGitHubPolicy, uses ProjectGitHubConfiguration.
+ * Includes canonical triage-label overrides, default-off auto_implement and trusted_issue_approvers.
  * POST .../github/sync -> ProjectGitHubOverview; imports owned issue/fix records and applies opted-in policies.
+ * Issue sources retain scope, resolved triage roles, eligibility reasons and revision-bound plan approval.
+ * POST .../github/issues/:number/approve -> ProjectGitHubOverview; ProjectIssueApprovalRequest,
+ * owner approval of fresh issue_revision and policy_revision with acceptance, dependencies and confirmed
+ * planning/testing decisions. Requires same origin, x-herdr-machine: 1 and x-herdr-factory: 1.
+ * Capturing readiness does not dispatch implementation or approve publication/merge.
  * GET .../github/pulls/:number/files?head=:sha -> ProjectGitHubFiles, bounded read-only patch inventory.
  * POST .../github/pulls/:number/(merge|update|rerequest|import) -> ProjectGitHubOverview;
  * mutations require the displayed head, base and policy_revision, same origin and x-herdr-machine: 1.
  */
-export type { ProjectGitHubOverview, ProjectGitHubPolicy, ProjectGitHubConfiguration, ProjectGitHubPull, ProjectGitHubSource, ProjectGitHubMutation, ProjectGitHubFiles } from "./github-project.ts";
+export type { ProjectGitHubOverview, ProjectGitHubPolicy, ProjectGitHubConfiguration, ProjectGitHubPull, ProjectGitHubSource, ProjectGitHubMutation, ProjectGitHubFiles, ProjectIssuePlan, ProjectIssueApproval, ProjectIssueApprovalRequest, ProjectIssueReadiness } from "./github-project.ts";
 export type { ProjectSyncJob, ProjectSyncSchedule, ProjectSyncResult, ProjectSchedulesOverview, ProjectScheduleConfiguration } from "./project-schedules.ts";
 export interface FactoryBatchReceipt {
   id: string; created_at: string; updated_at: string; implementation_id: string;

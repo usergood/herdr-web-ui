@@ -67,6 +67,7 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
     ], results: [] };
     return json(overview);
   }
+  if (/^\/api\/factory\/projects\/[^/]+\/github\/issues\/\d+\/approve$/.test(path)) return failure("demo_only", "Issue readiness needs verified GitHub evidence on a real connection server.");
   const githubRoute = /^\/api\/factory\/projects\/([^/]+)\/github(?:\/(configure|sync)|\/pulls\/(\d+)\/(merge|update|rerequest|import|files))?$/.exec(path);
   if (githubRoute) {
     const id = githubRoute[1]!; if (!projects.some((project) => project.id === id)) return failure("not_found", "Fictional Project not found", 404);

@@ -28,7 +28,9 @@ if (endpoint === "graphql") {
 }
 const result = endpoint === "user" ? { login: "fictional-owner", id: 1042 }
   : endpoint === "graphql" ? { data: { repository: { pullRequests: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } }
-  : endpoint?.includes("/issues?") ? [] : endpoint === "repos/fictional/schedules" ? { full_name: "fictional/schedules", default_branch: "main" } : {};
+  : endpoint?.includes("/issues?") ? (endpoint.includes("page=1&") ? data.issues ?? [] : [])
+  : endpoint?.includes("/comments?") ? (endpoint.includes("page=1&") ? data.comments ?? [] : [])
+  : endpoint?.includes("/issues/") ? data.issues?.find(issue => endpoint.endsWith("/" + issue.number)) : endpoint === "repos/fictional/schedules" ? { full_name: "fictional/schedules", default_branch: "main" } : {};
 process.stdout.write(JSON.stringify(result));
 `);
   let now = Date.parse("2026-10-14T08:59:00Z");
