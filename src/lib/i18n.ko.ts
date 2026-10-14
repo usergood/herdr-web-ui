@@ -6,6 +6,9 @@
  * braces keep their English names.
  */
 export const KO: Record<string, string> = {
+  "Issue scope paused": "이슈 범위 작업 일시 중지됨",
+  "Issue scope pause pending": "이슈 범위 작업 일시 중지 대기 중",
+  "Accepted issue scope": "승인된 이슈 범위",
   "Interrupted": "중단됨",
   "Stopped attempt": "중지된 시도",
   "Finished attempt": "완료된 시도",

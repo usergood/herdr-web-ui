@@ -10,6 +10,9 @@
  * Placeholders in braces keep their English names.
  */
 export const ZH: Record<string, string> = {
+  "Issue scope paused": "问题范围工作已暂停",
+  "Issue scope pause pending": "问题范围工作暂停待确认",
+  "Accepted issue scope": "已批准的问题范围",
   "Interrupted": "已中断",
   "Stopped attempt": "已停止的尝试",
   "Finished attempt": "已完成的尝试",

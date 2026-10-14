@@ -4131,6 +4131,161 @@ describe("terminal lens of a bridge without the PTY sidecar", () => {
   });
 });
 
+describe("changed GitHub issue scope", () => {
+  it("a fresh owner-approved attempt uses the new issue scope while the paused attempt stays frozen", async () => {
+    const owned: string[] = []; const prompts: string[] = [];
+    const f = await githubScheduleFixture({ version: async () => "owned-readiness-fixture", createWorkspace: async options => { const result = await herdrRpc<import("./herdr/client.ts").WorkspaceCreateResult>("workspace.create", { ...options, focus: false }); owned.push(result.workspace.workspace_id); return result; }, startAgent: async options => { prompts.push(readFileSync(join(options.args![1]!, ".saurons-eye-prompt.md"), "utf8")); await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "working" }); } });
+    try {
+      const issue = { number: 12, node_id: "owned-renewal-12", title: "First scope", body: "First approved requirements", html_url: "https://github.com/fictional/schedules/issues/12", state: "open", labels: [{ name: "ready-for-agent" }] };
+      writeFileSync(f.responses, JSON.stringify({ issues: [issue] }));
+      const policy = (await f.request(f.route + "/configure", { ...f.policy, auto_implement: true })).body;
+      let source = (await f.request(f.route + "/sync", {})).body.sources[0];
+      const plan = { acceptance_criteria: "Approved acceptance", dependencies: [], testing_seams: ["Public HTTP"], planning_decisions: [] };
+      await f.request(f.route + "/issues/12/approve", { policy_revision: policy.revision, issue_revision: source.revision, plan });
+      const prefix = `/implementations/${source.implementation_id}`;
+      const first = (await f.request(prefix + "/runs", { action: "work", idempotency_key: "first-scope" })).body;
+      expect(first.manifest.issue_scope.issue).toMatchObject({ title: "First scope", body: "First approved requirements" });
+      issue.title = "Renewed scope"; issue.body = "New owner-approved requirements"; writeFileSync(f.responses, JSON.stringify({ issues: [issue] }));
+      source = (await f.request(f.route + "/sync", {})).body.sources[0];
+      await f.request(f.route + "/issues/12/approve", { policy_revision: policy.revision, issue_revision: source.revision, plan });
+      const renewed = await f.request(prefix + "/runs", { action: "work", idempotency_key: "renewed-scope" });
+      expect(renewed.status).toBe(202);
+      expect(renewed.body.manifest.issue_scope.issue).toMatchObject({ title: "Renewed scope", body: "New owner-approved requirements" });
+      expect(prompts[1]).toContain("New owner-approved requirements");
+      expect(prompts[1]).toContain("Approved acceptance");
+      expect(prompts[1]).toContain("Public HTTP");
+      const detail = (await f.request(prefix)).body;
+      expect(detail.runs).toHaveLength(2);
+      expect(detail.runs[0]).toMatchObject({ condition: "cancelled", manifest: first.manifest });
+    } finally { for (const id of owned) await workspaceClose(id).catch(() => {}); f.close(); }
+  }, 60_000);
+
+  it("keeps the revocation visible when scope changes during native allocation without launching an agent", async () => {
+    const owned: string[] = []; let launched = 0; let release!: () => void; let reached!: () => void;
+    const gate = new Promise<void>(resolve => release = resolve), waiting = new Promise<void>(resolve => reached = resolve);
+    const f = await githubScheduleFixture({ version: async () => "owned-readiness-fixture", createWorkspace: async options => { const result = await herdrRpc<import("./herdr/client.ts").WorkspaceCreateResult>("workspace.create", { ...options, focus: false }); owned.push(result.workspace.workspace_id); reached(); await gate; return result; }, startAgent: async () => { launched++; } });
+    try {
+      const issue = { number: 12, node_id: "owned-allocation-12", title: "Pause before native launch", body: "Preserve notes", html_url: "https://github.com/fictional/schedules/issues/12", state: "open", labels: [{ name: "ready-for-agent" }] };
+      writeFileSync(f.responses, JSON.stringify({ issues: [issue] }));
+      const policy = (await f.request(f.route + "/configure", { ...f.policy, auto_implement: true })).body;
+      const source = (await f.request(f.route + "/sync", {})).body.sources[0];
+      await f.request(f.route + "/issues/12/approve", { policy_revision: policy.revision, issue_revision: source.revision, plan: { acceptance_criteria: "Preserve notes", dependencies: [], testing_seams: ["Public HTTP"], planning_decisions: [] } });
+      const prefix = `/implementations/${source.implementation_id}`;
+      const pending = f.request(prefix + "/runs", { action: "work", idempotency_key: "allocation-drift" });
+      await Promise.race([waiting, new Promise((_, reject) => setTimeout(() => reject(new Error("Owned allocation did not reach the gate")), 5000))]);
+      issue.body = "New scope during allocation"; writeFileSync(f.responses, JSON.stringify({ issues: [issue] }));
+      await f.request(f.route + "/sync", {}); release(); await pending;
+      const detail = (await f.request(prefix)).body;
+      expect(detail.board.lane).toBe("needs_you");
+      expect(detail.runs[0]).toMatchObject({ condition: "cancelled", scope_pause: { condition: "paused" } });
+      expect(launched).toBe(0);
+      expect(detail.runs).toHaveLength(1);
+    } finally { release(); for (const id of owned) await workspaceClose(id).catch(() => {}); f.close(); }
+  }, 60_000);
+
+  it("rechecks native issue scope before launch and requires a fresh complete planning approval", async () => {
+    let allocated = 0;
+    const f = await githubScheduleFixture({ version: async () => "owned-readiness-fixture", createWorkspace: async () => { allocated++; throw new Error("This revoked issue must never allocate native work"); } });
+    try {
+      const issue = { number: 12, node_id: "owned-before-launch-12", title: "Frozen requirements", body: "Approved requirements", html_url: "https://github.com/fictional/schedules/issues/12", state: "open", labels: [{ name: "ready-for-agent" }] };
+      writeFileSync(f.responses, JSON.stringify({ issues: [issue] }));
+      const policy = (await f.request(f.route + "/configure", { ...f.policy, auto_implement: true })).body;
+      const source = (await f.request(f.route + "/sync", {})).body.sources[0];
+      const plan = { acceptance_criteria: "Preserve notes", dependencies: [], testing_seams: ["Public HTTP"], planning_decisions: [] };
+      const proof = { policy_revision: policy.revision, issue_revision: source.revision, plan };
+      expect((await f.request(f.route + "/issues/12/approve", { ...proof, plan: { ...plan, testing_seams: [] } })).status).toBe(400);
+      expect((await f.request(f.route + "/issues/12/approve", proof)).status).toBe(200);
+      issue.body = "New testing choice"; writeFileSync(f.responses, JSON.stringify({ issues: [issue] }));
+      const started = await f.request(`/implementations/${source.implementation_id}/runs`, { action: "work", idempotency_key: "drift-before-launch" });
+      expect(started.status).toBe(409);
+      expect((await f.request(f.route)).body.sources[0].readiness.eligible).toBe(false);
+      expect((await f.request(`/implementations/${source.implementation_id}`)).body.runs).toHaveLength(0);
+      expect(allocated).toBe(0);
+    } finally { f.close(); }
+  }, 60_000);
+
+  it.each([false, true])("retains uncertain child reservations, fences further work and reconciles a controlled pause after repair (resting child: %s)", async restingChild => {
+    const owned: string[] = []; let reachable = true;
+    const f = await githubScheduleFixture({ version: async () => "owned-readiness-fixture", createWorkspace: async options => { const result = await herdrRpc<import("./herdr/client.ts").WorkspaceCreateResult>("workspace.create", { ...options, focus: false }); owned.push(result.workspace.workspace_id); return result; }, startAgent: async options => { await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "working" }); }, closeWorkspace: async id => { if (!reachable) throw new Error("Owned fixture lost its stop receipt"); return workspaceClose(id); } });
+    try {
+      const issue = { number: 12, node_id: "owned-uncertain-12", title: "Pause uncertain work", body: "Preserve notes", html_url: "https://github.com/fictional/schedules/issues/12", state: "open", labels: [{ name: "ready-for-agent" }] };
+      writeFileSync(f.responses, JSON.stringify({ issues: [issue] }));
+      const policy = (await f.request(f.route + "/configure", { ...f.policy, auto_implement: true })).body;
+      let source = (await f.request(f.route + "/sync", {})).body.sources[0];
+      const plan = { acceptance_criteria: "Preserve notes", dependencies: [], testing_seams: ["Public HTTP"], planning_decisions: [] };
+      await f.request(f.route + "/issues/12/approve", { policy_revision: policy.revision, issue_revision: source.revision, plan });
+      const prefix = `/implementations/${source.implementation_id}`;
+      const run = (await f.request(prefix + "/runs", { action: "work", idempotency_key: "uncertain-scope" })).body as FactoryRun;
+      expect(run.condition).toBe("working");
+      const child = (await f.request(`/runs/${run.id}/workers`, { role: "standards", idempotency_key: "owned-review" })).body;
+      expect(child.condition).toBe("working");
+      if (restingChild) {
+        await herdrRpc("pane.report_agent", { pane_id: child.pane_id, source: "manual", agent: "codex", state: "idle" });
+        expect((await f.request(`/runs/${run.id}/workers/${child.id}/reconcile`, {})).body.condition).toBe("ready");
+      }
+      reachable = false; issue.labels = []; writeFileSync(f.responses, JSON.stringify({ issues: [issue] }));
+      await f.request(f.route + "/sync", {});
+      let detail = (await f.request(prefix)).body;
+      expect(detail.runs[0]).toMatchObject({ condition: "needs_you", scope_pause: { condition: "uncertain" }, manifest: run.manifest });
+      expect(detail.workers[0]).toMatchObject({ id: child.id, condition: restingChild ? "ready" : "working", worktree: child.worktree });
+      await f.request("/settings", { max_implementations: 4, max_agents: 2 });
+      const created = await f.request("/implementations", { title: "Independent capacity fixture", description: "Owned capacity check", project_id: f.route.split("/")[2] });
+      expect(created.status).toBe(201); const other = created.body;
+      const blocked = await f.request(`/implementations/${other.id}/runs`, { action: "work", idempotency_key: "unrelated-scope" });
+      expect(blocked.status).toBe(409); expect(blocked.body.error.code).toBe("capacity_exhausted");
+      const more = await f.request(`/runs/${run.id}/workers`, { role: "spec", idempotency_key: "must-not-launch" });
+      expect(more.status).toBe(409);
+      await f.request(`/runs/${run.id}/reconcile`, {});
+      detail = (await f.request(prefix)).body;
+      expect(detail.board.lane).toBe("needs_you");
+      expect(detail.runs[0].condition).toBe("needs_you");
+      expect(detail.workers).toHaveLength(1);
+      f.restart();
+      expect((await f.request(prefix)).body.runs[0].scope_pause.condition).toBe("uncertain");
+      issue.labels = [{ name: "ready-for-agent" }]; writeFileSync(f.responses, JSON.stringify({ issues: [issue] }));
+      source = (await f.request(f.route + "/sync", {})).body.sources[0];
+      await f.request(f.route + "/issues/12/approve", { policy_revision: policy.revision, issue_revision: source.revision, plan });
+      expect((await f.request(prefix + "/runs", { action: "work", idempotency_key: "renewed-but-owned" })).status).toBe(409);
+      reachable = true;
+      const reconciled = await f.request(`/runs/${run.id}/reconcile`, {});
+      expect(reconciled.status).toBe(200);
+      detail = (await f.request(prefix)).body;
+      expect(detail.runs[0]).toMatchObject({ condition: "cancelled", scope_pause: { condition: "paused" }, manifest: run.manifest });
+      expect(detail.workers[0].condition).toBe("cancelled");
+      expect(detail.runs).toHaveLength(1);
+      expect((await f.request(`/implementations/${other.id}/runs`, { action: "work", idempotency_key: "unrelated-scope" })).status).toBe(202);
+    } finally { for (const id of owned) await workspaceClose(id).catch(() => {}); f.close(); }
+  }, 60_000);
+
+  it("pauses owned work and preserves the accepted issue contract and produced evidence", async () => {
+    const owned: string[] = [];
+    const f = await githubScheduleFixture({ version: async () => "owned-readiness-fixture", createWorkspace: async options => { const result = await herdrRpc<import("./herdr/client.ts").WorkspaceCreateResult>("workspace.create", { ...options, focus: false }); owned.push(result.workspace.workspace_id); return result; }, startAgent: async options => { await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "working" }); } });
+    try {
+      const issue = { number: 12, node_id: "owned-scope-12", title: "Retain the approved scope", body: "Preserve my notes", html_url: "https://github.com/fictional/schedules/issues/12", state: "open", labels: [{ name: "ready-for-agent" }] };
+      writeFileSync(f.responses, JSON.stringify({ issues: [issue] }));
+      const policy = (await f.request(f.route + "/configure", { ...f.policy, auto_implement: true })).body;
+      const source = (await f.request(f.route + "/sync", {})).body.sources[0];
+      const plan = { acceptance_criteria: "Preserve notes", dependencies: [], testing_seams: ["Public HTTP", "Real browser journeys"], planning_decisions: [] };
+      await f.request(f.route + "/issues/12/approve", { policy_revision: policy.revision, issue_revision: source.revision, plan });
+      const prefix = `/implementations/${source.implementation_id}`;
+      const started = await f.request(prefix + "/runs", { action: "work", idempotency_key: "approved-issue" });
+      expect(started.status).toBe(202); const run = started.body as FactoryRun;
+      expect(run.condition).toBe("working");
+      const detail = (await f.request(prefix)).body;
+      const artifact = (await f.request(prefix + "/artifacts", { chat_id: detail.chats[0].id, name: "retained.md", media_type: "text/markdown", content_base64: Buffer.from("Produced before scope changed").toString("base64") })).body;
+      issue.body = "Different acceptance"; writeFileSync(f.responses, JSON.stringify({ issues: [issue] }));
+      expect((await f.request(f.route + "/sync", {})).status).toBe(200);
+      const paused = (await f.request(prefix)).body;
+      expect(paused.board.lane).toBe("needs_you");
+      expect(paused.runs[0]).toMatchObject({ condition: "cancelled", scope_pause: { condition: "paused" }, worktree: run.worktree, branch: run.branch, manifest: run.manifest });
+      expect(paused.artifacts.map((entry: { id: string }) => entry.id)).toContain(artifact.id);
+      expect((await sessionSnapshot()).workspaces.some(workspace => workspace.workspace_id === run.workspace_id)).toBe(false);
+      expect((await f.request(prefix + "/runs", { action: "work", idempotency_key: "duplicate-revoked" })).status).toBe(409);
+      expect((await f.request(prefix)).body.runs).toHaveLength(1);
+    } finally { for (const id of owned) await workspaceClose(id).catch(() => {}); f.close(); }
+  }, 60_000);
+});
+
 it("refuses cross-origin changes while allowing same-origin and CLI requests", async () => {
   const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-origin-"));
   const instance = createServer({ port: 0, stateDir: root, token: "", tailscaleOwner: null, machines: false });

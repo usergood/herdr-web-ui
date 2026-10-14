@@ -37,8 +37,12 @@ export interface ProjectIssuePlan {
 export interface ProjectIssueApproval extends FactoryRecord {
   source_id: string; issue_revision: string; policy_revision: string; actor: string;
   origin: "owner" | "github_comment"; evidence_id: string | null; plan: ProjectIssuePlan;
+  /** Revocation is permanent for this receipt, including when the issue reverts. */
+  revoked_at?: string;
 }
 export interface ProjectIssueApprovalRequest { issue_revision: string; policy_revision: string; plan: ProjectIssuePlan }
+/** Frozen at admission. A new approval never changes an existing Run's instructions. */
+export interface ProjectIssueExecutionScope { source_id: string; repository: string; number: number; issue_revision: string; issue: NonNullable<ProjectGitHubSource["issue"]>; approval: ProjectIssueApproval }
 export interface ProjectIssueReadiness { eligible: boolean; reasons: IssueReadinessReason[]; approval: ProjectIssueApproval | null }
 export interface ProjectGitHubSource extends FactoryRecord {
   project_id: string; external_id: string; number: number; kind: "issue" | "fix"; implementation_id: string; revision: string; url: string; state: string;

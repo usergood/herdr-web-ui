@@ -8,6 +8,9 @@
  * in English. Placeholders in braces keep their English names.
  */
 export const JA: Record<string, string> = {
+  "Issue scope paused": "課題範囲の作業を一時停止しました",
+  "Issue scope pause pending": "課題範囲の作業の一時停止待ち",
+  "Accepted issue scope": "承認済みの課題範囲",
   "Interrupted": "中断",
   "Stopped attempt": "停止した試行",
   "Finished attempt": "完了した試行",

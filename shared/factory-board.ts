@@ -19,7 +19,7 @@ export function projectFactoryBoard(implementation: Implementation, context: { t
   const working = (condition: string) => ["accepted", "working", "disconnected"].includes(condition);
   const needsYou = (condition: string) => ["needs_you", "blocked", "interrupted", "failed"].includes(condition);
   const question = context.questions?.find(entry => entry.answer === null);
-  const attention = (question ? { condition: "needs_you" as const, waiting_reason: question.question } : null) ?? workers.find(worker => needsYou(worker.condition)) ?? (run && needsYou(run.condition) ? run : null) ?? (check && (check.condition === "failed" || check.condition === "interrupted") ? { condition: check.condition, waiting_reason: null } : null);
+  const attention = (run?.scope_pause ? { condition: "needs_you" as const, waiting_reason: run.scope_pause.reason } : null) ?? (question ? { condition: "needs_you" as const, waiting_reason: question.question } : null) ?? workers.find(worker => needsYou(worker.condition)) ?? (run && needsYou(run.condition) ? run : null) ?? (check && (check.condition === "failed" || check.condition === "interrupted") ? { condition: check.condition, waiting_reason: null } : null);
   const busy = check?.condition === "working" || workers.some(worker => working(worker.condition)) || !!run && working(run.condition);
   const checkpoint = run?.condition === "ready" && !busy;
   const awaitingChecks = checkpoint && !check && ["work", "implement-spec", "apply-retro"].includes(run.action);
