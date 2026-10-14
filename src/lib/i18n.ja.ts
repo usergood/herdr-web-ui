@@ -8,6 +8,29 @@
  * in English. Placeholders in braces keep their English names.
  */
 export const JA: Record<string, string> = {
+  "Uncertain": "結果不明",
+  "Succeeded": "成功",
+  "Reconciled": "照合済み",
+  "Sync retries only synchronize Project data; implementation Retry remains an owner action.": "同期の再試行はプロジェクトデータのみを同期します。実装の再試行はオーナーの操作です。",
+  "Refresh schedules": "スケジュールを更新",
+  "Save schedule": "スケジュールを保存",
+  "Run now": "今すぐ実行",
+  "Reconcile sync": "同期を照合",
+  "Next execution": "次回の実行",
+  "No scheduled execution": "実行予定なし",
+  "Sync retry": "同期の再試行",
+  "Automatic retries stopped. Correct the problem and choose Run now.": "自動再試行は停止しました。問題を修正して「今すぐ実行」を選択してください。",
+  "Sync results": "同期結果",
+
+  "GitHub sync schedule": "GitHub同期スケジュール",
+  "Upstream sync schedule": "アップストリーム同期スケジュール",
+  "Enable schedule": "スケジュールを有効にする",
+  "Schedule frequency": "実行頻度",
+  "Every interval": "指定間隔ごと",
+  "Interval (minutes)": "間隔（分）",
+  "Local time": "現地時刻",
+  "Time zone": "タイムゾーン",
+
   "Continue workflow": "ワークフローを続行",
   "Native verification will run before implementation.": "実装の前にネイティブ検証を実行します。",
   "Review and continue from this chat. Finished steps keep their history.": "このチャットで確認して続行してください。完了したステップの履歴は保持されます。",

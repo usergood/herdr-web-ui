@@ -6,6 +6,29 @@
  * braces keep their English names.
  */
 export const KO: Record<string, string> = {
+  "Uncertain": "확인 필요",
+  "Succeeded": "성공",
+  "Reconciled": "확인 완료",
+  "Sync retries only synchronize Project data; implementation Retry remains an owner action.": "동기화 재시도는 프로젝트 데이터만 동기화합니다. 구현 재시도는 소유자가 실행해야 합니다.",
+  "Refresh schedules": "일정 새로 고침",
+  "Save schedule": "일정 저장",
+  "Run now": "지금 실행",
+  "Reconcile sync": "동기화 상태 확인",
+  "Next execution": "다음 실행",
+  "No scheduled execution": "예약된 실행 없음",
+  "Sync retry": "동기화 재시도",
+  "Automatic retries stopped. Correct the problem and choose Run now.": "자동 재시도가 중지되었습니다. 문제를 해결한 후 지금 실행을 선택하세요.",
+  "Sync results": "동기화 결과",
+
+  "GitHub sync schedule": "GitHub 동기화 일정",
+  "Upstream sync schedule": "업스트림 동기화 일정",
+  "Enable schedule": "일정 활성화",
+  "Schedule frequency": "일정 주기",
+  "Every interval": "지정 간격마다",
+  "Interval (minutes)": "간격 (분)",
+  "Local time": "현지 시간",
+  "Time zone": "시간대",
+
   "Continue workflow": "워크플로 계속",
   "Native verification will run before implementation.": "구현 전에 네이티브 검증이 실행됩니다.",
   "Review and continue from this chat. Finished steps keep their history.": "이 채팅에서 검토하고 계속하세요. 완료된 단계의 기록은 보존됩니다.",

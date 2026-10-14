@@ -1258,6 +1258,8 @@ export interface FactoryRequests {
   model_catalog: { project_id: string; machine_id: string; provider: import("./factory.ts").FactoryProvider };
   pane_archive: { machine_id: string; pane_id: string; archived: boolean; terminal_id?: string; session_ref?: string | null };
   github_configuration: import("./github-project.ts").ProjectGitHubConfiguration;
+  project_schedule: import("./project-schedules.ts").ProjectScheduleConfiguration;
+  project_sync: { job: import("./project-schedules.ts").ProjectSyncJob; result_id?: string };
   github_action: { head: string; base: string; policy_revision: string };
   implementation: { title: string; description: string; project_id?: string | null };
   configure: { project_id?: string | null; provider?: import("./factory.ts").FactoryProvider | null; machine_id?: string | null };
@@ -1299,6 +1301,12 @@ export interface FactoryRequests {
 }
 export type FactoryRequestBody = FactoryRequests[keyof FactoryRequests];
 /** GET /api/factory/projects/:id/github -> ProjectGitHubOverview.
+ * GET .../github/schedules -> ProjectSchedulesOverview; built-in defaults preserve saved polling.
+ * POST .../github/schedules/configure -> ProjectSchedulesOverview; ProjectScheduleConfiguration,
+ * revision-bound enable/disable and wall time, same origin and x-herdr-machine: 1.
+ * POST .../github/schedules/run ({job}) -> ProjectSchedulesOverview; shares sync ownership.
+ * POST .../github/schedules/reconcile ({job,result_id}) -> ProjectSchedulesOverview;
+ * refreshes interrupted synchronization without replaying remote mutations.
  * POST .../github/settings ({account_profile_id}) -> ProjectGitHubSettings;
  * detected repository, collaborators and branch checks, without enabling automation.
  * POST .../github/configure -> ProjectGitHubPolicy, uses ProjectGitHubConfiguration.
@@ -1308,6 +1316,7 @@ export type FactoryRequestBody = FactoryRequests[keyof FactoryRequests];
  * mutations require the displayed head, base and policy_revision, same origin and x-herdr-machine: 1.
  */
 export type { ProjectGitHubOverview, ProjectGitHubPolicy, ProjectGitHubConfiguration, ProjectGitHubPull, ProjectGitHubSource, ProjectGitHubMutation, ProjectGitHubFiles } from "./github-project.ts";
+export type { ProjectSyncJob, ProjectSyncSchedule, ProjectSyncResult, ProjectSchedulesOverview, ProjectScheduleConfiguration } from "./project-schedules.ts";
 export interface FactoryBatchReceipt {
   id: string; created_at: string; updated_at: string; implementation_id: string;
   run_id: string; snapshot_id: string; key: string; signature: string;

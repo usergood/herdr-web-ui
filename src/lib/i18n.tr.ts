@@ -7,6 +7,29 @@
  * keep their English names.
  */
 export const TR: Record<string, string> = {
+  "Uncertain": "Belirsiz",
+  "Succeeded": "Başarılı",
+  "Reconciled": "Uzlaştırıldı",
+  "Sync retries only synchronize Project data; implementation Retry remains an owner action.": "Eşitleme yeniden denemeleri yalnızca proje verilerini eşitler; uygulamayı yeniden denemek sahibinin işlemidir.",
+  "Refresh schedules": "Zamanlamaları yenile",
+  "Save schedule": "Zamanlamayı kaydet",
+  "Run now": "Şimdi çalıştır",
+  "Reconcile sync": "Eşitlemeyi uzlaştır",
+  "Next execution": "Sonraki çalıştırma",
+  "No scheduled execution": "Planlanmış çalıştırma yok",
+  "Sync retry": "Eşitleme yeniden denemesi",
+  "Automatic retries stopped. Correct the problem and choose Run now.": "Otomatik yeniden denemeler durdu. Sorunu düzeltip Şimdi çalıştır seçeneğini seçin.",
+  "Sync results": "Eşitleme sonuçları",
+
+  "GitHub sync schedule": "GitHub eşitleme zamanlaması",
+  "Upstream sync schedule": "Upstream eşitleme zamanlaması",
+  "Enable schedule": "Zamanlamayı etkinleştir",
+  "Schedule frequency": "Zamanlama sıklığı",
+  "Every interval": "Belirlenen aralıklarla",
+  "Interval (minutes)": "Aralık (dakika)",
+  "Local time": "Yerel saat",
+  "Time zone": "Saat dilimi",
+
   "Continue workflow": "İş akışına devam et",
   "Native verification will run before implementation.": "Uygulamadan önce yerel doğrulama çalıştırılacak.",
   "Review and continue from this chat. Finished steps keep their history.": "Bu sohbetten inceleyip devam edin. Tamamlanan adımların geçmişi korunur.",
