@@ -9,6 +9,7 @@ export interface ImplementationPublication extends FactoryRecord {
   /** Written before dispatch, so a missing PR receipt cannot authorize replay. */
   creation_attempted?: boolean;
   upload_head?: string;
+  metadata?: { title: string; body: string };
   pull: { number: number; url: string } | null; problem: string | null;
 }
 export interface PublicationOverview {

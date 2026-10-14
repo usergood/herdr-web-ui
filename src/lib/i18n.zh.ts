@@ -10,6 +10,8 @@
  * Placeholders in braces keep their English names.
  */
 export const ZH: Record<string, string> = {
+  "PR title": "PR 标题",
+  "Problem and resulting behavior": "问题及变更后的行为",
   "Upstream repository (owner/name)": "上游仓库（所有者/名称）",
   "Upstream releases": "上游发布",
   "Upstream release": "上游发布版本",

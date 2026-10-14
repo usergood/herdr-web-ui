@@ -7,6 +7,5 @@
 .project-queue-list p { color: var(--text-dim); font-size: var(--fs-sm); }
 .project-queue-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 @media (max-width: 640px) {
-  .project-queue .icon-button, .project-queue .btn { min-width: var(--touch-target); min-height: var(--touch-target); }
-  .project-queue .settings-row:has(.btn) { flex-wrap: wrap; }
+  .project-queue-button { min-width: var(--touch-target); min-height: var(--touch-target); }
 }

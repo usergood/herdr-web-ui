@@ -2,7 +2,7 @@
   display: grid;
   gap: var(--space-3);
   padding: var(--space-4);
-  border: 1px solid var(--border);
+  border: var(--hairline) solid var(--border);
   border-radius: var(--radius-md);
   min-width: 0;
   overflow-wrap: anywhere;
@@ -16,5 +16,5 @@
 .project-upstream-active {
   display: flex;
   align-items: center;
-  min-height: 44px;
+  min-height: var(--touch-target);
 }

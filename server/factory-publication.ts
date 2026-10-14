@@ -100,7 +100,7 @@ export class FactoryPublication {
     })();
     return confirmed;
   }
-  async publish(id: string, head: unknown, authority: "owner" | "project" = "owner"): Promise<ImplementationPublication> {
+  async publish(id: string, head: unknown, authority: "owner" | "project" = "owner", metadata: { title?: unknown; body?: unknown } = {}): Promise<ImplementationPublication> {
     if (this.busy.has(id)) throw new FactoryError("publication_busy", "This Run's PR publication is already owned", 409);
     this.busy.add(id);
     let p: ImplementationPublication | null = null;
@@ -108,10 +108,16 @@ export class FactoryPublication {
       const candidate = await this.candidate(id);
       if (authority === "project" && this.store.get<FactoryProject>("projects", this.store.get<Implementation>("implementations", candidate.implementation_id)!.project_id!)?.auto_publish_pr !== true) throw new FactoryError("publication_unauthorized", "Automatic PR publication is disabled for this Project", 409);
       if (head !== candidate.head) throw new FactoryError("publication_scope_changed", "Publish only the displayed accepted head", 409);
+      const idea = this.store.get<Implementation>("implementations", candidate.implementation_id)!;
+      const title = metadata.title ?? idea.title;
+      const description = metadata.body ?? idea.description;
+      if (typeof title !== "string" || !title.trim() || title.length > 200 || /[\r\n]/.test(title) || typeof description !== "string" || description.length > 50_000) throw new FactoryError("invalid_publication_metadata", "Enter a bounded PR title and problem/result description");
+      const check = this.store.get<FactoryCheck>("checks", candidate.check_id)!;
+      const body = `${description.trim() || idea.title}\n\nValidation at ${candidate.head}:\n${check.commands.map(command => `- ${command.args.join(" ")}: exit ${command.exit_code}`).join("\n")}\nIndependent Standards and Spec reviews passed.\n\nAssignment: ${idea.id}\nChecks: ${check.id}\nReviews: ${candidate.review_ids.join(", ")}`;
       p = this.retained(id);
       const resuming = !!p;
       if (p) { await this.validate(p); if (p.condition !== "prepared" || p.creation_attempted !== false) return p; }
-      p = p ? { ...p, authority, condition: "sending", problem: null } : { ...this.store.record(), ...candidate, authority, condition: "sending", creation_attempted: false, pull: null, problem: null };
+      p = p ? { ...p, authority, condition: "sending", problem: null } : { ...this.store.record(), ...candidate, authority, condition: "sending", creation_attempted: false, pull: null, problem: null, metadata: { title: title.trim(), body } };
       this.store.put("pr_publications", p, id);
       this.store.event(p.implementation_id, resuming ? "implementation_pr_publication_resumed" : "implementation_pr_publication_intent", { publication_id: p.id, authority, head: p.head, repository: p.repository, target_branch: p.target_branch });
       const existing = await this.lookup(p);
@@ -121,9 +127,8 @@ export class FactoryPublication {
       if (uploaded?.commit?.sha !== p.head) throw new FactoryError("publication_upload_uncertain", "GitHub has not confirmed the approved branch head; reconcile publication", 409);
       p = { ...p, upload_head: p.head }; this.store.put("pr_publications", p, id);
       await this.validate(p, true);
-      const idea = this.store.get<Implementation>("implementations", p.implementation_id)!;
       p = { ...p, creation_attempted: true }; this.store.put("pr_publications", p, id);
-      const pull = await this.runtime.publication(p.machine_id, { action: "create", publication: p, title: idea.title }) as Pull;
+      const pull = await this.runtime.publication(p.machine_id, { action: "create", publication: p, title: p.metadata?.title ?? idea.title }) as Pull;
       return await this.confirm(p, pull);
     } catch (error) {
       if (!p) throw error;

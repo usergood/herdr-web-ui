@@ -1,3 +1,4 @@
+import { SettingsGroup, SettingsRow } from "./SettingsControls.tsx";
 import { useEffect, useRef, useState } from "react";
 import type { FactoryProject, ProjectGitHubConfiguration, ProjectGitHubFiles, ProjectGitHubOverview } from "../../shared/protocol.ts";
 import type { ProjectGitHubSettings } from "../../shared/github-project.ts";
@@ -58,7 +59,7 @@ export function FactoryProjectGitHub({ project, busy, perform, checkoutPath, che
       const policy = await accountRequest<{ revision: string }>(route + "/configure", { ...form, trusted_issue_approvers: form.trusted_issue_approvers?.map(login => login.trim()).filter(Boolean) }); if (id !== epoch.current) return; setForm(current => ({ ...current, expected_revision: policy.revision })); await refresh();
     }); }}>
       <label>{t("Repository (owner/name)")}<input className="input" readOnly value={form.repository} /></label>
-      <label>{t("Upstream repository (owner/name)")}<input className="input" maxLength={200} value={form.upstream_repository ?? ""} onChange={event => setForm({ ...form, upstream_repository: event.target.value.trim() || null })} /></label>
+      <SettingsGroup><SettingsRow wide label={t("Upstream repository (owner/name)")}><input aria-label={t("Upstream repository (owner/name)")} className="input" maxLength={200} value={form.upstream_repository ?? ""} onChange={event => setForm({ ...form, upstream_repository: event.target.value.trim() || null })} /></SettingsRow></SettingsGroup>
       {!form.repository && <p role="status">{t("No GitHub remote detected for this checkout.")}</p>}
       <label>{t("GitHub account")}<select className="select" value={form.account_profile_id} onChange={event => { setProblem(""); setDefaults(null); setForm(current => ({ ...current, account_profile_id: event.target.value })); }}><option value="">{t("Select account")}</option>{accounts?.profiles.filter(p => p.service === "github" && p.state !== "disabled").map(p => <option key={p.id} value={p.id} disabled={p.state !== "ready"}>{p.name} · {p.expected_login} · {p.state === "ready" ? t("Ready") : t("Needs sign-in")}</option>)}</select></label>
       {!ready && <p className="field-hint">{t("Import a saved login below or finish sign-in in Accounts. Created accounts remain visible until ready.")}</p>}

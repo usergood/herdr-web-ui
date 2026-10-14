@@ -66,6 +66,12 @@ export class ProjectQueue {
     this.store.put<AdmissionHold>("issue_admission_holds", { id, approval_id: approval.id, problem });
     this.store.event(id, "issue_admission_held", { reason: problem, approval_id: approval.id });
   }
+  boardContext(id: string): { selected: boolean; readiness_problem: string | null } {
+    const idea = this.store.get<Implementation>("implementations", id);
+    if (!idea?.project_id) return { selected: false, readiness_problem: null };
+    const source = this.issues(idea.project_id).sources.find(source => source.implementation_id === id && source.kind === "issue");
+    return { selected: source?.readiness?.eligible === true, readiness_problem: source?.readiness?.reasons.includes("conflicting_triage") ? "Resolve conflicting issue readiness labels before selecting the next action." : null };
+  }
   admissionProblem(id: string): string | null {
     const idea = this.store.get<Implementation>("implementations", id);
     if (!idea?.project_id) return null;

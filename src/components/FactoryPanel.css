@@ -35,7 +35,7 @@
   .factory-panel { padding: var(--space-4); }
   .factory-heading h1 { flex-basis: 100%; }
   .factory-heading-actions { width: 100%; }
-  .factory-heading-actions > .btn { flex: 1; min-width: 0; }
+  .factory-heading-button { flex: 1; min-width: 0; }
   .factory-filters { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-4); }
   .factory-form label, .factory-filters label { min-width: 0; }
   .factory-input { width: 100%; min-width: 0; min-height: var(--touch-target); font-size: var(--fs-input); }

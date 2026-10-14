@@ -1,3 +1,4 @@
+import { validIssuePlan } from "./github-issue-plan.ts";
 import { randomUUID } from "node:crypto";
 import type { FactoryRun, Implementation } from "../shared/factory.ts";
 import type { IssueBatch, IssueBatchProposal, IssueBatchesOverview, PlannedIssue } from "../shared/issue-batches.ts";
@@ -184,7 +185,7 @@ export class GitHubIssueBatches {
     if (keys.size !== value.items.length) throw new FactoryError("invalid_issue_batch", "Use a unique key for each deliverable");
     for (const item of value.items) {
       const plan = item.plan;
-      if (typeof item.key !== "string" || !/^[a-zA-Z0-9_-]{1,64}$/.test(item.key) || !text(item.title, 200) || !text(item.body, 30_000) || !text(item.deliverable, 10_000) || typeof item.ready_for_agent !== "boolean" || !Array.isArray(item.dependencies) || item.dependencies.length > 50 || item.dependencies.some(dep => !dep || !keys.has(dep.key) || dep.key === item.key || !["merge", "release"].includes(dep.requires)) || !plan || !text(plan.acceptance_criteria, 50_000) || !Array.isArray(plan.testing_seams) || !plan.testing_seams.length || plan.testing_seams.some(seam => !text(seam, 10_000)) || !Array.isArray(plan.planning_decisions) || plan.planning_decisions.some(decision => !text(decision, 10_000)) || !Array.isArray(plan.dependencies) || plan.dependencies.some(dep => !dep || !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(dep.repository) || !Number.isSafeInteger(dep.issue_number) || dep.issue_number < 1 || !["merge", "release"].includes(dep.requires))) throw new FactoryError("invalid_issue_batch", "Retain acceptance, deliverable boundaries, dependencies and confirmed testing decisions");
+      if (typeof item.key !== "string" || !/^[a-zA-Z0-9_-]{1,64}$/.test(item.key) || !text(item.title, 200) || !text(item.body, 30_000) || !text(item.deliverable, 10_000) || typeof item.ready_for_agent !== "boolean" || !Array.isArray(item.dependencies) || item.dependencies.length > 50 || item.dependencies.some(dep => !dep || !keys.has(dep.key) || dep.key === item.key || !["merge", "release"].includes(dep.requires)) || !validIssuePlan(plan)) throw new FactoryError("invalid_issue_batch", "Retain acceptance, deliverable boundaries, dependencies and confirmed testing decisions");
     }
     const visiting = new Set<string>(), visited = new Set<string>();
     const visit = (item: PlannedIssue) => {

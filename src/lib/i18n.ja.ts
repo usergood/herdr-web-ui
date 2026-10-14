@@ -8,6 +8,8 @@
  * in English. Placeholders in braces keep their English names.
  */
 export const JA: Record<string, string> = {
+  "PR title": "PR のタイトル",
+  "Problem and resulting behavior": "問題と変更後の動作",
   "Upstream repository (owner/name)": "アップストリームのリポジトリ（所有者/名前）",
   "Upstream releases": "アップストリームのリリース",
   "Upstream release": "対象のアップストリームリリース",

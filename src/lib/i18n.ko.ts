@@ -6,6 +6,8 @@
  * braces keep their English names.
  */
 export const KO: Record<string, string> = {
+  "PR title": "PR 제목",
+  "Problem and resulting behavior": "문제와 변경 후 동작",
   "Upstream repository (owner/name)": "업스트림 저장소 (소유자/이름)",
   "Upstream releases": "업스트림 릴리스",
   "Upstream release": "업스트림 릴리스 버전",

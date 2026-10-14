@@ -2,7 +2,7 @@
 export const factoryTrackerGuide = `Use only this Run's app-native Other tracker. All JSON fields are snake_case.
 Read: bun .saurons-eye-tracker.mjs contract; bun .saurons-eye-tracker.mjs ticket <ticket_id>.
 Allocate: bun .saurons-eye-tracker.mjs worker unused '{"role":"implementer","ticket_id":"<frontier ticket ID>","idempotency_key":"<stable key, letters/digits/underscore/hyphen, at most 128>","shared_paths":[]}'.
-For rework include "review_batch_id":"<sent batch ID>" and the original accepted ticket_id.
+For rework include "review_batch_id":"<sent batch ID>" and the original accepted ticket_id. Before any repair, read contract and select that exact review_batches entry; its immutable reports preserve the original full findings, Run ID and reviewed head. Notifications and worker context contain references, not replacement report content.
 Independent review roles are "standards" and "spec"; omit ticket_id, use a distinct stable idempotency_key.
 Worker actions: bun .saurons-eye-tracker.mjs reconcile|refresh|check|integrate|stop|review-evidence <worker_id>.
 A needs_you worker with a ready-candidate reason is quiescent, not completed: explicitly reconcile, refresh, check and integrate. A blocked native prompt or unanswered question requires the owner. Idle alone never completes a Ticket.

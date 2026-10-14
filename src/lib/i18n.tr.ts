@@ -7,6 +7,8 @@
  * keep their English names.
  */
 export const TR: Record<string, string> = {
+  "PR title": "PR başlığı",
+  "Problem and resulting behavior": "Sorun ve değişiklik sonrası davranış",
   "Upstream repository (owner/name)": "Üst kaynak deposu (sahip/ad)",
   "Upstream releases": "Üst kaynak sürümleri",
   "Upstream release": "Üst kaynak sürümü",

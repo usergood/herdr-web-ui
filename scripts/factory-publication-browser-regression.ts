@@ -16,6 +16,8 @@ try {
   await publication.getByText("fictional/project · main", { exact: true }).waitFor();
   assert.equal(f.uploads.length, 0);
   assert(await publication.getByText(f.head, { exact: true }).count());
+  await publication.getByRole("textbox", { name: "PR title", exact: true }).fill("fix(factory): preserve accepted delivery");
+  await publication.getByRole("textbox", { name: "Problem and resulting behavior", exact: true }).fill("Delivery lost its accepted result. Preserve it with verification evidence.");
   f.github({ lose_receipt: true });
   const published = page.waitForResponse(r => r.url().endsWith(f.route + "/publish"));
   await publication.getByRole("button", { name: "Publish PR", exact: true }).focus();

@@ -7,6 +7,8 @@ import "./FactoryPublicationPanel.css";
 
 export function FactoryPublicationPanel({ detail, busy, perform }: { detail: FactoryDetail; busy: boolean; perform: (action: () => Promise<void>) => Promise<void> }) {
   const t = useT(), run = detail.runs.at(-1);
+  const [title, setTitle] = useState(detail.implementation.title);
+  const [body, setBody] = useState(detail.implementation.description);
   const [view, setView] = useState<PublicationOverview | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const route = run ? `/runs/${run.id}/publication` : null;
@@ -21,7 +23,7 @@ export function FactoryPublicationPanel({ detail, busy, perform }: { detail: Fac
   const current = view?.run_id === run.id ? view : null;
   const publication = current?.publication;
   const act = (action: "publish" | "reconcile") => perform(async () => {
-    await accountRequest(`${route}/${action}`, action === "publish" ? { head: current?.head } : {});
+    await accountRequest(`${route}/${action}`, action === "publish" ? { head: current?.head, title, body } : {});
     setView(await accountRequest<PublicationOverview>(route));
   });
   return <section className="implementation-publication factory-section" aria-label={t("Implementation PR")}>
@@ -35,6 +37,6 @@ export function FactoryPublicationPanel({ detail, busy, perform }: { detail: Fac
     </> : publication && publication.condition !== "prepared" ? <>
       <p role="status">{t("Publication needs reconciliation")}</p>
       <button className="btn factory-button" disabled={busy} onClick={() => void act("reconcile")}>{t("Reconcile PR publication")}</button>
-    </> : <button className="btn factory-button" disabled={busy || !current?.eligible} onClick={() => void act("publish")}>{t("Publish PR")}</button>}
+    </> : <><label>{t("PR title")}<input className="input" value={title} maxLength={200} disabled={busy || !!publication} onChange={event => setTitle(event.target.value)} /></label><label>{t("Problem and resulting behavior")}<textarea className="input" value={body} maxLength={50_000} disabled={busy || !!publication} onChange={event => setBody(event.target.value)} /></label><button className="btn factory-button" disabled={busy || !current?.eligible} onClick={() => void act("publish")}>{t("Publish PR")}</button></>}
   </section>;
 }

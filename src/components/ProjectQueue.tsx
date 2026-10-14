@@ -61,7 +61,7 @@ export function ProjectQueue({ projectId }: { projectId: string }) {
         <SettingsRow label={t("Concurrent Assignments")} htmlFor={inputId} description={t("Bounded by global Assignment, agent and build limits.")}>
           <input id={inputId} className="input project-queue-limit" type="number" min={1} max={Math.min(view.capacity.max_implementations, view.capacity.max_agents, view.capacity.max_builds)} value={limit} disabled={busy} onChange={event => { editing.current = true; setLimit(Number(event.target.value)); }} />
         </SettingsRow>
-        <SettingsRow label={t("Save queue settings")}><button className="btn" disabled={busy || !Number.isSafeInteger(limit) || limit < 1 || limit > Math.min(view.capacity.max_implementations, view.capacity.max_agents, view.capacity.max_builds)} onClick={() => void act(route + "/configure", { expected_revision: view.revision, max_implementations: limit, paused: view.paused })}>{t("Save queue settings")}</button></SettingsRow>
+        <SettingsRow wide label={t("Save queue settings")}><button className="btn project-queue-button" disabled={busy || !Number.isSafeInteger(limit) || limit < 1 || limit > Math.min(view.capacity.max_implementations, view.capacity.max_agents, view.capacity.max_builds)} onClick={() => void act(route + "/configure", { expected_revision: view.revision, max_implementations: limit, paused: view.paused })}>{t("Save queue settings")}</button></SettingsRow>
       </SettingsGroup>
       <p role="status">{t("Project reservations: {count} of {limit}", { count: view.capacity.project_implementations, limit: view.effective_limit })}</p>
       <p>{t("Global reservations: {assignments} Assignments, {agents} agents, {builds} builds", { assignments: view.capacity.implementations, agents: view.capacity.agents, builds: view.capacity.builds })}</p>
@@ -71,9 +71,9 @@ export function ProjectQueue({ projectId }: { projectId: string }) {
           <p>{item.eligible ? t("Eligible") : [...new Set(item.reasons.map(reason => reasonLabel(reason, t)))].join(" · ")}</p>
           {item.problem && <p role="alert">{item.problem}</p>}
           <div className="project-queue-actions">
-            <button className="icon-button" aria-label={t("Move earlier")} disabled={busy || index === 0} onClick={() => void act(`/implementations/${item.implementation_id}/order`, { before_id: view.items[index - 1]!.implementation_id })}><ArrowUp aria-hidden="true" /></button>
-            <button className="icon-button" aria-label={t("Move later")} disabled={busy || index === view.items.length - 1} onClick={() => void act(`/implementations/${view.items[index + 1]!.implementation_id}/order`, { before_id: item.implementation_id })}><ArrowDown aria-hidden="true" /></button>
-            {item.failed_run_id && item.reasons.includes("retry_required") && <button className="btn" disabled={busy || item.reasons.includes("implementation_owned")} onClick={() => void act(`/implementations/${item.implementation_id}/retry`, { run_id: item.failed_run_id! })}>{t("Retry")}</button>}
+            <button className="icon-button project-queue-button" aria-label={t("Move earlier")} disabled={busy || index === 0} onClick={() => void act(`/implementations/${item.implementation_id}/order`, { before_id: view.items[index - 1]!.implementation_id })}><ArrowUp aria-hidden="true" /></button>
+            <button className="icon-button project-queue-button" aria-label={t("Move later")} disabled={busy || index === view.items.length - 1} onClick={() => void act(`/implementations/${view.items[index + 1]!.implementation_id}/order`, { before_id: item.implementation_id })}><ArrowDown aria-hidden="true" /></button>
+            {item.failed_run_id && item.reasons.includes("retry_required") && <button className="btn project-queue-button" disabled={busy || item.reasons.includes("implementation_owned")} onClick={() => void act(`/implementations/${item.implementation_id}/retry`, { run_id: item.failed_run_id! })}>{t("Retry")}</button>}
           </div>
         </li>)}</ol>
       </SettingsGroup>

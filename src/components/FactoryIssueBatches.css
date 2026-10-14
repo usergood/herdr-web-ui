@@ -3,9 +3,9 @@
 .factory-issue-batch + .factory-issue-batch { margin-top: var(--space-4); }
 .factory-issue-deliverable { padding-block: var(--space-3); border-top: var(--hairline) solid var(--border); }
 .factory-issue-deliverable h4 { margin-block: var(--space-2); }
-.factory-issue-batch .factory-actions .btn { min-height: var(--touch-target); }
+.factory-issue-batch-button { min-height: var(--touch-target); }
 @media (max-width: 640px) {
   .factory-issue-batch { padding: var(--space-3); }
-  .factory-issue-batch .factory-actions { flex-direction: column; }
-  .factory-issue-batch .factory-actions .btn { width: 100%; }
+  .factory-issue-batch-actions { flex-direction: column; }
+  .factory-issue-batch-button { width: 100%; }
 }

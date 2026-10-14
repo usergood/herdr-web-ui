@@ -127,6 +127,7 @@ export interface FactoryDetail {
   questions: FactoryQuestion[]; artifacts: FactoryArtifact[]; runs: FactoryRun[];
   snapshots: ReviewSnapshot[]; comments: ReviewComment[]; events: FactoryEvent[];
   workers: FactoryWorker[]; checks: FactoryCheck[]; review_evidence: FactoryReviewEvidence[];
+  review_batches?: import("./protocol.ts").FactoryBatchReceipt[];
   frontier: FactoryTicket[];
   retrospectives: FactoryRetrospective[];
   native_snapshots: NativeConversationSnapshot[];

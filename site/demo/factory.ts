@@ -102,6 +102,7 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
     return json(overview);
   }
   if (/^\/api\/factory\/projects\/[^/]+\/github\/issues\/\d+\/approve$/.test(path)) return failure("demo_only", "Issue readiness needs verified GitHub evidence on a real connection server.");
+  if (/^\/api\/factory\/implementations\/[^/]+\/request-changes$/.test(path) && method === "POST") return failure("demo_only", "Review delivery requires a real app-owned Run. The demo sends no reports or inline findings.");
   const issueBatchesRoute = /^\/api\/factory\/implementations\/([^/]+)\/issue-batches(?:\/([^/]+)\/(review|publish|resume))?$/.exec(path);
   if (issueBatchesRoute) {
     const detail = details.get(issueBatchesRoute[1]!);

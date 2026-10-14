@@ -11,5 +11,5 @@ export async function publicationGitHub(accounts: MachineAccounts, request: Publ
   if (request.action === "branch") return api(`branches/${encodeURIComponent(p.branch)}`);
   if (request.action === "push") { await push(); return api(`branches/${encodeURIComponent(p.branch)}`); }
   if (request.action !== "create" || typeof request.title !== "string" || !request.title.trim() || request.title.length > 200) throw new FactoryError("invalid_publication", "Select scoped PR publication");
-  return api("pulls", ["--method", "POST", "--raw-field", `title=${request.title}`, "--raw-field", `head=${p.branch}`, "--raw-field", `base=${p.target_branch}`, "--raw-field", `body=Assignment ${p.implementation_id}\n\nReviewed head: ${p.head}\nChecks: ${p.check_id}\nIndependent reviews: ${p.review_ids.join(", ")}\n\n<!-- saurons-eye-pr:${p.id} -->`]);
+  return api("pulls", ["--method", "POST", "--raw-field", `title=${request.title}`, "--raw-field", `head=${p.branch}`, "--raw-field", `base=${p.target_branch}`, "--raw-field", `body=${p.metadata?.body ?? `Assignment ${p.implementation_id}\nReviewed head: ${p.head}\nChecks: ${p.check_id}\nIndependent reviews: ${p.review_ids.join(", ")}`}\n\n<!-- saurons-eye-pr:${p.id} -->`]);
 }

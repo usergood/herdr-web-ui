@@ -1224,8 +1224,9 @@ export const DEFAULT_PORT = 7317;
  * POST .../accept (accept) -> FactoryRun; exact head, fresh checks/reviews, resolved findings;
  * publication requires its separate default-off Project opt-in or later Publish PR action.
  * GET /api/factory/runs/:id/publication -> PublicationOverview; accepted scope and current blockers.
- * POST .../publication/publish (accept) -> ImplementationPublication; exact accepted head,
- * current checks and independent reviews, selected Machine account; x-herdr-machine: 1 required.
+ * POST .../publication/publish (publish) -> ImplementationPublication; exact accepted head,
+ * optional repository-appropriate title/body, current checks and independent reviews,
+ * selected Machine account; x-herdr-machine: 1 required. Retains metadata and verification results.
  * POST .../publication/reconcile (empty) -> ImplementationPublication; read-only receipt recovery;
  * uncertain creation never replays. A verified upload with no creation dispatched can be
  * prepared for another explicit Publish PR. Automatic publication has a separate default-off Project setting.
@@ -1234,7 +1235,7 @@ export const DEFAULT_PORT = 7317;
  * GET /api/factory/tickets/:id -> FactoryTicket; stable app-native tracker identity.
  * POST /api/factory/implementations/:id/snapshots (snapshot) -> ReviewSnapshot, 201;
  * POST .../comments (comment) -> ReviewComment, 201; immutable line/hunk anchor.
- * POST .../request-changes (request_changes) -> FactoryBatchReceipt; only selected drafts delivered.
+ * POST .../request-changes (request_changes) -> FactoryBatchReceipt; selected inline drafts or immutable failed reports delivered once; uncertain receipts are never replayed.
  * POST .../comments/:comment/resolve (resolve) -> ReviewComment; current checks and both axes required.
  * POST /api/factory/projects/:id/retrospectives (retrospective) -> FactoryRetrospective, 201;
  * POST /api/factory/retrospectives/:id/approve (approve_retrospective) -> FactoryRetrospective; exact scope.
@@ -1333,7 +1334,8 @@ export interface FactoryRequests {
   accept: { head: string };
   snapshot: { mode: "branch" | "workspace"; run_id?: string };
   comment: { snapshot_id: string; path: string; change?: string; side: "old" | "new"; line_start: number; line_end: number; content: string };
-  request_changes: { run_id: string; snapshot_id: string; comment_ids: string[]; idempotency_key: string };
+  publish: { head: string; title?: string; body?: string };
+  request_changes: { run_id: string; snapshot_id: string; comment_ids: string[]; idempotency_key: string } | { run_id: string; head: string; report_ids: string[]; idempotency_key: string };
   resolve: { head: string; summary: string };
   retrospective: { evidence_ids: string[]; proposal: string };
   approve_retrospective: { scope_hash: string };
@@ -1394,7 +1396,8 @@ export type { ProjectSyncJob, ProjectSyncSchedule, ProjectSyncResult, ProjectSch
 export type { UpstreamRelease, ProjectUpstreamOverview } from "./upstream-releases.ts";
 export interface FactoryBatchReceipt {
   id: string; created_at: string; updated_at: string; implementation_id: string;
-  run_id: string; snapshot_id: string; key: string; signature: string;
+  run_id: string; snapshot_id: string | null; key: string; signature: string;
+  head?: string; report_ids?: string[]; reports?: import("./factory.ts").FactoryReviewEvidence[];
   status: "sending" | "sent" | "blocked" | "uncertain"; comment_ids: string[];
 }
 export interface FactoryAnswerDelivery {

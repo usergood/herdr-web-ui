@@ -62,6 +62,13 @@ export class FactoryMergeDelivery {
         const workspace = await this.runtime.capture(run.machine_id, path, idea.delivery_scope.base, "workspace");
         const branch = await this.runtime.capture(run.machine_id, path, idea.delivery_scope.base, "branch");
         if (workspace.files.length || workspace.repository !== idea.delivery_scope.repository || branch.repository !== idea.delivery_scope.repository) throw new FactoryError("delivery_changes_unknown", "Commit retained changes and restore the repository identity before verifying delivery", 409);
+        if (path === run.worktree && run.accepted_result && (workspace.head !== run.accepted_result.head || branch.head !== run.accepted_result.head)) throw new FactoryError("delivery_changes_changed", "The accepted integration head changed; accept fresh checks and reviews before delivery", 409);
+        // Accepted integration is the reviewed result. Completed worker branches
+        // retain superseded versions; their clean worktrees remain checked above.
+        if (path !== run.worktree && run.accepted_result && workers.filter(worker => worker.worktree === path).every(worker => worker.condition === "completed")) {
+          if (workers.some(worker => worker.worktree === path && worker.head !== branch.head)) throw new FactoryError("delivery_changes_changed", "A retained worker branch changed after integration; reconcile its changes before delivery", 409);
+          continue;
+        }
         for (const file of branch.files) {
           if (file.new_oid === undefined || file.new_mode === undefined) throw new FactoryError("delivery_changes_unknown", "Update this Machine's bridge to verify committed delivery changes", 409);
           const change: DeliveryChange = { path: file.path, oid: file.new_oid, mode: file.new_mode, ...(file.old_path ? { old_path: file.old_path } : {}) };
@@ -156,9 +163,11 @@ export class FactoryMergeDelivery {
           throw new FactoryError("delivery_changes_changed", "Retained changes or owned work changed during verification. Reconcile them and sync delivery again.", 409);
         }
         delivery.condition = "merged";
-        if (idea.delivery_scope?.milestone === "release") {
+        {
           const pending = this.store.list<FactoryQuestion>("questions", id).find(question => question.answer === null && (!question.run_id || this.store.get<FactoryRun>("runs", question.run_id)?.action !== "verify-provider"));
-          if (pending) throw new FactoryError("delivery_owner_action", "Answer the pending owner question before finishing release delivery", 409);
+          if (pending) throw new FactoryError("delivery_owner_action", "Answer the pending owner question before finishing delivery", 409);
+        }
+        if (idea.delivery_scope?.milestone === "release") {
           let complete = false, candidates = 0;
           for (let page = 1; page <= 3; page++) {
             const releases = await read<Release[]>({ kind: "releases", page });
@@ -202,7 +211,8 @@ export class FactoryMergeDelivery {
       if (this.scope(id) !== scope) throw new FactoryError("delivery_changed", "The Assignment changed during delivery verification; refresh before continuing", 409);
       const current = this.idea(id);
       this.store.db.transaction(() => {
-        const done = delivery.condition === "released" || delivery.condition === "merged" && current.delivery_scope?.milestone === "merge";
+        const pending = this.store.list<FactoryQuestion>("questions", id).some(question => question.answer === null && (!question.run_id || this.store.get<FactoryRun>("runs", question.run_id)?.action !== "verify-provider"));
+        const done = !pending && (delivery.condition === "released" || delivery.condition === "merged" && current.delivery_scope?.milestone === "merge");
         this.store.put("implementations", { ...current, delivery, completion_evidence: { ...evidence, reason: delivery.problem }, ...(done ? { stage: "done", outcome: delivery.condition === "released" ? "released" as const : "merged" as const } : {}) });
         const previous = current.delivery;
         if (previous?.condition !== delivery.condition || previous.problem !== delivery.problem || JSON.stringify(previous.changes) !== JSON.stringify(delivery.changes) || JSON.stringify(previous.pulls) !== JSON.stringify(delivery.pulls) || JSON.stringify(previous.release) !== JSON.stringify(delivery.release)) this.store.event(id, done ? "assignment_delivered" : "delivery_observed", { revision: delivery.revision, condition: delivery.condition, problem: delivery.problem, release: delivery.release });

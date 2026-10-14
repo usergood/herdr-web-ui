@@ -22,7 +22,7 @@ test("implementation PR publication defaults off and requires its own explicit P
 test("only an explicitly published accepted head opens its scoped PR and retains Awaiting merge", async () => {
   const f = await factoryPublicationFixture();
   try {
-    const proof = { head: f.head };
+    const proof = { head: f.head, title: "fix(factory): retain the reviewed result", body: "Completed work previously remained ambiguous. Preserve the accepted final change and its evidence." };
     expect((await f.request(f.route + "/publish", proof)).status).toBe(409);
     await f.verify();
     expect((await f.request(`/runs/${f.run.id}/accept`, proof)).status).toBe(200);
@@ -30,6 +30,11 @@ test("only an explicitly published accepted head opens its scoped PR and retains
     const published = await f.request(f.route + "/publish", proof);
     expect(published.status).toBe(200);
     const receipt = await published.json();
+    const created = f.calls().find(call => call.args.includes("--method"))!;
+    expect(created.args).toContain(`title=${proof.title}`);
+    const body = created.args.find(arg => arg.startsWith("body="))!;
+    expect(body).toContain(proof.body); expect(body).toContain("git status --porcelain: exit 0");
+    expect(body).toContain(`Validation at ${f.head}`); expect(body).toContain(`<!-- saurons-eye-pr:${receipt.id} -->`);
     expect(receipt).toMatchObject({ condition: "confirmed", head: f.head, repository: "fictional/project", target_branch: "main", branch: f.run.branch, pull: { number: 42 } });
     expect(f.uploads).toEqual([{ cwd: f.run.worktree!, repository: "fictional/project", branch: f.run.branch!, head: f.head }]);
     const detail = await f.request(f.prefix).then(r => r.json());

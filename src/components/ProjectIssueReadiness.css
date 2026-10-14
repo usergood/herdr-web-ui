@@ -1,4 +1,4 @@
 .project-issue-input { width: min(100%, 24rem); min-width: 0; }
 .project-issue-scope { white-space: pre-wrap; overflow-wrap: anywhere; }
 .project-issue-readiness { min-width: 0; overflow-wrap: anywhere; }
-.project-issue-dependency { display: grid; gap: var(--space-3); min-width: 0; border: 1px solid var(--border); border-radius: var(--radius-md); }
+.project-issue-dependency { display: grid; gap: var(--space-3); min-width: 0; border: var(--hairline) solid var(--border); border-radius: var(--radius-md); }

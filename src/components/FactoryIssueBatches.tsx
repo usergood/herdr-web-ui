@@ -56,10 +56,10 @@ export function FactoryIssueBatches({ implementationId, projectId, busy, perform
       {batch.problem && <p role="alert">{batch.problem}</p>}
       {!batch.dispatch_ready && batch.intents.length > 0 && <p role="status">{t("The whole batch is held until every issue and dependency link is confirmed.")}</p>}
       {!batch.dispatch_ready && batch.intents.length > 0 && <p>{t("Resume checks GitHub for the same batch before continuing publication.")}</p>}
-      {batch.condition !== "confirmed" && <div className="factory-actions">
-        <button className="btn" disabled={busy || !policyRevision || batch.intents.length > 0} onClick={() => act(batch, "review")}>{t("Review issue batch")}</button>
-        <button className="btn btn-primary" disabled={busy || !policyRevision || batch.condition !== "reviewed" || batch.review?.policy_revision !== policyRevision} onClick={() => act(batch, "publish")}>{t("Publish issue batch")}</button>
-        {(batch.condition === "held" || batch.condition === "publishing") && <button className="btn btn-primary" disabled={busy || !policyRevision || batch.review?.policy_revision !== policyRevision} onClick={() => act(batch, "resume")}>{t("Resume issue batch")}</button>}
+      {batch.condition !== "confirmed" && <div className="factory-actions factory-issue-batch-actions">
+        <button className="btn factory-issue-batch-button" disabled={busy || !policyRevision || batch.intents.length > 0} onClick={() => act(batch, "review")}>{t("Review issue batch")}</button>
+        <button className="btn factory-issue-batch-button btn-primary" disabled={busy || !policyRevision || batch.condition !== "reviewed" || batch.review?.policy_revision !== policyRevision} onClick={() => act(batch, "publish")}>{t("Publish issue batch")}</button>
+        {(batch.condition === "held" || batch.condition === "publishing") && <button className="btn factory-issue-batch-button btn-primary" disabled={busy || !policyRevision || batch.review?.policy_revision !== policyRevision} onClick={() => act(batch, "resume")}>{t("Resume issue batch")}</button>}
       </div>}
       {batch.intents.length > 0 && <details><summary>{t("Publication receipts")}</summary><ul>{batch.intents.map(intent => <li key={intent.id}>{batch.items.find(item => item.key === intent.item_key)?.title} · {intent.action === "create" ? t("Create issue") : intent.action === "link" ? t("Link dependencies") : t("Apply triage label")} · {intent.condition === "confirmed" ? t("Confirmed") : intent.condition === "uncertain" ? t("Uncertain") : t("Publishing")}{intent.problem && <p>{intent.problem}</p>}</li>)}</ul></details>}
     </section>)}

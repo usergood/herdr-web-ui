@@ -4893,3 +4893,19 @@ it("refuses cross-origin changes while allowing same-origin and CLI requests", a
     }
   } finally { instance.stop(); await workspaceClose(created.workspace.workspace_id); rmSync(root, { recursive: true, force: true }); }
 });
+
+// Report-only repair uses the same authenticated owner endpoint as inline findings.
+it("validates report-only request-changes ownership and rejects mixed batch shapes", async () => {
+  const { reviewReworkFixture } = await import("./factory-review-rework.fixture.ts");
+  const f = await reviewReworkFixture();
+  try {
+    const mixed = await f.request(f.prefix + "/request-changes", { ...f.submission, snapshot_id: "other", comment_ids: [] });
+    expect(mixed.status).toBe(400); expect(mixed.body.error.code).toBe("invalid_batch");
+    const other = (await f.request("/implementations", { title: "Other owned Assignment", description: "", project_id: f.project.id })).body;
+    expect((await f.request(`/implementations/${other.id}/request-changes`, f.submission)).body.error.code).toBe("batch_target_changed");
+    const sent = await f.request(f.prefix + "/request-changes", f.submission);
+    expect(sent.status).toBe(200); expect(sent.body.status).toBe("sent");
+    expect(sent.body.report_ids).toEqual([...f.submission.report_ids].sort());
+    expect((await f.request(f.prefix)).body.review_batches[0].id).toBe(sent.body.id);
+  } finally { f.close(); }
+}, 30_000);

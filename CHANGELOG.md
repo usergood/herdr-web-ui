@@ -7,6 +7,13 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 
 ## [Unreleased]
 
+### Added
+- Five Assignment board lanes, trusted issue readiness, Project queues, reviewed issue batches,
+  explicit PR publication, synchronization schedules and upstream release intake. Repository work
+  finishes only after verified merge or release delivery; pending owner decisions remain visible.
+- Send retained failed review reports to an owned repair worker with exact-head validation and
+  durable delivery receipts, preserving uncertain outcomes across reloads.
+
 ### Fixed
 - Continue approved planning from the native chat, retain finished chats, and run
   required verification before implementation. Scope native probe questions separately

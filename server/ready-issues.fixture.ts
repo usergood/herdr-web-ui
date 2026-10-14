@@ -7,14 +7,19 @@ import type { FactoryRun, FactoryWorker } from "../shared/factory.ts";
 
 /** An owned external Machine speaks the public host protocol and creates real Git worktrees.
  * It models certified native responses; it cannot certify a production provider. */
-export async function readyIssuesFixture() {
+export async function readyIssuesFixture(behavior: { reviewOutcome?: "passed" | "failed"; reportContent?: string } = {}) {
   const base = await githubScheduleFixture({ version: async () => "owned-ready-provider" });
   const repo = join(base.root, "repo");
   const runs = new Map<string, FactoryRun>();
+  const accesses = new Map<string, { url: string; token: string }>();
   const launches: FactoryRun[] = [];
   const workers = new Map<string, FactoryWorker>();
   const git = (path: string, args: string[]) => execFileSync("git", ["-C", path, ...args], { encoding: "utf8" }).trim();
   const head = (path: string) => ({ head: git(path, ["rev-parse", "HEAD"]), workspace_hash: git(path, ["rev-parse", "HEAD"]) + ":" + git(path, ["status", "--porcelain"]) });
+  const deliveries: string[] = [];
+  const workerContexts: unknown[] = [];
+  let uncertainDelivery = false;
+  let reviewOutcome = behavior.reviewOutcome ?? "passed";
   let failLaunch = false, offline = false;
   const host = Bun.serve({ port: 0, async fetch(request) {
     const url = new URL(request.url);
@@ -27,12 +32,18 @@ export async function readyIssuesFixture() {
     }
     if (url.pathname.endsWith("/launch")) {
       const run: FactoryRun = body.run;
+      accesses.set(run.id, body.access);
       launches.push(run);
       if (failLaunch) { const failed = { ...run, condition: "failed" as const, waiting_reason: "Owned pre-allocation failure" }; runs.set(run.id, failed); return Response.json(failed); }
       const worktree = join(base.root, "native", run.id); mkdirSync(join(base.root, "native"), { recursive: true });
       execFileSync("git", ["-C", repo, "worktree", "add", "-b", `owned/${run.id}`, worktree, run.base!], { stdio: "ignore" });
       const launched = { ...run, worktree, branch: `owned/${run.id}`, workspace_id: `owned-${run.id}`, pane_id: `owned-${run.id}:p1`, condition: "working" as const };
       runs.set(run.id, launched); return Response.json(launched);
+    }
+    if (/\/runs\/[^/]+\/send$/.test(url.pathname)) {
+      if (body.text.length > 250_000 || new TextEncoder().encode(JSON.stringify(body)).length > 512 * 1024) return Response.json({ error: { code: "invalid_input", message: "Owned remote send limit" } }, { status: 400 });
+      deliveries.push(body.text);
+      return uncertainDelivery ? new Response(null, { status: 503 }) : Response.json({ ok: true });
     }
     const nativeOperation = /\/runs\/([^/]+)\/operations\/([^/]+)$/.exec(url.pathname);
     if (nativeOperation) {
@@ -42,6 +53,8 @@ export async function readyIssuesFixture() {
       if (action === "head") return Response.json(head(run.worktree!));
       if (action === "transcript") return Response.json({ source_id: `owned:${run.id}`, version: "1", cursor: null, turns: [] });
       if (action === "worker") {
+        if (new TextEncoder().encode(JSON.stringify(body)).length > 512 * 1024) return Response.json({ error: { code: "body_too_large", message: "Owned remote context limit" } }, { status: 413 });
+        workerContexts.push(body.context);
         const record: FactoryWorker = body.worker;
         const worktree = join(base.root, "native", record.id), branch = `owned/${record.id}`;
         execFileSync("git", ["-C", repo, "worktree", "add", "-b", branch, worktree, record.base!], { stdio: "ignore" });
@@ -66,7 +79,7 @@ export async function readyIssuesFixture() {
         workers.set(worker!.id, { ...worker!, condition: worker!.condition === "completed" ? "completed" : "cancelled" });
         return Response.json({ ok: true });
       }
-      if (action === "review-evidence") return Response.json({ head: worker!.base, source_id: `owned-independent:${worker!.id}`, content: `Owned ${worker!.role} review`, outcome: "passed" });
+      if (action === "review-evidence") return Response.json({ head: worker!.base, source_id: `owned-independent:${worker!.id}`, content: behavior.reportContent ?? `Owned ${worker!.role} review\nready.txt:1 Preserve the exact original finding.`, outcome: reviewOutcome });
     }
     const operation = /\/runs\/([^/]+)\/(reconcile|stop|finish)$/.exec(url.pathname);
     if (operation) {
@@ -100,7 +113,12 @@ export async function readyIssuesFixture() {
   const plan = { acceptance_criteria: "Owner decisions survive automatic implementation", testing_seams: ["Public HTTP/API and browser journeys"], planning_decisions: ["One Assignment per deliverable"], dependencies: [] };
   const respond = (value: object) => writeFileSync(base.responses, JSON.stringify(value));
   return { ...base, origin, request, project, route, policy, issue, plan, respond, launches,
-    repo, hostAccountId: base.policy.account_profile_id,
+    repo, agentContract: async (runId: string) => {
+      const access = accesses.get(runId)!;
+      const response = await fetch(origin() + new URL(access.url).pathname + "/contract", { headers: { authorization: `Bearer ${access.token}` } });
+      if (!response.ok) throw new Error(`Owned contract read failed: ${response.status}`);
+      return response.json();
+    }, setReviewOutcome: (value: "passed" | "failed") => { reviewOutcome = value; }, deliveries, workerContexts, uncertainDelivery: (value: boolean) => { uncertainDelivery = value; }, hostAccountId: base.policy.account_profile_id,
     rest: (id: string) => { runs.set(id, { ...runs.get(id)!, condition: "ready" }); },
     restWorker: (id: string) => { const worker = workers.get(id)!; workers.set(id, { ...worker, ...head(worker.worktree!), condition: "ready" }); },
     tick: () => poll(), restart: () => { app.stop(); app = createServer(options); },

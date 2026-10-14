@@ -1,3 +1,4 @@
+import { validIssuePlan } from "./github-issue-plan.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -306,9 +307,8 @@ export class ProjectGitHub {
     return { ...source, triage_roles: roles, readiness: { eligible: reasons.length === 0, reasons, approval } };
   }
   private plan(value: unknown): ProjectIssuePlan {
-    const plan = value as ProjectIssuePlan | null;
-    const strings = (items: unknown, required = false): items is string[] => Array.isArray(items) && (!required || items.length > 0) && items.length <= 100 && items.every(item => typeof item === "string" && item.trim().length > 0 && item.length <= 10_000);
-    if (!plan || typeof plan.acceptance_criteria !== "string" || !plan.acceptance_criteria.trim() || plan.acceptance_criteria.length > 50_000 || !strings(plan.testing_seams, true) || !strings(plan.planning_decisions) || !Array.isArray(plan.dependencies) || plan.dependencies.length > 100 || plan.dependencies.some(item => !item || !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(item.repository) || !Number.isSafeInteger(item.issue_number) || item.issue_number < 1 || !["merge", "release"].includes(item.requires))) throw new FactoryError("github_plan_required", "Retain acceptance criteria, explicit dependencies, confirmed testing seams and planning decisions");
+    if (!validIssuePlan(value)) throw new FactoryError("github_plan_required", "Retain acceptance criteria, explicit dependencies, confirmed testing seams and planning decisions");
+    const plan = value;
     return { acceptance_criteria: plan.acceptance_criteria, dependencies: plan.dependencies.map(({ repository, issue_number, requires }) => ({ repository, issue_number, requires })), testing_seams: plan.testing_seams, planning_decisions: plan.planning_decisions };
   }
   async approveIssue(id: string, number: number, proof: ProjectIssueApprovalRequest): Promise<ProjectGitHubOverview> {
