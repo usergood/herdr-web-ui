@@ -7,6 +7,7 @@ import type { FactoryHostRequests, FactoryArtifact, FactoryChat, FactoryDetail, 
 import { badRequest, errorResponse, httpError, isJsonObject, jsonResponse } from "./http.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { FactoryError, hash, inspectCheckout } from "./factory-host.ts";
+import { FactoryDelivery } from "./factory-delivery.ts";
 import { FactoryArtifacts } from "./factory-artifacts.ts";
 import { FactoryWorkflow } from "./factory-workflow.ts";
 import { FactoryBackup } from "./factory-backup.ts";
@@ -465,6 +466,11 @@ export class FactoryService {
           return jsonResponse(checkout, 201);
         }
         const next = { ...project, updated_at: new Date().toISOString() };
+        if (body.delivery_policy !== undefined) { if (body.delivery_policy !== "merge" && body.delivery_policy !== "release") throw new FactoryError("invalid_delivery_policy", "Choose verified merge or containing release"); next.delivery_policy = body.delivery_policy; }
+        if (body.delivery_branch !== undefined) {
+          if (typeof body.delivery_branch !== "string" || !body.delivery_branch || body.delivery_branch.length > 200 || !/^(?![./-])(?!.*(?:\.\.|@\{|\/\/|[\x00-\x20\x7f~^:?*\[\\]))(?!.*(?:\/$|\.$|\.lock(?:\/|$)))[^\s]+$/.test(body.delivery_branch) || body.delivery_branch.split("/").some(part => part.startsWith("."))) throw new FactoryError("invalid_delivery_branch", "Enter a valid delivery branch");
+          next.delivery_branch = body.delivery_branch;
+        }
         if (body.name !== undefined) { if (typeof body.name !== "string" || !body.name.trim() || body.name.length > 200) throw new FactoryError("invalid_project", "Enter a Project name"); next.name = body.name.trim(); }
         if (body.workflow_instructions !== undefined) { if (typeof body.workflow_instructions !== "string" || body.workflow_instructions.length > 20000) throw new FactoryError("invalid_workflow", "Keep Project workflow instructions within 20,000 characters"); next.workflow_instructions = body.workflow_instructions; }
         if (body.context_target_tokens !== undefined) { if (!Number.isInteger(body.context_target_tokens) || Number(body.context_target_tokens) < 150000 || Number(body.context_target_tokens) > 200000) throw new FactoryError("invalid_context_target", "Use a context planning target between 150,000 and 200,000 tokens"); next.context_target_tokens = Number(body.context_target_tokens); }
@@ -629,7 +635,7 @@ export class FactoryService {
         if (typeof body.name !== "string" || !body.name.trim() || body.name.length > 200 || typeof body.path !== "string" || !providers.includes(body.provider as FactoryProvider) || !["app", "github", "gitlab", "local"].includes(String(body.tracker))) return badRequest("invalid_project", "Enter a name, checkout, provider and tracker");
         if (typeof body.machine_id !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(body.machine_id) || !this.registeredMachine(body.machine_id)) throw new FactoryError("invalid_machine", "Select an execution Machine");
         const inspected = await this.runtime.inspect(body.machine_id, body.path);
-        const project: FactoryProject = { ...this.store.record(), name: body.name.trim(), repository: inspected.repository, provider: body.provider as FactoryProvider, machine_id: body.machine_id, tracker: body.tracker as FactoryProject["tracker"], tracker_reference: typeof body.tracker_reference === "string" ? body.tracker_reference : "" };
+        const project: FactoryProject = { ...this.store.record(), name: body.name.trim(), repository: inspected.repository, provider: body.provider as FactoryProvider, machine_id: body.machine_id, tracker: body.tracker as FactoryProject["tracker"], tracker_reference: typeof body.tracker_reference === "string" ? body.tracker_reference : "", delivery_policy: "merge", delivery_branch: inspected.branch === "HEAD" ? "main" : inspected.branch };
         let guidance: Implementation | null = null;
         if (body.guided_setup === true) {
           const detected = await this.runtime.discover(project.machine_id, inspected.path);
@@ -656,6 +662,11 @@ export class FactoryService {
         this.store.db.transaction(() => { this.store.put("projects", project); this.store.put("checkouts", checkout, project.id); if (guidance) { this.store.put("implementations", guidance); const chat: FactoryChat = { ...this.store.record(), implementation_id: guidance.id, title: "Setup" }; this.store.put("chats", chat, guidance.id); } this.store.event(null, "project_registered", { project_id: project.id, checkout_id: checkout.id }); })();
         return jsonResponse(project, 201);
       }
+      const completionEvidence = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/completion-evidence$/.exec(url.pathname);
+      if (completionEvidence && request.method === "GET") {
+        if (!this.store.get("implementations", completionEvidence[1]!)) throw new FactoryError("not_found", "Assignment not found", 404);
+        return jsonResponse(await new FactoryDelivery(this.store, this.runtime).inspect(completionEvidence[1]!));
+      }
       const completeWork = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/complete-work$/.exec(url.pathname);
       if (completeWork && request.method === "POST") {
         const body = await this.body(request); const id = completeWork[1]!;
@@ -663,13 +674,17 @@ export class FactoryService {
         const run = this.store.list<FactoryRun>("runs", id).at(-1);
         if (!idea || !run || run.id !== body.run_id || run.action !== "work" || !run.workspace_id || !run.pane_id) throw new FactoryError("direct_work_required", "Select this Assignment's latest direct work session before marking it done", 409);
         if (idea.stage === "done" && !this.activeWork(id)) return jsonResponse(idea);
+        const evidence = await new FactoryDelivery(this.store, this.runtime).inspect(id);
+        if (evidence.repository_changes !== "none" || !evidence.quiescent) throw new FactoryError(evidence.repository_changes === "changes" ? "repository_delivery_required" : "completion_evidence_required", evidence.reason!, 409);
         const scope = hash(JSON.stringify({project_id:idea.project_id,provider:idea.provider,machine_id:idea.machine_id,archived_at:idea.archived_at}));
         await this.retainHandoff(run.id);
-        await this.runtime.stopRun(run.id, {summary:"Owner marked direct work done; its worktree is retained"});
+        if (!["completed", "cancelled", "failed"].includes(this.store.get<FactoryRun>("runs", run.id)!.condition)) await this.runtime.finishStep(run.id);
+        const finalEvidence = await new FactoryDelivery(this.store, this.runtime).inspect(id);
+        if (finalEvidence.repository_changes !== "none" || !finalEvidence.quiescent) throw new FactoryError(finalEvidence.repository_changes === "changes" ? "repository_delivery_required" : "completion_evidence_required", finalEvidence.reason!, 409);
         return jsonResponse(this.store.db.transaction(() => {
           const current = this.store.get<Implementation>("implementations", id)!;
           if (this.store.list<FactoryRun>("runs", id).at(-1)?.id !== run.id || this.activeWork(id) || hash(JSON.stringify({project_id:current.project_id,provider:current.provider,machine_id:current.machine_id,archived_at:current.archived_at})) !== scope) throw new FactoryError("scope_changed", "The Assignment changed during completion; refresh it before continuing", 409);
-          const next: Implementation = {...current,stage:"done",outcome:"implementation_complete",updated_at:new Date().toISOString()};
+          const next: Implementation = {...current,stage:"done",outcome:"research_accepted",updated_at:new Date().toISOString()};
           this.store.put("implementations",next);this.store.event(id,"direct_work_completed",{run_id:run.id,owner_accepted:true});return next;
         })());
       }

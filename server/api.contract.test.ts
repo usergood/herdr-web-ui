@@ -23,6 +23,7 @@ import type { FactoryAction, FactoryRun } from "../shared/factory.ts";
 import type { FactoryNative } from "./factory-native.ts";
 import { githubScheduleFixture } from "./github-schedules.fixture.ts";
 import { batchProposal, githubIssueBatchFixture } from "./github-issue-batches.fixture.ts";
+import { factoryDeliveryFixture } from "./factory-delivery.fixture.ts";
 
 async function factoryBoardFixture(native: Partial<FactoryNative> = {}) {
   const state = mkdtempSync(join(tmpdir(), "saurons-eye-board-live-")); const repo = join(state, "repo");
@@ -107,6 +108,156 @@ describe("GitHub planned issue batch publication", () => {
       expect(published.status).toBe(200); expect(published.body.condition).toBe("confirmed");
     } finally { f.close(); }
   });
+});
+
+describe("Assignment delivery policy", () => {
+  it("rejects invalid delivery branches instead of freezing an undeliverable Assignment scope", async () => {
+    const f = await factoryDeliveryFixture();
+    try {
+      const response = await f.request(`/projects/${f.project.id}/configure`, { delivery_branch: "delivery/.hidden" });
+      expect(response.status).toBe(400);
+      expect((await response.json()).error.code).toBe("invalid_delivery_branch");
+      expect((await f.request("").then(r => r.json())).projects.find((project: { id: string }) => project.id === f.project.id).delivery_branch).toBe("main");
+    } finally { await f.close(); }
+  }, 30_000);
+  it("retains repository-change evidence from an earlier review even if the current worktree is reset clean", async () => {
+    const f = await factoryDeliveryFixture();
+    try {
+      const run = await f.start();
+      writeFileSync(join(run.worktree!, "findings.md"), "Retained intended repository change\n");
+      f.git(["add", "findings.md"], run.worktree!);
+      f.git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "retained findings"], run.worktree!);
+      const review = await f.request(`${f.prefix}/snapshots`, { run_id: run.id, mode: "branch" }).then(r => r.json());
+      expect(review.files.some((entry: { path: string }) => entry.path === "findings.md")).toBe(true);
+      f.git(["reset", "--hard", run.base!], run.worktree!);
+      const response = await f.request(`${f.prefix}/complete-work`, { run_id: run.id });
+      expect(response.status).toBe(409);
+      expect((await response.json()).error.code).toBe("repository_delivery_required");
+      expect((await f.request(f.prefix).then(r => r.json())).snapshots.some((entry: { id: string }) => entry.id === review.id)).toBe(true);
+    } finally { await f.close(); }
+  }, 30_000);
+  it("keeps inspected no-change research in Needs you until the owner explicitly accepts it", async () => {
+    const f = await factoryDeliveryFixture();
+    try {
+      const run = await f.start();
+      await f.request(`/runs/${run.id}/stop`, {});
+      expect((await f.request(`${f.prefix}/completion-evidence`).then(r => r.json())).repository_changes).toBe("none");
+      const detail = await f.request(f.prefix).then(r => r.json());
+      expect(detail.board).toMatchObject({ lane: "needs_you", activity: "researching", busy: false });
+      expect(detail.board.waiting_reason).toContain("Accept");
+      expect(detail.implementation.stage).not.toBe("done");
+      expect((await f.request(`${f.prefix}/complete-work`, { run_id: run.id })).status).toBe(200);
+    } finally { await f.close(); }
+  }, 30_000);
+  it("rejects research acceptance when repository changes arrive during native handoff capture", async () => {
+    const f = await factoryDeliveryFixture(true);
+    try {
+      const run = await f.start();
+      f.changeDuringHandoff(() => writeFileSync(join(run.worktree!, "late-findings.md"), "Late repository documentation\n"));
+      const response = await f.request(`${f.prefix}/complete-work`, { run_id: run.id });
+      expect(response.status).toBe(409);
+      expect((await response.json()).error.code).toBe("repository_delivery_required");
+      expect((await f.request(f.prefix).then(r => r.json())).board.lane).toBe("needs_you");
+    } finally { await f.close(); }
+  }, 30_000);
+  it("accepts reviewed repository work while keeping the Assignment awaiting delivery", async () => {
+    const f = await factoryDeliveryFixture(true, true);
+    try {
+      await f.request(`/projects/${f.project.id}/configure`, { checks: [["git", "status", "--porcelain"]] });
+      const run = await f.start();
+      writeFileSync(join(run.worktree!, "findings.md"), "Reviewed repository change\n");
+      f.git(["add", "findings.md"], run.worktree!);
+      f.git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "reviewed findings"], run.worktree!);
+      const head = f.git(["rev-parse", "HEAD"], run.worktree!).trim(); f.setReviewHead(head);
+      expect((await f.request(`/runs/${run.id}/checks`, {})).status).toBe(200);
+      for (const role of ["standards", "spec"]) {
+        const worker = await f.request(`/runs/${run.id}/workers`, { role, idempotency_key: `delivery-${role}` }).then(r => r.json());
+        expect((await f.request(`/runs/${run.id}/workers/${worker.id}/review-evidence`, {})).status).toBe(200);
+      }
+      expect((await f.request(`/runs/${run.id}/accept`, { head })).status).toBe(200);
+      const detail = await f.request(f.prefix).then(r => r.json());
+      expect(detail.implementation).toMatchObject({ stage: "review", outcome: "implementation_complete" });
+      expect(detail.board).toMatchObject({ lane: "needs_you", activity: "awaiting_merge", busy: false });
+      expect(detail.runs[0].condition).toBe("completed");
+    } finally { await f.close(); }
+  }, 30_000);
+  it("reports an unavailable Machine as unknown and requires owner attention instead of accepting research", async () => {
+    const f = await factoryDeliveryFixture(true);
+    try {
+      const run = await f.start();
+      expect(run.condition).toBe("working");
+      f.disconnect();
+      const inspection = await f.request(`${f.prefix}/completion-evidence`);
+      expect(inspection.status).toBe(200);
+      expect(await inspection.json()).toMatchObject({ repository_changes: "unknown", quiescent: false });
+      expect((await f.request(`${f.prefix}/complete-work`, { run_id: run.id })).status).toBe(409);
+      const detail = await f.request(f.prefix).then(r => r.json());
+      expect(detail.board).toMatchObject({ lane: "needs_you" });
+      expect(detail.board.waiting_reason).toContain("Reconnect");
+      expect(detail.implementation.stage).not.toBe("done");
+    } finally { await f.close(); }
+  }, 30_000);
+  it("requires delivery for changes retained in a stopped child even when the parent has no changes", async () => {
+    const f = await factoryDeliveryFixture();
+    try {
+      const run = await f.start();
+      const workerResponse = await f.request(`/runs/${run.id}/workers`, { role: "standards", idempotency_key: "research-child" });
+      expect(workerResponse.status).toBe(200);
+      const worker = await workerResponse.json();
+      writeFileSync(join(worker.worktree, "child-findings.md"), "Retained child documentation\n");
+      expect((await f.request(`/runs/${run.id}/workers/${worker.id}/stop`, {})).status).toBe(200);
+      const response = await f.request(`${f.prefix}/complete-work`, { run_id: run.id });
+      expect(response.status).toBe(409);
+      expect((await response.json()).error.code).toBe("repository_delivery_required");
+      expect((await f.request(f.prefix).then(r => r.json())).implementation.completion_evidence.repository_changes).toBe("changes");
+    } finally { await f.close(); }
+  }, 30_000);
+  it("accepts app-held research only after verifying no repository changes and resting owned work", async () => {
+    const f = await factoryDeliveryFixture();
+    try {
+      const run = await f.start();
+      const detail = await f.request(f.prefix).then(r => r.json());
+      const artifact = await f.request(`${f.prefix}/artifacts`, { chat_id: detail.chats[0].id, name: "research.md", media_type: "text/markdown", content_base64: Buffer.from("App-held research\n").toString("base64") }).then(r => r.json());
+      const response = await f.request(`${f.prefix}/complete-work`, { run_id: run.id });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ stage: "done", outcome: "research_accepted", completion_evidence: { repository_changes: "none", quiescent: true } });
+      const completed = await f.request(f.prefix).then(r => r.json());
+      expect(completed.artifacts.some((entry: { id: string }) => entry.id === artifact.id)).toBe(true);
+      expect(completed.board.lane).toBe("done");
+      expect((await f.request(`${f.prefix}/complete-work`, { run_id: run.id })).status).toBe(200);
+    } finally { await f.close(); }
+  }, 30_000);
+  it("rejects manual completion of committed documentation despite a clean worktree", async () => {
+    const f = await factoryDeliveryFixture();
+    try {
+      const run = await f.start();
+      writeFileSync(join(run.worktree!, "findings.md"), "Research intended for repository delivery\n");
+      f.git(["add", "findings.md"], run.worktree!);
+      f.git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "retain findings"], run.worktree!);
+      const response = await f.request(`${f.prefix}/complete-work`, { run_id: run.id });
+      expect(response.status).toBe(409);
+      expect((await response.json()).error.code).toBe("repository_delivery_required");
+      const detail = await f.request(f.prefix).then(r => r.json());
+      expect(detail.implementation.stage).not.toBe("done");
+      expect(detail.board).toMatchObject({ lane: "needs_you", activity: "awaiting_merge", busy: false });
+      expect(detail.board.waiting_reason).toContain("delivery");
+    } finally { await f.close(); }
+  }, 30_000);
+  it("defaults to verified merge and freezes the repository, branch and milestone on first start", async () => {
+    const f = await factoryDeliveryFixture();
+    try {
+      expect(f.project).toMatchObject({ delivery_policy: "merge", delivery_branch: "main" });
+      expect((await f.request(`/projects/${f.project.id}/configure`, { delivery_policy: "release", delivery_branch: "stable" })).status).toBe(200);
+      const run = await f.start();
+      const scope = { milestone: "release", repository: f.project.repository, branch: "stable", base: run.base };
+      expect((await f.request(f.prefix).then(r => r.json())).implementation.delivery_scope).toEqual(scope);
+      await f.request(`/projects/${f.project.id}/configure`, { delivery_policy: "merge", delivery_branch: "main" });
+      await f.request(`/runs/${run.id}/stop`, {});
+      const next = await f.start("delivery-successor");
+      expect((await f.request(f.prefix).then(r => r.json())).implementation.delivery_scope).toEqual(scope);
+      expect((next.manifest as any).implementation.delivery_scope).toEqual(scope);
+    } finally { await f.close(); }
+  }, 30_000);
 });
 
 describe("GitHub issue readiness", () => {

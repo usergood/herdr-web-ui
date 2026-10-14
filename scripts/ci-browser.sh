@@ -59,6 +59,7 @@ run_script scripts/demo-build.ts "$HERDR_DEMO_BUILD"
 run_script scripts/ui-regression.ts
 run_script scripts/factory-browser-regression.ts
 run_script scripts/factory-board-browser-regression.ts
+run_script scripts/factory-delivery-browser-regression.ts
 run_script scripts/project-setup-browser-regression.ts
 run_script scripts/project-navigation-browser-regression.ts
 run_script scripts/project-schedules-browser-regression.ts

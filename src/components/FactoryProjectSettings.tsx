@@ -17,6 +17,8 @@ export function FactoryProjectSettings({ project, overview, machineId, machines,
   const [provider, setProvider] = useState<FactoryProvider>(project.provider);
   const [mode, setMode] = useState<AgentPermissionMode>(project.permission_mode ?? "ask");
   const [target, setTarget] = useState(project.context_target_tokens ?? 150000);
+  const [milestone, setMilestone] = useState(project.delivery_policy ?? "merge");
+  const [deliveryBranch, setDeliveryBranch] = useState(project.delivery_branch ?? overview.checkouts.find(c => c.project_id === project.id)?.branch ?? "main");
   const [host, setHost] = useState(project.machine_id);
   const [path, setPath] = useState(overview.checkouts.find(c => c.project_id === project.id && c.machine_id === machineId)?.path ?? "");
   const [data, setData] = useState<ProjectDiscovery | null>(null);
@@ -45,7 +47,7 @@ export function FactoryProjectSettings({ project, overview, machineId, machines,
   return <section className="factory-section"><h3>{section === "checkout" ? t("Verify Machine checkout") : t("Project execution settings")}</h3>
     {section === "execution" && <form className="factory-form" onSubmit={event => {
       event.preventDefault(); if (!selectedHost) return;
-      void perform(async () => { await factoryRequest(`/projects/${project.id}/configure`, { provider, machine_id: selectedHost, permission_mode: mode, context_target_tokens: target, ...(presetTouched.current ? { execution_preset: preset } : {}), ...(data || checksTouched ? { checks: choices.filter(c => selected.includes(c.id)).map(c => c.args) } : {}), ...(!project.workflow_instructions?.trim() ? { workflow_instructions: MATT_PROJECT_WORKFLOW } : {}) }); });
+      void perform(async () => { await factoryRequest(`/projects/${project.id}/configure`, { provider, machine_id: selectedHost, permission_mode: mode, context_target_tokens: target, delivery_policy: milestone, delivery_branch: deliveryBranch, ...(presetTouched.current ? { execution_preset: preset } : {}), ...(data || checksTouched ? { checks: choices.filter(c => selected.includes(c.id)).map(c => c.args) } : {}), ...(!project.workflow_instructions?.trim() ? { workflow_instructions: MATT_PROJECT_WORKFLOW } : {}) }); });
     }}>
       <label>{t("CLI agent")}<select className="select" value={provider} onChange={event => { const next = event.target.value as FactoryProvider; setProvider(next); modeTouched.current = true; presetTouched.current = true; setPreset({ model: null, reasoning: null }); setMode(next === "codex" && data?.permission_modes.codex.includes("approve_for_me") ? "approve_for_me" : "ask"); }}><option>codex</option><option>claude</option><option>opencode</option></select></label>
       <label>{t("Machine")}<select className="select" value={selectedHost} onChange={event => setHost(event.target.value)}><option value="" disabled>{t("Select a Machine")}</option>{hosts.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></label>
@@ -53,6 +55,9 @@ export function FactoryProjectSettings({ project, overview, machineId, machines,
       {selectedHost && <AgentModelPicker projectId={project.id} machineId={selectedHost} provider={provider} accountScope={JSON.stringify(project.account_bindings?.[selectedHost] ?? {})} value={preset} onChange={selection => { presetTouched.current = true; setPreset(selection); }} disabled={busy} />}
       <label>{t("Context handoff target")}<select className="select" value={target} onChange={event => setTarget(Number(event.target.value))}>{![150000, 200000].includes(target) && <option value={target}>{target.toLocaleString()}</option>}<option value={150000}>150,000</option><option value={200000}>200,000</option></select></label>
       <p className="field-hint">{t("A planning target for smaller Ticket workers, not a measured hard token limit.")}</p>
+      <label>{t("Delivery milestone")}<select className="select" value={milestone} onChange={event => setMilestone(event.target.value as "merge" | "release")}><option value="merge">{t("Verified merge")}</option><option value="release">{t("Containing release")}</option></select></label>
+      <label>{t("Delivery branch")}<input className="input" required value={deliveryBranch} onChange={event => setDeliveryBranch(event.target.value)} /></label>
+      <p className="field-hint">{t("Delivery settings apply to new Assignments. Started Assignments keep their frozen scope.")}</p>
       <ProjectChecks choices={choices} selected={selected} onChange={ids => {setChecksTouched(true);setSelected(ids);}} />{problem && <p role="status">{problem}</p>}
       <h3>{t("Matt Pocock workflow")}</h3><p>{t("Repository documents provide domain language and coding standards. Existing custom guidance is preserved.")}</p>{data && <ul>{data.guidance.map(file => <li key={file}>{file}</li>)}</ul>}
       <p className="field-hint">{t("Pinned skills, approved Tickets, checks and independent reviews remain required.")}</p>
