@@ -69,6 +69,157 @@ afterAll(() => {
 
 const base = () => `http://localhost:${server.port}`;
 
+describe("Assignment discard", () => {
+  it("does not let an in-flight research acceptance replace the owner's explicit Discard outcome", async () => {
+    const f = await factoryDeliveryFixture(true);
+    try {
+      const run = await f.start();
+      f.changeDuringHandoff(async () => {
+        expect((await f.request(`${f.prefix}/discard`, {}).then(r => r.json())).outcome).toBe("discarded");
+      });
+      const response = await f.request(`${f.prefix}/complete-work`, { run_id: run.id });
+      expect(response.status).toBe(409);
+      expect((await f.request(f.prefix).then(r => r.json())).implementation.outcome).toBe("discarded");
+    } finally { await f.close(); }
+  }, 30_000);
+  it("can discard after a child fails before any native workspace is allocated", async () => {
+    const f = await factoryDeliveryFixture();
+    try {
+      const run = await f.start();
+      const hook = join(f.repo, ".git", "hooks", "post-checkout");
+      writeFileSync(hook, "#!/bin/sh\nexit 1\n", { mode: 0o700 });
+      const worker = await f.request(`/runs/${run.id}/workers`, { role: "standards", idempotency_key: "provisioning-failed" }).then(r => r.json());
+      expect(worker).toMatchObject({ condition: "failed", workspace_id: null, pane_id: null });
+      const response = await f.request(`${f.prefix}/discard`, {});
+      expect(await response.json()).toMatchObject({ stage: "done", outcome: "discarded" });
+      expect((await f.request(f.prefix).then(r => r.json())).workers[0].condition).toBe("failed");
+    } finally { await f.close(); }
+  }, 30_000);
+  it("keeps capacity reserved while a pending Discard observes a resting but still owned remote Run", async () => {
+    const f = await factoryDeliveryFixture(true);
+    try {
+      await f.request("/settings", { max_agents: 1 });
+      await f.start();
+      f.disconnect();
+      await f.request(`${f.prefix}/discard`, {});
+      f.reconnect();
+      const next = await f.request("/implementations", { title: "Wait for owned stop", description: "", project_id: f.project.id }).then(r => r.json());
+      const response = await f.request(`/implementations/${next.id}/runs`, { action: "work", idempotency_key: "reserved-until-stopped" });
+      expect(response.status).toBe(409);
+      expect((await response.json()).error.code).toBe("capacity_exhausted");
+      expect((await f.request(`${f.prefix}/discard`, {}).then(r => r.json())).outcome).toBe("discarded");
+      expect((await f.request(`/implementations/${next.id}/runs`, { action: "work", idempotency_key: "capacity-after-stop" })).status).toBe(202);
+    } finally { await f.close(); }
+  }, 30_000);
+  it("continues stopping other owned contexts when one child's stop is uncertain", async () => {
+    let heldWorkspace = "";
+    const f = await factoryDeliveryFixture(false, false, { closeWorkspace: async id => { if (id !== heldWorkspace) await workspaceClose(id); } });
+    try {
+      const run = await f.start();
+      const held = await f.request(`/runs/${run.id}/workers`, { role: "spec", idempotency_key: "held-child" }).then(r => r.json());
+      heldWorkspace = held.workspace_id;
+      const other = await f.request(`/runs/${run.id}/workers`, { role: "standards", idempotency_key: "other-child" }).then(r => r.json());
+      expect((await f.request(`${f.prefix}/discard`, {}).then(r => r.json())).outcome).toBe("none");
+      const snapshot = await sessionSnapshot();
+      expect(snapshot.panes.some(pane => pane.pane_id === held.pane_id)).toBe(true);
+      expect(snapshot.panes.some(pane => pane.pane_id === other.pane_id || pane.pane_id === run.pane_id)).toBe(false);
+      heldWorkspace = "";
+      expect((await f.request(`${f.prefix}/discard`, {}).then(r => r.json())).outcome).toBe("discarded");
+    } finally { await f.close(); }
+  }, 30_000);
+  it("cancels an owned build and reconciles a lost check response before completing Discard", async () => {
+    const started = Promise.withResolvers<void>();
+    const observed = Bun.serve({ port: 0, fetch() { started.resolve(); return new Response("Observed owned build"); } });
+    const f = await factoryDeliveryFixture(true);
+    let checkResponse: Promise<Response> | undefined;
+    try {
+      await f.request(`/projects/${f.project.id}/configure`, { checks: [[process.execPath, "-e", `await fetch('http://localhost:${observed.port}'); setInterval(() => {}, 1000);`]] });
+      const run = await f.start();
+      f.loseCheckResponse();
+      checkResponse = f.request(`/runs/${run.id}/checks`, {});
+      await Promise.race([started.promise, new Promise((_, reject) => setTimeout(() => reject(new Error("Owned build did not start")), 5000))]);
+      await f.request(`${f.prefix}/discard`, {});
+      const interrupted = await (await checkResponse).json();
+      expect(interrupted.condition).toBe("interrupted");
+      const reconciled = await f.request(`${f.prefix}/discard`, {});
+      expect(await reconciled.json()).toMatchObject({ stage: "done", outcome: "discarded" });
+      const detail = await f.request(f.prefix).then(r => r.json());
+      expect(detail.checks).toHaveLength(1);
+      expect(detail.checks[0]).toMatchObject({ id: interrupted.id, condition: "failed" });
+      expect(detail.checks[0].commands[0].exit_code).not.toBe(0);
+      expect(detail.board).toMatchObject({ lane: "done", sidebar_hidden: true });
+    } finally { await f.close(); observed.stop(); await checkResponse?.catch(() => {}); }
+  }, 30_000);
+  it("requires a fresh observation of closed native identities instead of trusting a stop acknowledgement", async () => {
+    let closeConfirmed = false;
+    const f = await factoryDeliveryFixture(false, false, { closeWorkspace: async id => { if (closeConfirmed) await workspaceClose(id); } });
+    try {
+      const run = await f.start();
+      const worker = await f.request(`/runs/${run.id}/workers`, { role: "standards", idempotency_key: "unconfirmed-stop" }).then(r => r.json());
+      const response = await f.request(`${f.prefix}/discard`, {});
+      expect(response.status).toBe(200);
+      expect((await response.json()).outcome).toBe("none");
+      const pending = await f.request(f.prefix).then(r => r.json());
+      expect(pending.board).toMatchObject({ lane: "needs_you", activity: "discard_pending", sidebar_hidden: false });
+      expect(pending.workers[0].condition).toBe("disconnected");
+      expect((await sessionSnapshot()).panes.some(pane => pane.pane_id === worker.pane_id)).toBe(true);
+      expect((await f.request(`/runs/${run.id}/workers`, { role: "spec", idempotency_key: "no-work-during-discard" })).status).toBe(409);
+      closeConfirmed = true;
+      expect((await f.request(`${f.prefix}/discard`, {}).then(r => r.json())).outcome).toBe("discarded");
+      expect((await sessionSnapshot()).panes.some(pane => pane.pane_id === worker.pane_id || pane.pane_id === run.pane_id)).toBe(false);
+    } finally { await f.close(); }
+  }, 30_000);
+  it("retains an unreachable Run and child as Discard pending until the owner reconciles them", async () => {
+    const f = await factoryDeliveryFixture(true);
+    try {
+      const run = await f.start();
+      const worker = await f.request(`/runs/${run.id}/workers`, { role: "spec", idempotency_key: "remote-discard-child" }).then(r => r.json());
+      f.disconnect();
+      const pending = await f.request(`${f.prefix}/discard`, {});
+      expect(pending.status).toBe(200);
+      expect(await pending.json()).toMatchObject({ outcome: "none", discard_requested_at: expect.any(String) });
+      const detail = await f.request(f.prefix).then(r => r.json());
+      expect(detail.board).toMatchObject({ lane: "needs_you", activity: "discard_pending", sidebar_hidden: false });
+      expect(detail.runs[0].condition).toBe("disconnected");
+      expect(detail.workers.find((entry: { id: string }) => entry.id === worker.id).condition).toBe("disconnected");
+      expect((await f.start("discard-must-not-restart") as any).error.code).toBe("assignment_discarded");
+      f.reconnect();
+      const reconciled = await f.request(`${f.prefix}/discard`, {});
+      expect(reconciled.status).toBe(200);
+      expect(await reconciled.json()).toMatchObject({ stage: "done", outcome: "discarded" });
+      const finished = await f.request(f.prefix).then(r => r.json());
+      expect(finished.board).toMatchObject({ lane: "done", sidebar_hidden: true });
+      expect(finished.runs[0].condition).toBe("cancelled");
+      expect(finished.workers[0].condition).toBe("cancelled");
+    } finally { await f.close(); }
+  }, 30_000);
+  it("stops owned native work and retains the Assignment's evidence without archiving or deleting its branch", async () => {
+    const f = await factoryDeliveryFixture();
+    try {
+      const run = await f.start();
+      const worker = await f.request(`/runs/${run.id}/workers`, { role: "standards", idempotency_key: "discard-child" }).then(r => r.json());
+      const before = await f.request(f.prefix).then(r => r.json());
+      const artifact = await f.request(`${f.prefix}/artifacts`, { chat_id: before.chats[0].id, name: "findings.md", media_type: "text/markdown", content_base64: Buffer.from("Retained findings\n").toString("base64") }).then(r => r.json());
+      writeFileSync(join(run.worktree!, "unfinished.md"), "Retained repository work\n");
+      const snapshot = await f.request(`${f.prefix}/snapshots`, { run_id: run.id, mode: "workspace" }).then(r => r.json());
+      const response = await f.request(`${f.prefix}/discard`, {});
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ stage: "done", outcome: "discarded" });
+      const detail = await f.request(f.prefix).then(r => r.json());
+      expect(detail.board).toMatchObject({ lane: "done", busy: false });
+      expect(detail.implementation.archived_at ?? null).toBeNull();
+      expect(detail.runs[0].condition).toBe("cancelled");
+      expect(detail.workers.find((entry: { id: string }) => entry.id === worker.id).condition).toBe("cancelled");
+      expect(detail.chats).toEqual(before.chats);
+      expect(detail.artifacts.some((entry: { id: string }) => entry.id === artifact.id)).toBe(true);
+      expect(detail.snapshots.some((entry: { id: string }) => entry.id === snapshot.id)).toBe(true);
+      expect(f.git(["branch", "--show-current"], run.worktree! ).trim()).toBe(run.branch!);
+      expect(readFileSync(join(run.worktree!, "unfinished.md"), "utf8")).toBe("Retained repository work\n");
+      expect((await f.request(`${f.prefix}/discard`, {})).status).toBe(200);
+    } finally { await f.close(); }
+  }, 30_000);
+});
+
 describe("GitHub planned issue batch publication", () => {
   it("retains a scoped planning Run's whole issue proposal without granting remote publication", async () => {
     let proposalStatus: number | undefined;

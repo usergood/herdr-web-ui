@@ -21,7 +21,7 @@ const value = endpoint === "user" ? { login: "fictional-owner", id: 1042 } : dat
 if (value === undefined) { process.stderr.write("Missing owned GitHub response"); process.exit(1); }
 process.stdout.write(JSON.stringify(value));
 `);
-  const f = await factoryDeliveryFixture(remote, false, { ...(githubInitially ? { githubRepository: "fictional/project" } : {}), accountTools: { github: { executable: process.execPath, args: [tool] } } });
+  const f = await factoryDeliveryFixture(remote, false, {}, { ...(githubInitially ? { githubRepository: "fictional/project" } : {}), accountTools: { github: { executable: process.execPath, args: [tool] } } });
   const machine = remote ? "delivery-host" : "local";
   const profile = await f.request(`/machines/${machine}/accounts`, { name: "Delivery fixture", service: "github", expected_login: "fictional-owner" }).then(r => r.json());
   const verified = await f.request(`/machines/${machine}/accounts/${profile.id}/verify`, { expected_revision: profile.revision });

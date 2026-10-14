@@ -56,8 +56,11 @@ export function AssignmentActions({ preset, onPresetChange, detail, project, mac
     });
   }
   const disabled = busy || !project || !!project.removed_at || !!detail.implementation.archived_at || !capability?.installed;
+  if (detail.implementation.outcome === "discarded") return <section className="assignment-actions factory-section" aria-label={t("Next step")}><p role="status">{t("Discarded")}</p></section>;
+  if (detail.implementation.discard_requested_at) return <section className="assignment-actions factory-section" aria-label={t("Next step")}><p className="field-hint">{t("Discard stops owned work and retains chats, artifacts and branches.")}</p><button className="btn factory-button" disabled={busy} onClick={() => void perform(async () => { await factoryRequest(prefix + "/discard", {}); })}>{t("Reconcile Discard")}</button></section>;
   return <section className="assignment-actions factory-section" aria-label={t("Next step")}>
     <p role="status">{project ? t("Work uses {agent} on {machine} with this Project's settings.", { agent: provider, machine: machineName }) : t("Choose a Project to start work or plan implementation.")}</p>
+    {detail.implementation.stage !== "done" && <div className="factory-actions"><button className="btn factory-button" disabled={busy} onClick={() => void perform(async () => { await factoryRequest(prefix + "/discard", {}); })}>{t("Discard Assignment")}</button><p className="field-hint">{t("Discard stops owned work and retains chats, artifacts and branches.")}</p></div>}
     {problem && <p role="alert">{problem}</p>}
     {continuationProblem && <p role="alert">{continuationProblem}</p>}
     {!active && project && <AgentModelPicker projectId={project.id} machineId={machineId} provider={provider} accountScope={JSON.stringify(project.account_bindings?.[machineId] ?? {})} value={preset} onChange={onPresetChange} disabled={busy} />}

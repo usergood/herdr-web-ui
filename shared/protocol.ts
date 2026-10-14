@@ -1170,6 +1170,10 @@ export const DEFAULT_PORT = 7317;
  * all intended committed changes and linked merges must be covered before merge-based completion.
  * POST /api/factory-host/delivery-read (DeliveryReadRequest) -> bounded read-only GitHub resource;
  * selected Machine account snapshot only, no publication or merge authority.
+ * POST .../discard (discard) -> Implementation; explicitly stops owned Runs, workers and
+ * builds while retaining evidence. Unconfirmed stops retain discard_requested_at and
+ * Needs you / Discard pending. Repeating the action reconciles the same owned work.
+ * GET overview/detail board.sidebar_hidden is true only for finished, quiescent work.
  * POST /api/factory/settings (settings) -> FactorySettings; validated limits and future defaults.
  * POST /api/factory/projects/:id/configure (project_settings) -> FactoryProject;
  * GET /api/factory/projects/:id/references -> ProjectReferenceLibrary; current immutable versions.
@@ -1282,6 +1286,7 @@ export interface FactoryRequests {
   complete_work: { run_id: string };
   delivery: import("./factory.ts").AssignmentDeliveryConfiguration;
   delivery_sync: { expected_revision: string | null };
+  discard: Record<string, never>;
   project: { name: string; path: string; machine_id: string; provider: import("./factory.ts").FactoryProvider; tracker: import("./factory.ts").FactoryProject["tracker"]; tracker_reference?: string; guided_setup?: boolean; permission_mode?: import("./agent-permissions.ts").AgentPermissionMode; check_ids?: string[]; context_target_tokens?: number; guidance_task?: boolean; github_account_id?: string };
   project_settings: Partial<Pick<import("./factory.ts").FactoryProject, "name" | "checks" | "setup" | "environment" | "permissions" | "permission_mode" | "execution_preset" | "shared_paths" | "provider" | "machine_id" | "account_bindings" | "workflow_instructions" | "context_target_tokens" | "delivery_policy" | "delivery_branch">>;
   project_discovery: { machine_id: string; path: string };

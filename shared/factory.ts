@@ -4,12 +4,14 @@ import type { ProjectAccountBindings } from "./accounts.ts";
 export type FactoryProvider = "codex" | "claude" | "opencode";
 export type FactoryStage = "inbox" | "specifying" | "ready" | "running" | "review" | "done";
 export type FactoryBoardLane = "inbox" | "queued" | "running" | "needs_you" | "done";
-export type FactoryActivity = "specifying" | "implementing" | "validating" | "reviewing" | "researching" | "setting_up" | "reflecting" | "awaiting_checks" | "awaiting_release" | "awaiting_merge";
+export type FactoryActivity = "specifying" | "implementing" | "validating" | "reviewing" | "researching" | "setting_up" | "reflecting" | "awaiting_checks" | "awaiting_release" | "awaiting_merge" | "discard_pending";
 /** A current projection; persisted stages, Runs and events remain historical records. */
 export interface FactoryBoardItem {
   implementation_id: string; lane: FactoryBoardLane; activity: FactoryActivity | null;
   condition: RunCondition | null; run_id: string | null; busy: boolean; waiting_reason: string | null;
   ticket_progress: { completed: number; total: number } | null;
+  /** Hide finished sidebar entries only after all owned work is reconciled. */
+  sidebar_hidden?: boolean;
 }
 export type RunCondition = "accepted" | "working" | "ready" | "needs_you" | "blocked" | "disconnected" | "interrupted" | "failed" | "cancelled" | "completed";
 export type FactoryAction = "work" | "setup" | "grill-me" | "grill-with-docs" | "to-spec" | "to-tickets" | "implement-spec" | "retro" | "apply-retro" | "verify-provider";
@@ -17,8 +19,9 @@ export interface FactoryRecord { id: string; created_at: string; updated_at: str
 export interface Implementation extends FactoryRecord {
   title: string; description: string; project_id: string | null; provider: FactoryProvider | null;
   machine_id: string | null; stage: FactoryStage; position: number;
-  outcome: "none" | "implementation_complete" | "research_accepted" | "pr_open" | "merged" | "released";
+  outcome: "none" | "implementation_complete" | "research_accepted" | "pr_open" | "merged" | "released" | "discarded";
   archived_at?: string | null;
+  discard_requested_at?: string | null;
   /** Fixed at the first accepted Run, including its committed repository baseline. */
   delivery_scope?: { milestone: "merge" | "release"; repository: string | null; branch: string | null; base: string | null; github_repository?: string | null };
   completion_evidence?: { repository_changes: "none" | "changes" | "unknown"; quiescent: boolean; reason: string | null; checked_at: string };

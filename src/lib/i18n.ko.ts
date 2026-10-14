@@ -6,6 +6,11 @@
  * braces keep their English names.
  */
 export const KO: Record<string, string> = {
+  "Reconcile Discard": "폐기 상태 확인",
+  "Discard pending": "폐기 대기 중",
+  "Discard Assignment": "과제 폐기",
+  "Discarded": "폐기됨",
+  "Discard stops owned work and retains chats, artifacts and branches.": "폐기하면 이 과제의 작업을 중지하고 채팅, 산출물, 브랜치는 보존합니다.",
   "Issue scope paused": "이슈 범위 작업 일시 중지됨",
   "Issue scope pause pending": "이슈 범위 작업 일시 중지 대기 중",
   "Accepted issue scope": "승인된 이슈 범위",
