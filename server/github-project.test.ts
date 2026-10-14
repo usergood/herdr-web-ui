@@ -162,6 +162,41 @@ test("only a trusted GitHub actor approving the exact issue scope and complete p
   expect((await f.post(route + "/sync", {})).body.sources[0].readiness.eligible).toBe(false);
 });
 
+test("readiness removal remains revoked after the label returns until the owner approves again", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const data = JSON.parse(readFileSync(f.state, "utf8"));
+  data.issues[0].labels = [{ name: "ready-for-agent" }]; writeFileSync(f.state, JSON.stringify(data));
+  const policy = (await f.post(route + "/configure", { ...f.policy, auto_implement: true })).body;
+  const source = (await f.post(route + "/sync", {})).body.sources[0];
+  const proof = { policy_revision: policy.revision, issue_revision: source.revision, plan: { acceptance_criteria: "Preserve notes", dependencies: [], testing_seams: ["Public HTTP"], planning_decisions: [] } };
+  expect((await f.post(route + "/issues/12/approve", proof)).body.sources[0].readiness.eligible).toBe(true);
+  data.issues[0].labels = []; writeFileSync(f.state, JSON.stringify(data));
+  expect((await f.post(route + "/sync", {})).body.sources[0].readiness.eligible).toBe(false);
+  data.issues[0].labels = [{ name: "ready-for-agent" }]; writeFileSync(f.state, JSON.stringify(data));
+  const restored = (await f.post(route + "/sync", {})).body.sources[0];
+  expect(restored.readiness.eligible).toBe(false);
+  expect((await f.post(route + "/issues/12/approve", proof)).body.sources[0].readiness.eligible).toBe(true);
+  expect((await f.get(`/implementations/${source.implementation_id}`)).runs).toHaveLength(0);
+});
+
+test("reverting edited scope cannot replay a trusted approval comment but a fresh receipt renews readiness", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const data = JSON.parse(readFileSync(f.state, "utf8")); data.issues[0].labels = [{ name: "ready-for-agent" }];
+  writeFileSync(f.state, JSON.stringify(data));
+  await f.post(route + "/configure", { ...f.policy, auto_implement: true });
+  const source = (await f.post(route + "/sync", {})).body.sources[0];
+  const plan = { acceptance_criteria: "Preserve notes", dependencies: [], testing_seams: ["Public HTTP"], planning_decisions: [] };
+  const comment = { id: "IC_original", author: { login: "fictional-owner" }, editor: null, lastEditedAt: null, body: "```saurons-eye-readiness\n" + JSON.stringify({ issue_revision: source.revision, plan }) + "\n```" };
+  data.comments = [comment]; writeFileSync(f.state, JSON.stringify(data));
+  expect((await f.post(route + "/sync", {})).body.sources[0].readiness.eligible).toBe(true);
+  const body = data.issues[0].body; data.issues[0].body = "Different requirements"; writeFileSync(f.state, JSON.stringify(data));
+  expect((await f.post(route + "/sync", {})).body.sources[0].readiness.eligible).toBe(false);
+  data.issues[0].body = body; writeFileSync(f.state, JSON.stringify(data));
+  expect((await f.post(route + "/sync", {})).body.sources[0].readiness.eligible).toBe(false);
+  data.comments.push({ ...comment, id: "IC_renewed" }); writeFileSync(f.state, JSON.stringify(data));
+  expect((await f.post(route + "/sync", {})).body.sources[0].readiness.eligible).toBe(true);
+});
+
 test("a ready label and external plan prose cannot substitute for trusted approval", async () => {
   const f = await fixture(); const route = `/projects/${f.project.id}/github`;
   await f.post(route + "/configure", { ...f.policy, auto_implement: true });

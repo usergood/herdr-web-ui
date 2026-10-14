@@ -21,6 +21,7 @@ import { factoryEnvironment } from "./factory-environment.ts";
 import { materializeProjectReferences, preparedProjectReferences } from "./factory-reference-context.ts";
 import type { CodexReferenceContext, ProjectReferencePayload } from "../shared/protocol.ts";
 import type { AccountBindingSnapshot } from "../shared/accounts.ts";
+import type { ProjectIssueExecutionScope } from "../shared/github-project.ts";
 import type { MachineAccounts } from "./accounts.ts";
 import { withAccountEnvironment } from "./account-execution.ts";
 import { stagePlanningDocuments } from "./factory-planning-docs.ts";
@@ -234,7 +235,10 @@ export class FactoryExecutionHost {
         : `${skillPrefix} Read .saurons-eye-context.json for the frozen owner scope. Read contract through bun .saurons-eye-tracker.mjs for retained owner messages and the previous planning discussion; read the notes .research-index.json and planning indexes for retained glossary, decisions and documents. Follow this action's confirmation gates and await actual owner answers.`;
       if (run.action === "work") {
         const idea = (run.manifest as { implementation: import("../shared/factory.ts").Implementation }).implementation;
-        prompt = `Work on this Project idea:\n\n${idea.title}\n\n${idea.description}\n\nRead the repository's guidance and .saurons-eye-context.json for the selected Project scope. Read contract through bun .saurons-eye-tracker.mjs for retained owner messages and the notes .research-index.json for attachments. This is a direct owner-requested work session. Preserve the primary checkout; this workspace starts from its committed revision. Follow the Project's coding standards and native permissions. Ask for missing decisions in this chat. Publication and deployment require their separately authorized scope.`;
+        const issueScope = (run.manifest as { issue_scope?: ProjectIssueExecutionScope }).issue_scope;
+        const workScope = issueScope ? `${issueScope.issue.title}\n\n${issueScope.issue.body}\n\nApproved issue plan:\n${JSON.stringify(issueScope.approval.plan, null, 2)}` : `${idea.title}\n\n${idea.description}`;
+        prompt = `Work on this Project idea:\n\n${workScope}\n\nRead the repository's guidance and .saurons-eye-context.json for the selected Project scope. Read contract through bun .saurons-eye-tracker.mjs for retained owner messages and the notes .research-index.json for attachments. This is a direct owner-requested work session. Preserve the primary checkout; this workspace starts from its committed revision. Follow the Project's coding standards and native permissions. Ask for missing decisions in this chat. Publication and deployment require their separately authorized scope.`;
+        if (issueScope) prompt += " Use only the frozen approved issue requirements and testing decisions. Use the scoped tracker to ask the owner about missing requirements or any new design/testing choice, then wait for the actual answer.";
       }
       prompt += projectWorkflowPrompt((run.manifest as { project?: import("../shared/factory.ts").FactoryProject }).project);
       if (referenceContext) prompt += ` ${referenceContext.prompt}`;
