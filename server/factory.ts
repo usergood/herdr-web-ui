@@ -27,6 +27,7 @@ import { ProjectGitHub } from "./github-project.ts";
 import { sameOrigin } from "./machine-security.ts";
 import { parseModelSelection, resolveModelSelection } from "./agent-model-selection.ts";
 import { projectFactoryBoard } from "../shared/factory-board.ts";
+import { ProjectQueue } from "./project-queue.ts";
 
 const providers: FactoryProvider[] = ["codex", "claude", "opencode"];
 const initialSettings: FactorySettings = { provider: "codex", max_implementations: 6, max_agents: 6, max_builds: 2, max_artifact_bytes: 25 * 1024 * 1024, max_storage_bytes: 2 * 1024 * 1024 * 1024, skills_path: null };
@@ -45,6 +46,7 @@ export class FactoryService {
   private readonly references: FactoryReferences;
   private readonly accounts: MachineAccounts;
   private readonly github: ProjectGitHub;
+  private readonly queue: ProjectQueue;
   private stopped = false;
   constructor(stateDir: string, private readonly skillsPath: string | null = null, native: Partial<FactoryNative> = {}, endpoint: MachineEndpoint = () => undefined, publicUrl: string | null = null, accountTools: AccountTools = {}, private readonly registeredMachine: (id: string) => boolean = (id) => id === "local" || !!endpoint(id), accountDiscoveryHome?: string, scheduleTiming?: import("./project-schedules.ts").ProjectScheduleTiming) {
     this.accounts = new MachineAccounts(stateDir, accountTools, false, accountDiscoveryHome);
@@ -52,7 +54,7 @@ export class FactoryService {
     this.accounts.usage((id) => [...this.store.list<FactoryRun>("runs"), ...this.store.list<{ run: FactoryRun; closing?: boolean }>("host_leases").map((lease) => lease.run)].some((run) => ["accepted", "working", "ready", "needs_you", "blocked", "disconnected", "interrupted"].includes(run.condition) && (run.manifest as { account_snapshot?: import("../shared/accounts.ts").AccountBindingSnapshot })?.account_snapshot?.profiles.some((profile) => profile.id === id)));
     this.references = new FactoryReferences(this.store, this.artifacts);
     this.executionHost = new FactoryExecutionHost(this.store, () => this.settings().skills_path, native, this.accounts);
-    this.runtime = new FactoryRuntime(this.store, this.workflow, () => this.settings(), this.executionHost, endpoint, (record) => this.artifacts.read(record), publicUrl, this.references, this.accounts); this.review = new FactoryReview(this.store, (machine, path, base, mode) => this.runtime.capture(machine, path, base, mode), (machine, path) => this.runtime.inspect(machine, path));
+    this.runtime = new FactoryRuntime(this.store, this.workflow, () => this.settings(), this.executionHost, endpoint, (record) => this.artifacts.read(record), publicUrl, this.references, this.accounts, (id, continuing) => this.queue.assertAdmission(id, continuing), (id, next) => this.queue.consumeRetry(id, next)); this.review = new FactoryReview(this.store, (machine, path, base, mode) => this.runtime.capture(machine, path, base, mode), (machine, path) => this.runtime.inspect(machine, path));
     this.pipeline = new FactoryPipeline(this.store, this.runtime, this.workflow, () => this.settings(), id => this.retainHandoff(id));
     this.continuation = new FactoryContinuation(this.store, this.workflow, this.runtime, async (id, allowPartial) => {
       await this.retainHandoff(id);
@@ -62,6 +64,7 @@ export class FactoryService {
     });
     this.retrospectives = new FactoryRetrospectives(this.store);
     this.github = new ProjectGitHub(this.store, this.accounts, (machineId, path) => this.runtime.discover(machineId, path), scheduleTiming);
+    this.queue = new ProjectQueue(this.store, () => this.settings(), id => this.github.overview(id));
   }
   settings(): FactorySettings { return this.store.get<{ id: string; value: FactorySettings }>("settings", "default")?.value ?? { ...initialSettings, skills_path: this.skillsPath }; }
   private activeWork(id: string): boolean {
@@ -225,6 +228,18 @@ export class FactoryService {
   async handle(request: Request, url: URL): Promise<Response> {
     try {
       if (request.method !== "GET" && request.headers.get("x-herdr-factory") !== "1") return httpError(403, "invalid_origin", "Use factory controls from this app");
+      const queueRoute = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/queue(?:\/(configure))?$/.exec(url.pathname);
+      if (queueRoute) {
+        if (request.method === "GET" && !queueRoute[2]) { await this.runtime.reconcileCapacity(); return jsonResponse(this.queue.overview(queueRoute[1]!)); }
+        if (request.method !== "POST" || queueRoute[2] !== "configure" || !sameOrigin(request)) return httpError(403, "invalid_origin", "Use Project queue controls from this app");
+        return jsonResponse(this.queue.configure(queueRoute[1]!, await this.body(request)));
+      }
+      const retryRoute = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/retry$/.exec(url.pathname);
+      if (retryRoute) {
+        if (request.method !== "POST" || !sameOrigin(request)) return httpError(403, "invalid_origin", "Use Retry from this app");
+        await this.runtime.reconcileCapacity();
+        return jsonResponse(this.queue.retry(retryRoute[1]!, await this.body(request)));
+      }
       if (url.pathname === "/api/factory-host/pane-state" && request.method === "POST") {
         const body = await this.body(request); if (typeof body.pane_id !== "string" || (!body.pane_id || body.pane_id.length > 200 || /[\0\r\n]/.test(body.pane_id))) throw new FactoryError("invalid_pane", "Select a native pane");
         return jsonResponse(await this.executionHost.paneState(body.pane_id));
@@ -699,5 +714,5 @@ export class FactoryService {
       return httpError(404, "not_found", "Unknown factory endpoint");
     } catch (error) { return error instanceof FactoryError ? httpError(error.status, error.code, error.message) : error instanceof SyntaxError ? badRequest("invalid_json", "Enter valid JSON") : errorResponse(error); }
   }
-  stop(): void { if (this.stopped) return; this.stopped = true; this.continuation.stop(); this.github.stop(); this.accounts.stop(); this.runtime.stop(); this.store.close(); }
+  stop(): void { if (this.stopped) return; this.stopped = true; this.pipeline.stop(); this.continuation.stop(); this.github.stop(); this.accounts.stop(); this.runtime.stop(); this.store.close(); }
 }

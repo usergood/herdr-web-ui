@@ -8,6 +8,8 @@ import { FactoryWorkflow } from "./factory-workflow.ts";
 const owns = (condition: string): boolean => !["completed", "cancelled", "failed"].includes(condition);
 /** Admission reservations cover all native contexts and builds, including uncertain remote work. */
 export class FactoryPipeline {
+  private stopped = false;
+  stop(): void { this.stopped = true; }
   constructor(private readonly store: FactoryStore, private readonly runtime: FactoryRuntime, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly retainBeforeStop: (id: string) => Promise<void>) {}
   private run(id: string, factoryRequired = true): FactoryRun {
     const run = this.store.get<FactoryRun>("runs", id);
@@ -42,6 +44,7 @@ export class FactoryPipeline {
       const capacity = factoryCapacity(this.store);
       capacity.implementations.add(run.implementation_id);
       if (capacity.implementations.size > this.settings().max_implementations || capacity.agents >= this.settings().max_agents) throw new FactoryError("capacity_exhausted", "Global native context capacity is in use", 409);
+      this.runtime.assertProjectCapacity(run);
       const shared = body.shared_paths ?? [];
       const configured = (run.manifest as { project: FactoryProject }).project.shared_paths ?? [];
       if (!Array.isArray(shared) || shared.some((path) => typeof path !== "string" || !configured.includes(path))) throw new FactoryError("invalid_shared_paths", "Claim only configured shared document paths");
@@ -102,6 +105,7 @@ export class FactoryPipeline {
     let result: FactoryCheck;
     try { result = await this.runtime.operation(run, "check", { worker_id: workerId, check }); }
     catch { result = { ...check, condition: "interrupted" }; }
+    if (this.stopped) return { ...check, condition: "interrupted" };
     if (result.id !== check.id || result.run_id !== id || result.worker_id !== workerId) throw new FactoryError("check_identity_changed", "The Machine returned unrelated check evidence; capacity remains reserved", 409);
     this.store.put("checks", result, id); this.store.event(run.implementation_id, "checks_retained", { check_id: result.id, condition: result.condition, head: result.head }); return result;
   }

@@ -11,10 +11,11 @@ import { FactoryProjectGitHub } from "./FactoryProjectGitHub.tsx";
 import { FactoryOperationsPanel } from "./FactoryOperationsPanel.tsx";
 import { displayPaneTitle } from "./Sidebar.tsx";
 import { FactoryProjectReferences } from "./FactoryProjectReferences.tsx";
+import { ProjectQueue } from "./ProjectQueue.tsx";
 import "./FactoryPanel.css";
 import "./ProjectsPanel.css";
 
-export type ProjectSettingsPage = "general" | "execution" | "checkout" | "accounts" | "references" | "github" | "factory";
+export type ProjectSettingsPage = "general" | "execution" | "checkout" | "accounts" | "references" | "github" | "queue" | "factory";
 
 export function ProjectsPanel({ overview, machines, projectId, refresh, onProject, section = "general", embedded = false }: { overview: FactoryOverview | null; machines: Machine[]; projectId: string | null; refresh: () => Promise<void>; onProject: (id: string | null) => void; section?: ProjectSettingsPage; embedded?: boolean }) {
   const t = useT(); const [busy, setBusy] = useState(false); const [error, setError] = useState<string | null>(null);
@@ -42,7 +43,8 @@ function ProjectManagement({ project, overview, machines, busy, perform, section
   return <>
     {section === "general" && <section className="factory-section"><form className="factory-form" onSubmit={(event) => { event.preventDefault(); void perform(async () => { await factoryRequest(`/projects/${project.id}/configure`, { name }); }); }}><label>{t("Project name")}<input className="input" required maxLength={200} value={name} onChange={(event) => setName(event.target.value)} /></label><button className="btn" disabled={busy}>{t("Rename")}</button></form></section>}
     {section === "general" && <section className="factory-section"><h3>{t("Repository guidance")}</h3><p>{t("Use Matt Pocock skills to develop the glossary and coding standards with the owner.")}</p>{project.guidance_assignment_id ? <a className="btn" href={`#factory/${project.guidance_assignment_id}`}>{t("Open guidance setup")}</a> : <button className="btn" disabled={busy} onClick={()=>void perform(async()=>{await factoryRequest(`/projects/${project.id}/guidance`,{});})}>{t("Set up repository guidance")}</button>}</section>}
-    {section !== "general" && <section className="factory-section">{section !== "execution" && section !== "github" && <label>{t("Machine")}<select className="select" value={host?.id ?? ""} onChange={(event) => setSelectedHost(event.target.value)}><option value="" disabled>{t("Select a Machine")}</option>{machines.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</select></label>}
+    {section !== "general" && <section className="factory-section">{section !== "execution" && section !== "github" && section !== "queue" && <label>{t("Machine")}<select className="select" value={host?.id ?? ""} onChange={(event) => setSelectedHost(event.target.value)}><option value="" disabled>{t("Select a Machine")}</option>{machines.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</select></label>}
+    {section === "queue" && <ProjectQueue projectId={project.id} />}
     {section === "execution" && <FactoryProjectSettings key={`${project.id}:execution`} section="execution" project={project} overview={overview} machineId={selectedHost} machines={machines} busy={busy} perform={perform} />}
     {section === "github" && <FactoryProjectGitHub key={project.id} project={project} checkout={overview.checkouts.find(c=>c.project_id===project.id&&c.machine_id==="local") ?? overview.checkouts.find(c=>c.project_id===project.id&&c.machine_id===project.machine_id)} checkoutPath={overview.checkouts.find(c=>c.project_id===project.id&&c.machine_id==="local")?.path} machineName={machines.find(m=>m.id==="local")?.name} busy={busy} perform={perform} />}
     {host && <>

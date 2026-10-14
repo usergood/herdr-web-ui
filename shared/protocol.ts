@@ -1257,6 +1257,8 @@ export type { ProjectReference, ProjectReferenceLibrary, CodexReferenceContext, 
  */
 export type { AgentModelCatalog, AgentModelSelection, AgentExecutionPreset } from "./agent-models.ts";
 export interface FactoryRequests {
+  queue_configuration: import("./project-queue.ts").ProjectQueueConfiguration;
+  queue_retry: { run_id: string };
   model_catalog: { project_id: string; machine_id: string; provider: import("./factory.ts").FactoryProvider };
   pane_archive: { machine_id: string; pane_id: string; archived: boolean; terminal_id?: string; session_ref?: string | null };
   github_configuration: import("./github-project.ts").ProjectGitHubConfiguration;
@@ -1302,6 +1304,13 @@ export interface FactoryRequests {
   empty: Record<string, never>;
 }
 export type FactoryRequestBody = FactoryRequests[keyof FactoryRequests];
+/** GET /api/factory/projects/:id/queue -> ProjectQueueOverview; observes, never dispatches.
+ * POST /api/factory/projects/:id/queue/configure -> ProjectQueueOverview;
+ * ProjectQueueConfiguration requires the current revision and x-herdr-factory: 1.
+ * Pause stops new admissions while accepted work continues.
+ * POST /api/factory/implementations/:id/retry ({run_id}) -> ProjectQueueOverview;
+ * authorizes one replacement for the current failed attempt without dispatching. */
+export type { ProjectQueueConfiguration, ProjectQueueOverview } from "./project-queue.ts";
 /** GET /api/factory/projects/:id/github -> ProjectGitHubOverview.
  * GET .../github/schedules -> ProjectSchedulesOverview; built-in defaults preserve saved polling.
  * POST .../github/schedules/configure -> ProjectSchedulesOverview; ProjectScheduleConfiguration,

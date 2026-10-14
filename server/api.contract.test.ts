@@ -66,6 +66,25 @@ afterAll(() => {
 
 const base = () => `http://localhost:${server.port}`;
 
+describe("Project queue contract", () => {
+  it("reports capacity and rejects foreign or unmarked queue mutations without changing its revision", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      const route = f.route.replace(/\/github$/, "/queue");
+      const original = await f.request(route);
+      expect(original.status).toBe(200);
+      expect(original.body.capacity).toMatchObject({ project_implementations: 0, agents: 0, builds: 0 });
+      const body = { expected_revision: original.body.revision, max_implementations: 1, paused: true };
+      for (const headers of [{ ...f.headers, origin: "https://fictional-foreign.invalid" }, { "content-type": "application/json" }]) {
+        const response = await fetch(f.origin() + "/api/factory" + route + "/configure", { method: "POST", headers, body: JSON.stringify(body) });
+        expect(response.status).toBe(403); expect((await response.json()).error.code).toBe("invalid_origin");
+      }
+      expect((await f.request(route)).body.revision).toBe(original.body.revision);
+      expect((await f.request(route + "/configure", body)).body.paused).toBe(true);
+    } finally { f.close(); }
+  });
+});
+
 describe("GitHub issue readiness", () => {
   it("binds issue readiness to the owner-approved revision and current Project scope across restart", async () => {
     const f = await githubScheduleFixture();
