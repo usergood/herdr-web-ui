@@ -36,7 +36,7 @@ export class ProjectQueue {
       const reasons: string[] = [...(source?.readiness?.reasons ?? ["planning_required"])];
       const hold = this.store.get<AdmissionHold>("issue_admission_holds", idea.id);
       const stopped = this.store.list<FactoryRun>("runs", idea.id).filter(run => run.action === "implement-spec").at(-1);
-      const ownerStopped = stopped?.condition === "cancelled" && (stopped.manifest as { issue_scope?: { approval: { id: string } } }).issue_scope?.approval.id === source?.readiness?.approval?.id;
+      const ownerStopped = !!source?.readiness?.approval && stopped?.condition === "cancelled" && (stopped.manifest as { issue_scope?: { approval: { id: string } } }).issue_scope?.approval.id === source.readiness.approval.id;
       const problem = ownerStopped ? "Automatic implementation was stopped. Start another attempt explicitly." : hold?.approval_id === source?.readiness?.approval?.id ? hold?.problem ?? null : null;
       if (problem) reasons.push("admission_held");
       if (ownerStopped) reasons.push("implementation_stopped");

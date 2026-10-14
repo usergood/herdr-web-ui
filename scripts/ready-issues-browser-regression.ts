@@ -39,13 +39,17 @@ try {
       await pause.click();
       await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="Pause queue"]')?.getAttribute("aria-checked") === "false");
       await f.tick(); await page.reload();
+      if (await page.getByRole("dialog", { name: "Project settings", exact: true }).count() === 0) await page.getByRole("button", { name: "Project settings for Ready issues", exact: true }).click();
       if (width < 640 && await page.getByRole("tab", { name: "Queue", exact: true }).count()) await page.getByRole("tab", { name: "Queue", exact: true }).click();
+      if (width >= 640) await page.getByRole("tab", { name: "Queue", exact: true }).click();
       await page.getByText("Accepted work retains ownership", { exact: false }).waitFor();
       let detail = (await f.request(`/implementations/${source.implementation_id}`)).body;
       assert.deepEqual(detail.runs.map((run: any) => run.action), ["implement-spec"]);
       assert.equal(detail.questions.length, 0);
       assert.equal(detail.runs[0].manifest.issue_scope.approval.plan.acceptance_criteria, f.plan.acceptance_criteria);
-      f.restart(); await f.tick(); await page.reload();
+      f.restart(); await f.tick(); await page.goto(f.origin() + `/#projects/${f.project.id}/settings`);
+      await page.getByRole("tab", { name: "Queue", exact: true }).click();
+      await page.getByText("Accepted work retains ownership", { exact: false }).waitFor();
       detail = (await f.request(`/implementations/${source.implementation_id}`)).body;
       assert.equal(detail.runs.length, 1); assert.equal(f.launches.length, 1);
       await page.close(); page = undefined;
