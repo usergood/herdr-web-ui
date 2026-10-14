@@ -117,7 +117,7 @@ async function journey(): Promise<void> {
   await api(`/api/factory/runs/${run.id}/import-conversation`, {});
   await api(`/api/factory/runs/${run.id}/accept`, { head: check.head });
   detail = await api<FactoryDetail>(`/api/factory/implementations/${idea.id}`);
-  if (detail.implementation.stage !== "done" || detail.implementation.outcome !== "implementation_complete" || !detail.artifacts.some((entry) => entry.id === artifact.id) || !detail.native_snapshots.length) throw new Error("Acceptance lost durable history or outcome");
+  if (detail.implementation.stage !== "review" || detail.implementation.outcome !== "implementation_complete" || detail.board?.activity !== "awaiting_merge" || !detail.artifacts.some((entry) => entry.id === artifact.id) || !detail.native_snapshots.length) throw new Error("Acceptance completed delivery or lost durable history");
   if (Bun.spawnSync(["git", "status", "--porcelain"], { cwd: repo }).stdout.toString().trim() || readFileSync(join(repo, "README.md"), "utf8").indexOf("Owned greeting fixture") < 0) throw new Error("The factory modified its primary checkout");
   console.log(`${provider}: genuine Ticket integration, current checks, independent reviews, owner acceptance and history passed`);
 }

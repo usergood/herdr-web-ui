@@ -9,6 +9,7 @@ import { bundlePayload, verifySkills } from "./factory-skills.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { FactoryWorkflow } from "./factory-workflow.ts";
 import { FactoryReferences } from "./factory-references.ts";
+import { captureReview } from "./factory-review.ts";
 import type { CodexReferenceContext } from "../shared/protocol.ts";
 import type { AccountBindingSnapshot, ProjectAccountBindings } from "../shared/accounts.ts";
 import type { AccountOverview, AccountProfile, AccountSetup } from "../shared/accounts.ts";
@@ -112,6 +113,7 @@ export class FactoryRuntime {
     return machineId === "local" ? this.host.paneState(paneId) : this.remote(machineId, "/pane-state", { pane_id: paneId });
   }
   async capture(machineId: string, path: string, base: string, mode: "branch" | "workspace"): Promise<{ repository: string; head: string; files: import("../shared/protocol.ts").ReviewSnapshot["files"] }> {
+    if (machineId === "local") { const checkout = await inspectCheckout(path); return { repository: checkout.repository, ...await captureReview(path, base, mode) }; }
     return this.remote(machineId, "/review", { path, base, mode });
   }
   async start(id: string, body: Record<string, unknown>, origin: string, continuation?: { runId?: string; finish?: () => Promise<void>; validateScope?: () => void }): Promise<FactoryRun> {
@@ -220,6 +222,11 @@ export class FactoryRuntime {
       if (owned.some((entry) => entry.implementation_id === id)) throw new FactoryError("implementation_owned", "An existing or uncertain Run still owns this Implementation", 409);
       const capacity = factoryCapacity(this.store);
       if (capacity.implementations.size >= this.settings().max_implementations || capacity.agents >= this.settings().max_agents) throw new FactoryError("capacity_exhausted", "Global execution capacity is in use; start manually after capacity is released", 409);
+      const selectedImplementation = this.store.get<Implementation>("implementations", id)!;
+      if (!selectedImplementation.delivery_scope) {
+        implementation = { ...selectedImplementation, delivery_scope: { milestone: project?.delivery_policy ?? "merge", repository: project?.repository ?? null, branch: project?.delivery_branch ?? inspected?.branch ?? null, base: inspected?.head ?? null } };
+        this.store.put("implementations", implementation);
+      }
       const record: FactoryRun = { ...this.store.record(), implementation_id: id, action, provider, machine_id: machineId, condition: "accepted", waiting_reason: null, idempotency_key: body.idempotency_key as string, specification_id: specification?.id ?? null, graph_hash: graphHash, base: inspected?.head ?? null, checkout: inspected?.path ?? null, worktree: null, branch: null, workspace_id: null, pane_id: null, manifest: { skills, artifacts, context_message_ids: messages.map(message => message.id), retrospective, retrospective_evidence: retrospective ? this.store.get("retro_evidence", retrospective.id) : null, implementation, project, checkout: inspected, specification, tickets: this.workflow.tickets(id), approvals: this.store.list<FactoryApproval>("approvals", id), effective_settings: this.settings(), provider_version: capability.version, permissions: "Retain native controls; publication, merge, deployment and destructive cleanup are separate owner actions", contract_hash: contractHash } };
       record.manifest = { ...(record.manifest as object), execution_preset: executionPreset, project_references: projectReferences, account_snapshot: accountSnapshot };
       if (issueScope) record.manifest = { ...(record.manifest as object), issue_scope: issueScope };
