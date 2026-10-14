@@ -31,6 +31,28 @@ test("a published release containing the required merge completes the frozen rel
   } finally { await f.close(); }
 });
 
+test("verified release completion remains verified merge evidence for the synchronized upstream follow-up", async () => {
+  const f = await factoryMergeFixture(false, "release", true, {}, true);
+  try {
+    const route = `/projects/${f.project.id}/github/schedules`;
+    f.data["repos/fictional/upstream/releases?per_page=30&page=1"] = [{ id: 102, tag_name: "v2", draft: false, published_at: "2026-10-13T09:00:00Z" }];
+    f.data["repos/fictional/upstream/commits/v2"] = { sha: "9".repeat(40) }; f.respond();
+    const before = await f.request(route + "/run", { job: "upstream_sync" }).then(r => r.json());
+    expect(before.upstream.active.implementation_id).toBe(f.run.implementation_id);
+    expect(before.upstream.candidate.release_id).toBe("102");
+    const release = { id: 42, tag_name: "v1.0.0", draft: false, published_at: "2026-10-14T12:00:00Z" };
+    f.data["repos/fictional/project/releases?per_page=100&page=1"] = [release];
+    f.data["repos/fictional/project/releases/42"] = release;
+    f.data["repos/fictional/project/commits/tags%2Fv1.0.0"] = { sha: f.tip }; f.respond();
+    const linked = await f.request(f.prefix + "/delivery", f.links).then(r => r.json());
+    const delivery = await f.request(f.prefix + "/delivery/sync", { expected_revision: linked.revision }).then(r => r.json());
+    expect(delivery.condition).toBe("released");
+    const after = await f.request(route).then(r => r.json());
+    expect(after.upstream.active.release.release_id).toBe("102");
+    expect(after.upstream.candidate).toBeNull();
+  } finally { await f.close(); }
+});
+
 test("a containing release must include every linked delivery merge before completing the Assignment", async () => {
   const f = await factoryMergeFixture(false, "release");
   try {

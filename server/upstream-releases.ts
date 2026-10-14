@@ -29,7 +29,7 @@ export class UpstreamReleases {
     const state = this.store.get<StoredUpstream>("upstream_releases", project.id);
     if (!state?.active) return;
     const idea = this.store.get<Implementation>("implementations", state.active.implementation_id);
-    if (!idea || !(idea.stage === "done" && idea.outcome === "discarded" || idea.delivery?.condition === "merged")) return;
+    if (!idea || !(idea.stage === "done" && idea.outcome === "discarded" || idea.delivery?.condition === "merged" || idea.delivery?.condition === "released")) return;
     this.store.db.transaction(() => {
       const active = state.candidate ? this.createAssignment(project, state.candidate) : null;
       const offered = active ? [...state.offered, this.identity(active.release)] : state.offered;
