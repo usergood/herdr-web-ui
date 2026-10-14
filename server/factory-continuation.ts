@@ -72,6 +72,9 @@ export class FactoryContinuation {
     }
     if (body.action === "implement-spec" && (!this.workflow.tickets(id).length || !this.workflow.approved(id, "ticket_graph", this.workflow.graphHash(id)))) throw new FactoryError("scope_unaccepted", "Approve the current Ticket graph before continuing", 409);
   }
+  private validateScope(id: string, expected: string): void {
+    if (expected !== this.scopeHash(id)) throw new FactoryError("scope_changed", "Project settings or the approved scope changed during verification; inspect them before continuing", 409);
+  }
   private async advance(id: string, body: Record<string, unknown>, origin: string): Promise<FactoryRun> {
     const signature = hash(JSON.stringify(body));
     const previous = this.store.list<Continuation>("workflow_continuations", id).find(record => record.key === body.idempotency_key);
@@ -82,6 +85,7 @@ export class FactoryContinuation {
       throw new FactoryError("continuation_uncertain", previous.problem ?? "The previous Continue needs reconciliation; it was not replayed", 409);
     }
     this.validate(id, body);
+    const scopeHash = this.scopeHash(id);
     const source = typeof body.run_id === "string" ? this.store.get<FactoryRun>("runs", body.run_id) : null;
     const active = this.store.list<FactoryRun>("runs", id).filter(run => !["completed", "cancelled", "failed"].includes(run.condition));
     if (body.run_id !== null && (!source || source.implementation_id !== id) || active.some(run => run.id !== source?.id)) throw new FactoryError("step_changed", "Refresh the Assignment's current step before continuing", 409);
@@ -95,15 +99,16 @@ export class FactoryContinuation {
     }
     // Capture immutable owner intent before any native side effect. A lost response
     // can return the same accepted Run; an uncertain start never blindly retries.
-    const record: Continuation = { id: this.store.record().id, implementation_id: id, key: String(body.idempotency_key), signature, body, origin, scope_hash: this.scopeHash(id), run_id: null, condition: "starting", problem: null };
+    this.validateScope(id, scopeHash);
+    const record: Continuation = { id: this.store.record().id, implementation_id: id, key: String(body.idempotency_key), signature, body, origin, scope_hash: scopeHash, run_id: null, condition: "starting", problem: null };
     this.store.put("workflow_continuations", record, id);
     try {
-      const run = await this.runtime.start(id, { ...body, action }, origin, source && !["completed", "cancelled", "failed"].includes(source.condition) ? { runId: source.id, finish: async () => {
+      const run = await this.runtime.start(id, { ...body, action }, origin, { validateScope: () => this.validateScope(id, record.scope_hash), ...(source && !["completed", "cancelled", "failed"].includes(source.condition) ? { runId: source.id, finish: async () => {
         const observed = await this.runtime.reconcile(source.id);
         if (observed.condition !== "ready") throw new FactoryError("step_not_ready", observed.waiting_reason ?? "The current step is still working; continue when its proposal is ready", 409);
         await this.retain(source.id, body.allow_partial_handoff === true);
         await this.runtime.finishStep(source.id);
-      } } : undefined);
+      } } : {}) });
       if (this.stopped) return run;
       this.store.put("workflow_continuations", { ...record, run_id: run.id, condition: action === "verify-provider" && body.action === "implement-spec" ? "verifying" : "started" }, id);
       return run;
@@ -127,11 +132,12 @@ export class FactoryContinuation {
       if (["working", "needs_you", "blocked"].includes(run.condition)) { this.retry(runId); return; }
       if (run.condition !== "ready") return;
       this.validate(record.implementation_id, record.body);
-      if (record.scope_hash !== this.scopeHash(record.implementation_id)) throw new FactoryError("scope_changed", "Project settings or the approved scope changed during verification; inspect them before continuing", 409);
+      this.validateScope(record.implementation_id, record.scope_hash);
       await this.runtime.verifyProvider(run);
       if (this.stopped) return;
+      this.validateScope(record.implementation_id, record.scope_hash);
       // All evidence and approvals are still checked by normal factory admission.
-      const next = await this.runtime.start(record.implementation_id, { ...record.body, idempotency_key: `${record.key.slice(0, 110)}-verified` }, record.origin, { runId, finish: async () => {
+      const next = await this.runtime.start(record.implementation_id, { ...record.body, idempotency_key: `${record.key.slice(0, 110)}-verified` }, record.origin, { runId, validateScope: () => this.validateScope(record.implementation_id, record.scope_hash), finish: async () => {
         await this.retain(runId, false);
         await this.runtime.finishStep(runId);
       } });

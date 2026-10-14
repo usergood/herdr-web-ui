@@ -111,7 +111,8 @@ export class FactoryRuntime {
   async capture(machineId: string, path: string, base: string, mode: "branch" | "workspace"): Promise<{ repository: string; head: string; files: import("../shared/protocol.ts").ReviewSnapshot["files"] }> {
     return this.remote(machineId, "/review", { path, base, mode });
   }
-  async start(id: string, body: Record<string, unknown>, origin: string, continuation?: { runId: string; finish: () => Promise<void> }): Promise<FactoryRun> {
+  async start(id: string, body: Record<string, unknown>, origin: string, continuation?: { runId?: string; finish?: () => Promise<void>; validateScope?: () => void }): Promise<FactoryRun> {
+    continuation?.validateScope?.();
     if (!actions.includes(body.action as FactoryAction) || typeof body.idempotency_key !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.idempotency_key)) throw new FactoryError("invalid_start", "Select an explicit action with an idempotency key");
     let implementation = this.store.get<Implementation>("implementations", id);
     if (!implementation) throw new FactoryError("not_found", "Implementation not found", 404);
@@ -169,8 +170,10 @@ export class FactoryRuntime {
     }
     // Validate the next action before releasing the resting predecessor. Retained context
     // is then included in the new immutable contract, just as with a manual handoff.
-    if (continuation) {
+    continuation?.validateScope?.();
+    if (continuation?.finish) {
       await continuation.finish();
+      continuation.validateScope?.();
       const current = this.store.get<Implementation>("implementations", id)!;
       const { updated_at: beforeUpdated, ...beforeScope } = implementation;
       const { updated_at: afterUpdated, ...afterScope } = current;
@@ -201,6 +204,7 @@ export class FactoryRuntime {
     const contractHash = hash(JSON.stringify({ implementation, project, checkout, specification, graphHash, settings: this.settings(), skills: skills.hash, artifacts, messages, projectReferences }));
     await this.reconcileCapacity();
     const run = this.store.db.transaction(() => {
+      continuation?.validateScope?.();
       const raced = this.store.list<FactoryRun>("runs", id).find((entry) => entry.idempotency_key === body.idempotency_key);
       if (raced) return { run: raced, accepted: false };
       if (this.stopped) throw new FactoryError("stopping", "The bridge is stopping; reconcile before retrying", 409);
