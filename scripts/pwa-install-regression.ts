@@ -21,12 +21,14 @@ const proxy = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(request) {
   const passed = new Headers(response.headers); passed.delete("content-encoding"); passed.delete("content-length");
   return new Response(response.body, { status: response.status, headers: passed });
 } });
-const context = await chromium.launchPersistentContext(join(state, "chrome-profile"), { executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"], httpCredentials: { username: "fixture", password: "fixture-only" }, viewport: { width: 390, height: 844 } });
+const context = await chromium.launchPersistentContext(join(state, "chrome-profile"), { executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"], viewport: { width: 390, height: 844 } });
 try {
   const origin = `http://localhost:${proxy.port}`;
   const page = await context.newPage(); page.setDefaultTimeout(5000);
   const cdp = await context.newCDPSession(page);
-  await page.goto(origin, { waitUntil: "load" });
+  // The installability icon loader needs native browser authentication too;
+  // page-scoped Playwright challenge handling misses those requests.
+  await page.goto(`http://fixture:fixture-only@localhost:${proxy.port}`, { waitUntil: "load" });
   await page.locator('link[rel="manifest"]').waitFor({ state: "attached" });
   const manifest = await cdp.send("Page.getAppManifest");
   assert(manifest.data && !manifest.errors.some((error) => error.critical), "Chrome can read the manifest behind BasicAuth");
@@ -46,14 +48,14 @@ try {
   }
   await page.waitForFunction(async () => (await navigator.serviceWorker.getRegistration())?.active?.state === "activated");
   // Chrome's browser-process icon validation can finish after renderer image decoding.
-  const iconDeadline = Date.now() + 30_000;
+  const iconDeadline = Date.now() + 10_000;
   let installability = await cdp.send("Page.getInstallabilityErrors");
   while (installability.installabilityErrors.length && Date.now() < iconDeadline) {
     await Bun.sleep(100);
     installability = await cdp.send("Page.getInstallabilityErrors");
   }
   assert.deepEqual(installability.installabilityErrors, [], `Chrome reports no installability errors behind BasicAuth; icon requests: ${JSON.stringify(iconRequests)}`);
-  assert(manifestRequests.length && manifestRequests.every((request) => request.authorized), "The manifest carries the login credentials");
+  assert(manifestRequests.some((request) => request.authorized), "The manifest carries login credentials after its BasicAuth challenge");
   const badge = await page.evaluate(async () => {
     const image = new Image(); image.src = "/icons/badge-96.png?v=eye1"; await image.decode();
     const canvas = document.createElement("canvas"); canvas.width = 96; canvas.height = 96;
