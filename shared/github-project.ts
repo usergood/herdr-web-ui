@@ -24,7 +24,8 @@ export interface ProjectPullRequest {
 export type IssueReadinessReason = "start_planning" | "human_only" | "wontfix" | "conflicting_triage" | "approval_required" | "automatic_implementation_disabled" | "issue_closed";
 /** Trusted GitHub readiness reads one fenced `saurons-eye-readiness` JSON block in a native issue
  * comment: { issue_revision, plan }. Only the selected verified owner account or a configured
- * approver can grant readiness; the digest covers repository/issue identity, title, body, labels and
+ * approver can grant readiness. Edited comments use the native editor identity, failing closed when
+ * it is unavailable. The digest covers repository/issue identity, title, body, labels and
  * state. Comment timestamps are not scope approval. Empty dependency/decision arrays are explicit;
  * testing_seams must contain confirmed boundaries. The public API reports the digest to approve.
  */

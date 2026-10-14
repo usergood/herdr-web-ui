@@ -284,18 +284,24 @@ export class ProjectGitHub {
     const prior = this.issueReadiness(source, policy).readiness?.approval;
     if (prior?.issue_revision === source.revision && prior.policy_revision === policy.revision) return;
     // The native comment supplies the actor; its payload binds approval to the exact scope digest.
-    interface ReadinessComment { id: number; user?: { login: string }; body?: string }
+    interface ReadinessComment { id: string; author: { login: string } | null; editor: { login: string } | null; lastEditedAt: string | null; body: string }
     const comments: ReadinessComment[] = [];
+    const [owner, name] = policy.repository.split("/"); let cursor: string | null = null;
     for (let page = 1; ; page++) {
-      const items = await this.api(policy, scope, `repos/${policy.repository}/issues/${source.number}/comments?per_page=100&page=${page}&direction=asc`) as ReadinessComment[];
-      if (!Array.isArray(items)) throw new FactoryError("github_invalid_response", "GitHub did not return complete issue readiness evidence", 409);
-      comments.push(...items);
-      if (items.length < 100) break;
-      if (page === 100) throw new FactoryError("github_inventory_limit", "Issue readiness evidence exceeds the bounded synchronization budget", 409);
+      const query = `query { repository(owner:${JSON.stringify(owner)},name:${JSON.stringify(name)}) { issue(number:${source.number}) { comments(first:100${cursor ? ",after:" + JSON.stringify(cursor) : ""}) { nodes { id body author { login } editor { login } lastEditedAt } pageInfo { hasNextPage endCursor } } } } }`;
+      const response = await this.api(policy, scope, "graphql", ["-f", "query=" + query]) as { errors?: unknown; data?: { repository?: { issue?: { comments?: { nodes: ReadinessComment[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } } } } } };
+      const result = response.data?.repository?.issue?.comments;
+      if (response.errors || !Array.isArray(result?.nodes) || typeof result.pageInfo?.hasNextPage !== "boolean") throw new FactoryError("github_invalid_response", "GitHub did not return complete issue readiness evidence", 409);
+      comments.push(...result.nodes);
+      if (!result.pageInfo.hasNextPage) break;
+      if (page === 100 || !result.pageInfo.endCursor || result.pageInfo.endCursor === cursor) throw new FactoryError("github_inventory_limit", "Issue readiness evidence exceeds the bounded synchronization budget", 409);
+      cursor = result.pageInfo.endCursor;
     }
     const trusted = new Set([scope.profiles[0]!.identity.login, ...policy.trusted_issue_approvers ?? []].map(login => login.toLowerCase()));
     for (const comment of comments.reverse()) {
-      if (!Number.isSafeInteger(comment.id) || !comment.user?.login || !trusted.has(comment.user.login.toLowerCase()) || typeof comment.body !== "string") continue;
+      // https://docs.github.com/en/graphql/reference/issues#issuecomment distinguishes author and editor.
+      const actor = comment.editor?.login ?? (comment.lastEditedAt === null ? comment.author?.login : null);
+      if (typeof comment.id !== "string" || !comment.id || !actor || !trusted.has(actor.toLowerCase()) || typeof comment.body !== "string") continue;
       const matches = [...comment.body.matchAll(/^```saurons-eye-readiness\r?\n([\s\S]*?)\r?\n```[ \t]*\r?$/gm)];
       if (matches.length !== 1) continue;
       let plan: ProjectIssuePlan;
@@ -310,7 +316,7 @@ export class ProjectGitHub {
       if (issue.node_id !== source.external_id || issue.number !== source.number || issue.pull_request) throw new FactoryError("github_issue_changed", "The GitHub issue identity changed", 409);
       const current = this.importIssue(policy, issue);
       if (current.revision !== source.revision) return;
-      const approval: ProjectIssueApproval = { ...this.store.record(), source_id: source.id, issue_revision: source.revision, policy_revision: policy.revision, actor: comment.user.login, origin: "github_comment", evidence_id: String(comment.id), plan };
+      const approval: ProjectIssueApproval = { ...this.store.record(), source_id: source.id, issue_revision: source.revision, policy_revision: policy.revision, actor, origin: "github_comment", evidence_id: comment.id, plan };
       this.store.put("github_readiness", approval, policy.id);
       this.store.event(source.implementation_id, "github_readiness_approved", { source_id: source.id, approval_id: approval.id });
       return;

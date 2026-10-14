@@ -29,8 +29,8 @@ if (endpoint === "graphql" && data.pause || endpoint === "user" && data.pause_us
 }
 if (endpoint === "user") result = { login: "fictional-owner", id: 1042 };
 else if (endpoint?.includes("/issues?")) result = endpoint.includes("page=1&") ? data.issues : [];
-else if (endpoint?.includes("/comments?")) result = endpoint.includes("page=1&") ? data.comments ?? [] : [];
 else if (endpoint?.includes("/issues/") && !endpoint.includes("?")) result = data.issues.find(issue => endpoint.endsWith("/" + issue.number));
+else if (endpoint === "graphql" && args.some(arg => arg.includes("issue(number:"))) result = { data: { repository: { issue: { comments: { nodes: data.comments ?? [], pageInfo: { hasNextPage: false, endCursor: null } } } } } };
 else if (endpoint === "graphql") result = { data: { repository: { viewerPermission: "ADMIN", pullRequests: { nodes: data.pulls, pageInfo: { hasNextPage: false, endCursor: null } }, pullRequest: data.pull ?? data.pulls[0] } } };
 else if (endpoint?.endsWith("/merge")) result = { merged: !data.fail_merge, sha: "fictional-merged" };
 else if (endpoint?.endsWith("/update-branch")) result = { message: "Updating pull request branch", url: "https://api.github.com/fictional/update" };
@@ -145,8 +145,8 @@ test("only a trusted GitHub actor approving the exact issue scope and complete p
   const policy = (await f.post(route + "/configure", { ...f.policy, auto_implement: true, trusted_issue_approvers: ["fictional-maintainer"] })).body;
   writeFileSync(f.state, JSON.stringify({ issues: [issue], pulls: [] }));
   const source = (await f.post(route + "/sync", {})).body.sources[0];
-  const comment = { id: 1234, user: { login: "fictional-maintainer" }, body: "```saurons-eye-readiness\n" + JSON.stringify({ issue_revision: source.revision, plan }) + "\n```" };
-  for (const comments of [[{ ...comment, user: { login: "unknown-contributor" } }], [{ ...comment, body: "```saurons-eye-readiness\n" + JSON.stringify({ issue_revision: "another-scope", plan }) + "\n```" }]]) {
+  const comment = { id: "IC_1234", author: { login: "fictional-maintainer" }, editor: null, lastEditedAt: null, body: "```saurons-eye-readiness\n" + JSON.stringify({ issue_revision: source.revision, plan }) + "\n```" };
+  for (const comments of [[{ ...comment, author: { login: "unknown-contributor" } }], [{ ...comment, body: "```saurons-eye-readiness\n" + JSON.stringify({ issue_revision: "another-scope", plan }) + "\n```" }], [{ ...comment, editor: { login: "unknown-contributor" } }]]) {
     writeFileSync(f.state, JSON.stringify({ issues: [issue], comments, pulls: [] }));
     const result = await f.post(route + "/sync", {}); expect(result.status).toBe(200);
     expect(result.body.sources[0].readiness.eligible).toBe(false);
@@ -154,7 +154,7 @@ test("only a trusted GitHub actor approving the exact issue scope and complete p
   writeFileSync(f.state, JSON.stringify({ issues: [issue], comments: [comment], pulls: [] }));
   const result = await f.post(route + "/sync", {}); expect(result.status).toBe(200);
   expect(result.body.sources[0].readiness.eligible).toBe(true);
-  expect(result.body.sources[0].readiness.approval).toMatchObject({ actor: "fictional-maintainer", origin: "github_comment", evidence_id: "1234", issue_revision: source.revision, policy_revision: policy.revision, plan });
+  expect(result.body.sources[0].readiness.approval).toMatchObject({ actor: "fictional-maintainer", origin: "github_comment", evidence_id: "IC_1234", issue_revision: source.revision, policy_revision: policy.revision, plan });
   expect((await f.get(`/implementations/${source.implementation_id}`)).runs).toHaveLength(0);
   // A source author can edit within GitHub's one-second timestamp resolution. The digest must change.
   issue.body = "Broader acceptance at the same timestamp";
