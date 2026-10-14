@@ -51,6 +51,7 @@ describe("browser lane", () => {
       { script: "scripts/factory-board-browser-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/factory-delivery-browser-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/factory-merge-browser-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/factory-history-browser-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/project-setup-browser-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/project-navigation-browser-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/project-schedules-browser-regression.ts", seconds: expect.any(Number), code: 0 },
@@ -78,7 +79,7 @@ describe("browser lane", () => {
   it("summarizes every script and exits zero on success without enabling local evidence", async () => {
     const { text, code, evidence } = await lane();
     expect(code).toBe(0);
-    expect(rows(text)).toHaveLength(62);
+    expect(rows(text)).toHaveLength(63);
     expect(rows(text).map((row) => row.script)).toContain("scripts/upstream-releases-browser-regression.ts");
     expect(rows(text).map((row) => row.script)).toContain("scripts/portal-regression.ts");
     expect(rows(text).map((row) => row.script)).toContain("scripts/notification-icons-browser-qa.ts");

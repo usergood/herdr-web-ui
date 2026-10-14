@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { FactoryRecord } from "../shared/factory.ts";
+import { migrateFactoryHistory } from "./factory-history.ts";
 
 /** One transactional record/event store, never a provider's native transcript database. */
 export class FactoryStore {
@@ -23,6 +24,7 @@ export class FactoryStore {
     this.db.transaction(() => {
       this.db.exec("CREATE TABLE IF NOT EXISTS records(kind TEXT NOT NULL, id TEXT NOT NULL, parent TEXT, data TEXT NOT NULL, PRIMARY KEY(kind,id)); CREATE INDEX IF NOT EXISTS records_parent ON records(kind,parent); PRAGMA user_version=1;");
     })();
+    migrateFactoryHistory(this);
   }
   list<T>(kind: string, parent?: string): T[] {
     const rows = parent === undefined

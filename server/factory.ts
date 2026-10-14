@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { FactoryHostRequests, FactoryArtifact, FactoryChat, FactoryDetail, FactoryMessage, FactoryProject, FactoryProvider, FactoryRun, FactorySettings, Implementation, ProjectCheckout } from "../shared/protocol.ts";
 import { badRequest, errorResponse, httpError, isJsonObject, jsonResponse } from "./http.ts";
 import { FactoryStore } from "./factory-store.ts";
+import { migrateFactoryHistory } from "./factory-history.ts";
 import { FactoryError, hash, inspectCheckout } from "./factory-host.ts";
 import { FactoryDelivery } from "./factory-delivery.ts";
 import { FactoryMergeDelivery } from "./factory-merge-delivery.ts";
@@ -786,7 +787,11 @@ export class FactoryService {
         if (!record) throw new FactoryError("not_found", "Assignment not found", 404);
         if (archiveRoute[2] === "archive" && (record.stage !== "done" || this.activeWork(record.id))) throw new FactoryError("assignment_unfinished", "Finish or stop all work and complete the Assignment before archiving", 409);
         const next = { ...record, archived_at: archiveRoute[2] === "archive" ? new Date().toISOString() : null, updated_at: new Date().toISOString() };
-        this.store.put("implementations", next); this.store.event(record.id, "assignment_archive_changed", { archived_at: next.archived_at }); return jsonResponse(next);
+        return jsonResponse(this.store.db.transaction(() => {
+          this.store.put("implementations", next); this.store.event(record.id, "assignment_archive_changed", { archived_at: next.archived_at });
+          if (archiveRoute[2] === "restore") migrateFactoryHistory(this.store, record.id);
+          return this.store.get<Implementation>("implementations", record.id)!;
+        })());
       }
       const configured = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/configure$/.exec(url.pathname);
       if (configured && request.method === "POST") {
