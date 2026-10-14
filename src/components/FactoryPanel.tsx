@@ -18,6 +18,7 @@ import { AssignmentActions } from "./AssignmentActions.tsx";
 import { useFactoryCapabilities } from "../lib/useFactoryCapabilities.ts";
 import { FactoryBoardStatus } from "./FactoryBoardStatus.tsx";
 import { FactoryRunHistory } from "./FactoryRunHistory.tsx";
+import { FactoryIssueBatches } from "./FactoryIssueBatches.tsx";
 import { factoryConditionLabel } from "../lib/factoryPresentation.ts";
 import type { ProjectView } from "../lib/projectNavigation.ts";
 import "./FactoryPanel.css";
@@ -168,6 +169,7 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
         </div><p className="factory-context">{effectiveProvider} · {machines.find((machine) => machine.id === effectiveMachine)?.name ?? effectiveMachine} · {checkout?.path ?? t("No verified checkout")}</p>
       </section>
       <AssignmentActions preset={preset} onPresetChange={setPreset} key={detail.implementation.id} detail={detail} project={selectedProject} machineId={effectiveMachine} machineName={machines.find(m=>m.id===effectiveMachine)?.name??effectiveMachine} provider={effectiveProvider??"codex"} busy={busy} perform={perform} onOpenPane={onOpenPane} capabilities={execution.capabilities} problem={execution.problem} onCapabilities={execution.apply} />
+      {detail.implementation.project_id && <FactoryIssueBatches key={detail.implementation.id} implementationId={detail.implementation.id} projectId={detail.implementation.project_id} busy={busy} perform={perform} />}
       <details className="factory-section"><summary>{t("Advanced controls")}</summary>
         <div className="factory-filters">
           <label>{t("Provider")}<select className="select factory-input" value={detail.implementation.provider ?? ""} disabled={busy} onChange={(event) => void perform(async () => { await factoryRequest(`${prefix}/configure`, { provider: (event.target.value || null) as FactoryProvider | null }); })}><option value="">{t("Project default")}</option><option>codex</option><option>claude</option><option>opencode</option></select></label>

@@ -21,7 +21,7 @@ export interface ProjectPullRequest {
   commits: { nodes: { commit: { statusCheckRollup: { contexts: GitHubConnection<{ name?: string; context?: string; conclusion?: string | null; status?: string; state?: string }> } | null } }[] };
   baseRef: { branchProtectionRule: { isAdminEnforced: boolean; requiresApprovingReviews: boolean; requiredApprovingReviewCount: number; requiresStatusChecks: boolean; requiresStrictStatusChecks: boolean; requiresConversationResolution: boolean; requiredStatusCheckContexts: string[] } | null } | null;
 }
-export type IssueReadinessReason = "start_planning" | "human_only" | "wontfix" | "conflicting_triage" | "approval_required" | "automatic_implementation_disabled" | "issue_closed";
+export type IssueReadinessReason = "start_planning" | "human_only" | "wontfix" | "conflicting_triage" | "approval_required" | "automatic_implementation_disabled" | "issue_closed" | "batch_incomplete";
 /** Trusted GitHub readiness reads one fenced `saurons-eye-readiness` JSON block in a native issue
  * comment: { issue_revision, plan }. Only the selected verified owner account or a configured
  * approver can grant readiness. Edited comments use the native editor identity, failing closed when
@@ -37,13 +37,18 @@ export interface ProjectIssuePlan {
 export interface ProjectIssueApproval extends FactoryRecord {
   source_id: string; issue_revision: string; policy_revision: string; actor: string;
   origin: "owner" | "github_comment"; evidence_id: string | null; plan: ProjectIssuePlan;
+  /** Revocation is permanent for this receipt, including when the issue reverts. */
+  revoked_at?: string;
 }
 export interface ProjectIssueApprovalRequest { issue_revision: string; policy_revision: string; plan: ProjectIssuePlan }
+/** Frozen at admission. A new approval never changes an existing Run's instructions. */
+export interface ProjectIssueExecutionScope { source_id: string; repository: string; number: number; issue_revision: string; issue: NonNullable<ProjectGitHubSource["issue"]>; approval: ProjectIssueApproval }
 export interface ProjectIssueReadiness { eligible: boolean; reasons: IssueReadinessReason[]; approval: ProjectIssueApproval | null }
 export interface ProjectGitHubSource extends FactoryRecord {
   project_id: string; external_id: string; number: number; kind: "issue" | "fix"; implementation_id: string; revision: string; url: string; state: string;
   repository?: string; issue?: { title: string; body: string; updated_at: string | null; labels: string[] };
   triage_roles?: ProjectTriageRole[]; readiness?: ProjectIssueReadiness;
+  publication_batch_id?: string; batch_item_key?: string; originating_plan_id?: string;
 }
 export interface ProjectGitHubPull extends FactoryRecord { project_id: string; pull: ProjectPullRequest; blockers: string[]; observed_at: string; fix_implementation_id: string | null }
 export interface ProjectGitHubMutation extends FactoryRecord { project_id: string; repository: string; pull_id: string; number: number; action: "merge" | "update" | "rerequest"; head: string; base: string; policy_revision: string; condition: "sending" | "confirmed" | "uncertain"; problem: string | null }

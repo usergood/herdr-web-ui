@@ -4,13 +4,14 @@ import { randomUUID } from "node:crypto";
 import { githubDirectory } from "./project-discovery.ts";
 import type { AccountBindingSnapshot } from "../shared/accounts.ts";
 import type { FactoryChat, FactoryMessage, FactoryProject, Implementation, ProjectCheckout } from "../shared/factory.ts";
-import type { ProjectGitHubConfiguration, ProjectGitHubFiles, ProjectGitHubMutation, ProjectGitHubOverview, ProjectGitHubPolicy, ProjectGitHubPull, ProjectGitHubSource, ProjectPullRequest } from "../shared/github-project.ts";
+import type { ProjectGitHubConfiguration, ProjectGitHubFiles, ProjectGitHubMutation, ProjectGitHubOverview, ProjectGitHubPolicy, ProjectGitHubPull, ProjectGitHubSource, ProjectPullRequest, ProjectIssueExecutionScope } from "../shared/github-project.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { FactoryError, hash } from "./factory-host.ts";
 import { MachineAccounts } from "./accounts.ts";
 import type { ProjectSchedulesOverview, ProjectScheduleConfiguration, ProjectSyncJob, ProjectSyncResult } from "../shared/project-schedules.ts";
 import { nextProjectSync, validateProjectSchedule, type ProjectScheduleTiming, type StoredProjectSchedule } from "./project-schedules.ts";
 import { PROJECT_TRIAGE_ROLES, type IssueReadinessReason, type ProjectTriageLabels, type ProjectIssuePlan, type ProjectIssueApproval, type ProjectIssueApprovalRequest } from "../shared/github-project.ts";
+import { GitHubIssueBatches } from "./github-issue-batches.ts";
 
 const pullFields = `number id title body url state isDraft headRefOid baseRefOid headRefName baseRefName author { login } mergeStateStatus reviewDecision headRepository { nameWithOwner } viewerCanUpdate
 reviews(first:100) { nodes { id state body submittedAt author { login } commit { oid } } pageInfo { hasNextPage endCursor } }
@@ -19,16 +20,25 @@ reviewThreads(first:100) { nodes { id isResolved isOutdated comments(first:100) 
 commits(last:1) { nodes { commit { statusCheckRollup { contexts(first:100) { nodes { ... on CheckRun { name conclusion status } ... on StatusContext { context state } } pageInfo { hasNextPage endCursor } } } } } }
 baseRef { branchProtectionRule { isAdminEnforced requiresApprovingReviews requiredApprovingReviewCount requiresStatusChecks requiresStrictStatusChecks requiresConversationResolution requiredStatusCheckContexts } }`;
 interface SyncState { id: string; last_sync: string | null; next_sync: number; problem: string | null }
-interface Issue { number: number; node_id: string; title: string; body: string | null; html_url: string; state: string; labels?: { name: string }[]; updated_at?: string; pull_request?: unknown }
+export interface Issue { number: number; node_id: string; title: string; body: string | null; html_url: string; state: string; labels?: { name: string }[]; updated_at?: string; pull_request?: unknown }
 
 /** Project-scoped metadata and guarded mutation. Never executes foreign PR code. */
 export class ProjectGitHub {
+  readonly issueBatches: GitHubIssueBatches;
   private readonly busy = new Set<string>();
   private stopped = false;
   private readonly stopPolling: () => void;
   private readonly now: () => number;
-  constructor(private readonly store: FactoryStore, private readonly accounts: MachineAccounts, private readonly discover?: (machineId: string, path: string) => Promise<import("../shared/project-setup.ts").ProjectDiscovery>, timing: ProjectScheduleTiming = {}, private readonly observeDelivery?: (projectId: string) => Promise<void>) {
+  constructor(private readonly store: FactoryStore, private readonly accounts: MachineAccounts, private readonly discover?: (machineId: string, path: string) => Promise<import("../shared/project-setup.ts").ProjectDiscovery>, timing: ProjectScheduleTiming = {}, private readonly pauseIssueWork?: (source: ProjectGitHubSource) => Promise<void>, private readonly observeDelivery?: (projectId: string) => Promise<void>) {
     this.now = timing.now ?? Date.now;
+    this.issueBatches = new GitHubIssueBatches(this.store, async (id, revision, operation) => this.locked(id, async () => {
+      const policy = this.store.get<ProjectGitHubPolicy>("github_policies", id);
+      if (!policy || policy.revision !== revision) throw new FactoryError("github_policy_changed", "Refresh the Project policy before reviewing publication", 409);
+      this.current(policy);
+      const scope = await this.scope(policy);
+      this.current(policy);
+      return operation({ policy, api: (path, extra) => this.api(policy, scope, path, extra), importIssue: issue => { this.validateIssue(issue); return this.importIssue(policy, issue); } });
+    }));
     this.retainUncertainAttempts();
     if (timing.subscribe) this.stopPolling = timing.subscribe(() => this.poll());
     else { const timer = setInterval(() => { void this.poll(); }, 10_000); timer.unref(); this.stopPolling = () => clearInterval(timer); }
@@ -228,23 +238,53 @@ export class ProjectGitHub {
       this.store.put("github_sources", source, id); this.store.event(idea.id, "github_imported", { source_id: source.id, project_id: id, kind, url });
     })(); return source;
   }
-  private importIssue(policy: ProjectGitHubPolicy, issue: Issue): ProjectGitHubSource {
+  private async importIssue(policy: ProjectGitHubPolicy, issue: Issue): Promise<ProjectGitHubSource> {
     const labels = (issue.labels ?? []).map(label => label.name).sort();
     const snapshot = { title: issue.title, body: issue.body ?? "", updated_at: issue.updated_at ?? null, labels };
     const revision = hash(JSON.stringify({ repository: policy.repository.toLowerCase(), external_id: issue.node_id, title: snapshot.title, body: snapshot.body, labels, state: issue.state }));
     const source = this.import(policy.id, issue.node_id, issue.number, revision, issue.title, `GitHub issue: ${issue.html_url}\n\n${issue.body ?? ""}\n\nProject review context:\n${policy.review_context}`, issue.html_url, issue.state, "issue");
+    for (const approval of this.store.list<ProjectIssueApproval>("github_readiness", policy.id)) {
+      if (approval.source_id === source.id && approval.issue_revision !== revision && !approval.revoked_at) {
+        this.store.put("github_readiness", { ...approval, revoked_at: new Date().toISOString() }, policy.id);
+        this.store.event(source.implementation_id, "github_readiness_revoked", { source_id: source.id, approval_id: approval.id, observed_revision: revision });
+      }
+    }
     const roles = PROJECT_TRIAGE_ROLES.filter(role => labels.some(label => label.toLowerCase() === (policy.triage_labels?.[role] || role).toLowerCase()));
     const reasons: IssueReadinessReason[] = issue.state !== "open" ? ["issue_closed"] : roles.length > 1 ? ["conflicting_triage"] : roles[0] === "ready-for-human" ? ["human_only"] : roles[0] === "wontfix" ? ["wontfix"] : roles[0] === "ready-for-agent" ? ["approval_required"] : ["start_planning"];
     const next: ProjectGitHubSource = { ...source, repository: policy.repository, issue: snapshot, triage_roles: roles, readiness: { eligible: false, reasons, approval: null } };
-    this.store.put("github_sources", next, policy.id); return next;
+    this.store.put("github_sources", next, policy.id);
+    await this.pauseIssueWork?.(this.issueReadiness(next, policy));
+    return next;
+  }
+  executionScope(implementationId: string): ProjectIssueExecutionScope | null {
+    const source = this.store.list<ProjectGitHubSource>("github_sources").find(item => item.kind === "issue" && item.implementation_id === implementationId);
+    if (!source) return null;
+    const readiness = this.issueReadiness(source, this.store.get<ProjectGitHubPolicy>("github_policies", source.project_id)).readiness!;
+    if (readiness.reasons.some(reason => reason !== "automatic_implementation_disabled") || !readiness.approval) throw new FactoryError("github_readiness_required", "Approve the current issue requirements and testing decisions before implementation", 409);
+    return { source_id: source.id, repository: source.repository!, number: source.number, issue_revision: source.revision, issue: source.issue!, approval: readiness.approval };
+  }
+  async prepareExecutionScope(implementationId: string): Promise<void> {
+    const source = this.store.list<ProjectGitHubSource>("github_sources").find(item => item.kind === "issue" && item.implementation_id === implementationId);
+    if (!source) return;
+    await this.locked(source.project_id, async () => {
+      const policy = this.store.get<ProjectGitHubPolicy>("github_policies", source.project_id);
+      if (!policy || policy.repository.toLowerCase() !== source.repository?.toLowerCase()) throw new FactoryError("github_policy_changed", "Inspect the issue's current Project repository and readiness policy", 409);
+      const scope = await this.scope(policy);
+      const issue = await this.api(policy, scope, `repos/${policy.repository}/issues/${source.number}`) as Issue;
+      this.validateIssue(issue);
+      if (issue.node_id !== source.external_id || issue.number !== source.number || issue.pull_request) throw new FactoryError("github_issue_changed", "The GitHub issue identity changed", 409);
+      await this.importIssue(policy, issue);
+      this.executionScope(implementationId);
+    });
   }
   private issueReadiness(source: ProjectGitHubSource, policy: ProjectGitHubPolicy | null): ProjectGitHubSource {
     if (source.kind !== "issue") return source;
     // Recompute against the live policy even between synchronizations: an old trust setting is never authority.
     const roles = source.issue ? PROJECT_TRIAGE_ROLES.filter(role => source.issue!.labels.some(label => label.toLowerCase() === (policy?.triage_labels?.[role] || role).toLowerCase())) : [];
     const approval = this.store.list<ProjectIssueApproval>("github_readiness", source.project_id).filter(item => item.source_id === source.id).at(-1) ?? null;
-    const valid = policy && policy.project_scope === this.projectScope(policy.id) && approval?.issue_revision === source.revision && approval.policy_revision === policy.revision && source.repository?.toLowerCase() === policy.repository.toLowerCase();
+    const valid = policy && policy.project_scope === this.projectScope(policy.id) && approval?.issue_revision === source.revision && !approval.revoked_at && approval.policy_revision === policy.revision && source.repository?.toLowerCase() === policy.repository.toLowerCase();
     const reasons: IssueReadinessReason[] = source.state !== "open" ? ["issue_closed"] : roles.length > 1 ? ["conflicting_triage"] : roles[0] === "ready-for-human" ? ["human_only"] : roles[0] === "wontfix" ? ["wontfix"] : roles[0] !== "ready-for-agent" ? ["start_planning"] : !valid ? ["approval_required"] : !policy.auto_implement ? ["automatic_implementation_disabled"] : [];
+    if (source.publication_batch_id && this.store.get<import("../shared/issue-batches.ts").IssueBatch>("github_issue_batches", source.publication_batch_id)?.dispatch_ready !== true) reasons.push("batch_incomplete");
     return { ...source, triage_roles: roles, readiness: { eligible: reasons.length === 0, reasons, approval } };
   }
   private plan(value: unknown): ProjectIssuePlan {
@@ -264,11 +304,11 @@ export class ProjectGitHub {
       const issue = await this.api(policy, scope, `repos/${policy.repository}/issues/${number}`) as Issue;
       this.validateIssue(issue);
       if (issue.node_id !== source.external_id || issue.number !== number || issue.pull_request) throw new FactoryError("github_issue_changed", "The GitHub issue identity changed", 409);
-      const current = this.importIssue(policy, issue);
+      const current = await this.importIssue(policy, issue);
       if (current.revision !== proof.issue_revision) throw new FactoryError("github_issue_changed", "The issue scope changed; inspect it before approving readiness", 409);
       if (current.state !== "open" || current.triage_roles?.length !== 1 || current.triage_roles[0] !== "ready-for-agent") throw new FactoryError("github_issue_unready", "Resolve triage and select an open agent-ready issue before approving readiness", 409);
       const prior = this.issueReadiness(current, policy).readiness?.approval;
-      if (!prior || prior.issue_revision !== current.revision || prior.policy_revision !== policy.revision || JSON.stringify(prior.plan) !== JSON.stringify(plan)) {
+      if (!prior || prior.revoked_at || prior.issue_revision !== current.revision || prior.policy_revision !== policy.revision || JSON.stringify(prior.plan) !== JSON.stringify(plan)) {
         const approval: ProjectIssueApproval = { ...this.store.record(), source_id: current.id, issue_revision: current.revision, policy_revision: policy.revision, actor: "owner", origin: "owner", evidence_id: null, plan };
         this.store.put("github_readiness", approval, id);
         this.store.event(current.implementation_id, "github_readiness_approved", { source_id: current.id, approval_id: approval.id });
@@ -282,7 +322,7 @@ export class ProjectGitHub {
   private async trustedReadiness(policy: ProjectGitHubPolicy, scope: AccountBindingSnapshot, source: ProjectGitHubSource): Promise<void> {
     if (source.state !== "open" || source.triage_roles?.length !== 1 || source.triage_roles[0] !== "ready-for-agent") return;
     const prior = this.issueReadiness(source, policy).readiness?.approval;
-    if (prior?.issue_revision === source.revision && prior.policy_revision === policy.revision) return;
+    if (prior?.issue_revision === source.revision && prior.policy_revision === policy.revision && !prior.revoked_at) return;
     // The native comment supplies the actor; its payload binds approval to the exact scope digest.
     interface ReadinessComment { id: string; author: { login: string } | null; editor: { login: string } | null; lastEditedAt: string | null; body: string }
     const comments: ReadinessComment[] = [];
@@ -302,6 +342,7 @@ export class ProjectGitHub {
       // https://docs.github.com/en/graphql/reference/issues#issuecomment distinguishes author and editor.
       const actor = comment.editor?.login ?? (comment.lastEditedAt === null ? comment.author?.login : null);
       if (typeof comment.id !== "string" || !comment.id || !actor || !trusted.has(actor.toLowerCase()) || typeof comment.body !== "string") continue;
+      if (this.store.list<ProjectIssueApproval>("github_readiness", policy.id).some(approval => approval.source_id === source.id && approval.evidence_id === comment.id && approval.revoked_at)) continue;
       const matches = [...comment.body.matchAll(/^```saurons-eye-readiness\r?\n([\s\S]*?)\r?\n```[ \t]*\r?$/gm)];
       if (matches.length !== 1) continue;
       let plan: ProjectIssuePlan;
@@ -314,7 +355,7 @@ export class ProjectGitHub {
       const issue = await this.api(policy, scope, `repos/${policy.repository}/issues/${source.number}`) as Issue;
       this.validateIssue(issue);
       if (issue.node_id !== source.external_id || issue.number !== source.number || issue.pull_request) throw new FactoryError("github_issue_changed", "The GitHub issue identity changed", 409);
-      const current = this.importIssue(policy, issue);
+      const current = await this.importIssue(policy, issue);
       if (current.revision !== source.revision) return;
       const approval: ProjectIssueApproval = { ...this.store.record(), source_id: source.id, issue_revision: source.revision, policy_revision: policy.revision, actor, origin: "github_comment", evidence_id: comment.id, plan };
       this.store.put("github_readiness", approval, policy.id);
@@ -496,7 +537,7 @@ export class ProjectGitHub {
         for (const issue of issues) {
           this.validateIssue(issue);
           if (issue.state !== "open" && !this.store.list<ProjectGitHubSource>("github_sources", id).some((source) => source.external_id === issue.node_id && source.kind === "issue")) continue;
-          const source = this.importIssue(policy, issue);
+          const source = await this.importIssue(policy, issue);
           await this.trustedReadiness(policy, scope, source);
         }
         for (const pull of pulls) {

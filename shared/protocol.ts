@@ -1197,6 +1197,8 @@ export const DEFAULT_PORT = 7317;
  * under retained owner intent. Missing approvals are never inferred.
  * Resting Runs/workers are ready: native capacity released, exclusive worktree ownership retained.
  * POST /api/factory/runs/:id/reconcile (empty) -> FactoryRun; observation never redispatches.
+ * A revoked issue Run retains scope_pause independently of native status. Reconcile retries its
+ * controlled stop; uncertainty retains owned reservations. A paused attempt never resumes.
  * POST .../stop (stop) -> FactoryRun; verified ownership released, history/work retained.
  * POST .../cleanup (empty) -> FactoryCleanup; only stopped clean owned checkouts removed.
  * POST .../verify-provider (empty) -> FactoryCapabilities; genuine loading/owner-round evidence required.
@@ -1273,6 +1275,8 @@ export interface FactoryRequests {
   project_schedule: import("./project-schedules.ts").ProjectScheduleConfiguration;
   project_sync: { job: import("./project-schedules.ts").ProjectSyncJob; result_id?: string };
   github_action: { head: string; base: string; policy_revision: string };
+  issue_batch_proposal: import("./issue-batches.ts").IssueBatchProposal;
+  issue_batch_action: import("./issue-batches.ts").IssueBatchAction;
   implementation: { title: string; description: string; project_id?: string | null };
   configure: { project_id?: string | null; provider?: import("./factory.ts").FactoryProvider | null; machine_id?: string | null };
   complete_work: { run_id: string };
@@ -1314,6 +1318,18 @@ export interface FactoryRequests {
   empty: Record<string, never>;
 }
 export type FactoryRequestBody = FactoryRequests[keyof FactoryRequests];
+/** GET /api/factory/implementations/:id/issue-batches -> IssueBatchesOverview.
+ * POST .../issue-batches -> IssueBatch, 201; IssueBatchProposal retains a whole proposed
+ * deliverable graph without remote mutations. Revision changes invalidate prior review.
+ * POST .../issue-batches/:batch_id/review -> IssueBatch; IssueBatchAction binds owner review
+ * to the batch, Project policy, repository and account. Requires same-origin and machine header.
+ * POST .../issue-batches/:batch_id/publish -> IssueBatch; an explicit owner action against
+ * the reviewed revision, same-origin and x-herdr-machine: 1. Never runs on chat completion.
+ * POST /api/factory-agent/:run_id/issue-batch -> IssueBatch, 201; IssueBatchProposal,
+ * scoped planning Runs may retain draft proposals for their frozen Project only.
+ * The scoped credential grants neither review nor publication.
+ */
+export type { IssueBatch, IssueBatchProposal, IssueBatchesOverview, PlannedIssue } from "./issue-batches.ts";
 /** GET /api/factory/projects/:id/github -> ProjectGitHubOverview.
  * GET .../github/schedules -> ProjectSchedulesOverview; built-in defaults preserve saved polling.
  * POST .../github/schedules/configure -> ProjectSchedulesOverview; ProjectScheduleConfiguration,
@@ -1327,6 +1343,10 @@ export type FactoryRequestBody = FactoryRequests[keyof FactoryRequests];
  * Includes canonical triage-label overrides, default-off auto_implement and trusted_issue_approvers.
  * POST .../github/sync -> ProjectGitHubOverview; imports owned issue/fix records and applies opted-in policies.
  * Issue sources retain scope, resolved triage roles, eligibility reasons and revision-bound plan approval.
+ * An edited/unready revision permanently revokes its approval receipt (revoked_at). Restoring prior
+ * content/labels requires fresh owner approval or a new trusted native comment, never receipt replay.
+ * Implementation admission re-reads native issue scope and freezes issue_scope in the Run manifest;
+ * later drift requests a controlled stop without replacing those instructions or produced evidence.
  * POST .../github/issues/:number/approve -> ProjectGitHubOverview; ProjectIssueApprovalRequest,
  * owner approval of fresh issue_revision and policy_revision with acceptance, dependencies and confirmed
  * planning/testing decisions. Requires same origin, x-herdr-machine: 1 and x-herdr-factory: 1.

@@ -55,6 +55,8 @@ describe("browser lane", () => {
       { script: "scripts/project-navigation-browser-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/project-schedules-browser-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/github-readiness-browser-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/github-scope-browser-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/github-issue-batches-browser-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/inbox-start-browser-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/account-profiles-browser-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/plan-browser-regression.ts", seconds: expect.any(Number), code: 0 },
@@ -74,7 +76,7 @@ describe("browser lane", () => {
   it("summarizes every script and exits zero on success without enabling local evidence", async () => {
     const { text, code, evidence } = await lane();
     expect(code).toBe(0);
-    expect(rows(text)).toHaveLength(58);
+    expect(rows(text)).toHaveLength(60);
     expect(rows(text).map((row) => row.script)).toContain("scripts/portal-regression.ts");
     expect(rows(text).map((row) => row.script)).toContain("scripts/notification-icons-browser-qa.ts");
     expect(rows(text).map((row) => row.script)).toContain("scripts/agy-chat-browser-qa.ts");
