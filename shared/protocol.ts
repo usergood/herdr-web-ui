@@ -1327,6 +1327,9 @@ export type { ProjectQueueConfiguration, ProjectQueueOverview } from "./project-
  * deliverable graph without remote mutations. Revision changes invalidate prior review.
  * POST .../issue-batches/:batch_id/review -> IssueBatch; IssueBatchAction binds owner review
  * to the batch, Project policy, repository and account. Requires same-origin and machine header.
+ * POST .../issue-batches/:batch_id/resume -> IssueBatch; reconcile retained publication
+ * intents for the same reviewed batch and policy, continuing only confirmed identities;
+ * same-origin and x-herdr-machine: 1, with the whole batch held until all links are confirmed.
  * POST .../issue-batches/:batch_id/publish -> IssueBatch; an explicit owner action against
  * the reviewed revision, same-origin and x-herdr-machine: 1. Never runs on chat completion.
  * POST /api/factory-agent/:run_id/issue-batch -> IssueBatch, 201; IssueBatchProposal,
