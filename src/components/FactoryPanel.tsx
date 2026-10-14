@@ -5,6 +5,7 @@ import type { AgentModelSelection } from "../../shared/agent-models.ts";
 import type { Machine } from "../../shared/machines.ts";
 import { factoryDetail, factoryOverview, factoryRequest } from "../lib/factoryApi.ts";
 import { useT } from "../lib/i18n.ts";
+import { ProjectUpstreamStatus } from "./ProjectUpstreamStatus.tsx";
 import { OpenFileContext } from "../lib/filePaths.ts";
 import { base64FromBytes } from "../lib/api.ts";
 import { Markdown } from "./Markdown.tsx";
@@ -141,6 +142,7 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
     {!overview && <p role="status">{t("Loading…")}</p>}
     {!selected && overview && <>
       <FactoryOperationsPanel overview={overview} busy={busy} perform={perform} />
+      {allAssignments && boardProject && <ProjectUpstreamStatus key={boardProject.id} projectId={boardProject.id} />}
       {!allAssignments && <form className="factory-form factory-capture" onSubmit={(event) => void capture(event)}>
         <label>{t("Idea title")}<input className="input factory-input" value={title} onChange={(event) => setTitle(event.target.value)} required maxLength={200} /></label>
         <label>{t("Idea notes")}<textarea className="input factory-input" value={notes} onChange={(event) => setNotes(event.target.value)} maxLength={100_000} /></label>

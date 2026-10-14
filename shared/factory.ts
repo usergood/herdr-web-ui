@@ -26,6 +26,7 @@ export interface Implementation extends FactoryRecord {
   delivery_scope?: { milestone: "merge" | "release"; repository: string | null; branch: string | null; base: string | null; github_repository?: string | null };
   completion_evidence?: { repository_changes: "none" | "changes" | "unknown"; quiescent: boolean; reason: string | null; checked_at: string };
   delivery?: AssignmentDelivery;
+  upstream_update?: import("./upstream-releases.ts").UpstreamRelease;
 }
 export interface DeliveryChange { path: string; oid: string | null; mode: string | null; old_path?: string }
 export interface AssignmentDelivery {

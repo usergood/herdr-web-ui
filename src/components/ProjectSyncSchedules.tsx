@@ -4,6 +4,7 @@ import { factoryRequest } from "../lib/factoryApi.ts";
 import { accountRequest } from "../lib/accountsApi.ts";
 import { useT } from "../lib/i18n.ts";
 import { SettingsGroup, SettingsRow, Toggle } from "./SettingsControls.tsx";
+import { UpstreamReleaseStatus } from "./ProjectUpstreamStatus.tsx";
 import "./ProjectSyncSchedules.css";
 
 export function ProjectSyncSchedules({ projectId, configured, busy, perform, onSaved }: { projectId: string; configured: boolean; busy: boolean; perform: (action: () => Promise<void>) => Promise<void>; onSaved: () => Promise<void> }) {
@@ -51,6 +52,7 @@ export function ProjectSyncSchedules({ projectId, configured, busy, perform, onS
     });
   }
   return <div className="project-sync-schedules">
+    <UpstreamReleaseStatus view={view} />
     <p className="field-hint">{t("Sync retries only synchronize Project data; implementation Retry remains an owner action.")}</p>
     <button type="button" className="btn" disabled={busy} onClick={() => void perform(async () => { const generation = epoch.current; const next = await factoryRequest<ProjectSchedulesOverview>(route); if (generation === epoch.current) { setView(next); setForms(next.schedules); setProblem(""); } })}>{t("Refresh schedules")}</button>
     {problem && <p role="alert">{problem}</p>}

@@ -7,6 +7,15 @@
  * keep their English names.
  */
 export const TR: Record<string, string> = {
+  "Upstream repository (owner/name)": "Üst kaynak deposu (sahip/ad)",
+  "Upstream releases": "Üst kaynak sürümleri",
+  "Upstream releases enter Inbox for planning.": "Üst kaynak sürümleri planlama için Gelen Kutusu’na eklenir.",
+  "Detected release: {tag}": "Algılanan sürüm: {tag}",
+  "Active update: {tag}": "Etkin güncelleme: {tag}",
+  "Next release: {tag}": "Sonraki sürüm: {tag}",
+  "No release detected": "Sürüm algılanmadı",
+  "No active update": "Etkin güncelleme yok",
+  "No next release": "Sonraki sürüm yok",
   "Reconcile Discard": "Vazgeçmeyi doğrula",
   "Discard pending": "Vazgeçme bekliyor",
   "Discard Assignment": "Atamadan vazgeç",

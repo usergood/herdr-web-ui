@@ -21,5 +21,5 @@ export interface ProjectSyncResult {
   finished_at: string | null;
   problem: string | null;
 }
-export interface ProjectSchedulesOverview { schedules: ProjectSyncSchedule[]; results: ProjectSyncResult[] }
+export interface ProjectSchedulesOverview { schedules: ProjectSyncSchedule[]; results: ProjectSyncResult[]; upstream?: import("./upstream-releases.ts").ProjectUpstreamOverview }
 export type ProjectScheduleConfiguration = Pick<ProjectSyncSchedule, "job" | "enabled" | "cadence" | "interval_minutes" | "local_time" | "time_zone"> & { expected_revision: string | null };

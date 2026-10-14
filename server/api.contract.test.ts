@@ -485,6 +485,146 @@ describe("GitHub issue readiness", () => {
   });
 });
 
+describe("Upstream release discovery", () => {
+  it("creates one planning Assignment per release and no work for empty or repeated checks", async () => {
+    const f = await githubScheduleFixture({ startAgent: async () => { throw new Error("Discovery must not start an agent"); } });
+    try {
+      expect((await f.request(f.route + "/configure", { ...f.policy, upstream_repository: "fictional/upstream" })).status).toBe(200);
+      const check = () => f.request(f.route + "/schedules/run", { job: "upstream_sync" });
+      expect((await check()).status).toBe(200);
+      expect((await f.request("")).body.implementations).toEqual([]);
+      const release = { id: 101, tag_name: "v1.0.0", published_at: "2026-10-12T09:00:00Z", draft: false, prerelease: false, html_url: "https://github.com/fictional/upstream/releases/tag/v1.0.0" };
+      writeFileSync(f.responses, JSON.stringify({ releases: [release], release_heads: { "v1.0.0": "a".repeat(40) } }));
+      const discovered = await check();
+      expect(discovered.status).toBe(200);
+      expect(discovered.body.upstream).toMatchObject({ repository: "fictional/upstream", detected: { release_id: "101", tag: "v1.0.0", revision: "a".repeat(40) }, active: { release: { release_id: "101", revision: "a".repeat(40) } }, candidate: null });
+      f.restart();
+      expect((await check()).body.upstream).toEqual(discovered.body.upstream);
+      const overview = (await f.request("")).body;
+      expect(overview.implementations).toHaveLength(1);
+      const detail = (await f.request(`/implementations/${overview.implementations[0].id}`)).body;
+      expect(detail.implementation).toMatchObject({ stage: "inbox", outcome: "none", upstream_update: { repository: "fictional/upstream", release_id: "101", tag: "v1.0.0", revision: "a".repeat(40) } });
+      expect(detail.runs).toEqual([]);
+      expect(f.calls().every(args => !args.includes("--method") && !args.includes("-X") && !args.some(arg => arg.includes("mutation")))).toBe(true);
+    } finally { f.close(); }
+  });
+  it("keeps the active release fixed and coalesces successive releases to the newest candidate", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      await f.request(f.route + "/configure", { ...f.policy, upstream_repository: "fictional/upstream" });
+      const check = async (id: number) => {
+        writeFileSync(f.responses, JSON.stringify({ releases: [{ id, tag_name: `v${id}`, published_at: `2026-10-${id}T09:00:00Z`, draft: false }], release_heads: { [`v${id}`]: id.toString(16).repeat(40) } }));
+        const response = await f.request(f.route + "/schedules/run", { job: "upstream_sync" });
+        expect(response.status).toBe(200); return response.body.upstream;
+      };
+      const initial = await check(11);
+      const original = (await f.request(`/implementations/${initial.active.implementation_id}`)).body.implementation;
+      expect((await check(12)).candidate).toMatchObject({ release_id: "12", tag: "v12" });
+      const newest = await check(13);
+      expect(newest).toMatchObject({ active: initial.active, candidate: { release_id: "13", tag: "v13" }, detected: { release_id: "13" } });
+      f.restart();
+      // A temporarily older remote listing must not regress the retained candidate.
+      expect((await check(12)).candidate).toMatchObject({ release_id: "13" });
+      expect((await f.request(`/implementations/${initial.active.implementation_id}`)).body.implementation).toEqual(original);
+      expect((await f.request("")).body.implementations).toHaveLength(1);
+    } finally { f.close(); }
+  });
+  it("offers one newest follow-up after Discard and never requeues discarded or superseded releases", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      await f.request(f.route + "/configure", { ...f.policy, upstream_repository: "fictional/upstream" });
+      const check = async (id: number) => {
+        writeFileSync(f.responses, JSON.stringify({ releases: [{ id, tag_name: `v${id}`, published_at: `2026-10-${id}T09:00:00Z`, draft: false }], release_heads: { [`v${id}`]: id.toString(16).repeat(40) } }));
+        return (await f.request(f.route + "/schedules/run", { job: "upstream_sync" })).body.upstream;
+      };
+      const first = (await check(11)).active;
+      await check(12); await check(13);
+      expect((await f.request(`/implementations/${first.implementation_id}/discard`, {})).body.outcome).toBe("discarded");
+      const next = (await f.request(f.route + "/schedules")).body.upstream;
+      expect(next.active).toMatchObject({ release: { release_id: "13" } });
+      expect(next.candidate).toBeNull();
+      expect((await f.request("")).body.implementations).toHaveLength(2);
+      expect((await f.request(`/implementations/${next.active.implementation_id}`)).body.runs).toEqual([]);
+      await f.request(`/implementations/${next.active.implementation_id}/discard`, {});
+      f.restart();
+      expect((await check(13)).active).toBeNull();
+      expect((await check(12)).active).toBeNull();
+      expect((await f.request("")).body.implementations).toHaveLength(2);
+      expect((await f.request(`/implementations/${first.implementation_id}`)).body.implementation.outcome).toBe("discarded");
+    } finally { f.close(); }
+  });
+  it("offers the candidate after verified merge while a release milestone remains pending", async () => {
+    const f = await factoryMergeFixture(false, "release", true, {}, true);
+    try {
+      const route = `/projects/${f.project.id}/github`;
+      f.data["repos/fictional/upstream/releases?per_page=30&page=1"] = [{ id: 102, tag_name: "v2", draft: false, published_at: "2026-10-13T09:00:00Z" }];
+      f.data["repos/fictional/upstream/commits/v2"] = { sha: "e".repeat(40) }; f.respond();
+      const check = await f.request(route + "/schedules/run", { job: "upstream_sync" }).then(r => r.json());
+      expect(check.upstream.candidate.release_id).toBe("102");
+      f.pull.merged = false; f.pull.state = "open"; f.respond();
+      const linked = await f.request(f.prefix + "/delivery", f.links).then(r => r.json());
+      expect((await f.request(f.prefix + "/delivery/sync", { expected_revision: linked.revision }).then(r => r.json())).condition).toBe("needs_you");
+      expect((await f.request(route + "/schedules").then(r => r.json())).upstream.active.release.release_id).toBe("101");
+      f.pull.merged = true; f.pull.state = "closed"; f.respond();
+      expect((await f.request(f.prefix + "/delivery/sync", { expected_revision: linked.revision }).then(r => r.json())).condition).toBe("merged");
+      expect((await f.request(route + "/schedules").then(r => r.json())).upstream).toMatchObject({ active: { release: { release_id: "102" } }, candidate: null });
+      expect((await f.request(f.prefix).then(r => r.json())).implementation.outcome).toBe("none");
+      const overview = await f.request("").then(r => r.json());
+      expect(overview.implementations.filter((idea: { upstream_update?: unknown }) => idea.upstream_update)).toHaveLength(2);
+      expect(f.calls().every(call => !call.args.includes("--method") && !call.args.some(arg => arg.endsWith("/merge")))).toBe(true);
+    } finally { await f.close(); }
+  });
+  it("reads complete published release inventory and leaves moving main commits outside intake", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      await f.request(f.route + "/configure", { ...f.policy, upstream_repository: "fictional/upstream" });
+      const drafts = Array.from({ length: 30 }, (_, index) => ({ id: index + 200, draft: true, published_at: null }));
+      writeFileSync(f.responses, JSON.stringify({ release_pages: { "1": drafts, "2": [{ id: 101, tag_name: "v1", draft: false, published_at: "2026-10-12T09:00:00Z", target_commitish: "main" }] }, release_heads: { v1: "a".repeat(40), main: "b".repeat(40) } }));
+      const result = await f.request(f.route + "/schedules/run", { job: "upstream_sync" });
+      expect(result.status).toBe(200);
+      expect(result.body.upstream.active.release).toMatchObject({ release_id: "101", revision: "a".repeat(40) });
+      expect(f.calls().some(args => args.some(arg => arg.endsWith("/commits/main")))).toBe(false);
+    } finally { f.close(); }
+  });
+  it("keeps pending release identity when settings change and permits a new upstream after Discard", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      let policy = (await f.request(f.route + "/configure", { ...f.policy, upstream_repository: "fictional/upstream" })).body;
+      writeFileSync(f.responses, JSON.stringify({ releases: [{ id: 101, tag_name: "v1", draft: false, published_at: "2026-10-12T09:00:00Z" }], release_heads: { v1: "a".repeat(40) } }));
+      const state = (await f.request(f.route + "/schedules/run", { job: "upstream_sync" })).body.upstream;
+      const changed = await f.request(f.route + "/configure", { ...policy, expected_revision: policy.revision, upstream_repository: "fictional/other" });
+      expect(changed.status).toBe(409); expect(changed.body.error.code).toBe("upstream_update_pending");
+      expect((await f.request(f.route + "/schedules")).body.upstream).toEqual(state);
+      await f.request(`/implementations/${state.active.implementation_id}/discard`, {});
+      policy = (await f.request(f.route + "/configure", { ...policy, expected_revision: policy.revision, upstream_repository: "fictional/other" })).body;
+      expect(policy.upstream_repository).toBe("fictional/other");
+      const next = await f.request(f.route + "/schedules/run", { job: "upstream_sync" });
+      expect(next.status).toBe(200);
+      expect(next.body.upstream.active.release).toMatchObject({ repository: "fictional/other", release_id: "101" });
+    } finally { f.close(); }
+  });
+  it("retains upstream discovery failures and recovers through the scheduled retry without duplicate work", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      await f.request(f.route + "/configure", { ...f.policy, upstream_repository: "fictional/upstream" });
+      await f.request(f.route + "/schedules/configure", { job: "upstream_sync", expected_revision: null, enabled: true, cadence: "daily", interval_minutes: 1440, local_time: "03:00", time_zone: "America/Mexico_City" });
+      const release = { id: 101, tag_name: "v1", draft: false, published_at: "2026-10-12T09:00:00Z" };
+      writeFileSync(f.responses, JSON.stringify({ releases: [release] }));
+      const failed = await f.request(f.route + "/schedules/run", { job: "upstream_sync" });
+      expect(failed.status).toBe(409); expect(failed.body.error.code).toBe("github_invalid_response");
+      const state = (await f.request(f.route + "/schedules")).body;
+      expect(state.results).toMatchObject([{ job: "upstream_sync", condition: "failed", problem: "GitHub did not resolve the upstream release commit" }]);
+      expect(state.schedules[1]).toMatchObject({ condition: "failed", retry_at: "2026-10-14T09:00:00.000Z" });
+      expect((await f.request("")).body.implementations).toEqual([]);
+      f.restart();
+      writeFileSync(f.responses, JSON.stringify({ releases: [release], release_heads: { v1: "a".repeat(40) } }));
+      f.advance("2026-10-14T09:00:00Z"); await f.tick(); await f.tick();
+      expect((await f.request(f.route + "/schedules")).body.results).toMatchObject([{ condition: "failed" }, { job: "upstream_sync", trigger: "scheduled", condition: "succeeded" }]);
+      expect((await f.request("")).body.implementations).toHaveLength(1);
+    } finally { f.close(); }
+  });
+});
+
 describe("Project schedules", () => {
   it("offers disabled built-in defaults without enabling GitHub policy", async () => {
     const f = await githubScheduleFixture();
