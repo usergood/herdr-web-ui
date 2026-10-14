@@ -139,7 +139,7 @@ export class FactoryPipeline {
     }
     this.store.event(run.implementation_id, "ticket_integrated", { worker_id: workerId, ticket_id: worker.ticket_id, head: next.head }); return next;
   }
-  async accept(id: string, body: Record<string, unknown>): Promise<FactoryRun> {
+  async accept(id: string, body: Record<string, unknown>, issueApprovalId?: string): Promise<FactoryRun> {
     const run = this.run(id, false);
     await this.retainBeforeStop(id);
     this.run(id, false); // Capture may overlap an owner action; validate the live scope afterwards.
@@ -152,10 +152,10 @@ export class FactoryPipeline {
     const done = this.store.list<FactoryWorker>("workers", id).filter((entry) => entry.role === "implementer" && entry.condition === "completed");
     if (run.action === "implement-spec" && tickets.some((ticket) => !done.some((entry) => entry.ticket_id === ticket.id))) throw new FactoryError("tickets_incomplete", "Integrate every accepted Ticket before completion", 409);
     if (this.store.list<{ run_id: string | null; status: string }>("comments", run.implementation_id).some((entry) => entry.run_id === id && entry.status !== "resolved")) throw new FactoryError("findings_open", "Resolve this Run's retained findings with fresh evidence before acceptance", 409);
-    const approval = { ...this.store.record(), implementation_id: run.implementation_id, kind: "review", revision: current.head, scope: `Run ${id}; checks ${check.id}; independent Standards and Spec reports` };
+    const approval = { ...this.store.record(), implementation_id: run.implementation_id, kind: "review", revision: current.head, scope: `Run ${id}; checks ${check.id}; independent Standards and Spec reports`, ...(issueApprovalId ? { source_approval_id: issueApprovalId } : {}) };
     this.store.put("approvals", approval, run.implementation_id);
     // Release native ownership explicitly, while retaining Git and all evidence.
-    const stopped = await this.runtime.stopRun(id, { summary: `Owner accepted implementation at ${current.head}` });
+    const stopped = await this.runtime.stopRun(id, { summary: `${issueApprovalId ? "Trusted issue implementation verified" : "Owner accepted implementation"} at ${current.head}` });
     const completed: FactoryRun = { ...stopped, condition: "completed" };
     this.store.put("runs", completed, run.implementation_id);
     const implementation = this.store.get<Implementation>("implementations", run.implementation_id)!;
@@ -169,6 +169,20 @@ export class FactoryPipeline {
       if (proposal) this.store.put("retrospectives", { ...proposal, applied_run_id: run.id, updated_at: completed.updated_at }, proposal.project_id);
     }
     this.store.event(run.implementation_id, "implementation_accepted", { run_id: id, head: current.head, publication_authorized: false }); return completed;
+  }
+  /** Trusted issue scope already authorizes implementation. Only resting, verified
+   * work can release its slot; merge and delivery retain their separate owner gate. */
+  async completeReadyIssue(id: string): Promise<void> {
+    const run = this.store.get<FactoryRun>("runs", id);
+    if (run?.action !== "implement-spec" || run.condition !== "ready" || run.scope_pause || !(run.manifest as { issue_scope?: unknown }).issue_scope) return;
+    if (this.workflow.questions(run.implementation_id).some(question => question.answer === null)
+      || this.store.list<FactoryWorker>("workers", id).some(worker => owns(worker.condition))
+      || this.store.list<FactoryCheck>("checks", id).some(check => ["working", "interrupted"].includes(check.condition))) return;
+    const check = this.store.list<FactoryCheck>("checks", id).filter(check => check.worker_id === null).at(-1);
+    const reviews = this.store.list<FactoryReviewEvidence>("review_evidence", id);
+    if (!check || check.condition !== "passed" || !["standards", "spec"].every(axis => reviews.filter(review => review.axis === axis).at(-1)?.head === check.head && reviews.filter(review => review.axis === axis).at(-1)?.outcome === "passed")) return;
+    const scope = (run.manifest as { issue_scope: import("../shared/github-project.ts").ProjectIssueExecutionScope }).issue_scope;
+    await this.accept(id, { head: check.head }, scope.approval.id);
   }
   async resolveFinding(id: string, commentId: string, body: Record<string, unknown>): Promise<unknown> {
     const comment = this.store.get<import("../shared/protocol.ts").ReviewComment>("comments", commentId);

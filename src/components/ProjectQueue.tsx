@@ -69,6 +69,7 @@ export function ProjectQueue({ projectId }: { projectId: string }) {
         <ol className="project-queue-list">{view.items.map((item, index) => <li key={item.implementation_id}>
           <a href={`#factory/${item.implementation_id}`}>{item.title}</a>
           <p>{item.eligible ? t("Eligible") : [...new Set(item.reasons.map(reason => reasonLabel(reason, t)))].join(" · ")}</p>
+          {item.problem && <p role="alert">{item.problem}</p>}
           <div className="project-queue-actions">
             <button className="icon-button" aria-label={t("Move earlier")} disabled={busy || index === 0} onClick={() => void act(`/implementations/${item.implementation_id}/order`, { before_id: view.items[index - 1]!.implementation_id })}><ArrowUp aria-hidden="true" /></button>
             <button className="icon-button" aria-label={t("Move later")} disabled={busy || index === view.items.length - 1} onClick={() => void act(`/implementations/${view.items[index + 1]!.implementation_id}/order`, { before_id: item.implementation_id })}><ArrowDown aria-hidden="true" /></button>

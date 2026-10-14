@@ -3283,6 +3283,7 @@ export function createServer(
 
   const registration = options.registerBridge ? registerBridge(server.port ?? 0, bridgeToken) : null;
 
+  factory.bindOrigin(`http://localhost:${server.port}`);
   // ACKs can stop arriving entirely (a suspended tab). Bound the pause even then.
   const outputTimer = setInterval(() => {
     pending.expire();

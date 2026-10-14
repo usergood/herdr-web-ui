@@ -55,13 +55,15 @@ export class FactoryService {
   private readonly discards = new Map<string, Promise<Implementation>>();
   private readonly issueBatches: GitHubIssueBatches;
   private stopped = false;
+  private origin: string | null = null;
+  private readonly issueAdmissions = new Set<string>();
   constructor(stateDir: string, private readonly skillsPath: string | null = null, native: Partial<FactoryNative> = {}, endpoint: MachineEndpoint = () => undefined, publicUrl: string | null = null, accountTools: AccountTools = {}, private readonly registeredMachine: (id: string) => boolean = (id) => id === "local" || !!endpoint(id), accountDiscoveryHome?: string, scheduleTiming?: import("./project-schedules.ts").ProjectScheduleTiming) {
     this.accounts = new MachineAccounts(stateDir, accountTools, false, accountDiscoveryHome);
     this.store = new FactoryStore(stateDir); this.artifacts = new FactoryArtifacts(this.store, (text) => this.accounts.assertPublic(text)); this.workflow = new FactoryWorkflow(this.store); this.backup = new FactoryBackup(this.store, this.artifacts);
     this.accounts.usage((id) => [...this.store.list<FactoryRun>("runs"), ...this.store.list<{ run: FactoryRun; closing?: boolean }>("host_leases").map((lease) => lease.run)].some((run) => ["accepted", "working", "ready", "needs_you", "blocked", "disconnected", "interrupted"].includes(run.condition) && (run.manifest as { account_snapshot?: import("../shared/accounts.ts").AccountBindingSnapshot })?.account_snapshot?.profiles.some((profile) => profile.id === id)));
     this.references = new FactoryReferences(this.store, this.artifacts);
     this.executionHost = new FactoryExecutionHost(this.store, () => this.settings().skills_path, native, this.accounts);
-    this.runtime = new FactoryRuntime(this.store, this.workflow, () => this.settings(), this.executionHost, endpoint, (record) => this.artifacts.read(record), publicUrl, this.references, this.accounts, (id, continuing) => this.queue.assertAdmission(id, continuing), (id, next) => this.queue.consumeRetry(id, next), id => this.github.executionScope(id), id => this.github.prepareExecutionScope(id)); this.review = new FactoryReview(this.store, (machine, path, base, mode) => this.runtime.capture(machine, path, base, mode), (machine, path) => this.runtime.inspect(machine, path));
+    this.runtime = new FactoryRuntime(this.store, this.workflow, () => this.settings(), this.executionHost, endpoint, (record) => this.artifacts.read(record), publicUrl, this.references, this.accounts, (id, continuing) => this.queue.assertAdmission(id, continuing), (id, next) => this.queue.consumeRetry(id, next), id => this.github.executionScope(id), id => this.github.prepareExecutionScope(id), id => this.queue.prerequisites(id)); this.review = new FactoryReview(this.store, (machine, path, base, mode) => this.runtime.capture(machine, path, base, mode), (machine, path) => this.runtime.inspect(machine, path));
     this.pipeline = new FactoryPipeline(this.store, this.runtime, this.workflow, () => this.settings(), id => this.retainHandoff(id));
     this.continuation = new FactoryContinuation(this.store, this.workflow, this.runtime, async (id, allowPartial) => {
       await this.retainHandoff(id);
@@ -76,9 +78,36 @@ export class FactoryService {
         if (idea.project_id === projectId && idea.delivery && !idea.archived_at && !idea.discard_requested_at && idea.stage !== "done") await this.delivery.sync(idea.id, idea.delivery.revision);
       }
       this.github.upstream.reconcile(this.store.get<FactoryProject>("projects", projectId)!);
-    });
+    }, id => this.admitIssues(id));
     this.queue = new ProjectQueue(this.store, () => this.settings(), id => this.github.overview(id));
     this.issueBatches = this.github.issueBatches;
+  }
+  bindOrigin(origin: string): void { this.origin = origin; }
+  private async admitIssues(projectId: string): Promise<void> {
+    if (this.stopped || !this.origin || this.issueAdmissions.has(projectId)) return;
+    this.issueAdmissions.add(projectId);
+    try {
+      await this.runtime.reconcileCapacity();
+      if (this.stopped) return;
+      for (const run of this.store.list<FactoryRun>("runs")) {
+        if ((run.manifest as { project?: FactoryProject }).project?.id !== projectId) continue;
+        try { await this.pipeline.completeReadyIssue(run.id); }
+        catch { /* Stale evidence or uncertain ownership retains the implementing slot. */ }
+      }
+      if (this.stopped) return;
+      for (const item of this.queue.overview(projectId).items) {
+        const current = this.queue.overview(projectId).items.find(next => next.implementation_id === item.implementation_id);
+        if (this.stopped || !current || current.reasons.some(reason => reason !== "admission_held")) continue;
+        const scope = this.github.executionScope(item.implementation_id);
+        if (!scope) continue;
+        const attempts = this.store.list<FactoryRun>("runs", item.implementation_id).filter(run => run.action === "implement-spec").length;
+        try {
+          await this.runtime.start(item.implementation_id, { action: "implement-spec", idempotency_key: `issue-${scope.approval.id}-${attempts}` }, this.origin);
+          if (!this.stopped) this.queue.holdAdmission(item.implementation_id, null);
+        }
+        catch (error) { if (!this.stopped) this.queue.holdAdmission(item.implementation_id, error instanceof FactoryError ? error.message : "Automatic implementation could not be admitted"); }
+      }
+    } finally { this.issueAdmissions.delete(projectId); }
   }
   settings(): FactorySettings { return this.store.get<{ id: string; value: FactorySettings }>("settings", "default")?.value ?? { ...initialSettings, skills_path: this.skillsPath }; }
   private activeWork(id: string): boolean {

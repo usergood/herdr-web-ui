@@ -31,7 +31,7 @@ export class ProjectGitHub {
   private stopped = false;
   private readonly stopPolling: () => void;
   private readonly now: () => number;
-  constructor(private readonly store: FactoryStore, private readonly accounts: MachineAccounts, private readonly discover?: (machineId: string, path: string) => Promise<import("../shared/project-setup.ts").ProjectDiscovery>, timing: ProjectScheduleTiming = {}, private readonly pauseIssueWork?: (source: ProjectGitHubSource) => Promise<void>, private readonly observeDelivery?: (projectId: string) => Promise<void>) {
+  constructor(private readonly store: FactoryStore, private readonly accounts: MachineAccounts, private readonly discover?: (machineId: string, path: string) => Promise<import("../shared/project-setup.ts").ProjectDiscovery>, timing: ProjectScheduleTiming = {}, private readonly pauseIssueWork?: (source: ProjectGitHubSource) => Promise<void>, private readonly observeDelivery?: (projectId: string) => Promise<void>, private readonly admitIssues?: (projectId: string) => Promise<void>) {
     this.now = timing.now ?? Date.now;
     this.upstream = new UpstreamReleases(this.store);
     this.issueBatches = new GitHubIssueBatches(this.store, async (id, revision, operation) => this.locked(id, async () => {
@@ -596,6 +596,9 @@ export class ProjectGitHub {
         if (schedule.enabled && schedule.next_execution && Date.parse(schedule.next_execution) <= this.now() && !this.busy.has(id)) {
           try { await this.runSchedule(id, schedule.job, "scheduled"); } catch { /* Durable results are visible through the owner API. */ }
         }
+      }
+      if (!this.stopped) {
+        try { await this.admitIssues?.(id); } catch { /* Retained ownership and admission diagnostics remain visible. */ }
       }
     }
   }

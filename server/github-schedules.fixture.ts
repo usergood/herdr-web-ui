@@ -28,7 +28,7 @@ if (endpoint === "graphql") {
   }
   if (data.fail) { process.stderr.write("Owned GitHub fixture unavailable"); process.exit(1); }
 }
-const result = endpoint === "user" ? { login: "fictional-owner", id: 1042 }
+const result = data.resources && Object.hasOwn(data.resources, endpoint) ? data.resources[endpoint] : endpoint === "user" ? { login: "fictional-owner", id: 1042 }
   : endpoint === "graphql" && args.some(arg => arg.includes("issue(number:")) ? { data: { repository: { issue: { comments: { nodes: data.comments ?? [], pageInfo: { hasNextPage: false, endCursor: null } } } } } }
   : endpoint === "graphql" ? { data: { repository: { pullRequests: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } }
   : endpoint?.includes("/releases?") ? data.release_pages?.[endpoint.split("page=").at(-1)] ?? (endpoint.endsWith("page=1") ? data.releases ?? [] : [])

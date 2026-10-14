@@ -2,12 +2,14 @@ import { randomUUID } from "node:crypto";
 import type { FactoryProject, FactoryRun, FactorySettings, Implementation } from "../shared/factory.ts";
 import type { ProjectGitHubOverview } from "../shared/github-project.ts";
 import type { ProjectQueueOverview } from "../shared/project-queue.ts";
+import type { ProjectGitHubSource } from "../shared/github-project.ts";
 import { FactoryError } from "./factory-host.ts";
 import type { FactoryStore } from "./factory-store.ts";
 import { factoryCapacity } from "./factory-capacity.ts";
 
 type QueuePolicy = { id: string; revision: string; max_implementations: number; paused: boolean };
 type RetryReceipt = { id: string; implementation_id: string; consumed_run_id: string | null };
+type AdmissionHold = { id: string; approval_id: string; problem: string };
 
 /** Queue selection shares the factory's record store and reservation owner. */
 export class ProjectQueue {
@@ -32,9 +34,14 @@ export class ProjectQueue {
     const items = this.store.list<Implementation>("implementations").filter(idea => idea.project_id === id && !idea.archived_at && idea.stage !== "done").sort((a, b) => a.position - b.position).map(idea => {
       const source = sources.find(entry => entry.implementation_id === idea.id);
       const reasons: string[] = [...(source?.readiness?.reasons ?? ["planning_required"])];
-      if (["implementation_complete", "pr_open", "merged", "released"].includes(idea.outcome)) reasons.push("awaiting_delivery");
-      // Unavailable delivery evidence cannot satisfy an approved prerequisite.
-      if (source?.readiness?.approval?.plan.dependencies.length) reasons.push("dependency_unverified");
+      const hold = this.store.get<AdmissionHold>("issue_admission_holds", idea.id);
+      const problem = hold?.approval_id === source?.readiness?.approval?.id ? hold?.problem ?? null : null;
+      if (problem) reasons.push("admission_held");
+      if (["implementation_complete", "pr_open", "merged", "released"].includes(idea.outcome) || idea.delivery && ["merged", "released"].includes(idea.delivery.condition)) reasons.push("awaiting_delivery");
+      if (source?.readiness?.approval?.plan.dependencies.length) {
+        try { this.prerequisites(idea.id); } catch { reasons.push("dependency_unverified"); }
+      }
+      if (idea.discard_requested_at) reasons.push("assignment_discarded");
       if (paused) reasons.push("queue_paused");
       if (implementing.size >= effectiveLimit) reasons.push("project_capacity");
       if (capacity.implementations.size >= settings.max_implementations) reasons.push("assignment_capacity");
@@ -42,9 +49,42 @@ export class ProjectQueue {
       if (capacity.builds >= settings.max_builds) reasons.push("build_capacity");
       if (this.store.list<FactoryRun>("runs", idea.id).some(run => !["completed", "cancelled", "failed"].includes(run.condition))) reasons.push("implementation_owned");
       if (this.retryRequired(idea.id)) reasons.push("retry_required");
-      return { implementation_id: idea.id, title: idea.title, priority: idea.position, eligible: reasons.length === 0, reasons, failed_run_id: this.failedAttempt(idea.id)?.id ?? null };
+      return { implementation_id: idea.id, title: idea.title, priority: idea.position, eligible: reasons.length === 0, reasons, problem, failed_run_id: this.failedAttempt(idea.id)?.id ?? null };
     });
     return { project_id: id, revision: policy?.revision ?? null, max_implementations: policy?.max_implementations ?? 1, effective_limit: effectiveLimit, paused, capacity: { project_implementations: implementing.size, implementations: capacity.implementations.size, agents: capacity.agents, builds: capacity.builds, max_implementations: settings.max_implementations, max_agents: settings.max_agents, max_builds: settings.max_builds }, next_implementation_id: items.find(item => item.eligible)?.implementation_id ?? null, items };
+  }
+  holdAdmission(id: string, problem: string | null): void {
+    if (!problem) { this.store.remove("issue_admission_holds", id); return; }
+    const idea = this.store.get<Implementation>("implementations", id)!;
+    const approval = idea.project_id ? this.issues(idea.project_id).sources.find(source => source.implementation_id === id)?.readiness?.approval : null;
+    if (!approval) return;
+    const prior = this.store.get<AdmissionHold>("issue_admission_holds", id);
+    if (prior?.approval_id === approval.id && prior.problem === problem) return;
+    this.store.put<AdmissionHold>("issue_admission_holds", { id, approval_id: approval.id, problem });
+    this.store.event(id, "issue_admission_held", { reason: problem, approval_id: approval.id });
+  }
+  /** Delivery receipts cover the whole prerequisite, including Assignments still
+   * awaiting a release. Closing an issue or accepting implementation is insufficient. */
+  prerequisites(id: string): Implementation[] {
+    const idea = this.store.get<Implementation>("implementations", id)!;
+    const sources = this.store.list<ProjectGitHubSource>("github_sources");
+    const source = sources.find(source => source.kind === "issue" && source.implementation_id === id);
+    const plan = source ? this.issues(source.project_id).sources.find(item => item.id === source.id)?.readiness?.approval?.plan : null;
+    const project = idea.project_id ? this.project(idea.project_id) : null;
+    const branch = idea.delivery_scope?.branch ?? project?.delivery_branch ?? this.store.list<import("../shared/factory.ts").ProjectCheckout>("checkouts", idea.project_id ?? "").find(checkout => checkout.machine_id === (idea.machine_id ?? project?.machine_id))?.branch;
+    return (plan?.dependencies ?? []).map(dependency => {
+      const matches = sources.filter(item => item.kind === "issue" && item.repository?.toLowerCase() === dependency.repository.toLowerCase() && item.number === dependency.issue_number);
+      const local = matches.filter(item => item.project_id === source?.project_id);
+      const candidates = local.length ? local : matches;
+      const prerequisite = candidates.length === 1 ? this.store.get<Implementation>("implementations", candidates[0]!.implementation_id) : null;
+      const delivery = prerequisite?.delivery;
+      const merged = delivery && delivery.repository.toLowerCase() === dependency.repository.toLowerCase() && ["merged", "released"].includes(delivery.condition) && delivery.checked_at && delivery.changes.length && delivery.pulls.length && delivery.changes.every(change => delivery.pulls.some(pull => pull.covered_paths.includes(change.path)));
+      const satisfied = merged && (dependency.requires === "release"
+        ? delivery.condition === "released" && delivery.release && delivery.pulls.every(pull => delivery.release!.merge_commits.includes(pull.merge_commit))
+        : delivery.repository.toLowerCase() === source?.repository?.toLowerCase() && delivery.branch === branch);
+      if (!satisfied || prerequisite?.outcome === "discarded" || prerequisite?.discard_requested_at) throw new FactoryError("dependency_unverified", "Wait for verified prerequisite changes in the target branch or the explicitly required released artifact", 409);
+      return prerequisite!;
+    });
   }
   assertAdmission(implementationId: string, continuing = false): void {
     const idea = this.store.get<Implementation>("implementations", implementationId);
@@ -52,6 +92,7 @@ export class ProjectQueue {
     const view = this.overview(idea.project_id);
     if (!continuing && view.paused) throw new FactoryError("queue_paused", "The Project queue is paused; accepted work continues", 409);
     if (!continuing && this.retryRequired(implementationId)) throw new FactoryError("retry_required", "The failed implementation attempt requires the owner's explicit Retry", 409);
+    if (!continuing) this.prerequisites(implementationId);
     const own = factoryCapacity(this.store).implementing.has(implementationId) ? 1 : 0;
     if (continuing && own) return;
     if (view.capacity.project_implementations - own >= view.effective_limit) throw new FactoryError("project_capacity_exhausted", "The Project's implementing Assignment limit is reserved; reconcile accepted work before starting more", 409);

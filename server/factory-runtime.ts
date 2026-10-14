@@ -27,7 +27,7 @@ const actions: FactoryAction[] = ["work", "setup", "grill-me", "grill-with-docs"
 export class FactoryRuntime {
   private readonly dispatches = new Map<string, Promise<FactoryRun>>();
   private stopped = false;
-  constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly host: FactoryExecutionHost, private readonly endpoint: MachineEndpoint, private readonly readArtifact: (record: FactoryArtifact) => Buffer, private readonly publicUrl: string | null, private readonly references: FactoryReferences, private readonly accounts: MachineAccounts, private readonly projectAdmission: (id: string, continuing?: boolean) => void, private readonly consumeRetry: (id: string, nextRunId: string) => void, private readonly issueScope: (implementationId: string) => ProjectIssueExecutionScope | null = () => null, private readonly prepareIssueScope: (implementationId: string) => Promise<void> = async () => {}) {}
+  constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly host: FactoryExecutionHost, private readonly endpoint: MachineEndpoint, private readonly readArtifact: (record: FactoryArtifact) => Buffer, private readonly publicUrl: string | null, private readonly references: FactoryReferences, private readonly accounts: MachineAccounts, private readonly projectAdmission: (id: string, continuing?: boolean) => void, private readonly consumeRetry: (id: string, nextRunId: string) => void, private readonly issueScope: (implementationId: string) => ProjectIssueExecutionScope | null = () => null, private readonly prepareIssueScope: (implementationId: string) => Promise<void> = async () => {}, private readonly issuePrerequisites: (id: string) => Implementation[] = () => []) {}
   assertProjectCapacity(run: FactoryRun): void { if (["work", "implement-spec"].includes(run.action)) this.projectAdmission(run.implementation_id, true); }
   async discover(machineId: string, path: string): Promise<import("../shared/project-setup.ts").ProjectDiscovery> { return machineId === "local" ? this.host.discover(path) : this.remote(machineId, "/project-discovery", { path }); }
   async modelCatalog(machineId: string, provider: FactoryProvider, path: string, repository: string, snapshot?: AccountBindingSnapshot | null): Promise<import("../shared/agent-models.ts").AgentModelCatalog> {
@@ -174,6 +174,21 @@ export class FactoryRuntime {
     const selection = parseModelSelection(body.execution_preset === undefined ? project?.provider === provider ? project.execution_preset : undefined : body.execution_preset);
     const executionPreset = selection.model && inspected ? resolveModelSelection(selection, await this.modelCatalog(machineId, provider, inspected.path, inspected.repository, accountSnapshot)) : selection;
     if (selection.model && !inspected) throw new FactoryError("checkout_required", "Select a Project checkout before choosing a model", 409);
+    if (action === "implement-spec" && issueScope) {
+      this.workflow.reuseIssuePlan(id, issueScope);
+      implementation = this.store.get<Implementation>("implementations", id)!;
+    }
+    const prerequisites = issueScope ? this.issuePrerequisites(id) : [];
+    const prerequisiteRevision = hash(JSON.stringify(prerequisites));
+    for (const [index, prerequisite] of prerequisites.entries()) {
+      if (issueScope!.approval.plan.dependencies[index]!.requires !== "merge") continue;
+      const delivery = prerequisite.delivery!;
+      const account = await this.accountSnapshot(delivery.machine_id, { github: delivery.account_profile_id });
+      for (const pull of delivery.pulls) {
+        const comparison = await this.deliveryRead(delivery.machine_id, { repository: delivery.repository, account_snapshot: account, kind: "compare", base: pull.merge_commit, head: inspected!.head }) as { status?: string; merge_base_commit?: { sha?: string } };
+        if (!["ahead", "identical"].includes(comparison?.status ?? "") || comparison.merge_base_commit?.sha !== pull.merge_commit) throw new FactoryError("dependency_unverified", "Update the selected checkout to contain the verified prerequisite merges before implementation", 409);
+      }
+    }
     const specification = this.workflow.specification(id); const graphHash = this.workflow.graphHash(id);
     if (action === "to-tickets" || action === "implement-spec") {
       if (!specification || !this.workflow.approved(id, "specification", specification.id) || !this.workflow.approved(id, "testing_seams", specification.id)) throw new FactoryError("scope_unaccepted", "Accept the current specification and testing seams", 409);
@@ -223,6 +238,7 @@ export class FactoryRuntime {
     const run = this.store.db.transaction(() => {
       continuation?.validateScope?.();
       if (issueScope && JSON.stringify(this.issueScope(id)) !== JSON.stringify(issueScope)) throw new FactoryError("github_issue_changed", "The approved issue scope changed during admission", 409);
+      if (issueScope && hash(JSON.stringify(this.issuePrerequisites(id))) !== prerequisiteRevision) throw new FactoryError("dependency_unverified", "Prerequisite delivery changed during admission; verify it again", 409);
       const raced = this.store.list<FactoryRun>("runs", id).find((entry) => entry.idempotency_key === body.idempotency_key);
       if (raced) return { run: raced, accepted: false };
       if (this.stopped) throw new FactoryError("stopping", "The bridge is stopping; reconcile before retrying", 409);

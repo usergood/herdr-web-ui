@@ -23,6 +23,29 @@ export class FactoryWorkflow {
   approved(id: string, kind: FactoryApproval["kind"], revision: string): boolean {
     return this.store.list<FactoryApproval>("approvals", id).some((record) => record.kind === kind && record.revision === revision);
   }
+  /** Adapt an already accepted deliverable into bounded factory work. Every reused
+   * decision retains its readiness receipt; this is not another owner approval. */
+  reuseIssuePlan(id: string, scope: import("../shared/github-project.ts").ProjectIssueExecutionScope): void {
+    this.store.db.transaction(() => {
+      if (this.questions(id).some(question => question.answer === null)) throw new FactoryError("answers_unready", "Answer pending owner questions before implementing the issue", 409);
+      const prior = this.store.get<{ id: string; approval_id: string }>("issue_workflows", id);
+      if (prior?.approval_id === scope.approval.id) return;
+      if (!prior && this.specification(id)) throw new FactoryError("scope_unaccepted", "Reconcile the existing specification with the accepted issue plan before automatic implementation", 409);
+      const content = `${scope.issue.title}\n\n${scope.issue.body}\n\nAccepted issue plan:\n${JSON.stringify(scope.approval.plan, null, 2)}`;
+      if (content.length > 250_000) throw new FactoryError("github_plan_required", "The accepted issue plan exceeds the bounded factory context; retain a smaller deliverable", 409);
+      const specification: SpecificationVersion = { ...this.store.record(), implementation_id: id, revision: (this.specification(id)?.revision ?? 0) + 1, content, hash: hash(content) };
+      const ticket: FactoryTicket = { ...this.store.record(), implementation_id: id, specification_id: specification.id, title: scope.issue.title.slice(0, 200), acceptance: `Implement the accepted requirements and testing decisions in Specification ${specification.id}. Ask the owner about new decisions.`, dependencies: [], status: "proposed", tracker_reference: scope.approval.id };
+      const tickets = [ticket], graphHash = hash(JSON.stringify(tickets));
+      this.store.put("specifications", specification, id);
+      this.store.put("graphs", { id, specification_id: specification.id, hash: graphHash, tickets }, id);
+      this.store.put("graph_versions", { ...this.store.record(), specification_id: specification.id, hash: graphHash, tickets }, id);
+      for (const kind of ["specification", "testing_seams", "ticket_graph"] as const) {
+        this.store.put<FactoryApproval>("approvals", { ...this.store.record(), implementation_id: id, kind, revision: kind === "ticket_graph" ? graphHash : specification.id, source_approval_id: scope.approval.id, scope: `Reused issue readiness ${scope.approval.id} for ${scope.repository}#${scope.number} at ${scope.issue_revision}` }, id);
+      }
+      this.store.put("issue_workflows", { id, approval_id: scope.approval.id }, id);
+      this.store.event(id, "issue_plan_reused", { source_id: scope.source_id, approval_id: scope.approval.id, specification_id: specification.id, graph_hash: graphHash });
+    }).immediate();
+  }
   /** Only a verified native page may supply an answer; ambiguous replies stay pending. */
   retainNativeAnswers(run: FactoryRun, snapshot: NativeConversationSnapshot, latestPage: boolean): void {
     const questions = this.store.list<FactoryQuestion>("questions", run.implementation_id)

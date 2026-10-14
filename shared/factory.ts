@@ -71,7 +71,7 @@ export interface FactoryTicket extends FactoryRecord {
   dependencies: string[]; status: "proposed" | "ready" | "working" | "review" | "done";
   tracker_reference: string | null;
 }
-export interface FactoryApproval extends FactoryRecord { implementation_id: string; kind: "specification" | "testing_seams" | "ticket_graph" | "review" | "shared_understanding"; revision: string; scope: string }
+export interface FactoryApproval extends FactoryRecord { implementation_id: string; kind: "specification" | "testing_seams" | "ticket_graph" | "review" | "shared_understanding"; revision: string; scope: string; /** Existing trusted readiness receipt, when a decision was reused rather than newly approved. */ source_approval_id?: string }
 export interface FactoryQuestion extends FactoryRecord { implementation_id: string; run_id: string | null; question: string; answer_kind?: "text" | "confirmation"; answer: string | null; revision: string }
 export interface FactoryArtifact extends FactoryRecord {
   implementation_id: string; chat_id: string; name: string; media_type: string;
