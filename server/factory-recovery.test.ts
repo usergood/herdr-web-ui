@@ -61,5 +61,8 @@ test("the board distinguishes selected waiting work, conflicting readiness and u
       expect(overview.board.find((item: { implementation_id: string }) => item.implementation_id === source.implementation_id).lane).toBe(lane);
       expect((await f.request(`/implementations/${source.implementation_id}`)).body.board.lane).toBe(lane);
     }
+    expect((await f.request(`/projects/${f.project.id}/remove`, {})).status).toBe(200);
+    expect((await f.request("")).status).toBe(200);
+    expect((await f.request(`/implementations/${first.implementation_id}`)).status).toBe(200);
   } finally { f.close(); }
 }, 30_000);
