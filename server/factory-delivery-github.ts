@@ -9,7 +9,7 @@ export async function readDeliveryGitHub(accounts: MachineAccounts, request: Del
     return encodeURIComponent(value);
   };
   const number = request.number;
-  if (["pull", "files"].includes(request.kind) && (!Number.isSafeInteger(number) || number! < 1)) throw new FactoryError("invalid_delivery", "Select a delivery PR");
+  if (["pull", "files", "release"].includes(request.kind) && (!Number.isSafeInteger(number) || number! < 1)) throw new FactoryError("invalid_delivery", "Select a delivery PR or release");
   let path = `repos/${request.repository}`;
   switch (request.kind) {
     case "repository": break;
@@ -20,6 +20,11 @@ export async function readDeliveryGitHub(accounts: MachineAccounts, request: Del
       path += `/pulls/${number}/files?per_page=100&page=${request.page}`; break;
     case "tree": path += `/git/trees/${ref(request.ref)}?recursive=1`; break;
     case "compare": path += `/compare/${ref(request.base)}...${ref(request.head)}`; break;
+    case "releases":
+      if (!Number.isInteger(request.page) || request.page! < 1 || request.page! > 3) throw new FactoryError("invalid_delivery", "Select a bounded release page");
+      path += `/releases?per_page=100&page=${request.page}`; break;
+    case "release": path += `/releases/${number}`; break;
+    case "commit": path += `/commits/${ref(request.ref)}`; break;
     default: throw new FactoryError("invalid_delivery", "Select read-only delivery evidence");
   }
   const value = await accounts.github(request.account_snapshot, ["api", path]);

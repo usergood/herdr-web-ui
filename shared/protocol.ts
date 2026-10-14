@@ -1168,6 +1168,8 @@ export const DEFAULT_PORT = 7317;
  * POST .../delivery (AssignmentDeliveryConfiguration) -> AssignmentDelivery; revision-bound correction.
  * POST .../delivery/sync ({expected_revision}) -> AssignmentDelivery; read-only GitHub verification;
  * all intended committed changes and linked merges must be covered before merge-based completion.
+ * Release milestones additionally verify a published release tag contains every linked merge;
+ * retained release ID, URL, tag commit and publication time are inspectable. No release writes.
  * POST /api/factory-host/delivery-read (DeliveryReadRequest) -> bounded read-only GitHub resource;
  * selected Machine account snapshot only, no publication or merge authority.
  * POST .../discard (discard) -> Implementation; explicitly stops owned Runs, workers and

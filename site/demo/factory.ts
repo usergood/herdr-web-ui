@@ -43,7 +43,7 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
   const path = url.pathname;
   if (/^\/api\/factory\/implementations\/[^/]+\/delivery(?:\/sync)?$/.test(path)) {
     const id = path.split("/")[4]!;
-    return method === "GET" ? json(details.get(id)?.implementation.delivery ?? null) : failure("demo_unavailable", "Verifying PR delivery requires a real repository and selected GitHub account", 409);
+    return method === "GET" ? json(details.get(id)?.implementation.delivery ?? null) : failure("demo_unavailable", "Verifying PR and release delivery requires a real repository and selected GitHub account", 409);
   }
   if (path === "/api/factory-host/delivery-read") return failure("demo_unavailable", "GitHub delivery evidence is unavailable in the fictional demo", 409);
   if (/^\/api\/factory\/implementations\/[^/]+\/retry$/.test(path)) return failure("demo_only", "Retry requires an observed failed attempt on a real connection server.");

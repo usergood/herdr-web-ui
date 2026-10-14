@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AssignmentDelivery, AssignmentDeliveryConfiguration, DeliveryChange, FactoryProject, FactoryRun, FactoryWorker, Implementation } from "../shared/factory.ts";
+import type { AssignmentDelivery, AssignmentDeliveryConfiguration, DeliveryChange, FactoryProject, FactoryQuestion, FactoryRun, FactoryWorker, Implementation } from "../shared/factory.ts";
 import type { DeliveryReadRequest } from "../shared/factory-delivery.ts";
 import { FactoryError, hash } from "./factory-host.ts";
 import { FactoryStore } from "./factory-store.ts";
@@ -8,6 +8,7 @@ import { FactoryDelivery } from "./factory-delivery.ts";
 
 interface Pull { number: number; html_url: string; state: string; merged: boolean; merge_commit_sha: string | null; base: { ref: string; repo: { full_name: string } }; head: { sha: string } }
 interface Tree { truncated: boolean; tree: { path: string; mode: string; type: string; sha: string }[] }
+interface Release { id: number; tag_name: string; draft: boolean; published_at: string | null }
 const oid = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{40,64}$/.test(value);
 
 /** Retains owner linkage; observes delivery without ever asking GitHub to merge. */
@@ -22,7 +23,7 @@ export class FactoryMergeDelivery {
   private scope(id: string): string {
     const { completion_evidence: _, updated_at: __, ...idea } = this.idea(id);
     const runs = this.store.list<FactoryRun>("runs", id);
-    return hash(JSON.stringify({ idea, project: idea.project_id && this.store.get("projects", idea.project_id), runs: runs.map(({ updated_at, condition, waiting_reason, ...run }) => run), workers: runs.flatMap(run => this.store.list<FactoryWorker>("workers", run.id).map(({ updated_at, ...worker }) => worker)), checks: runs.flatMap(run => this.store.list("checks", run.id)) }));
+    return hash(JSON.stringify({ idea, project: idea.project_id && this.store.get("projects", idea.project_id), runs: runs.map(({ updated_at, condition, waiting_reason, ...run }) => run), workers: runs.flatMap(run => this.store.list<FactoryWorker>("workers", run.id).map(({ updated_at, ...worker }) => worker)), checks: runs.flatMap(run => this.store.list("checks", run.id)), questions: this.store.list("questions", id) }));
   }
   private async locked<T>(id: string, action: () => Promise<T>): Promise<T> {
     if (this.busy.has(id)) throw new FactoryError("delivery_busy", "Wait for this Assignment's delivery verification", 409);
@@ -83,11 +84,11 @@ export class FactoryMergeDelivery {
         throw new FactoryError("delivery_changed", "Link the Assignment's delivery PRs before verifying, or discard this Assignment", 409);
       }
       if (revision !== linked.revision) throw new FactoryError("delivery_changed", "Refresh the Assignment's delivery PRs before verifying", 409);
-      if (idea.stage === "done" && linked.condition === "merged") return linked;
+      if (idea.stage === "done" && ["merged", "released"].includes(linked.condition)) return linked;
       let evidence = await new FactoryDelivery(this.store, this.runtime).inspect(id);
       idea = this.idea(id);
       const scope = this.scope(id);
-      const delivery: AssignmentDelivery = { ...linked, changes: [], pulls: [], condition: "needs_you", problem: null, checked_at: new Date().toISOString() };
+      const delivery: AssignmentDelivery = { ...linked, changes: [], pulls: [], release: undefined, condition: "needs_you", problem: null, checked_at: new Date().toISOString() };
       try {
         if (!evidence.quiescent) throw new FactoryError("delivery_active", evidence.repository_changes === "unknown" ? evidence.reason! : "Stop and reconcile owned work before verifying delivery", 409);
         const project = idea.project_id ? this.store.get<FactoryProject>("projects", idea.project_id) : null;
@@ -142,6 +143,7 @@ export class FactoryMergeDelivery {
         const latestTarget = await read<{ name: string; commit: { sha: string } }>({ kind: "branch", ref: linked.branch });
         if (latestTarget.name !== linked.branch || latestTarget.commit?.sha !== target.commit.sha) throw new FactoryError("delivery_branch_changed", "The delivery branch changed during verification. Sync delivery again against its current revision.", 409);
         if (this.scope(id) !== scope) throw new FactoryError("delivery_changed", "The Assignment changed during delivery verification", 409);
+        if (idea.delivery_scope?.milestone === "release") delivery.condition = "merged";
         for (const run of this.store.list<FactoryRun>("runs", id)) {
           if (["completed", "cancelled", "failed"].includes(run.condition)) continue;
           if (run.action === "implement-spec" || run.action === "apply-retro") throw new FactoryError("delivery_active", "Complete the implementation's checks and review before finishing delivery", 409);
@@ -149,19 +151,61 @@ export class FactoryMergeDelivery {
           await this.runtime.finishStep(run.id);
         }
         evidence = await new FactoryDelivery(this.store, this.runtime).inspect(id);
-        if (!evidence.quiescent || JSON.stringify(await this.changes(this.idea(id))) !== JSON.stringify(delivery.changes)) throw new FactoryError("delivery_changes_changed", "Retained changes or owned work changed during verification. Reconcile them and sync delivery again.", 409);
+        if (!evidence.quiescent || JSON.stringify(await this.changes(this.idea(id))) !== JSON.stringify(delivery.changes)) {
+          delivery.condition = "needs_you";
+          throw new FactoryError("delivery_changes_changed", "Retained changes or owned work changed during verification. Reconcile them and sync delivery again.", 409);
+        }
         delivery.condition = "merged";
-        if (idea.delivery_scope?.milestone === "release") delivery.problem = "Verified merges are retained. A containing release is still required to finish this Assignment.";
+        if (idea.delivery_scope?.milestone === "release") {
+          const pending = this.store.list<FactoryQuestion>("questions", id).find(question => question.answer === null && (!question.run_id || this.store.get<FactoryRun>("runs", question.run_id)?.action !== "verify-provider"));
+          if (pending) throw new FactoryError("delivery_owner_action", "Answer the pending owner question before finishing release delivery", 409);
+          let complete = false, candidates = 0;
+          for (let page = 1; page <= 3; page++) {
+            const releases = await read<Release[]>({ kind: "releases", page });
+            if (!Array.isArray(releases) || releases.length > 100) throw new FactoryError("delivery_incomplete", "GitHub release evidence is incomplete; sync again when it is available", 409);
+            for (const release of releases) {
+              if (!release || !Number.isSafeInteger(release.id) || release.id < 1 || typeof release.tag_name !== "string" || !release.tag_name || typeof release.draft !== "boolean" || release.published_at !== null && (typeof release.published_at !== "string" || !Number.isFinite(Date.parse(release.published_at)))) throw new FactoryError("delivery_incomplete", "GitHub release evidence is incomplete; sync again when it is available", 409);
+              if (release.draft || release.published_at === null) continue;
+              if (++candidates > 30) throw new FactoryError("delivery_incomplete", "Published release candidates exceed the verification budget; inspect release evidence and sync again", 409);
+              // target_commitish may name today's branch, not the published tag's commit.
+              const commit = await read<{ sha: string }>({ kind: "commit", ref: `tags/${release.tag_name}` });
+              if (!oid(commit.sha)) throw new FactoryError("delivery_incomplete", "GitHub could not resolve the published release tag", 409);
+              let contained = true;
+              for (const pull of delivery.pulls) {
+                const comparison = await read<{ status?: string; merge_base_commit?: { sha: string } }>({ kind: "compare", base: pull.merge_commit, head: commit.sha });
+                if (!["ahead", "behind", "diverged", "identical"].includes(comparison?.status ?? "") || !oid(comparison?.merge_base_commit?.sha)) throw new FactoryError("delivery_incomplete", "GitHub release ancestry evidence is incomplete; sync again when it is available", 409);
+                if (!["ahead", "identical"].includes(comparison.status ?? "") || comparison.merge_base_commit?.sha !== pull.merge_commit) { contained = false; break; }
+              }
+              if (!contained) continue;
+              const releasedTree = await tree(commit.sha);
+              if (delivery.changes.some(file => !contains(releasedTree, file))) continue;
+              const latestCommit = await read<{ sha: string }>({ kind: "commit", ref: `tags/${release.tag_name}` });
+              const latestRelease = await read<Release>({ kind: "release", number: release.id });
+              if (latestCommit.sha !== commit.sha || latestRelease.id !== release.id || latestRelease.tag_name !== release.tag_name || latestRelease.draft !== false || latestRelease.published_at !== release.published_at) throw new FactoryError("delivery_release_changed", "The release or its tag changed during verification. Sync delivery again against its current revision.", 409);
+              delivery.release = { id: release.id, tag: release.tag_name, url: `https://github.com/${linked.repository}/releases/tag/${encodeURIComponent(release.tag_name)}`, commit: commit.sha, published_at: release.published_at, merge_commits: delivery.pulls.map(pull => pull.merge_commit) };
+              delivery.condition = "released";
+              break;
+            }
+            if (delivery.release || releases.length < 100) { complete = true; break; }
+          }
+          if (!complete) throw new FactoryError("delivery_incomplete", "Release history exceeds the verification budget; inspect release evidence and sync again", 409);
+          evidence = await new FactoryDelivery(this.store, this.runtime).inspect(id);
+          if (!evidence.quiescent || JSON.stringify(await this.changes(this.idea(id))) !== JSON.stringify(delivery.changes)) {
+            delivery.condition = "needs_you"; delivery.release = undefined;
+            throw new FactoryError("delivery_changes_changed", "Retained changes or owned work changed during release verification. Reconcile them and sync delivery again.", 409);
+          }
+        }
       } catch (error) {
+        if (delivery.condition === "released") { delivery.condition = "needs_you"; delivery.release = undefined; }
         delivery.problem = error instanceof FactoryError ? error.message : "Delivery evidence is unavailable. Reconnect the Machine or verify the selected GitHub account, then sync again.";
       }
       if (this.scope(id) !== scope) throw new FactoryError("delivery_changed", "The Assignment changed during delivery verification; refresh before continuing", 409);
       const current = this.idea(id);
       this.store.db.transaction(() => {
-        const done = delivery.condition === "merged" && current.delivery_scope?.milestone === "merge";
-        this.store.put("implementations", { ...current, delivery, completion_evidence: { ...evidence, reason: delivery.problem }, ...(done ? { stage: "done", outcome: "merged" } : {}) });
+        const done = delivery.condition === "released" || delivery.condition === "merged" && current.delivery_scope?.milestone === "merge";
+        this.store.put("implementations", { ...current, delivery, completion_evidence: { ...evidence, reason: delivery.problem }, ...(done ? { stage: "done", outcome: delivery.condition === "released" ? "released" as const : "merged" as const } : {}) });
         const previous = current.delivery;
-        if (previous?.condition !== delivery.condition || previous.problem !== delivery.problem || JSON.stringify(previous.changes) !== JSON.stringify(delivery.changes) || JSON.stringify(previous.pulls) !== JSON.stringify(delivery.pulls)) this.store.event(id, done ? "assignment_delivered" : "delivery_observed", { revision: delivery.revision, condition: delivery.condition, problem: delivery.problem });
+        if (previous?.condition !== delivery.condition || previous.problem !== delivery.problem || JSON.stringify(previous.changes) !== JSON.stringify(delivery.changes) || JSON.stringify(previous.pulls) !== JSON.stringify(delivery.pulls) || JSON.stringify(previous.release) !== JSON.stringify(delivery.release)) this.store.event(id, done ? "assignment_delivered" : "delivery_observed", { revision: delivery.revision, condition: delivery.condition, problem: delivery.problem, release: delivery.release });
       })();
       return delivery;
     });

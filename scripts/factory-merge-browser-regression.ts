@@ -2,6 +2,7 @@ import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
 import { factoryMergeFixture } from "../server/factory-merge.fixture.ts";
+import { checkReleaseDelivery } from "./factory-release-browser.ts";
 
 const f = await factoryMergeFixture();
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
@@ -41,4 +42,5 @@ try {
   assert(f.calls().every(call => !call.args.includes("--method")), "Delivery observation sends no mutations");
   assert.deepEqual(errors, []);
   console.log("Merge delivery browser: desktop linkage, rejected target, phone correction, verified coverage and Done");
+  await checkReleaseDelivery(browser);
 } finally { await browser.close(); await f.close(); }

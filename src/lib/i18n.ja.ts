@@ -1449,6 +1449,8 @@ export const JA: Record<string, string> = {
   "Issue number": "Issue番号",
   "Required delivery": "必要な提供段階",
   "Verified merge": "検証済みマージ",
+  "Verified release": "検証済みリリース",
+  "Published at": "公開日時",
   "Containing release": "変更を含むリリース",
   "Remove dependency": "依存関係を削除",
   "Add dependency": "依存関係を追加",

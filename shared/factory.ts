@@ -30,10 +30,12 @@ export interface Implementation extends FactoryRecord {
 export interface DeliveryChange { path: string; oid: string | null; mode: string | null; old_path?: string }
 export interface AssignmentDelivery {
   revision: string; machine_id: string; account_profile_id: string; repository: string; branch: string;
-  pull_numbers: number[]; condition: "linked" | "needs_you" | "merged";
+  pull_numbers: number[]; condition: "linked" | "needs_you" | "merged" | "released";
   changes: DeliveryChange[];
   pulls: { number: number; url: string; head: string; merge_commit: string; covered_paths: string[] }[];
   branch_head?: string;
+  /** Published release whose resolved tag contains every verified delivery merge. */
+  release?: { id: number; tag: string; url: string; commit: string; published_at: string; merge_commits: string[] };
   problem: string | null; checked_at: string | null;
 }
 export interface AssignmentDeliveryConfiguration { expected_revision: string | null; machine_id: string; account_profile_id: string; pull_numbers: number[] }

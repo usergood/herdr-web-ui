@@ -41,6 +41,7 @@ process.stdout.write(JSON.stringify(value));
   const pull = { number: 12, html_url: "https://github.com/fictional/project/pull/12", state: "closed", merged: true, merge_commit_sha: merge, base: { ref: "main", repo: { full_name: "fictional/project" } }, head: { sha: head } };
   const data: Record<string, unknown> = {
     "repos/fictional/project": { full_name: "fictional/project" },
+    "repos/fictional/project/releases?per_page=100&page=1": [],
     "repos/fictional/project/pulls/12": pull,
     "repos/fictional/project/pulls/12/files?per_page=100&page=1": [{ filename: "findings.md", status: "added", sha }],
     [`repos/fictional/project/git/trees/${merge}?recursive=1`]: tree,

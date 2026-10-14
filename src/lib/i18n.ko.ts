@@ -1447,6 +1447,8 @@ export const KO: Record<string, string> = {
   "Issue number": "이슈 번호",
   "Required delivery": "필요한 전달 단계",
   "Verified merge": "검증된 병합",
+  "Verified release": "검증된 릴리스",
+  "Published at": "게시 시각",
   "Containing release": "변경을 포함한 릴리스",
   "Remove dependency": "의존 항목 제거",
   "Add dependency": "의존 항목 추가",

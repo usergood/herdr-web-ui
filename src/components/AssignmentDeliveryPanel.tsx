@@ -50,7 +50,12 @@ export function AssignmentDeliveryPanel({ detail, project, busy, perform }: { de
         {delivery && <button type="button" className="btn factory-button" disabled={busy} onClick={() => void perform(async () => { await accountRequest(prefix + "/sync", { expected_revision: delivery.revision }); })}>{t("Sync delivery evidence")}</button>}
       </div>
     </form>}
-    {delivery?.condition === "merged" && <p role="status">{t("Verified merge")}</p>}
+    {delivery && ["merged", "released"].includes(delivery.condition) && <p role="status">{t("Verified merge")}</p>}
+    {delivery?.release && <div>
+      <p role="status">{t("Verified release")}</p>
+      <p><a href={delivery.release.url} target="_blank" rel="noreferrer">{t("Containing release")} {delivery.release.tag}</a> · <code>{delivery.release.commit}</code></p>
+      <p>{t("Published at")}: <time dateTime={delivery.release.published_at}>{delivery.release.published_at}</time></p>
+    </div>}
     {delivery && <ul>{delivery.pull_numbers.map(number => {
       const pull = delivery.pulls.find(pull => pull.number === number);
       return <li key={number}><a href={`https://github.com/${delivery.repository}/pull/${number}`} target="_blank" rel="noreferrer">PR #{number}</a>{pull && <> · <code>{pull.merge_commit}</code><p>{t("Covered changes")}: {pull.covered_paths.join(", ")}</p></>}</li>;

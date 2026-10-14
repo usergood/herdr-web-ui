@@ -1402,6 +1402,8 @@ export const TR: Record<string, string> = {
   "Issue number": "Konu numarası",
   "Required delivery": "Gerekli teslimat",
   "Verified merge": "Doğrulanmış birleştirme",
+  "Verified release": "Doğrulanmış sürüm",
+  "Published at": "Yayımlanma zamanı",
   "Containing release": "Değişikliği içeren sürüm",
   "Remove dependency": "Bağımlılığı kaldır",
   "Add dependency": "Bağımlılık ekle",

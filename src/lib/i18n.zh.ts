@@ -1451,6 +1451,8 @@ export const ZH: Record<string, string> = {
   "Issue number": "议题编号",
   "Required delivery": "所需交付阶段",
   "Verified merge": "已验证的合并",
+  "Verified release": "已验证的发布",
+  "Published at": "发布时间",
   "Containing release": "包含变更的版本发布",
   "Remove dependency": "移除依赖项",
   "Add dependency": "添加依赖项",

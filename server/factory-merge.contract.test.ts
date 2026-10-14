@@ -157,10 +157,10 @@ test("verified merges cannot bypass a containing-release milestone frozen before
     const linked = await f.request(f.prefix + "/delivery", f.links).then(r => r.json());
     const result = await f.request(f.prefix + "/delivery/sync", { expected_revision: linked.revision }).then(r => r.json());
     expect(result.condition).toBe("merged");
-    expect(result.problem).toContain("containing release");
+    expect(result.problem).toBeNull();
     const detail = await f.request(f.prefix).then(r => r.json());
     expect(detail.implementation.delivery_scope.milestone).toBe("release");
-    expect(detail.board.lane).not.toBe("done"); expect(detail.implementation.outcome).toBe("none");
+    expect(detail.board).toMatchObject({ lane: "running", activity: "awaiting_release", busy: false }); expect(detail.implementation.outcome).toBe("none");
   } finally { await f.close(); }
 });
 
