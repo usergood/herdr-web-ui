@@ -3,7 +3,7 @@ import { writePrivateFile } from "./factory-files.ts";
 import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { FactoryCheck, FactoryProject, FactoryRun, FactoryWorker } from "../shared/protocol.ts";
-import { factoryPaneResting, factoryAgentArguments, type FactoryNative } from "./factory-native.ts";
+import { factoryPaneResting, factoryWorkspaceGone, factoryAgentArguments, type FactoryNative } from "./factory-native.ts";
 import { prepareFactoryPrompt } from "./factory-prompt.ts";
 import { FactoryError, git, hash, inspectCheckout } from "./factory-host.ts";
 import { provisionFactoryAgent, provisionSkills, verifySkills } from "./factory-skills.ts";
@@ -186,7 +186,12 @@ export class FactoryWorktrees {
   }
   shutdown(): void { for (const build of this.builds.values()) build.controller.abort(); }
   async stopWorkers(id: string): Promise<void> {
-    for (const worker of this.store.list<FactoryWorker>("host_workers", id)) if (worker.workspace_id && worker.condition !== "cancelled") await this.stop(id, worker.id);
+    let failure: unknown;
+    for (const worker of this.store.list<FactoryWorker>("host_workers", id)) if (worker.condition !== "cancelled") {
+      if (worker.condition === "failed" && !worker.workspace_id && !worker.pane_id) continue;
+      try { await this.stop(id, worker.id); } catch (error) { failure = error; }
+    }
+    if (failure) throw failure;
   }
   async integrate(id: string, workerId: string, expectedTip: string): Promise<FactoryWorker> {
     const run = this.run(id); const worker = this.store.get<FactoryWorker>("host_workers", workerId);
@@ -213,14 +218,22 @@ export class FactoryWorktrees {
     } finally { this.locks.delete(id); }
   }
   async stop(id: string, workerId: string): Promise<void> {
-    const worker = this.store.get<FactoryWorker>("host_workers", workerId);
+    let worker = this.store.get<FactoryWorker>("host_workers", workerId);
     if (!worker || worker.run_id !== id) throw new FactoryError("invalid_worker", "Select this Run's worker");
     if (worker.condition === "cancelled") return;
+    const expected = worker;
     const snapshot = await this.native.snapshot();
-    const pane = snapshot.panes.find((entry) => entry.pane_id === worker.pane_id);
-    const workspace = snapshot.workspaces.find((entry) => entry.workspace_id === worker.workspace_id);
-    if (!pane?.cwd || realpathSync(pane.cwd) !== worker.worktree || workspace?.label !== `saurons-eye-worker-${worker.id}`) throw new FactoryError("native_identity_uncertain", "The worker's native identity is uncertain; preserve ownership", 409);
-    await this.native.closeWorkspace(workspace.workspace_id);
+    const label = `saurons-eye-worker-${worker.id}`;
+    const matches = snapshot.workspaces.filter(entry => entry.label === label);
+    const workspace = expected.workspace_id ? snapshot.workspaces.find(entry => entry.workspace_id === expected.workspace_id) : matches.length === 1 ? matches[0] : undefined;
+    const candidates = snapshot.panes.filter(entry => entry.workspace_id === workspace?.workspace_id && entry.cwd === expected.worktree);
+    const pane = expected.pane_id ? snapshot.panes.find(entry => entry.pane_id === expected.pane_id) : candidates.length === 1 ? candidates[0] : undefined;
+    if (!factoryWorkspaceGone(snapshot, worker, label)) {
+      if (!pane?.cwd || realpathSync(pane.cwd) !== worker.worktree || workspace?.label !== label || pane.workspace_id !== workspace.workspace_id) throw new FactoryError("native_identity_uncertain", "The worker's native identity is uncertain; preserve ownership", 409);
+      worker = { ...worker, workspace_id: workspace.workspace_id, pane_id: pane.pane_id };
+      await this.native.closeWorkspace(workspace.workspace_id);
+      if (!factoryWorkspaceGone(await this.native.snapshot(), worker, label)) throw new FactoryError("native_stop_uncertain", "The native worker has not been confirmed stopped; ownership is retained", 409);
+    }
     this.store.put("host_workers", { ...worker, condition: "cancelled" }, id);
   }
 }

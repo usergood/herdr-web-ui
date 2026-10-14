@@ -176,6 +176,10 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
     if (method === "POST") {
       let result: unknown;
       if (action === "configure") { detail.implementation = { ...detail.implementation, ...body } as Implementation; result = detail.implementation; }
+      else if (action === "discard") {
+        if (detail.runs.some(run => !["completed", "cancelled", "failed"].includes(run.condition)) || detail.workers.some(worker => !["completed", "cancelled", "failed"].includes(worker.condition)) || detail.checks.some(check => ["working", "interrupted"].includes(check.condition))) return failure("demo_unavailable", "Confirming native stops requires a real Machine; the demo retains the owned work");
+        detail.implementation = { ...detail.implementation, stage: "done", outcome: "discarded", discard_requested_at: detail.implementation.discard_requested_at ?? new Date().toISOString(), updated_at: new Date().toISOString() }; result = detail.implementation;
+      }
       else if (action === "messages") { const message = { ...record(), implementation_id: detail.implementation.id, chat_id: String(body.chat_id), role: body.role as "owner" | "agent" | "system", content: String(body.content), source_id: null, sequence: null }; detail.messages.push(message); result = message; }
       else if (action === "chats") { const chat = { ...record(), implementation_id: detail.implementation.id, title: String(body.title) }; detail.chats.push(chat); result = chat; }
       else if (action === "artifacts") {

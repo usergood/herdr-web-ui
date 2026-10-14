@@ -842,6 +842,7 @@ export function App() {
   const selectedArchived = !!selectedPaneId && archivedPaneKeys.has(paneStorageId(selectedMachineId, selectedPaneId));
   const factoryHeading = factoryRoute.kind === "inbox" ? t("Inbox") : factoryRoute.kind === "projects" ? t("Projects") : factoryRoute.kind === "assignment" ? factoryData.overview?.implementations.find((i) => i.id === factoryRoute.id)?.title ?? t("Assignments") : "id" in factoryRoute ? `${factoryData.overview?.projects.find((p) => p.id === factoryRoute.id)?.name ?? t("Project")}${factoryRoute.kind === "project-inbox" ? ` · ${t("Inbox")}` : ""}` : t("Assignments");
   const excludedProjectPanes = auth?.role === "watch" ? undefined : new Set([...projectRows.map((row) => paneStorageId(row.machine.id, row.pane.pane_id)), ...archivedPaneKeys]);
+  const finishedProjectPanes = auth?.role === "watch" ? undefined : new Set(projectRows.filter(row => row.finished).map(row => paneStorageId(row.machine.id, row.pane.pane_id)));
   useScreenWakeLock(settings.keepScreenOn && locked === false && selectedPane !== null);
   const selectedWorkspace = selectedPane
     ? (snapshot?.workspaces.find((workspace) => workspace.workspace_id === selectedPane.workspace_id) ?? null)
@@ -1493,7 +1494,7 @@ export function App() {
       <div className="app-body">
         <aside id="workspace-drawer" className={`sidebar${drawerOpen ? " is-open" : ""}`}>
           {error && <div className="error-state" role="alert"><p>{error}</p><button className="btn" onClick={() => void load()}>{t("Retry")}</button></div>}
-          <MachineSidebar projectNavigation={auth?.role !== "watch" ? <ProjectSidebar overview={factoryData.overview} error={factoryData.error} machines={machines} selectedMachineId={selectedMachineId} selectedPaneId={selectedPaneId} onNavigate={navigateProject} onOpenPane={selectTarget} /> : undefined} excludedPanes={excludedProjectPanes} machines={machines} selectedMachineId={selectedMachineId} selectedPaneId={selectedPaneId} actions={actions} onSelect={selectTarget} onSetup={(machine, update = false) => { setUpdateRemote(update); setMachineDialog(machine); }} onNew={(id) => { setNewSessionMachineId(id); setNewTab(null); setNewSessionOpen(true); setDrawerOpen(false); }} />
+          <MachineSidebar projectNavigation={auth?.role !== "watch" ? <ProjectSidebar overview={factoryData.overview} error={factoryData.error} machines={machines} selectedMachineId={selectedMachineId} selectedPaneId={selectedPaneId} onNavigate={navigateProject} onOpenPane={selectTarget} /> : undefined} excludedPanes={excludedProjectPanes} hiddenAgentPanes={finishedProjectPanes} machines={machines} selectedMachineId={selectedMachineId} selectedPaneId={selectedPaneId} actions={actions} onSelect={selectTarget} onSetup={(machine, update = false) => { setUpdateRemote(update); setMachineDialog(machine); }} onNew={(id) => { setNewSessionMachineId(id); setNewTab(null); setNewSessionOpen(true); setDrawerOpen(false); }} />
           <SidebarResizer width={sidebarWidth} onResize={setSidebarWidth} />
         </aside>
 

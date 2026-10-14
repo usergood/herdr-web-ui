@@ -10,6 +10,11 @@
  * Placeholders in braces keep their English names.
  */
 export const ZH: Record<string, string> = {
+  "Reconcile Discard": "核对放弃状态",
+  "Discard pending": "等待放弃确认",
+  "Discard Assignment": "放弃任务",
+  "Discarded": "已放弃",
+  "Discard stops owned work and retains chats, artifacts and branches.": "放弃会停止此任务所属的工作，并保留聊天、产物和分支。",
   "Issue scope paused": "问题范围工作已暂停",
   "Issue scope pause pending": "问题范围工作暂停待确认",
   "Accepted issue scope": "已批准的问题范围",
