@@ -7,6 +7,8 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-15
+
 ### Added
 - Five Assignment board lanes, trusted issue readiness, Project queues, reviewed issue batches,
   explicit PR publication, synchronization schedules and upstream release intake. Repository work
