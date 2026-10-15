@@ -47,13 +47,16 @@ export interface FactoryMessage extends FactoryRecord {
   content: string; source_id: string | null; sequence: number | null;
 }
 export interface FactoryEvent extends FactoryRecord { implementation_id: string | null; kind: string; data: unknown }
-export interface SpecificationVersion extends FactoryRecord { implementation_id: string; revision: number; content: string; hash: string }
+export interface SpecificationVersion extends FactoryRecord { implementation_id: string; revision: number; content: string; hash: string; presentation_run_id?: string }
 export interface FactoryTicket extends FactoryRecord {
   implementation_id: string; specification_id: string; title: string; acceptance: string;
   dependencies: string[]; status: "proposed" | "ready" | "working" | "review" | "done";
   tracker_reference: string | null;
 }
-export interface FactoryApproval extends FactoryRecord { implementation_id: string; kind: "specification" | "testing_seams" | "ticket_graph" | "review" | "shared_understanding"; revision: string; scope: string }
+export interface FactoryApproval extends FactoryRecord {
+  implementation_id: string; kind: "specification" | "testing_seams" | "ticket_graph" | "review" | "shared_understanding"; revision: string; scope: string;
+  provenance?: { kind: "button" | "owner_chat" | "native_chat"; specification_hash: string; message_id?: string; run_id?: string; snapshot_id?: string; source_id?: string; turn_ts?: string };
+}
 export interface FactoryQuestion extends FactoryRecord { implementation_id: string; run_id: string | null; question: string; answer_kind?: "text" | "confirmation"; answer: string | null; revision: string }
 export interface FactoryArtifact extends FactoryRecord {
   implementation_id: string; chat_id: string; name: string; media_type: string;

@@ -7,6 +7,11 @@
  * keep their English names.
  */
 export const TR: Record<string, string> = {
+  "Specification accepted": "Şartname kabul edildi",
+  "Specification reply": "Şartname yanıtı",
+  "Reply accepted to approve this revision, or use Accept specification.": "Bu revizyonu onaylamak için accepted yazın veya Şartnameyi kabul et düğmesini kullanın.",
+  "Send reply": "Yanıt gönder",
+
   "Continue workflow": "İş akışına devam et",
   "Native verification will run before implementation.": "Uygulamadan önce yerel doğrulama çalıştırılacak.",
   "Review and continue from this chat. Finished steps keep their history.": "Bu sohbetten inceleyip devam edin. Tamamlanan adımların geçmişi korunur.",

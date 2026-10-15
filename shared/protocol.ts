@@ -1199,8 +1199,12 @@ export const DEFAULT_PORT = 7317;
  * POST .../verify-provider (empty) -> FactoryCapabilities; genuine loading/owner-round evidence required.
  * POST .../import-artifacts (empty) -> FactoryArtifact[], 201; verified outputs retained centrally.
  * POST .../import-conversation (import_conversation) -> NativeConversationSnapshot; immutable native page.
- * Retaining a verified page saves unambiguous user replies to that Run's text questions;
- * it preserves existing answers and never grants approval.
+ * Retaining a verified page saves unambiguous user replies to that Run's text questions.
+ * Only an explicit accepted reply immediately following that Run's exact current Specification
+ * presentation can grant Specification approval; shared understanding always needs its explicit control.
+ * POST /api/factory/implementations/:id/specification-acceptance (specification_acceptance), 201:
+ * button -> FactoryApproval; owner_chat -> {message:FactoryMessage,approval:FactoryApproval|null}.
+ * Requires the presented current ID/hash; repeat delivery is durable and never launches execution.
  * POST .../send-answers (send_answers) -> FactoryAnswerDelivery; uncertainty never replays.
  * POST .../workers (worker) -> FactoryWorker; frontier/rework and global reservation checked.
  * POST .../workers/:worker/refresh|reconcile|integrate (empty) -> FactoryWorker;
@@ -1242,7 +1246,8 @@ export const DEFAULT_PORT = 7317;
  * POST .../question -> FactoryQuestion, 201; consume -> {receipt:{id:string,run_id:string,
  * worker_id:string|null,revision:string,created_at:string,updated_at:string},questions:FactoryQuestion[]}.
  * POST .../sync-answers (sync_answers) -> FactoryNativeAnswers; verified native replies only,
- * optional older-page cursor from this Run. Ambiguous/missing replies remain pending; no approval.
+ * optional older-page cursor from this Run. Ambiguous/missing replies remain pending; only the
+ * exact Specification presentation rule above grants approval, never historical confirmation text.
  * POST .../worker -> FactoryWorker; checks -> FactoryCheck; artifact -> FactoryArtifact, 201;
  * specification -> SpecificationVersion, 201; tickets -> {hash:string,tickets:FactoryTicket[]}, 201;
  * proposal -> FactoryRetrospective, 201. Bodies are FactoryAgentRequests; proposals are action-scoped.
@@ -1284,6 +1289,7 @@ export interface FactoryRequests {
   reference_remove: { expected_revision: string };
   reference_prepare: { expected_revision: string; machine_id: string };
   specification: { content: string };
+  specification_acceptance: { specification_id: string; hash: string; source: "button" } | { specification_id: string; hash: string; source: "owner_chat"; content: string; idempotency_key: string };
   tickets: { specification_id: string; tickets: { key: string; title: string; acceptance: string; dependencies: string[] }[] };
   approval: { kind: Exclude<import("./factory.ts").FactoryApproval["kind"], "review">; revision: string; scope: string };
   question: { question: string; run_id?: string; answer_kind?: "text" | "confirmation" };

@@ -1,4 +1,5 @@
-import type { FactoryApproval, FactoryQuestion, FactoryRun, FactoryTicket, Implementation, NativeConversationSnapshot, SpecificationVersion } from "../shared/protocol.ts";
+import type { FactoryApproval, FactoryChat, FactoryMessage, FactoryQuestion, FactoryRun, FactoryTicket, Implementation, NativeConversationSnapshot, SpecificationVersion } from "../shared/protocol.ts";
+import { isSpecificationAcceptance } from "../shared/specification-acceptance.ts";
 import { isJsonObject } from "./http.ts";
 import { FactoryError, hash } from "./factory-host.ts";
 import { FactoryStore } from "./factory-store.ts";
@@ -25,13 +26,15 @@ export class FactoryWorkflow {
   }
   /** Only a verified native page may supply an answer; ambiguous replies stay pending. */
   retainNativeAnswers(run: FactoryRun, snapshot: NativeConversationSnapshot, latestPage: boolean): void {
+    this.retainNativeAcceptance(run, snapshot, latestPage);
     const questions = this.store.list<FactoryQuestion>("questions", run.implementation_id)
       .filter(question => question.run_id === run.id).sort((a, b) => a.created_at.localeCompare(b.created_at));
     // A chronological interval does not identify which overlapping question the
     // owner is answering. Keep every such reply pending for an explicit decision.
-    if (questions.filter(question => question.answer === null).length !== 1) return;
+    if (questions.filter(question => question.answer === null && question.answer_kind !== "confirmation").length !== 1) return;
     const turns = snapshot.turns.filter(turn => turn.ts !== null && Number.isFinite(Date.parse(turn.ts)));
-    const userTurns = snapshot.turns.filter(turn => turn.role === "user" && turn.parts.some(part => part.kind === "text") && turn.parts.every(part => part.kind === "text" || part.kind === "image"));
+    const decisions = this.store.list<FactoryApproval>("approvals", run.implementation_id).filter(a => a.provenance?.kind === "native_chat" && a.provenance.run_id === run.id && a.provenance.source_id === snapshot.source_id);
+    const userTurns = snapshot.turns.filter(turn => turn.role === "user" && !decisions.some(a => a.provenance?.turn_ts === turn.ts) && turn.parts.some(part => part.kind === "text") && turn.parts.every(part => part.kind === "text" || part.kind === "image"));
     if (userTurns.some(turn => turn.ts === null || !Number.isFinite(Date.parse(turn.ts)))) return;
     const oldest = turns.reduce((time, turn) => Math.min(time, Date.parse(turn.ts!)), Infinity);
     const newest = turns.reduce((time, turn) => Math.max(time, Date.parse(turn.ts!)), -Infinity);
@@ -48,6 +51,24 @@ export class FactoryWorkflow {
       if (!answer || answer.length > 20_000) continue;
       this.mutate(run.implementation_id, "answer", { question_id: question.id, revision: question.revision, answer });
       this.store.event(run.implementation_id, "native_question_answered", { question_id: question.id, run_id: run.id, snapshot_id: snapshot.id, source_id: snapshot.source_id, turn_ts: reply.ts });
+    }
+  }
+  private retainNativeAcceptance(run: FactoryRun, snapshot: NativeConversationSnapshot, latestPage: boolean): void {
+    const spec = this.specification(run.implementation_id);
+    if (!latestPage || run.action !== "to-spec" || spec?.presentation_run_id !== run.id || this.approved(run.implementation_id, "specification", spec.id)) return;
+    const presentation = `Specification ${spec.id}, SHA-256 ${spec.hash}\n\n${spec.content}`.trim();
+    for (const [index, reply] of snapshot.turns.entries()) {
+      const previous = snapshot.turns[index - 1];
+      const finalPart = previous?.parts.at(-1);
+      if (!previous || previous.role !== "assistant" || reply.role !== "user" || finalPart?.kind !== "text" || !reply.parts.every(p => p.kind === "text")) continue;
+      const shown = finalPart.text.trim();
+      const answer = reply.parts.flatMap(p => p.kind === "text" ? [p.text] : []).join("\n").trim();
+      const presentedAt = previous.end_ts ?? previous.ts;
+      if (shown !== presentation || !isSpecificationAcceptance(answer) || !presentedAt || !reply.ts || !Number.isFinite(Date.parse(presentedAt)) || !Number.isFinite(Date.parse(reply.ts)) || Date.parse(presentedAt) < Date.parse(spec.created_at) || Date.parse(reply.ts) <= Date.parse(presentedAt)) continue;
+      if (this.questions(run.implementation_id).some(q => q.answer === null && Date.parse(q.created_at) >= Date.parse(presentedAt) && Date.parse(q.created_at) <= Date.parse(reply.ts!))) continue;
+      const approval: FactoryApproval = { ...this.store.record(), implementation_id: run.implementation_id, kind: "specification", revision: spec.id, scope: `Specification ${spec.id}, SHA-256 ${spec.hash}`, provenance: { kind: "native_chat", specification_hash: spec.hash, run_id: run.id, snapshot_id: snapshot.id, source_id: snapshot.source_id, turn_ts: reply.ts } };
+      this.store.put("approvals", approval, run.implementation_id); this.store.event(run.implementation_id, "owner_approved", approval);
+      return;
     }
   }
   mutate(id: string, action: string, body: Record<string, unknown>): unknown {
@@ -90,7 +111,7 @@ export class FactoryWorkflow {
       }
       if (action === "specifications") {
         if (typeof body.content !== "string" || !body.content.trim() || body.content.length > 250_000) throw new FactoryError("invalid_specification", "Enter a bounded specification");
-        const specification: SpecificationVersion = { ...this.store.record(), implementation_id: id, revision: (this.specification(id)?.revision ?? 0) + 1, content: body.content, hash: hash(body.content) };
+        const specification: SpecificationVersion = { ...this.store.record(), implementation_id: id, revision: (this.specification(id)?.revision ?? 0) + 1, content: body.content, hash: hash(body.content), ...(typeof body.presentation_run_id === "string" ? { presentation_run_id: body.presentation_run_id } : {}) };
         this.store.put("specifications", specification, id);
         if (!["running", "review"].includes(implementation.stage)) this.store.put("implementations", { ...implementation, stage: "specifying", updated_at: specification.created_at });
         this.store.event(id, "specification_created", { specification_id: specification.id, revision: specification.revision });
@@ -124,6 +145,33 @@ export class FactoryWorkflow {
         this.store.put("graph_versions", { ...this.store.record(), specification_id: specification.id, hash: graphHash, tickets }, id);
         this.store.event(id, "tickets_proposed", { specification_id: specification.id, graph_hash: graphHash, tickets });
         return { hash: graphHash, tickets };
+      }
+      if (action === "specification-acceptance") {
+        const specification = this.specification(id);
+        if (!specification || body.specification_id !== specification.id || body.hash !== specification.hash) throw new FactoryError("stale_specification", "Accept the presented current Specification revision", 409);
+        if (body.source !== "button" && body.source !== "owner_chat" || body.role !== undefined || body.source_id !== undefined) throw new FactoryError("invalid_acceptance", "Choose an explicit owner acceptance");
+        if (body.source === "owner_chat") {
+          if (typeof body.content !== "string" || !body.content.trim() || body.content.length > 20_000 || typeof body.idempotency_key !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.idempotency_key)) throw new FactoryError("invalid_acceptance", "Send a bounded owner reply with a stable identity");
+          const sourceId = `specification:${specification.id}:${body.idempotency_key}`;
+          let message = this.store.list<FactoryMessage>("messages", id).find(m => m.source_id === sourceId);
+          if (message && message.content !== body.content.trim()) throw new FactoryError("source_conflict", "This reply identity already has different content", 409);
+          if (!message) {
+            const chat = this.store.list<FactoryChat>("chats", id).find(c => c.title === "Specifications") ?? this.store.put("chats", { ...this.store.record(), implementation_id: id, title: "Specifications" }, id);
+            message = { ...this.store.record(), implementation_id: id, chat_id: chat.id, role: "owner", content: body.content.trim(), source_id: sourceId, sequence: 0 };
+            this.store.put("messages", message, id); this.store.event(id, "message_retained", { message_id: message.id, chat_id: chat.id });
+          }
+          let approval = this.store.list<FactoryApproval>("approvals", id).find(a => a.kind === "specification" && a.revision === specification.id) ?? null;
+          if (!approval && isSpecificationAcceptance(message.content)) {
+            approval = { ...this.store.record(), implementation_id: id, kind: "specification", revision: specification.id, scope: `Specification ${specification.id}, SHA-256 ${specification.hash}`, provenance: { kind: "owner_chat", specification_hash: specification.hash, message_id: message.id } };
+            this.store.put("approvals", approval, id); this.store.event(id, "owner_approved", approval);
+          }
+          return { message, approval };
+        }
+        const previous = this.store.list<FactoryApproval>("approvals", id).find(a => a.kind === "specification" && a.revision === specification.id);
+        if (previous) return previous;
+        const approval: FactoryApproval = { ...this.store.record(), implementation_id: id, kind: "specification", revision: specification.id, scope: `Specification ${specification.id}, SHA-256 ${specification.hash}`, provenance: { kind: "button", specification_hash: specification.hash } };
+        this.store.put("approvals", approval, id); this.store.event(id, "owner_approved", approval);
+        return approval;
       }
       if (action === "approvals") {
         const kinds: FactoryApproval["kind"][] = ["specification", "testing_seams", "ticket_graph", "shared_understanding"];

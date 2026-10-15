@@ -8,6 +8,11 @@
  * in English. Placeholders in braces keep their English names.
  */
 export const JA: Record<string, string> = {
+  "Specification accepted": "仕様を承認しました",
+  "Specification reply": "仕様への返信",
+  "Reply accepted to approve this revision, or use Accept specification.": "この版を承認するには accepted と返信するか、仕様を承認を押してください。",
+  "Send reply": "返信を送信",
+
   "Continue workflow": "ワークフローを続行",
   "Native verification will run before implementation.": "実装の前にネイティブ検証を実行します。",
   "Review and continue from this chat. Finished steps keep their history.": "このチャットで確認して続行してください。完了したステップの履歴は保持されます。",

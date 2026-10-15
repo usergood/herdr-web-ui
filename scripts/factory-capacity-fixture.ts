@@ -3,13 +3,15 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "../server/index.ts";
-import type { FactoryRun, FactoryWorker } from "../shared/factory.ts";
+import type { FactoryRun, FactoryWorker, NativeConversationSnapshot } from "../shared/factory.ts";
 
 export async function capacityFixture() {
   const state = mkdtempSync(join(tmpdir(), "factory-capacity-"));
   const token = "owned-capacity-fixture";
   const runs = new Map<string, FactoryRun>(); const workers = new Map<string, FactoryWorker>();
   let loseLaunch = false; let loseCheck = false;
+  let transcript: Pick<NativeConversationSnapshot, "source_id" | "version" | "cursor" | "turns"> = { source_id: "owned-transcript", version: "v1", cursor: null, turns: [] };
+  const access = new Map<string, { url: string; token: string }>();
   let app: ReturnType<typeof createServer>;
   const machine = Bun.serve({ port: 0, async fetch(request) {
     if (request.headers.get("authorization") !== `Bearer ${token}`) return Response.json({ error: { code: "unauthorized", message: "Owned fixture credential required" } }, { status: 401 });
@@ -22,7 +24,7 @@ export async function capacityFixture() {
     if (path === "/inspect") return Response.json({ path: body.path, repository: `owned-repo:${body.path}`, head: "1".repeat(40), branch: "main", instructions: [] });
     if (path === "/launch") {
       const run = { ...body.run, condition: "working", worktree: join(state, body.run.id), branch: `owned-${body.run.id}`, workspace_id: null, pane_id: null } as FactoryRun;
-      runs.set(run.id, run);
+      runs.set(run.id, run); access.set(run.id, body.access);
       if (loseLaunch) { loseLaunch = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost acknowledgment" } }, { status: 503 }); }
       return Response.json(run);
     }
@@ -30,6 +32,7 @@ export async function capacityFixture() {
     const run = route ? runs.get(route[1]!) : undefined;
     if (run) {
       const action = route![2];
+      if (action === "operations/transcript") return Response.json(transcript);
       if (action === "reconcile") return Response.json(run);
       if (action === "send") { run.condition = "working"; return Response.json({ ok: true }); }
       if (action === "stop") { run.condition = "cancelled"; return Response.json(run); }
@@ -58,6 +61,8 @@ export async function capacityFixture() {
     return idea.id as string;
   }
   return { api, assignment, runs, workers, state, token, get app() { return app; },
+    setTranscript: (value: typeof transcript) => { transcript = value; },
+    agent: (runId: string, action: string, body: unknown) => { const credential = access.get(runId)!; return fetch(`${credential.url}/${action}`, { method: "POST", headers: { authorization: `Bearer ${credential.token}`, "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) }); },
     loseNextLaunch: () => { loseLaunch = true; },
     loseNextCheck: () => { loseCheck = true; },
     restart: () => { app.stop(); app = createServer(options); },
