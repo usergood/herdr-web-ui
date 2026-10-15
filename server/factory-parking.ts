@@ -35,6 +35,10 @@ export class FactoryParking {
       return { ...run, continuation: { ...park, condition: "parked", reason: "Waiting for owner answers; execution capacity released" } };
     }
     if (park.kind === "children") {
+      if (this.store.get("execution_plans", run.id)) {
+        this.store.remove("capacity_waits", waitId);
+        return { ...run, continuation: { ...park, condition: "parked", reason: "The backend is executing the accepted Ticket plan; execution capacity released" } };
+      }
       park = { ...park, worker_keys: [...new Set([...(park.worker_keys ?? []), ...keys])] };
       const children = workers.filter(worker => park!.worker_keys!.includes(worker.key));
       const restingChild = (worker: FactoryWorker): boolean => ["completed", "cancelled", "failed"].includes(worker.condition) || worker.condition === "ready" && (!worker.continuation || worker.continuation.condition === "resumed");

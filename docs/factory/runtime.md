@@ -42,7 +42,7 @@ The integration branch and worktree belong to the Run. Implementers receive sepa
 
 Only the dependency frontier can start ordinary Ticket work. Shared document claims exclude competing writers. Workers reconcile the current integration tip, run the configured checks and submit a committed candidate. The serialized backend merger rejects stale tips, changed cwd/branch/repository, dirty tracked changes, unclaimed shared documents and committed application scaffolding. It retains the branch and never updates the default branch.
 
-The native adapter includes an exact request guide and `bun .saurons-eye-tracker.mjs help`. A blocked worker remains an owner-answer gate; a ready worker is a candidate awaiting explicit checks/integration. Integrating all accepted Tickets moves the card to Review; acceptance still requires current evidence and does not infer publication.
+The native adapter includes an exact request guide and `bun .saurons-eye-tracker.mjs help`. For historical Runs, a blocked worker remains an owner-answer gate and a ready worker awaits explicit checks/integration. New Specification-authorized plans are driven automatically as described below. Integrating all accepted Tickets moves the card to Review; acceptance still requires current evidence and does not infer publication.
 
 Agent-context reservations cover active and uncertain app-managed execution globally across Projects, providers and Machines. The default normal limit is six Agent contexts, with one additional shared interview/pre-approval Specification context; implementation and review cannot use that allowance. Builds have a separate default limit of two. Inbox exposes Factory settings and recovery. Ready chats consume no execution slot but retain their worktree ownership. Ordinary terminals and independently launched agents are excluded.
 
@@ -57,6 +57,14 @@ Artifacts have hashes, size limits, versions, provenance, annotations and source
 Stop releases only the verified owned native resources and retains work/history. Cleanup checks every generated file, refuses unexpected or ignored outputs and uncommitted changes, and removes only clean stopped checkouts. It preserves Git branches and sibling notes. Native conversation pages can be retained explicitly and a Stop attempts a final capture; unavailable or older native pages remain a visible import limitation rather than an invented transcript.
 
 Retrospectives use only a selected retained Project evidence set. Candidates are immutable records. Approval and Apply in a new worktree are separate actions; the pinned retro action presents candidates without applying them.
+
+## Automatic Ticket execution
+
+After an automatically authorized Orchestrator retains its execution plan, it ends its native turn at rest. The backend submits the dependency frontier to the same durable capacity queue with stable request keys, fresh tdd workers and isolated worktrees. Configured shared document paths are claimed conservatively for each worker, so competing shared writers wait. The coordinator releases capacity only after verified rest and remains parked while the backend processes candidates, including at a cap of one.
+
+Native rest is a candidate signal. The backend reconciles identity, refreshes against the integration tip, runs Project setup/check recipes under the separate build reservation and integrates through the serialized merger. Only retained integration receipts complete Tickets. Completed Tickets and check identities survive restart; uncertain launches, check replies and merger replies are reconciled rather than replayed. A stopped or failed worker, native permission, unresolved scope question, unconsumed answer revision, failing/interrupted check or integration conflict stays visible with its owned work preserved. Machine uncertainty uses six observations with exponential backoff before exposing exhausted recovery.
+
+The normal Assignment view shows **Automatic execution**, named workers, waiting reasons and expandable check output. Detail and the scoped contract retain plan-bound progress; `checked` means all accepted Tickets are integrated and integration checks passed. It does not certify independent review, PR publication or delivery. Automatic final review/repair/publication is the following implementation slice; historical Runs retain their explicit controls. Recovery copies never dispatch or build.
 
 ## Backup, restore and rollback
 

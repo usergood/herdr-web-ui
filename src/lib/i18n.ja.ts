@@ -8,6 +8,9 @@
  * in English. Placeholders in braces keep their English names.
  */
 export const JA: Record<string, string> = {
+  "Automatic execution": "自動実行",
+  "Tickets, checks and integration continue automatically.": "チケット、チェック、統合は自動的に進みます。",
+
   "Internal planning continues automatically after Specification approval.": "仕様の承認後、内部計画は自動で進みます。",
   "Execution plan": "実行計画",
   "Testing plan": "テスト計画",

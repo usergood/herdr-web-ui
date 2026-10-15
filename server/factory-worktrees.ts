@@ -165,7 +165,8 @@ export class FactoryWorktrees {
     const path = await this.identity(run, worker); await this.quiescent(worker);
     if ((await git(path, ["diff", "--name-only", "HEAD", "--"])).trim()) throw new FactoryError("dirty_worker", "Commit or preserve the worker's changes before reconciliation", 409);
     const tip = (await git(run.worktree!, ["rev-parse", "HEAD"])).trim();
-    await git(path, ["merge", "--no-edit", tip]);
+    try { await git(path, ["merge", "--no-edit", tip]); }
+    catch { throw new FactoryError("integration_conflict", "The candidate could not merge the current integration tip; preserve the worktree and resolve its conflicts", 409); }
     const next: FactoryWorker = { ...worker, integration_tip: tip, head: (await git(path, ["rev-parse", "HEAD"])).trim(), condition: "ready", waiting_reason: "Run checks before integration", updated_at: new Date().toISOString() };
     this.store.put("host_workers", next, id); return next;
   }
@@ -218,12 +219,14 @@ export class FactoryWorktrees {
     if (this.locks.has(id)) throw new FactoryError("integration_busy", "The merger currently owns the integration writer", 409);
     this.locks.add(id);
     try {
-      const parent = await this.identity(run); const path = await this.identity(run, worker); await this.quiescent(worker);
+      const parent = await this.identity(run); const path = await this.identity(run, worker);
       const tip = (await git(parent, ["rev-parse", "HEAD"])).trim(); const head = (await git(path, ["rev-parse", "HEAD"])).trim();
+      if (worker.condition !== "completed") await this.quiescent(worker);
       if (worker.head === head && (await git(parent, ["merge-base", tip, head])).trim() === head) {
         const integrated: FactoryWorker = { ...worker, condition: "completed", updated_at: new Date().toISOString() };
         this.store.put("host_workers", integrated, id); return integrated;
       }
+      if (worker.condition === "completed") throw new FactoryError("worker_stale", "The previously merged candidate changed; preserve its worktree for inspection", 409);
       if (tip !== expectedTip || tip !== worker.integration_tip || !worker.head || head !== worker.head || (await git(path, ["diff", "--name-only", "HEAD", "--"])).trim() || (await git(parent, ["diff", "--name-only", "HEAD", "--"])).trim()) throw new FactoryError("worker_stale", "Reconcile the worker against the current integration tip and rerun checks", 409);
       await git(path, ["merge-base", "--is-ancestor", tip, head]);
       const files = (await git(path, ["diff", "--name-only", tip, head, "--"])).trim().split("\n");
@@ -243,8 +246,9 @@ export class FactoryWorktrees {
     const snapshot = await this.native.snapshot();
     const pane = snapshot.panes.find((entry) => entry.pane_id === worker.pane_id);
     const workspace = snapshot.workspaces.find((entry) => entry.workspace_id === worker.workspace_id);
+    if (!pane && !workspace && worker.condition === "completed") return;
     if (!pane?.cwd || realpathSync(pane.cwd) !== worker.worktree || workspace?.label !== `saurons-eye-worker-${worker.id}`) throw new FactoryError("native_identity_uncertain", "The worker's native identity is uncertain; preserve ownership", 409);
     await this.native.closeWorkspace(workspace.workspace_id);
-    this.store.put("host_workers", { ...worker, condition: "cancelled" }, id);
+    this.store.put("host_workers", { ...worker, condition: worker.condition === "completed" ? "completed" : "cancelled" }, id);
   }
 }

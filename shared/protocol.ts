@@ -1212,6 +1212,9 @@ export const DEFAULT_PORT = 7317;
  * Requires the presented current ID/hash; repeat delivery retains one durable automatic planning request. Specification authority
  * starts Orchestrator through normal capacity, without testing-plan or Ticket-graph owner gates.
  * Detail exposes automatic_planning waits and execution_plans with Specification-derived authority.
+ * Accepted execution plans dispatch their frontier and reconcile/check/integrate candidates automatically.
+ * Detail.automatic_execution retains plan-bound executing/waiting/blocked/checked progress across restart.
+ * Historical Runs without automatic Specification authority retain explicit worker controls.
  * POST .../send-answers (send_answers) -> FactoryAnswerDelivery; queued continuations share admission with Start; uncertainty never replays.
  * POST .../workers (worker) -> FactoryWorker, or FactoryCapacityWait, 202 when queued;
  * root and child requests share ordering; frontier/rework and global reservation checked.
@@ -1346,6 +1349,7 @@ export interface FactoryBackupManifest {
 export interface FactoryRestore { id: string; state_dir: string; execution_enabled: false }
 export interface FactoryCleanup { removed: string[]; branches_retained: true; notes_retained: true }
 export interface FactoryAgentContract {
+  automatic_execution?: import("./factory.ts").FactoryAutomaticExecution | null;
   execution_plan?: import("./factory.ts").FactoryExecutionPlan | null;
   tracker_guide: string;
   run: import("./factory.ts").FactoryRun; workers: import("./factory.ts").FactoryWorker[];

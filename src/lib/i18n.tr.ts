@@ -7,6 +7,9 @@
  * keep their English names.
  */
 export const TR: Record<string, string> = {
+  "Automatic execution": "Otomatik yürütme",
+  "Tickets, checks and integration continue automatically.": "Biletler, kontroller ve entegrasyon otomatik olarak devam eder.",
+
   "Internal planning continues automatically after Specification approval.": "Belirtim onayından sonra iç planlama otomatik olarak devam eder.",
   "Execution plan": "Yürütme planı",
   "Testing plan": "Test planı",

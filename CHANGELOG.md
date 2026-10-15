@@ -8,6 +8,8 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 ## [Unreleased]
 
 ### Fixed
+- Execute accepted Ticket frontiers automatically with fresh workers, backend integration,
+  reserved checks and restart recovery. Show named workers, gates and check results in the Assignment.
 - Start internal Ticket and test planning automatically after Specification approval,
   retaining an inspectable plan without repeated planning approvals.
 - Let waiting factory conversations release execution capacity after verified native rest

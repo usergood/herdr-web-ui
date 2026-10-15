@@ -6,6 +6,9 @@
  * braces keep their English names.
  */
 export const KO: Record<string, string> = {
+  "Automatic execution": "자동 실행",
+  "Tickets, checks and integration continue automatically.": "티켓, 검사 및 통합이 자동으로 계속됩니다.",
+
   "Internal planning continues automatically after Specification approval.": "명세 승인 후 내부 계획이 자동으로 진행됩니다.",
   "Execution plan": "실행 계획",
   "Testing plan": "테스트 계획",

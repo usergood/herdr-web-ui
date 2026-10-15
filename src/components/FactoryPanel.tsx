@@ -13,6 +13,7 @@ import { FactoryOperationsPanel } from "./FactoryOperationsPanel.tsx";
 import { FactoryWorkflowPanel } from "./FactoryWorkflowPanel.tsx";
 import { FactoryArtifactPreview } from "./FactoryArtifactPreview.tsx";
 import { FactoryReviewPanel } from "./FactoryReviewPanel.tsx";
+import { FactoryAutomaticExecution } from "./FactoryAutomaticExecution.tsx";
 import { FactoryExecutionPanel } from "./FactoryExecutionPanel.tsx";
 import { FactoryRetrospectivePanel } from "./FactoryRetrospectivePanel.tsx";
 import { AssignmentActions } from "./AssignmentActions.tsx";
@@ -147,6 +148,7 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
       </section>
       <AssignmentActions preset={preset} onPresetChange={setPreset} key={detail.implementation.id} detail={detail} project={selectedProject} machineId={effectiveMachine} machineName={machines.find(m=>m.id===effectiveMachine)?.name??effectiveMachine} provider={effectiveProvider??"codex"} busy={busy} perform={perform} onOpenPane={onOpenPane} capabilities={execution.capabilities} problem={execution.problem} onCapabilities={execution.apply} />
       <WorkflowConversations detail={detail} machines={machines} selectedId={conversationId} onSelect={id => onConversation?.(id)} onOpenPane={onOpenPane} busy={busy} perform={perform} />
+      <FactoryAutomaticExecution detail={detail} onOpenPane={onOpenPane} />
       <details className="factory-section"><summary>{t("Advanced controls")}</summary>
         <div className="factory-filters">
           <label>{t("Provider")}<select className="select factory-input" value={detail.implementation.provider ?? ""} disabled={busy} onChange={(event) => void perform(async () => { await factoryRequest(`${prefix}/configure`, { provider: (event.target.value || null) as FactoryProvider | null }); })}><option value="">{t("Project default")}</option><option>codex</option><option>claude</option><option>opencode</option></select></label>

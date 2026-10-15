@@ -10,6 +10,9 @@
  * Placeholders in braces keep their English names.
  */
 export const ZH: Record<string, string> = {
+  "Automatic execution": "自动执行",
+  "Tickets, checks and integration continue automatically.": "工单、检查和集成将自动继续。",
+
   "Internal planning continues automatically after Specification approval.": "规格获批后，内部规划会自动继续。",
   "Execution plan": "执行计划",
   "Testing plan": "测试计划",

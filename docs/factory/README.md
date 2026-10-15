@@ -27,8 +27,11 @@ Assignment exposes the request's waiting or blocked reason and the generated pla
 dependencies and Specification-derived authority. Native readiness, Project checks and
 permissions remain required. A new scope decision stops dependent work for an actual
 owner question and exact answer consumption. Existing Runs keep their frozen contracts;
-this change does not retroactively approve historical planning or implement automatic
-frontier execution, review or publication, which remain separate implementation Tickets.
+historical planning is not retroactively approved. Accepted execution plans now dispatch
+their dependency frontier, check and integrate candidates automatically through the backend.
+Named workers and check output appear in the normal Assignment view, with retained
+progress across restart. Final automatic review and publication remain the next slice.
+See [Automatic Ticket execution](runtime.md#automatic-ticket-execution).
 
 The [Q1–Q20 automatic workflow design](automatic-dispatch-pause-delete-design.md) records the accepted Specification for global Agent-context scheduling, one-operation Specification approval, automatic execution, Pause/Delete, named conversations and integrated Human Review with conditional merge authority. It supersedes conflicting earlier proposals, including repeated planning approvals and retained-history Discard. These are implementation targets; the operational descriptions in this guide and runtime.md remain current until the corresponding behavior ships.
 

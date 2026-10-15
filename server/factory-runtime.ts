@@ -87,6 +87,20 @@ export class FactoryRuntime {
       const deadline = AbortSignal.timeout(path.endsWith("/operations/check") ? 325_000 : path === "/launch" ? 75_000 : path === "/model-catalog" ? 30_000 : 15_000);
       const response = await fetch(`${endpoint.url}/api/factory-host${path}`, { method: body === undefined ? "GET" : "POST", headers: { authorization: `Bearer ${endpoint.token}`, "x-herdr-factory": "1", "x-herdr-machine": "1", "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), redirect: "error", signal: signal ? AbortSignal.any([signal, deadline]) : deadline });
       if (!response.ok) {
+        if (response.status === 409 && /\/operations\/(refresh|integrate)$/.test(path)) {
+          const failure = await response.json().catch(() => null) as { error?: { code?: string } } | null;
+          const reasons: Record<string, string> = {
+            integration_conflict: "The candidate has an integration conflict; preserve its worktree for reconciliation",
+            worker_stale: "The candidate integration tip changed; refresh and check the retained worker",
+            dirty_worker: "The candidate has uncommitted changes; inspect the retained worktree",
+            shared_writer_required: "The candidate changes shared documents without the required ownership claim",
+            scaffolding_committed: "The candidate includes application scaffolding; inspect its commits",
+            worker_busy: "The native worker is executing; wait for verified rest before integration",
+            integration_busy: "The backend merger is busy with another candidate",
+          };
+          const code = failure?.error?.code;
+          if (code && reasons[code]) throw new FactoryError(code, reasons[code], 409);
+        }
         if (response.status === 409 && (path.endsWith("/send") || path.endsWith("/operations/send-worker"))) {
           const failure = await response.json().catch(() => null) as { error?: { code?: string } } | null;
           const code = failure?.error?.code;
@@ -314,6 +328,9 @@ export class FactoryRuntime {
     }));
   }
   observeWorker(run: FactoryRun, expected: import("../shared/factory.ts").FactoryWorker, actual: import("../shared/factory.ts").FactoryWorker): import("../shared/factory.ts").FactoryWorker {
+    // A lost merger reply is recovered through integrate, which retains graph
+    // progress and closes native ownership. Observation alone cannot complete it.
+    if (actual.role === "implementer" && actual.condition === "completed" && expected.condition !== "completed") actual = { ...actual, integration_pending: true, condition: "ready", waiting_reason: "The Machine merged this candidate; retain its integration receipt" };
     return this.parking.observeWorker(run, { ...actual, continuation: expected.continuation }, actual.condition === "ready");
   }
   async reconcile(runId: string): Promise<FactoryRun> {
