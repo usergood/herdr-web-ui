@@ -41,7 +41,7 @@ export function AssignmentActions({ preset, onPresetChange, detail, project, mac
       const run = await factoryRequest<FactoryRun | FactoryCapacityWait>(prefix + (action === "work" ? "/runs" : "/continue"), { ...(action === "work" ? {} : { run_id: active?.id ?? null, allow_partial_handoff: acknowledgedHandoff === active?.id }), action, execution_preset: preset, idempotency_key: crypto.randomUUID(), expected: { provider, machine_id: machineId, project_id: detail.implementation.project_id, specification_id: specification?.id ?? null, graph_hash: detail.graph_hash } });
       if (!live.current) return;
       if (run.condition === "queued" || !("pane_id" in run)) return;
-      if (run.condition !== "working" || !run.pane_id) throw new Error(run.waiting_reason ?? t("The agent did not start. Open advanced controls to inspect the retained attempt."));
+      if (!["working", "ready", "needs_you"].includes(run.condition) || !run.pane_id) throw new Error(run.waiting_reason ?? t("The agent did not start. Open advanced controls to inspect the retained attempt."));
       onOpenPane(run.machine_id, run.pane_id);
   }
   async function start(action: FactoryAction) { await perform(() => launch(action)); }

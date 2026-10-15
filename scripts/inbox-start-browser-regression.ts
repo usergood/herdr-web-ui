@@ -43,7 +43,7 @@ try {
   await page.goto(`http://localhost:${app.port}/#projects/${project.id}/inbox`);await page.getByRole("textbox",{name:"Idea title",exact:true}).fill("Plan the new checkout");await page.getByRole("button",{name:"Capture idea",exact:true}).click();
   await page.getByRole("heading",{name:"Plan the new checkout",exact:true}).waitFor();
   const planningId=new URL(page.url()).hash.slice("#factory/".length);
-  const planning=page.waitForResponse(r=>r.url().endsWith("/continue")&&r.request().method()==="POST");await page.getByRole("button",{name:"Plan implementation",exact:true}).click();const planned=await planning;assert.equal(planned.status(),202);const plan=await planned.json();assert.equal(plan.action,"grill-with-docs");assert.equal(plan.condition,"working",JSON.stringify(fixtureFailures));
+  const planning=page.waitForResponse(r=>r.url().endsWith("/continue")&&r.request().method()==="POST");await page.getByRole("button",{name:"Plan implementation",exact:true}).click();const planned=await planning;assert.equal(planned.status(),202);const plan=await planned.json();assert.equal(plan.action,"grill-with-docs");assert.equal(plan.condition,"needs_you",JSON.stringify(fixtureFailures));
   await page.locator(".factory-panel").waitFor({state:"hidden"});
   const workflow=page.getByRole("dialog",{name:"Workflow",exact:true});
   const openWorkflow=async()=>{await page.getByRole("button",{name:"Workflow",exact:true}).click();await workflow.waitFor();};
