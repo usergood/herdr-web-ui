@@ -162,7 +162,7 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
           if (typeof body.content !== "string" || !body.content.trim() || body.content.length > 20_000 || typeof body.idempotency_key !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.idempotency_key)) return failure("invalid_acceptance", "Send a bounded owner reply with a stable identity", 400);
           const sourceId = `specification:${spec.id}:${body.idempotency_key}`;
           message = detail.messages.find(m => m.source_id === sourceId) ?? null;
-          if (message && message.content !== body.content.trim()) return failure("source_conflict", "This reply identity already has different content");
+          if (message && (message.content !== body.content.trim() || message.role !== "owner" || !detail.chats.some(c => c.id === message!.chat_id && c.title === "Specifications"))) return failure("source_conflict", "This reply identity already has different content or provenance");
           if (!message) {
             let chat = detail.chats.find(c => c.title === "Specifications");
             if (!chat) { chat = { ...record(), implementation_id: detail.implementation.id, title: "Specifications" }; detail.chats.push(chat); }

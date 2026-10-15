@@ -154,7 +154,7 @@ export class FactoryWorkflow {
           if (typeof body.content !== "string" || !body.content.trim() || body.content.length > 20_000 || typeof body.idempotency_key !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.idempotency_key)) throw new FactoryError("invalid_acceptance", "Send a bounded owner reply with a stable identity");
           const sourceId = `specification:${specification.id}:${body.idempotency_key}`;
           let message = this.store.list<FactoryMessage>("messages", id).find(m => m.source_id === sourceId);
-          if (message && message.content !== body.content.trim()) throw new FactoryError("source_conflict", "This reply identity already has different content", 409);
+          if (message && (message.content !== body.content.trim() || message.role !== "owner" || !this.store.list<FactoryChat>("chats", id).some(c => c.id === message?.chat_id && c.title === "Specifications"))) throw new FactoryError("source_conflict", "This reply identity already has different content or provenance", 409);
           if (!message) {
             const chat = this.store.list<FactoryChat>("chats", id).find(c => c.title === "Specifications") ?? this.store.put("chats", { ...this.store.record(), implementation_id: id, title: "Specifications" }, id);
             message = { ...this.store.record(), implementation_id: id, chat_id: chat.id, role: "owner", content: body.content.trim(), source_id: sourceId, sequence: 0 };

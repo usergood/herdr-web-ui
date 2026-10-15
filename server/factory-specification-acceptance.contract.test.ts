@@ -39,6 +39,9 @@ describe("Specification acceptance through authenticated HTTP", () => {
       const chat = (await f.api(prefix).then(r => r.json())).chats[0];
       await f.api(`${prefix}/messages`, { chat_id: chat.id, role: "agent", content: "accepted", source_id: "imported-agent", sequence: 0 });
       expect((await f.api(prefix).then(r => r.json())).approvals).toHaveLength(0);
+      await f.api(`${prefix}/messages`, { chat_id: chat.id, role: "agent", content: "accepted", source_id: `specification:${spec.id}:agent-collision`, sequence: 0 });
+      expect((await reply("accepted", "agent-collision")).status).toBe(409);
+      expect((await f.api(prefix).then(r => r.json())).approvals).toHaveLength(0);
       const response = await reply("accepted", "owner-accepts"); expect(response.status).toBe(201);
       const result = await response.json();
       expect(result.approval).toMatchObject({ revision: spec.id, provenance: { kind: "owner_chat", specification_hash: spec.hash, message_id: result.message.id } });
