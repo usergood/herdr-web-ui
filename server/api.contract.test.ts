@@ -23,7 +23,6 @@ import { handleMachineRequest } from "./machine-api.ts";
 import type { MachineManager } from "./machines.ts";
 import { TailnetIdentitySource } from "./tailscale.ts";
 import { forgetTranscriptState } from "./conversation.ts";
-import { capacityFixture } from "../scripts/factory-capacity-fixture.ts";
 
 /**
  * Contract test for herdr-web-ui's HTTP + WS surface.
