@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import type { FactoryCheck, FactoryProject, FactoryRun, FactoryWorker } from "../shared/protocol.ts";
 import { factoryPaneResting, factoryAgentArguments, type FactoryNative } from "./factory-native.ts";
 import { prepareFactoryPrompt } from "./factory-prompt.ts";
-import { FactoryError, git, hash, inspectCheckout } from "./factory-host.ts";
+import { FactoryError, git, hash, inspectCheckout, withinRoot } from "./factory-host.ts";
 import { provisionFactoryAgent, provisionSkills, verifySkills } from "./factory-skills.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { factoryTrackerClient, factoryTrackerGuide } from "./factory-tracker-client.ts";
@@ -208,10 +208,15 @@ export class FactoryWorktrees {
     const builds = [...this.builds.values()].filter((build) => build.run_id === id);
     for (const build of builds) build.controller.abort();
     await Promise.allSettled(builds.map((build) => build.promise));
+    const unknown = this.store.list<FactoryCheck>("host_checks", id).find(check => ["working", "interrupted"].includes(check.condition) && !this.builds.has(check.id));
+    if (unknown) throw new FactoryError("build_identity_uncertain", `Retained build ${unknown.id} has no live cancellation handle; its shutdown remains unconfirmed`, 409);
   }
   shutdown(): void { this.stopped = true; for (const build of this.builds.values()) build.controller.abort(); }
   async stopWorkers(id: string): Promise<void> {
-    for (const worker of this.store.list<FactoryWorker>("host_workers", id)) if (worker.workspace_id && worker.condition !== "cancelled") await this.stop(id, worker.id);
+    const workers = this.store.list<FactoryWorker>("host_workers", id).filter(worker => worker.condition !== "cancelled" && (worker.workspace_id || !["completed", "failed"].includes(worker.condition)));
+    const results = await Promise.allSettled(workers.map(worker => this.stop(id, worker.id)));
+    const failed = results.findIndex(result => result.status === "rejected");
+    if (failed !== -1) throw new FactoryError("native_identity_uncertain", `Child ${workers[failed]!.id} shutdown is unconfirmed; its ownership is retained`, 409);
   }
   async integrate(id: string, workerId: string, expectedTip: string): Promise<FactoryWorker> {
     const run = this.run(id); const worker = this.store.get<FactoryWorker>("host_workers", workerId);
@@ -240,13 +245,22 @@ export class FactoryWorktrees {
     } finally { this.locks.delete(id); }
   }
   async stop(id: string, workerId: string): Promise<void> {
-    const worker = this.store.get<FactoryWorker>("host_workers", workerId);
+    let worker = this.store.get<FactoryWorker>("host_workers", workerId);
     if (!worker || worker.run_id !== id) throw new FactoryError("invalid_worker", "Select this Run's worker");
     if (worker.condition === "cancelled") return;
+    if (!worker.workspace_id || !worker.pane_id) worker = await this.reconcile(id, workerId);
     const snapshot = await this.native.snapshot();
     const pane = snapshot.panes.find((entry) => entry.pane_id === worker.pane_id);
     const workspace = snapshot.workspaces.find((entry) => entry.workspace_id === worker.workspace_id);
-    if (!pane && !workspace && worker.condition === "completed") return;
+    let unchanged = false;
+    try { unchanged = !!worker.worktree && realpathSync(worker.worktree) === worker.worktree; } catch { /* Unavailable work retains ownership. */ }
+    const couldOwn = (cwd: string | null | undefined): boolean => {
+      if (!cwd || !worker.worktree) return false;
+      try { const path = realpathSync(cwd); return path === worker.worktree || withinRoot(worker.worktree, path); } catch { return true; }
+    };
+    if (unchanged && worker.workspace_id && worker.pane_id && !workspace && !pane && !snapshot.workspaces.some(w => w.label === `saurons-eye-worker-${worker.id}`) && !snapshot.panes.some(p => !p.cwd && !p.foreground_cwd || couldOwn(p.cwd) || couldOwn(p.foreground_cwd))) {
+      this.store.put("host_workers", { ...worker, condition: worker.condition === "completed" ? "completed" : "cancelled" }, id); return;
+    }
     if (!pane?.cwd || realpathSync(pane.cwd) !== worker.worktree || workspace?.label !== `saurons-eye-worker-${worker.id}`) throw new FactoryError("native_identity_uncertain", "The worker's native identity is uncertain; preserve ownership", 409);
     await this.native.closeWorkspace(workspace.workspace_id);
     this.store.put("host_workers", { ...worker, condition: worker.condition === "completed" ? "completed" : "cancelled" }, id);

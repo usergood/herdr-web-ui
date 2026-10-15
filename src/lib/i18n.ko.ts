@@ -9,6 +9,11 @@ export const KO: Record<string, string> = {
   "Automatic execution": "자동 실행",
   "Tickets, checks and integration continue automatically.": "티켓, 검사 및 통합이 자동으로 계속됩니다.",
 
+  "Assignment execution": "Assignment 실행",
+  "Pause pending": "일시 정지 대기 중",
+  "Paused": "일시 정지됨",
+  "Resume Assignment": "Assignment 재개",
+  "Pause Assignment": "Assignment 일시 정지",
   "Internal planning continues automatically after Specification approval.": "명세 승인 후 내부 계획이 자동으로 진행됩니다.",
   "Execution plan": "실행 계획",
   "Testing plan": "테스트 계획",

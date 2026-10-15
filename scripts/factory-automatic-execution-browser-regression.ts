@@ -38,6 +38,18 @@ try {
       assert.equal(await progress.getByRole("button", { name: "Start Ticket worker", exact: true }).count(), 0);
       await page.waitForFunction(async prefix => (await fetch(`/api/factory${prefix}`).then(r => r.json())).workers.some((w: { condition: string }) => w.condition === "working"), prefix);
       const worker = (await detail()).workers[0];
+      const controls = page.getByRole("region", { name: "Assignment execution", exact: true });
+      await controls.getByRole("button", { name: "Pause Assignment", exact: true }).click();
+      await controls.getByText("Paused", { exact: true }).waitFor();
+      await progress.getByText("Paused", { exact: true }).first().waitFor();
+      await controls.getByRole("button", { name: "Resume Assignment", exact: true }).click();
+      const resumeDeadline = Date.now() + 10000;
+      for (;;) {
+        const current = (await detail()).workers.find((w: { id: string }) => w.id === worker.id);
+        if (!current.suspension && current.condition === "working") break;
+        if (Date.now() > resumeDeadline) throw new Error("The retained Ticket did not resume");
+        await Bun.sleep(20);
+      }
       f.workers.get(worker.id)!.condition = "needs_you";
       f.workers.get(worker.id)!.waiting_reason = "Owned native permission required";
       await progress.getByText("Owned native permission required", { exact: true }).first().waitFor();

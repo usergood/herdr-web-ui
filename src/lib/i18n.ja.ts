@@ -11,6 +11,11 @@ export const JA: Record<string, string> = {
   "Automatic execution": "自動実行",
   "Tickets, checks and integration continue automatically.": "チケット、チェック、統合は自動的に進みます。",
 
+  "Assignment execution": "Assignment の実行",
+  "Pause pending": "一時停止を待機中",
+  "Paused": "一時停止中",
+  "Resume Assignment": "Assignment を再開",
+  "Pause Assignment": "Assignment を一時停止",
   "Internal planning continues automatically after Specification approval.": "仕様の承認後、内部計画は自動で進みます。",
   "Execution plan": "実行計画",
   "Testing plan": "テスト計画",

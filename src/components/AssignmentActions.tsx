@@ -56,7 +56,7 @@ export function AssignmentActions({ preset, onPresetChange, detail, project, mac
       else if (spec && !updated.tickets.length && accepted("specification", spec.id) && accepted("testing_seams", spec.id)) await launch("to-tickets");
     });
   }
-  const disabled = busy || queued || !project || !!project.removed_at || !!detail.implementation.archived_at || !capability?.installed;
+  const disabled = busy || !!detail.implementation.pause || queued || !project || !!project.removed_at || !!detail.implementation.archived_at || !capability?.installed;
   return <section className="assignment-actions factory-section" aria-label={t("Next step")}>
     <p role="status">{project ? t("Work uses {agent} on {machine} with this Project's settings.", { agent: provider, machine: machineName }) : t("Choose a Project to start work or plan implementation.")}</p>
     {queued && <p role="status">{t("Queued work starts automatically when capacity is available.")}</p>}

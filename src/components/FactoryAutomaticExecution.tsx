@@ -10,13 +10,14 @@ export function FactoryAutomaticExecution({ detail, onOpenPane }: { detail: Fact
   const progress = detail.automatic_execution?.find(p => p.run_id === run.id);
   const workers = detail.workers.filter(w => w.run_id === run.id);
   const checks = detail.checks.filter(c => c.run_id === run.id);
+  const pause = detail.implementation.pause;
   const title = (ticketId: string) => plan.tickets.find(t => t.id === ticketId)?.title ?? ticketId;
   return <section className="factory-section" aria-label={t("Automatic execution")}>
     <h3>{t("Automatic execution")}</h3>
-    <p>{t("Tickets, checks and integration continue automatically.")}</p>
-    {progress && <p role={progress.condition === "blocked" ? "alert" : "status"}><strong>{progress.condition}</strong>{progress.reason && <> · {progress.reason}</>}</p>}
+    {!pause && <p>{t("Tickets, checks and integration continue automatically.")}</p>}
+    {progress && <p role={!pause && progress.condition === "blocked" ? "alert" : "status"}><strong>{pause ? pause.condition === "paused" ? t("Paused") : t("Pause pending") : progress.condition}</strong>{!pause && progress.reason && <> · {progress.reason}</>}</p>}
     {workers.map(worker => <article className="factory-message" key={worker.id}>
-      <strong>{title(worker.ticket_id)}</strong><p>{worker.role} · {worker.condition}</p>
+      <strong>{title(worker.ticket_id)}</strong><p>{worker.role} · {worker.suspension?.condition === "stopped" ? t("Paused") : worker.condition}</p>
       {worker.waiting_reason && <p role="status">{worker.waiting_reason}</p>}
       {worker.pane_id && <button className="btn factory-button" onClick={() => onOpenPane(run.machine_id, worker.pane_id!)}>{t("Open agent")}</button>}
     </article>)}

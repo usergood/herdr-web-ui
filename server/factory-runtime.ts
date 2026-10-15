@@ -23,15 +23,33 @@ type HostCapabilities = Awaited<ReturnType<FactoryExecutionHost["capabilities"]>
 const activeConditions = new Set(["accepted", "working", "ready", "needs_you", "blocked", "disconnected", "interrupted"]);
 const actions: FactoryAction[] = ["work", "setup", "grill-me", "grill-with-docs", "to-spec", "to-tickets", "implement-spec", "retro", "apply-retro", "verify-provider"];
 export class FactoryRuntime {
+  retainBeforePause: ((id: string, workerId?: string) => Promise<void>) | null = null;
+  private readonly pausing = new Map<string, Promise<void>>();
   readonly queue: FactoryDispatch;
   private readonly parking: FactoryParking;
   private readonly dispatches = new Map<string, Promise<FactoryRun>>();
   private stopped = false;
   constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly host: FactoryExecutionHost, private readonly endpoint: MachineEndpoint, private readonly readArtifact: (record: FactoryArtifact) => Buffer, private readonly publicUrl: string | null, private readonly references: FactoryReferences, private readonly accounts: MachineAccounts) {
     this.queue = new FactoryDispatch(store, () => this.reconcileCapacity(), (id, body, origin) => this.start(id, body, origin, undefined, true));
+    this.queue.maintenance = async () => {
+      for (const idea of store.list<Implementation>("implementations")) if (idea.pause?.condition === "pending") await this.reconcilePause(idea.id);
+      for (const run of store.list<FactoryRun>("runs")) {
+        const idea = store.get<Implementation>("implementations", run.implementation_id);
+        if (idea?.pause || idea?.deletion) continue;
+        const targets = [run, ...store.list<import("../shared/factory.ts").FactoryWorker>("workers", run.id)];
+        for (const target of targets) if (target.suspension && target.suspension.condition !== "stopped") {
+          try {
+            const result = await this.operation<FactoryRun | import("../shared/factory.ts").FactoryWorker>(run, "resume-status", { pause_id: target.suspension.pause_id, ...(target.id !== run.id ? { worker_id: target.id } : {}) });
+            this.completeResumption(run, target, result);
+          } catch { /* Unknown execution keeps its reservation; observation never launches. */ }
+        }
+      }
+    };
+    this.queue.resumeSuspension = (id, body) => this.resumeSuspension(id, body);
     this.parking = new FactoryParking(store, workflow, this.queue, planning => agentCapacityPool(store, settings(), planning), (run, text, signal, worker) => worker ? this.operation(run, "send-worker", { worker_id: worker.id, text }).then(() => {}) : this.deliver(run, text, signal));
   }
   async requestStart(id: string, body: Record<string, unknown>, origin: string): Promise<FactoryRun | import("../shared/factory.ts").FactoryCapacityWait> {
+    this.assertExecuting(id);
     if (!actions.includes(body.action as FactoryAction) || typeof body.idempotency_key !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.idempotency_key)) throw new FactoryError("invalid_start", "Select an explicit action with an idempotency key");
     const idea = this.store.get<Implementation>("implementations", id);
     if (!idea) throw new FactoryError("not_found", "Assignment not found", 404);
@@ -42,6 +60,139 @@ export class FactoryRuntime {
     const action = body.action as FactoryAction;
     const planning = ["grill-me", "grill-with-docs"].includes(action) || action === "to-spec" && !this.workflow.approved(id, "specification", this.workflow.specification(id)?.id ?? "");
     return this.queue.start({ ...this.store.record(), id: `${id}:${body.idempotency_key}`, implementation_id: id, assignment_title: idea.title, action, machine_id: idea.machine_id ?? project?.machine_id ?? "local", provider: idea.provider ?? project?.provider ?? this.settings().provider, idempotency_key: body.idempotency_key, reason: "Waiting for agent capacity", purpose: planning ? "planning" : "execution", condition: "queued", run_id: null }, body, origin);
+  }
+  assertExecuting(id: string): void {
+    const idea = this.store.get<Implementation>("implementations", id);
+    if (idea?.deletion) throw new FactoryError("assignment_deleting", "This Assignment has a pending permanent Delete; execution cannot resume", 409);
+    if (idea?.pause) throw new FactoryError("assignment_paused", "Resume this Assignment before starting execution", 409);
+  }
+  async pauseAssignment(id: string, resume = false): Promise<Implementation> {
+    const idea = this.store.get<Implementation>("implementations", id);
+    if (!idea) throw new FactoryError("not_found", "Assignment not found", 404);
+    if (idea.deletion) throw new FactoryError("assignment_deleting", "This Assignment has a pending permanent Delete; execution cannot resume", 409);
+    if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Execution control is disabled on a restored copy", 409);
+    if (resume) {
+      if (idea.pause?.condition === "pending") throw new FactoryError("pause_pending", "Wait for confirmed shutdown before resuming", 409);
+      return this.store.db.transaction(() => {
+        for (const run of this.store.list<FactoryRun>("runs", id)) {
+          const workers = this.store.list<import("../shared/factory.ts").FactoryWorker>("workers", run.id);
+          for (const target of [...workers, run]) {
+            if (target.suspension?.condition !== "stopped" || !activeConditions.has(target.condition) || !activeConditions.has(target.suspension.previous_condition)) continue;
+            this.enqueueSuspension(idea, run, target);
+          }
+        }
+        const { pause: _pause, ...next } = idea;
+        this.store.put("implementations", next);
+        return next;
+      }).immediate();
+    }
+    const next: Implementation = { ...idea, pause: idea.pause ?? { id: this.store.record().id, condition: "pending", reasons: [] } };
+    this.store.put("implementations", next);
+    await this.reconcilePause(id);
+    return this.store.get<Implementation>("implementations", id)!;
+  }
+  private planning(run: Pick<FactoryRun, "action" | "implementation_id">): boolean {
+    const specification = this.workflow.specification(run.implementation_id);
+    return ["grill-me", "grill-with-docs"].includes(run.action) || run.action === "to-spec" && (!specification || !this.workflow.approved(run.implementation_id, "specification", specification.id));
+  }
+  private enqueueSuspension(idea: Implementation, run: FactoryRun, target: FactoryRun | import("../shared/factory.ts").FactoryWorker): void {
+    const suspension = target.suspension!;
+    const queuedAt = suspension.queued_at ?? new Date().toISOString();
+    this.store.put(target.id === run.id ? "runs" : "workers", { ...target, suspension: { ...suspension, queued_at: queuedAt } }, target.id === run.id ? idea.id : run.id);
+    this.queue.enqueueContinuation({ ...this.store.record(), created_at: queuedAt, id: `suspension:${suspension.pause_id}:${target.id}`, implementation_id: idea.id, assignment_title: idea.title, action: run.action, machine_id: run.machine_id, provider: run.provider, idempotency_key: suspension.pause_id, reason: "Waiting for capacity to continue unfinished work", purpose: target.id === run.id && this.planning(run) ? "planning" : "execution", condition: "queued", run_id: run.id, continuation: true }, { suspension: true, pause_id: suspension.pause_id, ...(target.id !== run.id ? { worker_id: target.id } : {}) });
+  }
+  async resumeSuspension(id: string, body: Record<string, unknown>): Promise<void> {
+    const run = this.store.get<FactoryRun>("runs", id);
+    if (!run) return;
+    this.assertExecuting(run.implementation_id);
+    const workerId = typeof body.worker_id === "string" ? body.worker_id : null;
+    const kind = workerId ? "workers" : "runs";
+    const target = this.store.get<FactoryRun | import("../shared/factory.ts").FactoryWorker>(kind, workerId ?? id);
+    if (!target?.suspension || target.suspension.pause_id !== body.pause_id) return;
+    if (target.suspension.condition !== "stopped") return;
+    const graphHash = this.store.get<{ hash: string }>("execution_plans", run.id)?.hash ?? run.graph_hash;
+    if (run.specification_id && (this.workflow.specification(run.implementation_id)?.id !== run.specification_id || !this.workflow.approved(run.implementation_id, "specification", run.specification_id)) || graphHash && this.workflow.graphHash(run.implementation_id) !== graphHash) throw new FactoryError("scope_changed", "The accepted scope changed while paused; reconcile its authority before continuing", 409);
+    if (this.workflow.questions(run.implementation_id, run.id).some(q => q.answer === null)) throw new FactoryError("answers_unready", "Answer pending owner questions before continuing", 409);
+    const reserved = this.store.db.transaction(() => {
+      this.assertExecuting(run.implementation_id);
+      const pool = agentCapacityPool(this.store, this.settings(), !workerId && this.planning(run));
+      const reservation = { ...target, condition: "accepted" as const, ...(!workerId ? { capacity_pool: pool } : {}), suspension: { ...target.suspension!, condition: "resuming" as const } };
+      this.store.put(kind, reservation, workerId ? id : run.implementation_id);
+      return reservation;
+    }).immediate();
+    try {
+      const snapshot = this.store.list<import("../shared/factory.ts").NativeConversationSnapshot>("native_snapshots", id).filter(entry => (entry.worker_id ?? null) === workerId).at(-1);
+      const history = snapshot ? `Retained native snapshot ${snapshot.id} (${snapshot.source_id}).${snapshot.cursor ? " Earlier pages remain in retained Assignment history." : ""}\n` + snapshot.turns.map(turn => `${turn.role}: ${turn.parts.flatMap(part => part.kind === "text" || part.kind === "compact" ? [part.text] : []).join("\n")}`).join("\n\n").slice(-48_000) : "No native transcript page could be captured; the original provider store and all previously retained Assignment history remain preserved. Inspect the retained files and current tracker evidence before continuing.";
+      const result = await this.operation<FactoryRun | import("../shared/factory.ts").FactoryWorker>(run, "resume-context", { ...body, history });
+      this.completeResumption(run, reserved, result);
+    } catch {
+      if (!this.stopped && JSON.stringify(this.store.get(kind, target.id)) === JSON.stringify(reserved)) this.store.put(kind, { ...reserved, condition: "disconnected", suspension: { ...reserved.suspension, condition: "uncertain" }, waiting_reason: "Continuation outcome is uncertain; reservation retained without replay" }, workerId ? id : run.implementation_id);
+    }
+  }
+  private completeResumption(run: FactoryRun, expected: FactoryRun | import("../shared/factory.ts").FactoryWorker, result: FactoryRun | import("../shared/factory.ts").FactoryWorker): void {
+    const worker = "run_id" in expected;
+    const neverStarted = result.suspension?.condition === "stopped" && result.suspension.pause_id === expected.suspension?.pause_id;
+    if (result.id !== expected.id || result.worktree !== expected.worktree || result.branch !== expected.branch || result.suspension && !neverStarted || !["working", "ready", "needs_you"].includes(result.condition)) throw new FactoryError("resume_uncertain", "The Machine did not confirm the retained continuation", 409);
+    if (worker) {
+      if (!("run_id" in result) || result.run_id !== run.id || result.ticket_id !== expected.ticket_id || result.role !== expected.role || result.base !== expected.base) throw new FactoryError("resume_uncertain", "The Machine returned another child identity", 409);
+    } else this.observed({ ...expected, pane_id: null, workspace_id: null, suspension: undefined }, result as FactoryRun);
+    const kind = worker ? "workers" : "runs";
+    if (this.stopped || this.store.get<Implementation>("implementations", run.implementation_id)?.pause || JSON.stringify(this.store.get(kind, expected.id)) !== JSON.stringify(expected)) return;
+    if (neverStarted) {
+      this.enqueueSuspension(this.store.get<Implementation>("implementations", run.implementation_id)!, run, { ...expected, condition: "ready", suspension: { ...expected.suspension!, condition: "stopped" } });
+      return;
+    }
+    const { suspension: _suspension, ...next } = { ...expected, ...result };
+    if (next.continuation) {
+      this.store.remove("capacity_waits", `resume:${next.continuation.id}`);
+      next.continuation = { ...next.continuation, condition: "resumed", reason: "Owner Resume continued the retained work", question_revision: this.workflow.questionRevision(run.implementation_id, run.id) };
+    }
+    this.store.put(kind, { ...next, ...(!worker ? { capacity_pool: (expected as FactoryRun).capacity_pool } : {}) }, worker ? run.id : run.implementation_id);
+  }
+  private reconcilePause(id: string): Promise<void> {
+    const pending = this.pausing.get(id);
+    if (pending) return pending;
+    const operation = this.performPause(id).finally(() => this.pausing.delete(id));
+    this.pausing.set(id, operation);
+    return operation;
+  }
+  private async performPause(id: string): Promise<void> {
+    const idea = this.store.get<Implementation>("implementations", id);
+    if (idea?.pause?.condition !== "pending") return;
+    const pauseId = idea.pause.id; const reasons: string[] = [];
+    for (const run of this.store.list<FactoryRun>("runs", id)) {
+      const workers = this.store.list<import("../shared/factory.ts").FactoryWorker>("workers", run.id);
+      const checks = this.store.list<import("../shared/factory.ts").FactoryCheck>("checks", run.id).filter(c => ["working", "interrupted"].includes(c.condition));
+      if (run.suspension?.pause_id === pauseId && run.suspension.condition === "stopped") continue;
+      if (!activeConditions.has(run.condition) && !workers.some(w => activeConditions.has(w.condition)) && !checks.length) continue;
+      const uncertain = (target: FactoryRun | import("../shared/factory.ts").FactoryWorker) => ({ ...target, suspension: { pause_id: pauseId, condition: "uncertain" as const, previous_condition: target.suspension?.previous_condition ?? target.condition } });
+      this.store.db.transaction(() => {
+        if (activeConditions.has(run.condition)) this.store.put("runs", uncertain(run), id);
+        for (const worker of workers) if (activeConditions.has(worker.condition)) this.store.put("workers", uncertain(worker), run.id);
+      }).immediate();
+      try {
+        if (this.dispatches.has(run.id)) throw new FactoryError("allocation_pending", "Waiting for accepted allocation to settle", 409);
+        // Capture before closing native workspaces. A missing transcript must never prevent shutdown.
+        await this.retainBeforePause?.(run.id).catch(() => {});
+        for (const worker of workers.filter(w => activeConditions.has(w.condition))) await this.retainBeforePause?.(run.id, worker.id).catch(() => {});
+        const result = await this.operation<import("../shared/factory.ts").FactoryPauseResult>(run, "pause", { pause_id: pauseId });
+        this.observed(run, result.run);
+        if (result.run.id !== run.id || result.run.implementation_id !== id || result.run.suspension?.pause_id !== pauseId || result.run.suspension.condition !== "stopped" || result.run.worktree !== run.worktree || result.workers.some(w => w.run_id !== run.id || activeConditions.has(w.condition) && (w.suspension?.condition !== "stopped" || w.suspension.pause_id !== pauseId)) || workers.some(w => activeConditions.has(w.condition) && !result.workers.some(stopped => stopped.id === w.id)) || result.checks.some(c => c.run_id !== run.id || ["working", "interrupted"].includes(c.condition)) || checks.some(c => !result.checks.some(stopped => stopped.id === c.id && stopped.worker_id === c.worker_id))) throw new FactoryError("pause_uncertain", "Machine shutdown acknowledgment did not match the owned resources", 409);
+        if (this.stopped) return;
+        this.store.db.transaction(() => {
+          this.store.put("runs", { ...result.run, continuation: run.continuation }, id);
+          for (const worker of result.workers) {
+            const current = this.store.get<import("../shared/factory.ts").FactoryWorker>("workers", worker.id);
+            if (!current || current.run_id !== run.id) throw new FactoryError("pause_uncertain", "Unknown child in shutdown acknowledgment", 409);
+            this.store.put("workers", { ...current, ...worker, continuation: current.continuation }, run.id);
+          }
+          for (const check of checks) this.store.put("checks", result.checks.find(stopped => stopped.id === check.id)!, run.id);
+        }).immediate();
+      } catch (error) { reasons.push(`${run.machine_id} / ${run.id}: ${error instanceof FactoryError ? error.message : "Shutdown could not be confirmed; reservations retained"}`); }
+    }
+    if (this.stopped) return;
+    const current = this.store.get<Implementation>("implementations", id);
+    if (current?.pause?.id === pauseId) this.store.put("implementations", { ...current, pause: { ...current.pause, condition: reasons.length ? "pending" : "paused", reasons } });
   }
   async discover(machineId: string, path: string): Promise<import("../shared/project-setup.ts").ProjectDiscovery> { return machineId === "local" ? this.host.discover(path) : this.remote(machineId, "/project-discovery", { path }); }
   async modelCatalog(machineId: string, provider: FactoryProvider, path: string, repository: string, snapshot?: AccountBindingSnapshot | null): Promise<import("../shared/agent-models.ts").AgentModelCatalog> {
@@ -137,6 +288,7 @@ export class FactoryRuntime {
     return run.machine_id === "local" ? this.host.verifyProvider(run.id) : this.remote(run.machine_id, `/runs/${run.id}/verify-provider`, {});
   }
   async operation<T>(run: FactoryRun, action: string, body: Record<string, unknown> = {}): Promise<T> {
+    if (!["pause", "resume-context", "resume-status", "transcript", "head", "check-reconcile", "reconcile-worker", "stop-worker"].includes(action)) this.assertExecuting(run.implementation_id);
     if (this.stopped) throw new FactoryError("stopping", "The bridge is stopping", 409);
     if (existsSync(join(this.store.root, "recovery-copy.json")) && !["transcript", "head", "review-evidence"].includes(action)) throw new FactoryError("recovery_copy", "Native control is disabled on a restored copy", 409);
     const result = (run.machine_id === "local" ? await this.host.operation(run.id, action, body) : await this.remote(run.machine_id, `/runs/${run.id}/operations/${action}`, body)) as T;
@@ -153,6 +305,7 @@ export class FactoryRuntime {
     return this.remote(machineId, "/review", { path, base, mode });
   }
   async start(id: string, body: Record<string, unknown>, origin: string, continuation?: { runId?: string; finish?: () => Promise<void>; validateScope?: () => void }, admitting = false): Promise<FactoryRun> {
+    this.assertExecuting(id);
     continuation?.validateScope?.();
     if (!actions.includes(body.action as FactoryAction) || typeof body.idempotency_key !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.idempotency_key)) throw new FactoryError("invalid_start", "Select an explicit action with an idempotency key");
     let implementation = this.store.get<Implementation>("implementations", id);
@@ -253,6 +406,7 @@ export class FactoryRuntime {
     const contractHash = hash(JSON.stringify({ implementation, project, checkout, specification, graphHash, settings: this.settings(), skills: skills.hash, artifacts, messages, projectReferences }));
     await this.reconcileCapacity();
     const run = this.store.db.transaction(() => {
+      this.assertExecuting(id);
       continuation?.validateScope?.();
       const raced = this.store.list<FactoryRun>("runs", id).find((entry) => entry.idempotency_key === body.idempotency_key);
       if (raced) return { run: raced, accepted: false };
@@ -312,13 +466,15 @@ export class FactoryRuntime {
   }
   /** Refresh capacity from owned native identities, including remote and resting chats. */
   async reconcileCapacity(): Promise<void> {
-    const runs = this.store.list<FactoryRun>("runs").filter(run => activeConditions.has(run.condition) && !this.dispatches.has(run.id));
+    const runs = this.store.list<FactoryRun>("runs").filter(run => !run.suspension && activeConditions.has(run.condition) && !this.dispatches.has(run.id) && !this.store.get<Implementation>("implementations", run.implementation_id)?.pause);
     await Promise.all(runs.map(run => this.reconcile(run.id)));
     if (this.stopped) return;
     const workers = this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers").filter(worker => activeConditions.has(worker.condition));
     await Promise.all(workers.map(async worker => {
       const run = this.store.get<FactoryRun>("runs", worker.run_id);
       if (!run) return;
+      if (worker.suspension) return;
+      if (this.store.get<Implementation>("implementations", run.implementation_id)?.pause) return;
       let next = worker;
       try {
         next = await this.operation(run, "reconcile-worker", { worker_id: worker.id });
@@ -335,6 +491,8 @@ export class FactoryRuntime {
   }
   async reconcile(runId: string): Promise<FactoryRun> {
     let run = this.store.get<FactoryRun>("runs", runId); if (!run) throw new FactoryError("not_found", "Run not found", 404);
+    if (run.suspension) return run;
+    if (this.store.get<Implementation>("implementations", run.implementation_id)?.pause) return run;
     if (["completed", "cancelled", "failed"].includes(run.condition)) return run;
     const revision = hash(JSON.stringify(run));
     try { run = this.observed(run, run.machine_id === "local" ? await this.host.reconcile(run.id) : await this.remote<FactoryRun>(run.machine_id, `/runs/${run.id}/reconcile`, {})); }
@@ -382,6 +540,7 @@ export class FactoryRuntime {
   }
   async outputs(run: FactoryRun): Promise<FactoryOutput[]> { return run.machine_id === "local" ? this.host.outputs(run.id) : this.remote(run.machine_id, `/runs/${run.id}/artifacts`); }
   async send(run: FactoryRun, text: string, signal: AbortSignal): Promise<void> {
+    this.assertExecuting(run.implementation_id);
     const reservation = this.store.db.transaction(() => {
       const current = this.store.get<FactoryRun>("runs", run.id);
       if (!current || !["working", "ready", "needs_you", "blocked"].includes(current.condition)) throw new FactoryError("run_unavailable", "Reconcile the Run before submitting changes", 409);

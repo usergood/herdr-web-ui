@@ -38,6 +38,15 @@ if (!details.size) capture("Explore release notes", "A fictional Inbox idea: kee
 
 export async function factoryDemo(url: URL, method: string, body: Record<string, unknown>, machines: Machine[] = []): Promise<Response> {
   const path = url.pathname;
+  const suspension = /^\/api\/factory\/implementations\/([^/]+)\/(pause|resume)$/.exec(path);
+  if (suspension && method === "POST") {
+    const detail = details.get(suspension[1]!);
+    if (!detail) return failure("not_found", "Fictional Assignment not found", 404);
+    if (suspension[2] === "pause") detail.implementation.pause ??= { id: crypto.randomUUID(), condition: "paused", reasons: [] };
+    else delete detail.implementation.pause;
+    save(); return json(detail.implementation);
+  }
+  if (/^\/api\/factory-host\/runs\/[^/]+\/operations\/(pause|resume-context|resume-status)$/.test(path)) return failure("demo_unavailable", "Native suspension requires an execution Machine; the demo retains fictional records only");
   if (method === "POST" && (/^\/api\/factory\/implementations\/[^/]+\/runs$/.test(path) || /^\/api\/factory\/runs\/[^/]+\/workers$/.test(path))) return failure("demo_unavailable", "Automatic dispatch requires a real execution Machine; the demo keeps fictional records only");
   if (/^\/api\/factory\/runs\/[^/]+\/send-answers$/.test(path)) return failure("demo_unavailable", "Waiting conversations require a real execution Machine; the demo keeps fictional records only");
   if (/^\/api\/factory-agent\/[^/]+\/sync-answers$/.test(path)) return failure("demo_unavailable", "Native answer synchronization needs a real agent conversation");

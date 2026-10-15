@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { FactoryAutomaticExecution, FactoryCheck, FactoryExecutionPlan, FactoryProject, FactoryRun, FactoryWorker } from "../shared/factory.ts";
+import type { FactoryAutomaticExecution, FactoryCheck, FactoryExecutionPlan, FactoryProject, FactoryRun, FactoryWorker, Implementation } from "../shared/factory.ts";
 import { FactoryError } from "./factory-host.ts";
 import type { FactoryPipeline } from "./factory-pipeline.ts";
 import type { FactoryRuntime } from "./factory-runtime.ts";
@@ -29,6 +29,8 @@ export class FactoryExecution {
   private live(plan: FactoryExecutionPlan): FactoryRun | null {
     if (this.stopped) return null;
     const run = this.store.get<FactoryRun>("runs", plan.run_id);
+    const assignment = run ? this.store.get<Implementation>("implementations", run.implementation_id) : null;
+    if (!assignment || assignment.pause || assignment.deletion || run?.suspension) return null;
     const frozen = run?.manifest as { planning_authority?: { id: string; automatic_execution?: boolean }; contract_hash?: string } | undefined;
     return run?.action === "implement-spec" && !["completed", "cancelled", "failed"].includes(run.condition) && frozen?.planning_authority?.automatic_execution && frozen.planning_authority.id === plan.authority.approval_id && frozen.contract_hash === plan.authority.contract_hash && run.specification_id === plan.specification_id ? run : null;
   }
@@ -63,6 +65,7 @@ export class FactoryExecution {
       const workers = this.store.list<FactoryWorker>("workers", run.id).filter(w => w.role === "implementer" && plan.tickets.some(t => t.id === w.ticket_id));
       for (let worker of workers) {
         if (worker.condition === "completed") continue;
+        if (worker.suspension) continue;
         if (["failed", "cancelled"].includes(worker.condition)) throw new FactoryError("worker_stopped", worker.waiting_reason ?? `Ticket worker ${worker.id} stopped before integration`, 409);
         worker = await this.pipeline.workerAction(run.id, worker.id, "reconcile") as FactoryWorker;
         if (!this.live(plan)) return;

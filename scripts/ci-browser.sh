@@ -61,6 +61,7 @@ run_script scripts/factory-browser-regression.ts
 run_script scripts/workflow-conversations-browser-regression.ts
 run_script scripts/factory-capacity-browser-regression.ts
 run_script scripts/factory-parking-browser-regression.ts
+run_script scripts/factory-pause-browser-regression.ts
 run_script scripts/factory-automatic-planning-browser-regression.ts
 run_script scripts/factory-automatic-execution-browser-regression.ts
 run_script scripts/project-setup-browser-regression.ts

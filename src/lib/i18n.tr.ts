@@ -10,6 +10,11 @@ export const TR: Record<string, string> = {
   "Automatic execution": "Otomatik yürütme",
   "Tickets, checks and integration continue automatically.": "Biletler, kontroller ve entegrasyon otomatik olarak devam eder.",
 
+  "Assignment execution": "Assignment yürütmesi",
+  "Pause pending": "Duraklatma bekleniyor",
+  "Paused": "Duraklatıldı",
+  "Resume Assignment": "Assignment devam ettir",
+  "Pause Assignment": "Assignment duraklat",
   "Internal planning continues automatically after Specification approval.": "Belirtim onayından sonra iç planlama otomatik olarak devam eder.",
   "Execution plan": "Yürütme planı",
   "Testing plan": "Test planı",

@@ -56,6 +56,10 @@ Artifacts have hashes, size limits, versions, provenance, annotations and source
 
 Stop releases only the verified owned native resources and retains work/history. Cleanup checks every generated file, refuses unexpected or ignored outputs and uncommitted changes, and removes only clean stopped checkouts. It preserves Git branches and sibling notes. Native conversation pages can be retained explicitly and a Stop attempts a final capture; unavailable or older native pages remain a visible import limitation rather than an invented transcript.
 
+Assignment execution controls provide Pause and Resume without requiring agent capacity or Done/archive eligibility. Pause durably blocks dispatch before stopping every owned attempt, child and build. Offline or uncertain resources leave Pause pending with Machine/Run reasons and retain their reservations; shutdown is reconciled automatically after reconnect and restart. Paused is a status within the existing board lane. Worktrees, dirty and ignored edits, retained conversations, approvals, completed Tickets and check evidence remain available.
+
+Resume queues only retained unfinished contexts at global capacity. The native continuation uses the same Run/worker and worktree and receives a bounded handoff from its captured history; earlier captured pages remain available. Changed accepted Specification/graph authority blocks continuation for reconciliation rather than silently reusing stale evidence. Completed work is not restarted, and unchanged scope requires no renewed approval. Pending Delete authority takes precedence over Resume. Lost continuation responses are observed without replay; a Machine's durable proof that continuation never started permits safe automatic requeueing.
+
 Retrospectives use only a selected retained Project evidence set. Candidates are immutable records. Approval and Apply in a new worktree are separate actions; the pinned retro action presents candidates without applying them.
 
 ## Automatic Ticket execution

@@ -190,4 +190,34 @@ describe("Automatic Ticket execution through authenticated HTTP", () => {
     } finally { f.close(); }
   }, 45000);
 
+  it("keeps completed Ticket progress while the Assignment is paused and automatically continues only unfinished work after Resume", async () => {
+    const f = await capacityFixture();
+    try {
+      const { id, detail, run } = await acceptedPlan(f, 1);
+      f.runs.get(run.id)!.condition = "ready";
+      const first = await until(detail, d => d.workers.length === 1);
+      f.workers.get(first.workers[0].id)!.condition = "ready";
+      const second = await until(detail, d => d.workers.length === 2);
+      expect(second.workers[0].condition).toBe("completed");
+      expect((await f.api(`/implementations/${id}/pause`, {})).status).toBe(200);
+      const deadline = Date.now() + 600;
+      do {
+        const paused = await detail();
+        expect(paused.implementation.pause.condition).toBe("paused");
+        expect(paused.automatic_execution[0].condition).not.toBe("blocked");
+        expect(paused.checks).toHaveLength(1);
+        await Bun.sleep(20);
+      } while (Date.now() < deadline);
+      f.restart();
+      expect((await f.api(`/implementations/${id}/resume`, {})).status).toBe(200);
+      const resumed = await until(detail, d => !d.workers[1].suspension && d.workers[1].condition === "working");
+      f.runs.get(run.id)!.condition = "ready";
+      f.workers.get(resumed.workers[1].id)!.condition = "ready";
+      const done = await until(detail, d => d.automatic_execution?.[0]?.condition === "checked");
+      expect(done.workers.map((w: any) => w.id)).toEqual(second.workers.map((w: any) => w.id));
+      expect(done.tickets.map((t: any) => t.status)).toEqual(["done", "done"]);
+      expect(f.workerLaunches).toHaveLength(2);
+    } finally { f.close(); }
+  });
+
 });
