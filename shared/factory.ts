@@ -214,3 +214,14 @@ export interface NativeConversationSnapshot extends FactoryRecord {
   run_id: string; source_id: string; sequence: number; version: string;
   turns: ConversationTurn[]; cursor: string | null;
 }
+
+/** Public board projection; counts cover the complete current Ticket scope. */
+export type FactoryBoardLane = "inbox" | "queued" | "running" | "needs_you" | "done";
+export type FactoryActivity = "specifying" | "implementing" | "testing" | "auto_review" | "fixing";
+export interface FactoryAssignmentProgress {
+  implementation_id: string; lane: FactoryBoardLane; activities: FactoryActivity[];
+  counts: { waiting: number; running: number; completed: number };
+  tickets: { ticket_id: string; title: string; state: "waiting" | "running" | "completed"; reason: string | null }[];
+  reasons: string[];
+}
+export interface FactoryOverview { progress: FactoryAssignmentProgress[] }

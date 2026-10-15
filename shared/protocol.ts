@@ -1126,7 +1126,10 @@ export const DEFAULT_PORT = 7317;
  * keys below; all JSON errors are ApiError. Mutations require same-origin and
  * x-herdr-factory: 1; reads and writes require owner access.
  * GET /api/factory -> FactoryOverview with global normal/planning/build limits,
- * occupied/uncertain reservations and retained capacity waits.
+ * occupied/uncertain reservations and retained capacity waits. progress contains one
+ * five-lane board rollup per Assignment: named Tickets, waiting/running/completed counts,
+ * concurrent evidence-backed activities and dependency/capacity/failure reasons.
+ * Paused and pending lifecycle operations remain independent of the lane/activity tags.
  * Normal contexts share max_agents across Projects, providers and Machines. One additional
  * interview/pre-approval Specification context may execute globally; workers cannot use it.
  * Ordinary terminals and independently launched agents are excluded. Ready chats consume
@@ -1163,7 +1166,7 @@ export const DEFAULT_PORT = 7317;
  * -> FactoryQuestion; revision-bound, never invents answers. Missing answer_kind means text.
  * Explicit shared_understanding approval confirms pending confirmation questions atomically
  * and binds to the resulting product question revision. Unanswered text questions still block.
- * POST .../order (order) -> {ok:true}; reordering never dispatches.
+ * POST .../order is retired: 409 automatic_order; dispatch uses oldest eligible request age.
  * POST .../complete-work (complete_work) -> Implementation; explicit owner completion of the
  * latest direct-work Run after confirmed native stop, with its worktree retained.
  * POST .../pause|resume (empty) -> Implementation; same-origin owner controls need no agent slot.
@@ -1311,7 +1314,6 @@ export interface FactoryRequests {
   approval: { kind: Exclude<import("./factory.ts").FactoryApproval["kind"], "review">; revision: string; scope: string };
   question: { question: string; run_id?: string; worker_id?: string; answer_kind?: "text" | "confirmation" };
   answer: { revision: string; answer: string };
-  order: { direction: -1 | 1 } | { before_id: string };
   start: { action: import("./factory.ts").FactoryAction; idempotency_key: string; execution_preset?: import("./agent-models.ts").AgentModelSelection; retrospective_id?: string; expected?: { provider: import("./factory.ts").FactoryProvider; machine_id: string; project_id: string | null; specification_id: string | null; graph_hash: string } };
   continue_workflow: FactoryRequests["start"] & { run_id: string | null; allow_partial_handoff?: boolean };
   stop: { summary?: string };

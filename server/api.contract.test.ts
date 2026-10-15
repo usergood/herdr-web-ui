@@ -865,20 +865,20 @@ describe("factory records", () => {
       expect(copy.implementations).toHaveLength(1);
     } finally { restored?.stop(); app.stop(); rmSync(state, { recursive: true, force: true }); }
   });
-  it("retains unanswered questions and reorders the board without starting work", async () => {
+  it("retains unanswered questions and creation order without starting work", async () => {
     const state = mkdtempSync(join(tmpdir(), "saurons-eye-questions-"));
     let app = createServer({ port: 0, stateDir: state, machines: false });
     const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
     try {
       const first = await request("implementations", { title: "First", description: "" }).then((response) => response.json());
       const second = await request("implementations", { title: "Second", description: "" }).then((response) => response.json());
-      expect((await request(`implementations/${second.id}/order`, { direction: -1 })).status).toBe(200);
+      expect((await request(`implementations/${second.id}/order`, { direction: -1 })).status).toBe(409);
       const questionResponse = await request(`implementations/${first.id}/questions`, { question: "Which public interface should be tested?" });
       expect(questionResponse.status).toBe(201);
       const question = await questionResponse.json();
       app.stop(); app = createServer({ port: 0, stateDir: state, machines: false });
       const board = await fetch(`http://localhost:${app.port}/api/factory`).then((response) => response.json());
-      expect(board.implementations.map((idea: { title: string }) => idea.title)).toEqual(["Second", "First"]);
+      expect(board.implementations.map((idea: { title: string }) => idea.title)).toEqual(["First", "Second"]);
       const detail = await fetch(`http://localhost:${app.port}/api/factory/implementations/${first.id}`).then((response) => response.json());
       expect(detail.questions).toMatchObject([{ id: question.id, answer: null }]);
       expect((await request(`implementations/${first.id}/approvals`, { kind: "shared_understanding", revision: detail.question_revision, scope: "Confirm" })).status).toBe(409);

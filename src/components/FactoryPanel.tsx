@@ -1,6 +1,8 @@
+import { FactoryBoardProgress } from "./FactoryBoardProgress.tsx";
+import type { FactoryBoardLane } from "../../shared/factory.ts";
 import { FactoryCapacityPanel } from "./FactoryCapacityPanel.tsx";
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { ArrowDown, ArrowUp, ArrowLeft, Archive, Paperclip, Plus, RefreshCw } from "lucide-react";
+import { ArrowLeft, Archive, Paperclip, Plus, RefreshCw } from "lucide-react";
 import type { FactoryDetail, FactoryOverview, FactoryProvider, FactoryStage, Implementation, SpecificationVersion } from "../../shared/protocol.ts";
 import type { AgentModelSelection } from "../../shared/agent-models.ts";
 import type { Machine } from "../../shared/machines.ts";
@@ -22,7 +24,10 @@ import { WorkflowConversations } from "./WorkflowConversations.tsx";
 import { RetainedNativeTurn } from "./RetainedNativeTurn.tsx";
 import "./FactoryPanel.css";
 
-const stages: FactoryStage[] = ["inbox", "specifying", "ready", "running", "review", "done"];
+const lanes: FactoryBoardLane[] = ["inbox", "queued", "running", "needs_you", "done"];
+function laneLabel(lane: FactoryBoardLane, t: ReturnType<typeof useT>): string {
+  switch (lane) { case "inbox": return t("Inbox"); case "queued": return t("Queued"); case "running": return t("Running"); case "needs_you": return t("Needs you"); case "done": return t("Done"); }
+}
 function stageLabel(stage: FactoryStage, t: ReturnType<typeof useT>): string {
   switch (stage) { case "inbox": return t("Inbox"); case "specifying": return t("Specifying"); case "ready": return t("Ready"); case "running": return t("Running"); case "review": return t("Review"); case "done": return t("Done"); }
 }
@@ -48,6 +53,7 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
   const [testingSeams, setTestingSeams] = useState("Public API and real browser user journeys");
   const [tickets, setTickets] = useState<PlannedTicket[]>([{ key: "t1", title: "", acceptance: "", dependencies: [] }]);
   const [showArchived, setShowArchived] = useState(false);
+  const [expandedTickets, setExpandedTickets] = useState<Set<string>>(() => new Set());
   const [source, setSource] = useState<{ id: string; content: string } | null>(null);
   const selection = useRef(selected); selection.current = selected;
   const generation = useRef(0);
@@ -131,11 +137,10 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
         <label>{t("Provider")}<select className="select factory-input" value={providerFilter} onChange={(event) => setProviderFilter(event.target.value)}><option value="all">{t("All providers")}</option><option>codex</option><option>claude</option><option>opencode</option></select></label>
         <label>{t("Machine")}<select className="select factory-input" value={machineFilter} onChange={(event) => setMachineFilter(event.target.value)}><option value="all">{t("All Machines")}</option>{machines.map((machine) => <option key={machine.id} value={machine.id}>{machine.name}</option>)}</select></label>
       </div>
-      <div className={`factory-board${showArchived || allAssignments ? "" : " factory-inbox-board"}`}>{(showArchived || allAssignments ? stages : ["inbox"] as FactoryStage[]).map((stage) => <section className="factory-lane" key={stage} aria-label={stageLabel(stage, t)}><h2>{stageLabel(stage, t)}</h2>
-        {overview.implementations.filter((item) => item.stage === stage && (showArchived ? !!item.archived_at : !item.archived_at) && (conditionFilter === "all" || overview.activity.some((activity) => activity.implementation_id === item.id && activity.condition === conditionFilter)) && (projectFilter === "all" || (item.project_id ?? "unassigned") === projectFilter) && (providerFilter === "all" || (item.provider ?? overview.projects.find((project) => project.id === item.project_id)?.provider ?? overview.settings.provider) === providerFilter) && (machineFilter === "all" || (item.machine_id ?? overview.projects.find((project) => project.id === item.project_id)?.machine_id ?? "local") === machineFilter)).map((item) => <article className="factory-card" key={item.id} draggable onDragStart={(event) => event.dataTransfer.setData("application/x-saurons-eye-card", item.id)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const id = event.dataTransfer.getData("application/x-saurons-eye-card"); if (overview.implementations.some((entry) => entry.id === id) && id !== item.id) void perform(async () => { await factoryRequest(`/implementations/${id}/order`, { before_id: item.id }); }); }}>
+      <div className={`factory-board${showArchived || allAssignments ? "" : " factory-inbox-board"}`}>{(showArchived || allAssignments ? lanes : ["inbox"] as FactoryBoardLane[]).map((stage) => <section className="factory-lane" key={stage} aria-label={laneLabel(stage, t)}><h2>{laneLabel(stage, t)}</h2>
+        {overview.implementations.filter((item) => (overview.progress.find(progress => progress.implementation_id === item.id)?.lane ?? "inbox") === stage && (showArchived ? !!item.archived_at : !item.archived_at) && (conditionFilter === "all" || overview.activity.some((activity) => activity.implementation_id === item.id && activity.condition === conditionFilter)) && (projectFilter === "all" || (item.project_id ?? "unassigned") === projectFilter) && (providerFilter === "all" || (item.provider ?? overview.projects.find((project) => project.id === item.project_id)?.provider ?? overview.settings.provider) === providerFilter) && (machineFilter === "all" || (item.machine_id ?? overview.projects.find((project) => project.id === item.project_id)?.machine_id ?? "local") === machineFilter)).map((item) => <article className="factory-card" key={item.id} aria-label={item.title}>
           <button className="factory-card-title" onClick={() => choose(item.id)}>{item.title}</button><p>{overview.projects.find((project) => project.id === item.project_id)?.name ?? t("Unassigned")}</p><small>{item.provider ?? overview.projects.find((project) => project.id === item.project_id)?.provider ?? overview.settings.provider} · {machines.find((machine) => machine.id === (item.machine_id ?? overview.projects.find((project) => project.id === item.project_id)?.machine_id))?.name ?? item.machine_id ?? overview.projects.find((project) => project.id === item.project_id)?.machine_id ?? t("Unassigned")}</small><time>{new Date(item.updated_at).toLocaleString()}</time>
-          {item.pause ? <p role="status">{item.pause.condition === "pending" ? t("Pause pending") : t("Paused")}</p> : overview.activity.filter((activity) => activity.implementation_id === item.id).map((activity) => <p key={activity.run_id}>{activity.action} · {activity.condition} · {activity.completed_tickets}/{activity.total_tickets}{activity.waiting_reason && <span role="status"> · {activity.waiting_reason}</span>}</p>)}
-          <div className="factory-card-order"><button className="icon-button" aria-label={t("Move earlier")} onClick={() => void perform(async () => { await factoryRequest(`/implementations/${item.id}/order`, { direction: -1 }); })}><ArrowUp /></button><button className="icon-button" aria-label={t("Move later")} onClick={() => void perform(async () => { await factoryRequest(`/implementations/${item.id}/order`, { direction: 1 }); })}><ArrowDown /></button></div>
+          <FactoryBoardProgress idea={item} progress={overview.progress.find(progress => progress.implementation_id === item.id)} expanded={expandedTickets.has(item.id)} onExpandedChange={open => setExpandedTickets(current => { if (current.has(item.id) === open) return current; const next = new Set(current); if (open) next.add(item.id); else next.delete(item.id); return next; })} />
         </article>)}
       </section>)}</div>
     </>}
