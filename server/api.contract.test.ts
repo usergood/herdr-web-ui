@@ -3880,3 +3880,18 @@ it("issue Start scope uses the existing guarded Run endpoint and standard error 
     expect((await fixture.json(`/implementations/${source.implementation_id}`)).runs).toEqual([]);
   } finally { fixture.close(); }
 });
+
+
+it("failed issue Retry uses the guarded factory mutation and structured error contract", async () => {
+  const state = mkdtempSync(join(tmpdir(), "issue-retry-route-"));
+  const app = createServer({ port: 0, stateDir: state, machines: false });
+  try {
+    const url = `http://localhost:${app.port}/api/factory/runs/unknown-attempt/retry`;
+    const unguarded = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ idempotency_key: "owner-retry", issue_scope: {} }) });
+    expect(unguarded.status).toBe(403);
+    expect((await unguarded.json()).error.code).toBe("invalid_origin");
+    const missing = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify({ idempotency_key: "owner-retry", issue_scope: {} }) });
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toEqual({ error: { code: "not_found", message: "Run not found" } });
+  } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+});

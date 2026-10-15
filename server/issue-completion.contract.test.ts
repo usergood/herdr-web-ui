@@ -16,6 +16,23 @@ test("accepting a checked and independently reviewed issue implementation awaits
   } finally { fixture.close(); }
 }, 20_000);
 
+test("restart keeps uncertain retirement recoverable through public controls while retaining its slot", async () => {
+  const fixture = githubReviewFixture();
+  try {
+    const { run, path, route } = await fixture.prepare();
+    await fixture.integrate(run); await fixture.json(`/runs/${run.id}/checks`, {});
+    await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    fixture.setUncertainStop(true);
+    expect((await fixture.post(`/runs/${run.id}/reconcile`, {})).status).toBe(409);
+    fixture.restart();
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1, available_slots: 0 });
+    expect((await fixture.json(path)).runs[0].implementation_completion_pending).toBe(true);
+    fixture.setUncertainStop(false);
+    expect((await fixture.json(`/runs/${run.id}/reconcile`, {})).condition).toBe("completed");
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 0, available_slots: 1 });
+  } finally { fixture.close(); }
+}, 20_000);
+
 test("finishing a later direct-work step cannot mark an admitted issue delivered", async () => {
   const fixture = githubReviewFixture();
   try {

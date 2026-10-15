@@ -28,15 +28,32 @@ console.log(JSON.stringify(endpoint === "user" ? {login:"fictional-owner",id:104
   // Owned remote native transport: no CLI agent, worktree or live herdr is launched.
   let checkout: unknown; let capabilities: unknown;
   let executionHandler: ((request: Request) => Promise<Response | null>) | null = null;
+  let launchOutcome: "working" | "failed" | "lost" = "working";
+  const trackerAccess = new Map<string, { token: string }>();
+  const nativeRuns = new Map<string, Record<string, unknown>>();
+  const launches: string[] = [];
+  let hostOffline = false;
+  let launchGate: (() => Promise<void>) | null = null;
   let capabilityGate: (() => Promise<void>) | null = null;
   const host = execution ? Bun.serve({ port: 0, async fetch(request) {
     const handled = await executionHandler?.(request.clone());
     if (handled) return handled;
     const path = new URL(request.url).pathname;
+    if (hostOffline) return Response.json({ error: { code: "offline", message: "Fictional host unavailable" } }, { status: 503 });
     if (path.endsWith("/capabilities")) { await capabilityGate?.(); return Response.json(capabilities); }
     if (path.endsWith("/inspect")) return Response.json(checkout);
     if (path.endsWith("/operations/head")) return Response.json({ head: (checkout as { head: string }).head });
-    if (path.endsWith("/launch")) { const { run } = await request.json() as { run: Record<string, unknown> }; return Response.json({ ...run, condition: "working", worktree: repo, branch: "fictional-run" }); }
+    if (path.endsWith("/launch")) {
+      const { run, access } = await request.json() as { run: Record<string, unknown>; access: { token: string } };
+      trackerAccess.set(run.id as string, access);
+      launches.push(run.id as string);
+      const observed = { ...run, condition: launchOutcome === "failed" ? "failed" : "working", waiting_reason: launchOutcome === "failed" ? "Fictional failure before native allocation" : null, worktree: repo, branch: "fictional-run" };
+      nativeRuns.set(run.id as string, observed);
+      await launchGate?.();
+      return launchOutcome === "lost" ? Response.json({ error: { code: "lost_response", message: "Fictional response loss after acceptance" } }, { status: 503 }) : Response.json(observed);
+    }
+    const reconcile = /[/]runs[/]([^/]+)[/]reconcile$/.exec(path);
+    if (reconcile && nativeRuns.has(reconcile[1]!)) return Response.json(nativeRuns.get(reconcile[1]!)!);
     return Response.json({ error: { code: "fixture_operation_unavailable", message: "No real native operation in this fixture" } }, { status: 409 });
   } }) : null;
   const options = { accountDiscoveryHome: root, accountTools: { github: { executable: process.execPath, args: [cli] } }, ...(host ? { machineEndpoint: (id: string) => id === "fictional-host" ? { url: `http://localhost:${host.port}`, token: "fictional-host" } : undefined } : {}) };
@@ -76,10 +93,22 @@ console.log(JSON.stringify(endpoint === "user" ? {login:"fictional-owner",id:104
     capabilityGate = async () => { entered(); await gate; };
     return { waiting, release: () => { capabilityGate = null; release(); } };
   }
+  function holdLaunch() {
+    let entered!: () => void; let release!: () => void;
+    const waiting = new Promise<void>(resolve => entered = resolve);
+    const gate = new Promise<void>(resolve => release = resolve);
+    launchGate = async () => { entered(); await gate; };
+    return { waiting, release: () => { launchGate = null; release(); } };
+  }
   function holdSync() {
     writeFileSync(syncGate, "hold"); rmSync(syncEntered, { force: true });
     const waiting = (async () => { const deadline = Date.now() + 5000; while (!existsSync(syncEntered)) { if (Date.now() > deadline) throw new Error("Owned GitHub observation did not reach its gate"); await new Promise(resolve => setTimeout(resolve, 10)); } })();
     return { waiting, release: () => rmSync(syncGate, { force: true }) };
   }
-  return { root, issue, save, post, get, json, setup, restart, headers, holdCapabilities, holdSync, setExecutionHandler(handler: typeof executionHandler) { executionHandler = handler; }, get origin() { return origin; }, close() { app.stop(); host?.stop(true); rmSync(root, { recursive: true, force: true }); } };
+  const tracker = async (runId: string) => {
+    const access = trackerAccess.get(runId); if (!access) throw new Error("Unknown fictional tracker credential");
+    const response = await fetch(origin + `/api/factory-agent/${runId}/contract`, { headers: { authorization: `Bearer ${access.token}` } });
+    if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<any>;
+  };
+  return { setExecutionHandler(handler: typeof executionHandler) { executionHandler = handler; }, tracker, failNativeRun: (id: string) => { const run = nativeRuns.get(id); if (!run) throw new Error("Unknown fictional Run"); nativeRuns.set(id, { ...run, condition: "failed", waiting_reason: "Fictional native failure" }); }, setHostOffline: (offline: boolean) => { hostOffline = offline; }, holdLaunch, setLaunchOutcome: (outcome: typeof launchOutcome) => { launchOutcome = outcome; }, launches, root, issue, save, post, get, json, setup, restart, headers, holdCapabilities, holdSync, get origin() { return origin; }, close() { app.stop(); host?.stop(true); rmSync(root, { recursive: true, force: true }); } };
 }

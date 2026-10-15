@@ -51,7 +51,7 @@ export class FactoryService {
     this.accounts.usage((id) => [...this.store.list<FactoryRun>("runs"), ...this.store.list<{ run: FactoryRun; closing?: boolean }>("host_leases").map((lease) => lease.run)].some((run) => ["accepted", "working", "ready", "needs_you", "blocked", "disconnected", "interrupted"].includes(run.condition) && (run.manifest as { account_snapshot?: import("../shared/accounts.ts").AccountBindingSnapshot })?.account_snapshot?.profiles.some((profile) => profile.id === id)));
     this.references = new FactoryReferences(this.store, this.artifacts);
     this.executionHost = new FactoryExecutionHost(this.store, () => this.settings().skills_path, native, this.accounts);
-    this.runtime = new FactoryRuntime(this.store, this.workflow, () => this.settings(), this.executionHost, endpoint, (record) => this.artifacts.read(record), publicUrl, this.references, this.accounts, (id, scope) => this.github.admission(id, scope), id => this.pipeline.reconcileCompletion(id)); this.review = new FactoryReview(this.store, (machine, path, base, mode) => this.runtime.capture(machine, path, base, mode), (machine, path) => this.runtime.inspect(machine, path));
+    this.runtime = new FactoryRuntime(this.store, this.workflow, () => this.settings(), this.executionHost, endpoint, (record) => this.artifacts.read(record), publicUrl, this.references, this.accounts, (id, scope, retryRunId) => this.github.admission(id, scope, retryRunId), id => this.pipeline.reconcileCompletion(id)); this.review = new FactoryReview(this.store, (machine, path, base, mode) => this.runtime.capture(machine, path, base, mode), (machine, path) => this.runtime.inspect(machine, path));
     this.pipeline = new FactoryPipeline(this.store, this.runtime, this.workflow, () => this.settings(), id => this.retainHandoff(id));
     this.continuation = new FactoryContinuation(this.store, this.workflow, this.runtime, async (id, allowPartial) => {
       await this.retainHandoff(id);
@@ -118,6 +118,7 @@ export class FactoryService {
       const route = /^\/api\/factory-agent\/([a-zA-Z0-9-]+)\/(contract|question|sync-answers|consume|worker|checks|artifact|specification|tickets|proposal|ticket\/[a-zA-Z0-9-]+|worker\/[a-zA-Z0-9-]+\/[a-z-]+)$/.exec(url.pathname);
       if (!route) throw new FactoryError("not_found", "Unknown scoped tracker operation", 404);
       if (!this.agentAuthenticated(request, url)) throw new FactoryError("unauthorized", "Use this Run's scoped tracker credential", 401);
+      await this.runtime.recover();
       const run = this.store.get<FactoryRun>("runs", route[1]!);
       if (!run || ["completed", "cancelled", "failed"].includes(run.condition)) throw new FactoryError("run_closed", "This Run's control scope has ended", 409);
       if (request.headers.has("origin") && request.headers.get("origin") !== url.origin) throw new FactoryError("invalid_origin", "Use the scoped tracker on its authenticated app origin", 403);
@@ -232,6 +233,7 @@ export class FactoryService {
   async handle(request: Request, url: URL): Promise<Response> {
     try {
       if (request.method !== "GET" && request.headers.get("x-herdr-factory") !== "1") return httpError(403, "invalid_origin", "Use factory controls from this app");
+      if (url.pathname === "/api/factory" || url.pathname.startsWith("/api/factory/")) await this.runtime.recover();
       if (url.pathname === "/api/factory-host/pane-state" && request.method === "POST") {
         const body = await this.body(request); if (typeof body.pane_id !== "string" || (!body.pane_id || body.pane_id.length > 200 || /[\0\r\n]/.test(body.pane_id))) throw new FactoryError("invalid_pane", "Select a native pane");
         return jsonResponse(await this.executionHost.paneState(body.pane_id));
@@ -513,8 +515,11 @@ export class FactoryService {
       if (continueRoute && request.method === "POST") return jsonResponse(await this.continuation.start(continueRoute[1]!, await this.body(request), url.origin), 202);
       if (startRoute && request.method === "POST") {
         const body = await this.body(request);
+        if (body.retry_of !== undefined) throw new FactoryError("invalid_start", "Use the explicit Retry operation");
         return jsonResponse(await this.runtime.start(startRoute[1]!, body, url.origin), 202);
       }
+      const retryRoute = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/retry$/.exec(url.pathname);
+      if (retryRoute && request.method === "POST") return jsonResponse(await this.runtime.retry(retryRoute[1]!, await this.body(request), url.origin), 202);
       const reconcileRoute = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/reconcile$/.exec(url.pathname);
       if (reconcileRoute && request.method === "POST") return jsonResponse(await this.runtime.reconcile(reconcileRoute[1]!));
       const stopRoute = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/stop$/.exec(url.pathname);

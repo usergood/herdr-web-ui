@@ -56,7 +56,7 @@ export class ProjectGitHub {
       return { ...source, delivery, delivery_history: deliveryHistory, dependencies: { ...source.dependencies, fresh, satisfied: fresh && source.dependencies.satisfied === true } };
     });
   }
-  queue(id: string): import("../shared/issue-queue.ts").IssueQueue {
+  queue(id: string, retryRunId?: string): import("../shared/issue-queue.ts").IssueQueue {
     this.project(id);
     const policy = this.store.get<import("../shared/issue-queue.ts").ProjectQueuePolicy & { id: string }>("github_queue_policies", id) ?? { project_id: id, revision: null, automatic_implementation: false, paused: false, max_implementations: 1 };
     const globalLimit = this.store.get<{ value: { max_implementations: number } }>("settings", "default")?.value.max_implementations ?? 6;
@@ -65,7 +65,7 @@ export class ProjectGitHub {
     const profiles = this.accounts.overview().profiles.filter(profile => profile.id === githubPolicy?.account_profile_id || profile.id === readinessPolicy?.account_profile_id);
     const accountReady = !!githubPolicy && !!readinessPolicy && [githubPolicy.account_profile_id, readinessPolicy.account_profile_id].every(id => profiles.some(profile => profile.id === id && profile.service === "github" && profile.state === "ready" && profile.verified_identity)) && profiles.some(profile => profile.id === readinessPolicy.account_profile_id && profile.verified_identity?.account_id === readinessPolicy.owner.account_id && profile.verified_identity?.login.toLowerCase() === readinessPolicy.owner.login.toLowerCase());
     const sources = this.sources(id).filter(source => source.kind === "issue").map(source => this.describeSource(source));
-    const entries = sources.map(source => issueQueueEntry(this.store, source, policy, accountReady)).sort((a, b) => a.position - b.position || a.source_id.localeCompare(b.source_id));
+    const entries = sources.map(source => issueQueueEntry(this.store, source, policy, accountReady, retryRunId)).sort((a, b) => a.position - b.position || a.source_id.localeCompare(b.source_id));
     const revision = hash(JSON.stringify({ policy, global_limit: globalLimit, github_policy: githubPolicy, readiness_policy: readinessPolicy, profiles: profiles.map(profile => [profile.id, profile.revision, profile.state, profile.verified_identity]), scope: this.projectScope(id), sources, entries, contracts: entries.map(entry => [this.workflowScope(entry.implementation_id)]) }));
     const preview = this.store.get<{ id: string; revision: string; created_at: string; eligible_count: number }>("github_queue_previews", id);
     const implementingCount = implementingAssignments(this.store, this.store.list<import("../shared/factory.ts").FactoryRun>("runs").filter(run => run.action === "implement-spec" && (run.manifest as { project?: FactoryProject }).project?.id === id)).size;
@@ -84,7 +84,7 @@ export class ProjectGitHub {
   }
 
   /** Synchronous read used again inside runtime's atomic admission transaction. */
-  admission(implementationId: string, scope: unknown): import("../shared/issue-admission.ts").IssueAdmission {
+  admission(implementationId: string, scope: unknown, retryRunId?: string): import("../shared/issue-admission.ts").IssueAdmission {
     if (!scope || typeof scope !== "object" || Array.isArray(scope)) throw new FactoryError("invalid_issue_scope", "Select the displayed prepared issue scope");
     const selected = scope as Record<string, unknown>;
     const idea = this.store.get<Implementation>("implementations", implementationId);
@@ -92,7 +92,7 @@ export class ProjectGitHub {
     if (this.busy.has(idea.project_id)) throw new FactoryError("github_busy", "Wait for complete Project GitHub evidence before starting", 409);
     const source = this.sources(idea.project_id).map(source => this.describeSource(source)).find(source => source.id === selected.source_id && source.implementation_id === implementationId && source.kind === "issue");
     if (!source || source.revision !== selected.source_revision || source.planning?.graph_hash !== selected.graph_hash) throw new FactoryError("issue_changed", "Refresh the prepared issue scope before starting", 409);
-    const queue = this.queue(idea.project_id);
+    const queue = this.queue(idea.project_id, retryRunId);
     if (queue.policy.paused) throw new FactoryError("queue_paused", "Queue paused. Admitted work continues.", 409);
     const entry = queue.entries.find(entry => entry.source_id === source.id);
     if (!entry?.eligible || source.planning?.condition !== "prepared") throw new FactoryError("issue_not_eligible", "Resolve current issue eligibility before starting", 409);

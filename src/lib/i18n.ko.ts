@@ -6,6 +6,10 @@
  * braces keep their English names.
  */
 export const KO: Record<string, string> = {
+  "Attempt failed. Use Retry to start again.": "시도가 실패했습니다. 다시 시작하려면 다시 시도를 누르세요.",
+  "Reconciliation required. Ownership remains reserved.": "실행 상태 확인이 필요합니다. 소유권은 계속 예약됩니다.",
+  "Execution confirmed.": "실행이 확인되었습니다.",
+
   "Start prepared issue": "준비된 이슈 시작",
   "Admitted issue contract": "승인된 이슈 실행 계약",
   "The admitted scope stays fixed. Required checks and independent reviews still apply.": "승인된 실행 범위는 고정됩니다. 필수 검사와 독립 검토는 계속 적용됩니다.",

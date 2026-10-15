@@ -8,6 +8,10 @@
  * in English. Placeholders in braces keep their English names.
  */
 export const JA: Record<string, string> = {
+  "Attempt failed. Use Retry to start again.": "試行が失敗しました。再開するには再試行を選んでください。",
+  "Reconciliation required. Ownership remains reserved.": "実行状態の照合が必要です。所有権の予約は維持されます。",
+  "Execution confirmed.": "実行を確認しました。",
+
   "Start prepared issue": "準備済みイシューを開始",
   "Admitted issue contract": "受理済みイシューの実行契約",
   "The admitted scope stays fixed. Required checks and independent reviews still apply.": "受理済みの範囲は固定されます。必須チェックと独立したレビューは引き続き適用されます。",

@@ -1,5 +1,5 @@
 import type { GitHubDependencyEdge, ProjectGitHubIssueRevision, ProjectGitHubSource } from "../../shared/github-project.ts";
-import type { FactoryTicket } from "../../shared/factory.ts";
+import type { FactoryRun, FactoryTicket } from "../../shared/factory.ts";
 import { useT } from "../lib/i18n.ts";
 import { IssueQueueStatus } from "./IssueQueueStatus.tsx";
 import { IssueReadiness } from "./IssueReadiness.tsx";
@@ -88,9 +88,10 @@ function DependencyDelivery({ source, busy, perform }: { source: ProjectGitHubSo
   </section>;
 }
 
-export function AssignmentIssueSource({ sources, problem, busy, perform, tickets, questionRevision, preset }: { sources: ProjectGitHubSource[]; problem: string | null; busy: boolean; perform: (action: () => Promise<void>) => Promise<void>; tickets: FactoryTicket[]; questionRevision: string; preset: import("../../shared/agent-models.ts").AgentModelSelection }) {
+export function AssignmentIssueSource({ sources, problem, busy, perform, tickets, questionRevision, preset, runs }: { sources: ProjectGitHubSource[]; problem: string | null; busy: boolean; perform: (action: () => Promise<void>) => Promise<void>; tickets: FactoryTicket[]; questionRevision: string; preset: import("../../shared/agent-models.ts").AgentModelSelection; runs: FactoryRun[] }) {
   const t = useT(); const issues = sources.filter(source => source.kind === "issue");
   if (!issues.length) return null;
+  const latest = runs.at(-1);
   return <section className="factory-section assignment-issue-source" aria-label={t("GitHub issue source")}>
     <h3>{t("GitHub issue source")}</h3>
     {problem && <p role="alert">{problem}</p>}
@@ -113,6 +114,7 @@ export function AssignmentIssueSource({ sources, problem, busy, perform, tickets
           <p>{source.planning.origin === "app_plan" ? t("Reused approved app plan") : t("Reused trusted issue plan")}</p>
           <p>{t("Approved by {login}", { login: source.planning.authorization.approval.actor.login })} · {source.planning.authorization.approval.provenance === "app_owner" ? t("Owner approval in app") : t("Trusted GitHub label")}</p>
           <p>{t("Required checks and independent Standards and Spec reviews still apply.")}</p>
+          {latest?.condition === "failed" && (latest.manifest as { issue_admission?: { source: { id: string } } }).issue_admission?.source.id === source.id && source.planning.condition === "prepared" && <button className="btn" disabled={busy || !source.intake || source.intake.reasons.some(reason => reason.code !== "attempt_exists")} onClick={() => void perform(async () => { await accountRequest(`/runs/${latest.id}/retry`, { idempotency_key: crypto.randomUUID(), execution_preset: preset, issue_scope: { source_id: source.id, source_revision: source.revision, graph_hash: source.planning!.graph_hash } }); })}>{t("Retry")}</button>}
           {source.planning.condition === "prepared" && <button className="btn" disabled={busy || !source.intake?.eligible} onClick={() => void perform(async () => { await accountRequest(`/implementations/${source.implementation_id}/runs`, { action: "implement-spec", idempotency_key: crypto.randomUUID(), execution_preset: preset, issue_scope: { source_id: source.id, source_revision: source.revision, graph_hash: source.planning!.graph_hash } }); })}>{t("Start prepared issue")}</button>}
           <details><summary>{t("Reused planning")}</summary><Markdown>{source.planning.content}</Markdown>
             <p>{source.planning.source_revision}</p><p>{source.planning.graph_hash}</p>

@@ -10,6 +10,10 @@
  * Placeholders in braces keep their English names.
  */
 export const ZH: Record<string, string> = {
+  "Attempt failed. Use Retry to start again.": "尝试失败。请点击重试以重新开始。",
+  "Reconciliation required. Ownership remains reserved.": "需要核对执行状态。所有权仍保留。",
+  "Execution confirmed.": "已确认执行。",
+
   "Start prepared issue": "启动已准备的议题",
   "Admitted issue contract": "已接纳的议题执行约定",
   "The admitted scope stays fixed. Required checks and independent reviews still apply.": "已接纳的范围保持固定。必需检查和独立审查仍然适用。",

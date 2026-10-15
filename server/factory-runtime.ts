@@ -29,7 +29,27 @@ export class FactoryRuntime {
   private readonly dispatches = new Map<string, Promise<FactoryRun>>();
   private readonly starts = new Map<string, { scope: string; pending: Promise<FactoryRun> }>();
   private stopped = false;
-  constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly host: FactoryExecutionHost, private readonly endpoint: MachineEndpoint, private readonly readArtifact: (record: FactoryArtifact) => Buffer, private readonly publicUrl: string | null, private readonly references: FactoryReferences, private readonly accounts: MachineAccounts, private readonly issueAdmission: (id: string, scope: unknown) => import("../shared/issue-admission.ts").IssueAdmission, private readonly reconcileImplementation: (id: string) => Promise<FactoryRun>) {}
+  private recovery: Promise<void> | null = null;
+  private readonly recoveryIds: string[];
+  constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly host: FactoryExecutionHost, private readonly endpoint: MachineEndpoint, private readonly readArtifact: (record: FactoryArtifact) => Buffer, private readonly publicUrl: string | null, private readonly references: FactoryReferences, private readonly accounts: MachineAccounts, private readonly issueAdmission: (id: string, scope: unknown, retryRunId?: string) => import("../shared/issue-admission.ts").IssueAdmission, private readonly reconcileImplementation: (id: string) => Promise<FactoryRun>) { this.recoveryIds = this.store.list<FactoryRun>("runs").filter(run => activeConditions.has(run.condition) || run.implementation_completion_pending || run.implementation_completion).map(run => run.id); }
+  /** Restart observes durable identities once before accepting another operation. Never relaunch. */
+  recover(): Promise<void> {
+    return this.recovery ??= (async () => {
+      for (const id of this.recoveryIds) {
+        if (this.stopped) return;
+        try { await this.reconcile(id); }
+        catch (error) {
+          if (this.stopped) return;
+          const run = this.store.get<FactoryRun>("runs", id);
+          if (!run?.implementation_completion_pending) throw error;
+          if (run?.implementation_completion_pending) {
+            this.store.put("runs", { ...run, condition: "disconnected", waiting_reason: "Implementation retirement is uncertain; reconcile its retained identity before release" }, run.implementation_id);
+            this.store.event(run.implementation_id, "run_recovery_uncertain", { run_id: id, code: error instanceof FactoryError ? error.code : "recovery_uncertain" });
+          }
+        }
+      }
+    })();
+  }
   async discover(machineId: string, path: string): Promise<import("../shared/project-setup.ts").ProjectDiscovery> { return machineId === "local" ? this.host.discover(path) : this.remote(machineId, "/project-discovery", { path }); }
   async modelCatalog(machineId: string, provider: FactoryProvider, path: string, repository: string, snapshot?: AccountBindingSnapshot | null): Promise<import("../shared/agent-models.ts").AgentModelCatalog> {
     const result = machineId === "local" ? await this.host.modelCatalog(provider, path, repository, snapshot) : await this.remote<import("../shared/agent-models.ts").AgentModelCatalog>(machineId, "/model-catalog", { provider, path, repository, account_snapshot: snapshot } satisfies FactoryHostRequests["model_catalog"]);
@@ -118,9 +138,15 @@ export class FactoryRuntime {
   async capture(machineId: string, path: string, base: string, mode: "branch" | "workspace"): Promise<{ repository: string; head: string; files: import("../shared/protocol.ts").ReviewSnapshot["files"] }> {
     return this.remote(machineId, "/review", { path, base, mode });
   }
+  async retry(runId: string, body: Record<string, unknown>, origin: string): Promise<FactoryRun> {
+    const previous = this.store.get<FactoryRun>("runs", runId);
+    if (!previous) throw new FactoryError("not_found", "Run not found", 404);
+    if (!(previous.manifest as { issue_admission?: unknown }).issue_admission || previous.condition !== "failed" || body.issue_scope === undefined) throw new FactoryError("retry_unavailable", "Only a failed issue attempt can be retried after current scope review", 409);
+    return this.start(previous.implementation_id, { ...body, action: "implement-spec", retry_of: runId }, origin);
+  }
   async start(id: string, body: Record<string, unknown>, origin: string, continuation?: { runId?: string; finish?: () => Promise<void>; validateScope?: () => void }): Promise<FactoryRun> {
     const key = JSON.stringify([id, body.idempotency_key]);
-    const scope = hash(JSON.stringify([body.action, issueScopeIdentity(body.issue_scope)]));
+    const scope = hash(JSON.stringify([body.action, issueScopeIdentity(body.issue_scope), body.retry_of ?? null]));
     const existing = this.starts.get(key);
     if (existing) {
       if (existing.scope !== scope) throw new FactoryError("idempotency_conflict", "This Start key belongs to another scope", 409);
@@ -137,6 +163,7 @@ export class FactoryRuntime {
     if (!implementation) throw new FactoryError("not_found", "Implementation not found", 404);
     const previous = this.store.list<FactoryRun>("runs", id).find((run) => run.idempotency_key === body.idempotency_key);
     if (previous) {
+      if (previous.retry_of !== body.retry_of) throw new FactoryError("idempotency_conflict", "This Start key belongs to another attempt", 409);
       if (previous.action !== body.action) throw new FactoryError("idempotency_conflict", "This Start key already belongs to another action", 409);
       const admitted = (previous.manifest as { issue_admission?: import("../shared/issue-admission.ts").IssueAdmission }).issue_admission;
       const scope = admitted ? { source_id: admitted.source.id, source_revision: admitted.source.revision, graph_hash: admitted.planning.graph_hash } : null;
@@ -148,9 +175,16 @@ export class FactoryRuntime {
     if (implementation.archived_at || project?.removed_at) throw new FactoryError("inactive_assignment", "Restore this Assignment and Project before starting work", 409);
     const action = body.action as FactoryAction;
     if (body.issue_scope !== undefined && action !== "implement-spec") throw new FactoryError("invalid_issue_scope", "Prepared issue scope authorizes implementation only");
-    const issueAdmission = body.issue_scope === undefined ? null : this.issueAdmission(id, body.issue_scope);
+    if (action === "implement-spec" && body.retry_of === undefined && this.store.list<FactoryRun>("runs", id).some(run => run.condition === "failed" && (run.manifest as { issue_admission?: unknown }).issue_admission)) throw new FactoryError("retry_required", "Failed issue work requires the owner’s explicit Retry", 409);
+    const validateRetry = () => {
+      const latest = this.store.list<FactoryRun>("runs", id).at(-1);
+      if (body.retry_of !== undefined && (latest?.id !== body.retry_of || latest.condition !== "failed")) throw new FactoryError("retry_superseded", "Refresh the latest attempt before Retry", 409);
+    };
+    validateRetry();
+    const retryRunId = typeof body.retry_of === "string" ? body.retry_of : undefined;
+    const issueAdmission = body.issue_scope === undefined ? null : this.issueAdmission(id, body.issue_scope, retryRunId);
     const validateIssue = () => {
-      if (issueAdmission && hash(JSON.stringify(this.issueAdmission(id, body.issue_scope))) !== hash(JSON.stringify(issueAdmission))) throw new FactoryError("issue_changed", "The issue admission evidence changed; review it before starting", 409);
+      if (issueAdmission && hash(JSON.stringify(this.issueAdmission(id, body.issue_scope, retryRunId))) !== hash(JSON.stringify(issueAdmission))) throw new FactoryError("issue_changed", "The issue admission evidence changed; review it before starting", 409);
     };
     if (["work", "implement-spec", "grill-with-docs", "to-tickets", "retro", "apply-retro"].includes(action) && !project) throw new FactoryError("project_required", "Select a Project before starting this action", 409);
     const retrospective = ["retro", "apply-retro"].includes(action) ? this.store.get<import("../shared/protocol.ts").FactoryRetrospective>("retrospectives", String(body.retrospective_id)) : null;
@@ -159,8 +193,11 @@ export class FactoryRuntime {
     const machineId = implementation.machine_id ?? project?.machine_id;
     if (!machineId) throw new FactoryError("machine_required", "Select an execution Machine explicitly", 409);
     if (this.store.list<FactoryRun>("runs", id).some((run) => run.id !== continuation?.runId && activeConditions.has(run.condition))) throw new FactoryError("implementation_owned", "An existing or uncertain Run retains ownership; reconcile it before starting another", 409);
-    const priorRuns = new Set(this.store.list<FactoryRun>("runs", id).map((run) => run.id));
-    if (this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers").some((worker) => priorRuns.has(worker.run_id) && activeConditions.has(worker.condition))) throw new FactoryError("implementation_owned", "An accepted or uncertain child still owns this Implementation; reconcile or stop it before starting another", 409);
+    const validateChildren = () => {
+      const priorRuns = new Set(this.store.list<FactoryRun>("runs", id).map(run => run.id));
+      if (this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers").some(worker => priorRuns.has(worker.run_id) && activeConditions.has(worker.condition)) || this.store.list<import("../shared/protocol.ts").FactoryCheck>("checks").some(check => priorRuns.has(check.run_id) && ["working", "interrupted"].includes(check.condition))) throw new FactoryError("implementation_owned", "An active or uncertain worker or build still owns this Assignment; reconcile it before another attempt", 409);
+    };
+    validateChildren();
     const provider = implementation.provider ?? project?.provider ?? this.settings().provider;
     if (project?.permission_mode && !validPermissionMode(provider, project.permission_mode)) throw new FactoryError("permission_provider_mismatch", "The selected CLI does not support this Project's permission mode. Choose a compatible CLI or update Project execution settings before starting", 409);
     if (action === "implement-spec" && project?.permission_mode === "read_only") throw new FactoryError("project_read_only", "Choose an editing permission mode in Project settings before implementation", 409);
@@ -235,6 +272,8 @@ export class FactoryRuntime {
       continuation?.validateScope?.();
       const raced = this.store.list<FactoryRun>("runs", id).find((entry) => entry.idempotency_key === body.idempotency_key);
       if (raced) return { run: raced, accepted: false };
+      validateRetry();
+      validateChildren();
       validateIssue();
       if (this.stopped) throw new FactoryError("stopping", "The bridge is stopping; reconcile before retrying", 409);
       const currentHash = hash(JSON.stringify({ implementation: this.store.get("implementations", id), project: project ? this.store.get("projects", project.id) : null, checkout: checkout ? this.store.get("checkouts", checkout.id) : null, specification: this.workflow.specification(id), graphHash: this.workflow.graphHash(id), settings: this.settings(), skills: skills.hash, artifacts: selectedArtifacts(), messages: this.store.list<FactoryMessage>("messages", id), projectReferences: project ? this.references.current(project.id) : null }));
@@ -244,16 +283,18 @@ export class FactoryRuntime {
       const capacity = factoryCapacity(this.store);
       if (capacity.implementations.size >= this.settings().max_implementations || capacity.agents >= this.settings().max_agents) throw new FactoryError("capacity_exhausted", "Global execution capacity is in use; start manually after capacity is released", 409);
       const record: FactoryRun = { ...this.store.record(), implementation_id: id, action, provider, machine_id: machineId, condition: "accepted", waiting_reason: null, idempotency_key: body.idempotency_key as string, specification_id: specification?.id ?? null, graph_hash: graphHash, base: inspected?.head ?? null, checkout: inspected?.path ?? null, worktree: null, branch: null, workspace_id: null, pane_id: null, manifest: { skills, artifacts, context_message_ids: messages.map(message => message.id), retrospective, retrospective_evidence: retrospective ? this.store.get("retro_evidence", retrospective.id) : null, implementation, project, checkout: inspected, specification, tickets: this.workflow.tickets(id), approvals: this.store.list<FactoryApproval>("approvals", id), effective_settings: this.settings(), provider_version: capability.version, permissions: "Retain native controls; publication, merge, deployment and destructive cleanup are separate owner actions", contract_hash: contractHash } };
+      if (retryRunId) record.retry_of = retryRunId;
       record.manifest = { ...(record.manifest as object), execution_preset: executionPreset, project_references: projectReferences, account_snapshot: accountSnapshot, ...(issueAdmission ? { issue_admission: issueAdmission } : {}) };
       if (projectReferences) this.references.freeze(projectReferences.project_id);
-      this.store.put("runs", record, id); this.store.event(id, "dispatch_accepted", { run_id: record.id, action }); return { run: record, accepted: true };
+      this.store.put("runs", record, id);
+      this.store.put("run_access", { id: record.id, token: randomBytes(32).toString("base64url"), url: `${api.origin}/api/factory-agent/${record.id}` });
+      this.store.put("run_artifacts", { id: record.id, artifacts });
+      this.store.event(id, "dispatch_accepted", { run_id: record.id, action }); return { run: record, accepted: true };
     }).immediate();
     const accepted = run;
     const pending = this.dispatches.get(accepted.run.id);
     if (pending) return pending;
     if (!accepted.accepted) return accepted.run;
-    this.store.put("run_access", { id: accepted.run.id, token: randomBytes(32).toString("base64url"), url: `${api.origin}/api/factory-agent/${accepted.run.id}` });
-    this.store.put("run_artifacts", { id: accepted.run.id, artifacts });
     const dispatch = this.dispatch(accepted.run);
     this.dispatches.set(accepted.run.id, dispatch);
     try { return await dispatch; } finally { this.dispatches.delete(accepted.run.id); }
@@ -281,7 +322,7 @@ export class FactoryRuntime {
     return run;
   }
   private observed(expected: FactoryRun, actual: FactoryRun): FactoryRun {
-    for (const key of ["id", "implementation_id", "action", "provider", "machine_id", "idempotency_key", "specification_id", "graph_hash", "base", "checkout", "created_at"] as const) if (actual?.[key] !== expected[key]) throw new FactoryError("run_identity_changed", "The Machine returned another accepted Run identity; preserve ownership", 409);
+    for (const key of ["id", "implementation_id", "action", "provider", "machine_id", "idempotency_key", "specification_id", "graph_hash", "base", "checkout", "created_at", "retry_of"] as const) if (actual?.[key] !== expected[key]) throw new FactoryError("run_identity_changed", "The Machine returned another accepted Run identity; preserve ownership", 409);
     if (hash(JSON.stringify(actual.manifest)) !== hash(JSON.stringify(expected.manifest)) || !["accepted", "working", "ready", "needs_you", "blocked", "disconnected", "interrupted", "failed", "cancelled", "completed"].includes(actual.condition)) throw new FactoryError("run_identity_changed", "The Machine changed the accepted contract; preserve ownership", 409);
     if (expected.worktree && (actual.worktree !== expected.worktree || actual.branch !== expected.branch || expected.workspace_id !== null && actual.workspace_id !== expected.workspace_id || expected.pane_id !== null && actual.pane_id !== expected.pane_id)) throw new FactoryError("run_identity_changed", "The Machine changed the owned working directory or native identity", 409);
     return actual;
@@ -308,6 +349,7 @@ export class FactoryRuntime {
     const revision = hash(JSON.stringify(run));
     try { run = this.observed(run, run.machine_id === "local" ? await this.host.reconcile(run.id) : await this.remote<FactoryRun>(run.machine_id, `/runs/${run.id}/reconcile`, {})); }
     catch (error) { run = { ...run, condition: "disconnected", waiting_reason: error instanceof FactoryError ? error.message : "The Machine cannot currently be observed; ownership is retained", updated_at: new Date().toISOString() }; }
+    if (this.stopped) return run;
     const current = this.store.get<FactoryRun>("runs", runId);
     if (current && hash(JSON.stringify(current)) !== revision) return current;
     if (current?.implementation_completion_pending) run = { ...run, implementation_completion_pending: true };
