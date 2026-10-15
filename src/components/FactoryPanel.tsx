@@ -1,3 +1,4 @@
+import { FactoryCapacityPanel } from "./FactoryCapacityPanel.tsx";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ArrowDown, ArrowUp, ArrowLeft, Archive, Paperclip, Plus, RefreshCw } from "lucide-react";
 import type { FactoryDetail, FactoryOverview, FactoryProvider, FactoryStage, Implementation, SpecificationVersion } from "../../shared/protocol.ts";
@@ -110,11 +111,12 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
 
   return <OpenFileContext.Provider value={null}><section className="factory-panel" aria-label={t("Factory")}>
     <div className="factory-heading"><h1>{selected ? selectedProject?.name ?? t("Assignments") : projectId ? overview?.projects.find((p) => p.id === projectId)?.name : allAssignments ? t("Assignments") : t("Inbox")}</h1><button className="btn factory-button" onClick={() => choose(null)}><ArrowLeft aria-hidden="true" />{selected || allAssignments ? t("Assignments") : t("Inbox")}</button><button className="icon-button" aria-label={t("Refresh factory")} disabled={busy} onClick={() => void perform(refresh)}><RefreshCw /></button></div>
+    {overview && <FactoryCapacityPanel capacity={overview.capacity} />}
     {error && <p role="alert" className="error-state">{error}</p>}
     {busy && <p role="status">{t("Saving…")}</p>}
     {!overview && <p role="status">{t("Loading…")}</p>}
     {!selected && overview && <>
-      <FactoryOperationsPanel overview={overview} busy={busy} perform={perform} />
+      <FactoryOperationsPanel overview={overview} busy={busy} perform={perform} showCapacity={false} />
       {!allAssignments && <form className="factory-form factory-capture" onSubmit={(event) => void capture(event)}>
         <label>{t("Idea title")}<input className="input factory-input" value={title} onChange={(event) => setTitle(event.target.value)} required maxLength={200} /></label>
         <label>{t("Idea notes")}<textarea className="input factory-input" value={notes} onChange={(event) => setNotes(event.target.value)} maxLength={100_000} /></label>

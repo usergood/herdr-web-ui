@@ -142,16 +142,29 @@ describe("HTML file previews", () => {
 });
 
 describe("factory records", () => {
-  it("persists a global six-task limit and validates its supported range", async () => {
+  it("migrates saved limits without turning the removed Assignment cap into agent capacity", async () => {
     const state = mkdtempSync(join(tmpdir(), "saurons-capacity-settings-"));
-    let app = createServer({ port: 0, stateDir: state, machines: false });
-    const post = (value: unknown) => fetch(`http://localhost:${app.port}/api/factory/settings`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(value) });
+    let app = createServer({ port: 0, stateDir: state, token: "owned-capacity", machines: false });
+    app.stop();
+    // A saved settings document from the previous app version, not a second API seam.
+    const db = new Database(join(state, "factory", "records.sqlite"));
+    db.query("INSERT INTO records(kind,id,parent,data) VALUES(?,?,?,?)").run("settings", "default", null, JSON.stringify({ id: "default", value: { provider: "claude", max_implementations: 1, max_agents: 4, max_builds: 3, max_artifact_bytes: 1024, max_storage_bytes: 8192, skills_path: null } }));
+    db.close();
+    app = createServer({ port: 0, stateDir: state, token: "owned-capacity", machines: false });
+    const headers = { authorization: "Bearer owned-capacity", "content-type": "application/json", "x-herdr-factory": "1" };
+    const post = (value: unknown) => fetch(`http://localhost:${app.port}/api/factory/settings`, { method: "POST", headers, body: JSON.stringify(value) });
+    const overview = () => fetch(`http://localhost:${app.port}/api/factory`, { headers }).then(response => response.json());
     try {
-      expect((await post({ max_implementations: 2 })).status).toBe(200);
-      const saved = await post({ max_implementations: 6, max_agents: 6 }); expect(saved.status).toBe(200); expect((await saved.json()).max_implementations).toBe(6);
-      for (const value of [0, 33, 1.5, "6"]) { const rejected = await post({ max_implementations: value }); expect(rejected.status).toBe(400); expect((await rejected.json()).error.code).toBe("invalid_limit"); }
-      app.stop(); app = createServer({ port: 0, stateDir: state, machines: false });
-      const overview = await fetch(`http://localhost:${app.port}/api/factory`).then(response => response.json()); expect(overview.settings.max_implementations).toBe(6); expect(overview.settings.max_agents).toBe(6);
+      expect((await fetch(`http://localhost:${app.port}/api/factory`)).status).toBe(401);
+      const migrated = await overview();
+      expect(migrated.settings).toMatchObject({ provider: "claude", max_agents: 4, max_builds: 3 });
+      expect(migrated.settings).not.toHaveProperty("max_implementations");
+      expect((await post({ max_implementations: 2 })).status).toBe(400);
+      for (const value of [0, 33, 1.5, "6"]) { const rejected = await post({ max_agents: value }); expect(rejected.status).toBe(400); expect((await rejected.json()).error.code).toBe("invalid_limit"); }
+      expect((await post({ max_agents: 2, max_builds: 1 })).status).toBe(200);
+      app.stop(); app = createServer({ port: 0, stateDir: state, token: "owned-capacity", machines: false });
+      expect((await overview()).settings).toMatchObject({ max_agents: 2, max_builds: 1 });
+      expect((await overview()).settings).not.toHaveProperty("max_implementations");
     } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
   });
   for (const location of ["local", "remote"]) it(`discovers model choices for the selected ${location} Project checkout through the owner API`, async () => {

@@ -1,3 +1,4 @@
+import { factoryCapacity } from "./factory-capacity.ts";
 import { mkdirSync } from "node:fs";
 import { permissionDescription, validPermissionMode } from "../shared/agent-permissions.ts";
 import { MATT_PROJECT_WORKFLOW } from "../shared/project-setup.ts";
@@ -29,7 +30,7 @@ import { workflowConversations } from "../shared/factory-conversations.ts";
 import { parseModelSelection, resolveModelSelection } from "./agent-model-selection.ts";
 
 const providers: FactoryProvider[] = ["codex", "claude", "opencode"];
-const initialSettings: FactorySettings = { provider: "codex", max_implementations: 6, max_agents: 6, max_builds: 2, max_artifact_bytes: 25 * 1024 * 1024, max_storage_bytes: 2 * 1024 * 1024 * 1024, skills_path: null };
+const initialSettings: FactorySettings = { provider: "codex", max_agents: 6, max_builds: 2, max_artifact_bytes: 25 * 1024 * 1024, max_storage_bytes: 2 * 1024 * 1024 * 1024, skills_path: null };
 
 export class FactoryService {
   readonly store: FactoryStore;
@@ -63,7 +64,13 @@ export class FactoryService {
     this.retrospectives = new FactoryRetrospectives(this.store);
     this.github = new ProjectGitHub(this.store, this.accounts, (machineId, path) => this.runtime.discover(machineId, path));
   }
-  settings(): FactorySettings { return this.store.get<{ id: string; value: FactorySettings }>("settings", "default")?.value ?? { ...initialSettings, skills_path: this.skillsPath }; }
+  settings(): FactorySettings {
+    const saved = this.store.get<{ id: string; value: Partial<FactorySettings> & { max_implementations?: number } }>("settings", "default");
+    const { max_implementations: removed, ...value } = saved?.value ?? {};
+    const settings = { ...initialSettings, skills_path: this.skillsPath, ...value };
+    if (removed !== undefined) this.store.put("settings", { id: "default", value: settings });
+    return settings;
+  }
   private activeWork(id: string): boolean {
     const runs = this.store.list<FactoryRun>("runs", id); const ids = new Set(runs.map((run) => run.id));
     return runs.some((run) => !["completed", "failed", "cancelled"].includes(run.condition)) || this.store.list<import("../shared/factory.ts").FactoryWorker>("workers").some((worker) => ids.has(worker.run_id) && !["completed", "failed", "cancelled"].includes(worker.condition));
@@ -342,13 +349,13 @@ export class FactoryService {
       if (hostOutputs && request.method === "GET") return jsonResponse(hostOutputs[2] ? this.executionHost.output(hostOutputs[1]!, url.searchParams.get("name") ?? "", url.searchParams.get("hash") ?? "") : await this.executionHost.outputs(hostOutputs[1]!));
       const prepareRoute = /^\/api\/factory\/machines\/([a-zA-Z0-9_-]+)\/prepare$/.exec(url.pathname);
       if (prepareRoute && request.method === "POST") return jsonResponse(await this.runtime.prepare(prepareRoute[1]!));
-      if (url.pathname === "/api/factory" && request.method === "GET") return jsonResponse({ implementations: this.store.list<Implementation>("implementations").sort((a, b) => a.position - b.position), pane_links: this.paneLinks(), conversations: this.store.list<Implementation>("implementations").flatMap(idea => this.conversations(idea)), pane_archives: this.store.list("pane_archives"), projects: this.store.list("projects"), checkouts: this.store.list<ProjectCheckout>("checkouts").map((entry) => { if (url.searchParams.get("navigation") !== "1") return entry; const { instructions: _instructions, ...metadata } = entry; return metadata; }), settings: this.settings(), activity: this.store.list<Implementation>("implementations").flatMap((idea) => { const run = this.store.list<FactoryRun>("runs", idea.id).at(-1); return run ? [{ implementation_id: idea.id, run_id: run.id, condition: run.condition, action: run.action, waiting_reason: run.waiting_reason, completed_tickets: this.workflow.tickets(idea.id).filter((ticket) => ticket.status === "done").length, total_tickets: this.workflow.tickets(idea.id).length }] : []; }) });
+      if (url.pathname === "/api/factory" && request.method === "GET") return jsonResponse({ implementations: this.store.list<Implementation>("implementations").sort((a, b) => a.position - b.position), pane_links: this.paneLinks(), conversations: this.store.list<Implementation>("implementations").flatMap(idea => this.conversations(idea)), pane_archives: this.store.list("pane_archives"), projects: this.store.list("projects"), checkouts: this.store.list<ProjectCheckout>("checkouts").map((entry) => { if (url.searchParams.get("navigation") !== "1") return entry; const { instructions: _instructions, ...metadata } = entry; return metadata; }), settings: this.settings(), capacity: factoryCapacity(this.store, this.settings()), activity: this.store.list<Implementation>("implementations").flatMap((idea) => { const run = this.store.list<FactoryRun>("runs", idea.id).at(-1); return run ? [{ implementation_id: idea.id, run_id: run.id, condition: run.condition, action: run.action, waiting_reason: run.waiting_reason, completed_tickets: this.workflow.tickets(idea.id).filter((ticket) => ticket.status === "done").length, total_tickets: this.workflow.tickets(idea.id).length }] : []; }) });
       if (url.pathname === "/api/factory/settings" && request.method === "POST") {
         const body = await this.body(request); const settings = { ...this.settings() };
         const known = new Set(Object.keys(settings));
         if (Object.keys(body).some((key) => !known.has(key))) throw new FactoryError("invalid_settings", "Unknown factory setting");
         if (body.provider !== undefined) { if (!providers.includes(body.provider as FactoryProvider)) throw new FactoryError("invalid_provider", "Select a supported provider"); settings.provider = body.provider as FactoryProvider; }
-        for (const [key, maximum] of [["max_implementations", 32], ["max_agents", 32], ["max_builds", 16], ["max_artifact_bytes", 64 * 1024 * 1024], ["max_storage_bytes", Number.MAX_SAFE_INTEGER]] as const) {
+        for (const [key, maximum] of [["max_agents", 32], ["max_builds", 16], ["max_artifact_bytes", 64 * 1024 * 1024], ["max_storage_bytes", Number.MAX_SAFE_INTEGER]] as const) {
           const value = body[key]; if (value === undefined) continue;
           if (!Number.isSafeInteger(value) || Number(value) < 1 || Number(value) > maximum) throw new FactoryError("invalid_limit", "Enter a positive limit within supported capacity");
           settings[key] = value as number;
@@ -533,7 +540,7 @@ export class FactoryService {
         const delivery = { ...this.store.record(), run_id: run.id, revision, key: body.idempotency_key, condition: "sending" };
         this.store.put("answer_deliveries", delivery, run.id);
         try { await this.runtime.send(run, `The owner explicitly sent answered context ${revision}. Read contract through .saurons-eye-tracker.mjs, then consume this exact revision; preserve unanswered or changed questions and await the owner.`, request.signal); delivery.condition = "sent"; }
-        catch (error) { delivery.condition = error instanceof FactoryError && ["agent_busy", "delivery_busy", "input_draft", "disconnected", "run_unavailable"].includes(error.code) || error instanceof HerdrError && ["agent_not_ready", "agent_not_found", "agent_blocked", "cancelled"].includes(error.code) ? "blocked" : "uncertain"; this.store.put("answer_deliveries", delivery, run.id); return jsonResponse(delivery); }
+        catch (error) { delivery.condition = error instanceof FactoryError && ["capacity_exhausted", "agent_busy", "delivery_busy", "input_draft", "disconnected", "run_unavailable"].includes(error.code) || error instanceof HerdrError && ["agent_not_ready", "agent_not_found", "agent_blocked", "cancelled"].includes(error.code) ? "blocked" : "uncertain"; this.store.put("answer_deliveries", delivery, run.id); return jsonResponse(delivery); }
         this.store.put("answer_deliveries", delivery, run.id); this.store.event(run.implementation_id, "answered_context_sent", { delivery_id: delivery.id, revision }); return jsonResponse(delivery);
       }
       const cleanup = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/cleanup$/.exec(url.pathname);
