@@ -90,6 +90,7 @@ describe("Assignment deletion from app-managed recovery through authenticated HT
       const result = await f.api(`/implementations/${deleted}/delete`, {}).then(r => r.json());
       expect(result.condition).toBe("pending");
       expect(result.reasons.join(" ")).toContain("backup");
+      expect((await f.api(`/implementations/${deleted}`).then(r => r.json())).implementation.deletion.local_cleanup).toBe("complete");
       f.restart();
       expect((await f.api("/backups", {})).status).toBe(409);
       expect((await f.api(`/backups/${backup.id}/restore`, {})).status).toBe(409);

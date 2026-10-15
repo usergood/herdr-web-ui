@@ -60,8 +60,9 @@ export class FactoryDeletion {
       this.store.put("implementations", { ...idea, deletion: { ...idea.deletion, reasons } });
       return { id, condition: "pending", reasons };
     }
+    let backupReason: string | undefined;
     try { this.purgeBackups(id); journal.backups = false; }
-    catch (error) { journal.backups = true; reasons.push(error instanceof FactoryError ? error.message : "App-managed backup and recovery cleanup failed; deletion remains pending"); }
+    catch (error) { journal.backups = true; backupReason = error instanceof FactoryError ? error.message : "App-managed backup and recovery cleanup failed; deletion remains pending"; }
     const inbox = join(this.store.root, "inbox", id);
     const inboxInfo = lstatSync(inbox, { throwIfNoEntry: false });
     if (inboxInfo) {
@@ -103,7 +104,7 @@ export class FactoryDeletion {
       unlinkSync(path);
     }
     const localCleanup = reasons.length ? undefined : "complete" as const;
-    if (journal.backups && !reasons.length) reasons.push("App-managed backup and recovery cleanup has not been confirmed");
+    if (journal.backups) reasons.push(backupReason ?? "App-managed backup and recovery cleanup has not been confirmed");
     if (journal.github) reasons.push("Linked GitHub issue deletion and source suppression have not been confirmed");
     if (reasons.length) {
       this.store.put("implementations", { ...idea, title: "Delete pending", description: "", outcome: "none", pause: undefined, deletion: { ...idea.deletion, reasons, local_cleanup: localCleanup } });
