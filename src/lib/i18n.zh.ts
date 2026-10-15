@@ -15,6 +15,7 @@ export const ZH: Record<string, string> = {
   "Reply accepted to approve this revision, or use Accept specification.": "回复 accepted 或点击批准规格，即可批准此版本。",
   "Send reply": "发送回复",
 
+  "Queued work starts automatically when capacity is available.": "有可用执行容量时，排队中的工作会自动开始。",
   "Continue workflow": "继续工作流程",
   "Native verification will run before implementation.": "实施前将运行原生验证。",
   "Review and continue from this chat. Finished steps keep their history.": "在此聊天中审阅并继续。已完成步骤的历史记录会保留。",

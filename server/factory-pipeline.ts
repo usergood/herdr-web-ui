@@ -8,7 +8,16 @@ import { FactoryWorkflow } from "./factory-workflow.ts";
 const owns = (condition: string): boolean => !["completed", "cancelled", "failed"].includes(condition);
 /** Admission reservations cover all native contexts and builds, including uncertain remote work. */
 export class FactoryPipeline {
-  constructor(private readonly store: FactoryStore, private readonly runtime: FactoryRuntime, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly retainBeforeStop: (id: string) => Promise<void>) {}
+  constructor(private readonly store: FactoryStore, private readonly runtime: FactoryRuntime, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly retainBeforeStop: (id: string) => Promise<void>) {
+    runtime.queue.worker = (id, body) => this.startWorker(id, body);
+  }
+  async requestWorker(id: string, body: Record<string, unknown>): Promise<FactoryWorker | import("../shared/factory.ts").FactoryCapacityWait> {
+    const run = this.run(id, body.role === "implementer");
+    if (!["implementer", "standards", "spec"].includes(String(body.role)) || typeof body.idempotency_key !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.idempotency_key)) throw new FactoryError("invalid_worker", "Select a worker role and explicit request key");
+    if (this.store.list<FactoryWorker & { key: string }>("workers", id).some(worker => worker.key === body.idempotency_key)) return this.startWorker(id, body);
+    const idea = this.store.get<Implementation>("implementations", run.implementation_id)!;
+    return this.runtime.queue.start({ ...this.store.record(), id: `${id}:${body.idempotency_key}`, implementation_id: idea.id, assignment_title: idea.title, action: run.action, machine_id: run.machine_id, provider: run.provider, idempotency_key: body.idempotency_key, purpose: "execution", condition: "queued", run_id: id, reason: "Waiting for agent capacity" }, body, "");
+  }
   private run(id: string, factoryRequired = true): FactoryRun {
     const run = this.store.get<FactoryRun>("runs", id);
     if (!run || factoryRequired && run.action !== "implement-spec" || !run.checkout || !["working", "ready", "needs_you", "blocked"].includes(run.condition)) throw new FactoryError("factory_run_required", "Reconcile an admitted repository Run first", 409);

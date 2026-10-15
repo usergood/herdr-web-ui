@@ -9,6 +9,8 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 
 ### Fixed
 - Accept the presented Specification directly in Specifications with one button or an explicit owner reply. Retain revision and source evidence, reject stale decisions, and keep pending shared-understanding confirmations from blocking later attributable answers.
+- Queue factory Start and child requests durably at capacity and dispatch eligible work
+  oldest-first automatically, with restart recovery and visible bounded Machine retries.
 - Continue approved planning from the native chat, retain finished chats, and run
   required verification before implementation. Scope native probe questions separately
   so an obsolete verification attempt cannot block product work or a replacement probe.

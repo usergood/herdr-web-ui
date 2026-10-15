@@ -1,4 +1,5 @@
 import { agentCapacityPool } from "./factory-capacity.ts";
+import { FactoryDispatch } from "./factory-dispatch.ts";
 import { existsSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
@@ -21,9 +22,24 @@ type HostCapabilities = Awaited<ReturnType<FactoryExecutionHost["capabilities"]>
 const activeConditions = new Set(["accepted", "working", "ready", "needs_you", "blocked", "disconnected", "interrupted"]);
 const actions: FactoryAction[] = ["work", "setup", "grill-me", "grill-with-docs", "to-spec", "to-tickets", "implement-spec", "retro", "apply-retro", "verify-provider"];
 export class FactoryRuntime {
+  readonly queue: FactoryDispatch;
   private readonly dispatches = new Map<string, Promise<FactoryRun>>();
   private stopped = false;
-  constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly host: FactoryExecutionHost, private readonly endpoint: MachineEndpoint, private readonly readArtifact: (record: FactoryArtifact) => Buffer, private readonly publicUrl: string | null, private readonly references: FactoryReferences, private readonly accounts: MachineAccounts) {}
+  constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly host: FactoryExecutionHost, private readonly endpoint: MachineEndpoint, private readonly readArtifact: (record: FactoryArtifact) => Buffer, private readonly publicUrl: string | null, private readonly references: FactoryReferences, private readonly accounts: MachineAccounts) {
+    this.queue = new FactoryDispatch(store, () => this.reconcileCapacity(), (id, body, origin) => this.start(id, body, origin, undefined, true));
+  }
+  async requestStart(id: string, body: Record<string, unknown>, origin: string): Promise<FactoryRun | import("../shared/factory.ts").FactoryCapacityWait> {
+    if (!actions.includes(body.action as FactoryAction) || typeof body.idempotency_key !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.idempotency_key)) throw new FactoryError("invalid_start", "Select an explicit action with an idempotency key");
+    const idea = this.store.get<Implementation>("implementations", id);
+    if (!idea) throw new FactoryError("not_found", "Assignment not found", 404);
+    const existing = this.store.list<FactoryRun>("runs", id).find(run => run.idempotency_key === body.idempotency_key);
+    if (existing) return this.start(id, body, origin);
+    if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Execution is disabled on a restored copy", 409);
+    const project = idea.project_id ? this.store.get<FactoryProject>("projects", idea.project_id) : null;
+    const action = body.action as FactoryAction;
+    const planning = ["grill-me", "grill-with-docs"].includes(action) || action === "to-spec" && !this.workflow.approved(id, "specification", this.workflow.specification(id)?.id ?? "");
+    return this.queue.start({ ...this.store.record(), id: `${id}:${body.idempotency_key}`, implementation_id: id, assignment_title: idea.title, action, machine_id: idea.machine_id ?? project?.machine_id ?? "local", provider: idea.provider ?? project?.provider ?? this.settings().provider, idempotency_key: body.idempotency_key, reason: "Waiting for agent capacity", purpose: planning ? "planning" : "execution", condition: "queued", run_id: null }, body, origin);
+  }
   async discover(machineId: string, path: string): Promise<import("../shared/project-setup.ts").ProjectDiscovery> { return machineId === "local" ? this.host.discover(path) : this.remote(machineId, "/project-discovery", { path }); }
   async modelCatalog(machineId: string, provider: FactoryProvider, path: string, repository: string, snapshot?: AccountBindingSnapshot | null): Promise<import("../shared/agent-models.ts").AgentModelCatalog> {
     const result = machineId === "local" ? await this.host.modelCatalog(provider, path, repository, snapshot) : await this.remote<import("../shared/agent-models.ts").AgentModelCatalog>(machineId, "/model-catalog", { provider, path, repository, account_snapshot: snapshot } satisfies FactoryHostRequests["model_catalog"]);
@@ -99,8 +115,11 @@ export class FactoryRuntime {
     return run.machine_id === "local" ? this.host.verifyProvider(run.id) : this.remote(run.machine_id, `/runs/${run.id}/verify-provider`, {});
   }
   async operation<T>(run: FactoryRun, action: string, body: Record<string, unknown> = {}): Promise<T> {
+    if (this.stopped) throw new FactoryError("stopping", "The bridge is stopping", 409);
     if (existsSync(join(this.store.root, "recovery-copy.json")) && !["transcript", "head", "review-evidence"].includes(action)) throw new FactoryError("recovery_copy", "Native control is disabled on a restored copy", 409);
-    return (run.machine_id === "local" ? await this.host.operation(run.id, action, body) : await this.remote(run.machine_id, `/runs/${run.id}/operations/${action}`, body)) as T;
+    const result = (run.machine_id === "local" ? await this.host.operation(run.id, action, body) : await this.remote(run.machine_id, `/runs/${run.id}/operations/${action}`, body)) as T;
+    if (this.stopped) throw new FactoryError("stopping", "The bridge stopped during the operation; ownership is retained", 409);
+    return result;
   }
   async inspect(machineId: string, path: string): Promise<Awaited<ReturnType<typeof inspectCheckout>>> {
     return machineId === "local" ? inspectCheckout(path) : this.remote(machineId, "/inspect", { path });
@@ -111,7 +130,7 @@ export class FactoryRuntime {
   async capture(machineId: string, path: string, base: string, mode: "branch" | "workspace"): Promise<{ repository: string; head: string; files: import("../shared/protocol.ts").ReviewSnapshot["files"] }> {
     return this.remote(machineId, "/review", { path, base, mode });
   }
-  async start(id: string, body: Record<string, unknown>, origin: string, continuation?: { runId?: string; finish?: () => Promise<void>; validateScope?: () => void }): Promise<FactoryRun> {
+  async start(id: string, body: Record<string, unknown>, origin: string, continuation?: { runId?: string; finish?: () => Promise<void>; validateScope?: () => void }, admitting = false): Promise<FactoryRun> {
     continuation?.validateScope?.();
     if (!actions.includes(body.action as FactoryAction) || typeof body.idempotency_key !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.idempotency_key)) throw new FactoryError("invalid_start", "Select an explicit action with an idempotency key");
     let implementation = this.store.get<Implementation>("implementations", id);
@@ -122,6 +141,8 @@ export class FactoryRuntime {
       return this.dispatches.get(previous.id) ?? previous;
     }
     if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Execution is disabled on a restored copy until separately scoped promotion", 409);
+    if (!admitting) await this.queue.flush();
+    if (this.stopped) throw new FactoryError("stopping", "The bridge is stopping", 409);
     const project = implementation.project_id ? this.store.get<FactoryProject>("projects", implementation.project_id) : null;
     if (implementation.archived_at || project?.removed_at) throw new FactoryError("inactive_assignment", "Restore this Assignment and Project before starting work", 409);
     const action = body.action as FactoryAction;
@@ -145,6 +166,7 @@ export class FactoryRuntime {
     const skills = verifySkills(this.settings().skills_path ?? this.host.skillPath());
     const accountSnapshot = project?.account_bindings?.[machineId] && Object.keys(project.account_bindings[machineId]!).length ? await this.accountSnapshot(machineId, project.account_bindings[machineId]!) : null;
     const capabilities = await this.capabilities(machineId, accountSnapshot);
+    if (this.stopped) throw new FactoryError("stopping", "The bridge stopped during admission", 409);
     if (accountSnapshot && capabilities.account_profile_protocol !== 1) throw new FactoryError("account_bridge_required", "The selected Machine needs account-profile bridge support", 409);
     const capability = capabilities.providers.find((entry) => entry.provider === provider);
     if (!capability?.installed || !capability.skills_verified || capabilities.skill_manifest?.hash !== skills.hash || action === "implement-spec" && !capability.factory_ready) throw new FactoryError("provider_unavailable", capability?.reasons.join("; ") || "The selected provider has no verified native contract on this Machine", 409);
@@ -153,6 +175,7 @@ export class FactoryRuntime {
     if (project) {
       if (!checkout) throw new FactoryError("checkout_required", "Configure a verified checkout on the selected Machine", 409);
       inspected = await this.inspect(machineId, checkout.path);
+      if (this.stopped) throw new FactoryError("stopping", "The bridge stopped during admission", 409);
       if (inspected.repository !== checkout.repository) throw new FactoryError("wrong_checkout", "The selected checkout belongs to a different repository", 409);
       if (action === "implement-spec" && machineId === "local" && (await git(inspected.path, ["status", "--porcelain", "--untracked-files=all"])).trim()) throw new FactoryError("dirty_checkout", "Save the Project checkout's existing changes before starting automated implementation. Planning and direct work can start in their own workspaces", 409);
     }
@@ -203,8 +226,7 @@ export class FactoryRuntime {
     if (!["http:", "https:"].includes(api.protocol) || api.username || api.password) throw new FactoryError("invalid_factory_url", "Use an authenticated HTTP(S) app address for the tracker");
     const contractHash = hash(JSON.stringify({ implementation, project, checkout, specification, graphHash, settings: this.settings(), skills: skills.hash, artifacts, messages, projectReferences }));
     await this.reconcileCapacity();
-    let run: { run: FactoryRun; accepted: boolean };
-    try { run = this.store.db.transaction(() => {
+    const run = this.store.db.transaction(() => {
       continuation?.validateScope?.();
       const raced = this.store.list<FactoryRun>("runs", id).find((entry) => entry.idempotency_key === body.idempotency_key);
       if (raced) return { run: raced, accepted: false };
@@ -220,15 +242,7 @@ export class FactoryRuntime {
       if (projectReferences) this.references.freeze(projectReferences.project_id);
       this.store.remove("capacity_waits", `${id}:${body.idempotency_key}`);
       this.store.put("runs", record, id); this.store.event(id, "dispatch_accepted", { run_id: record.id, action }); return { run: record, accepted: true };
-    }).immediate(); }
-    catch (error) {
-      if (error instanceof FactoryError && error.code === "capacity_exhausted") {
-        const waitId = `${id}:${body.idempotency_key}`;
-        const previous = this.store.get<import("../shared/factory.ts").FactoryCapacityWait>("capacity_waits", waitId);
-        this.store.put("capacity_waits", { ...(previous ?? this.store.record()), id: waitId, updated_at: new Date().toISOString(), implementation_id: id, assignment_title: implementation.title, action, machine_id: machineId, provider, idempotency_key: body.idempotency_key as string, reason: error.message, request: body, origin, contract_hash: contractHash }, id);
-      }
-      throw error;
-    }
+    }).immediate();
     const accepted = run;
     const pending = this.dispatches.get(accepted.run.id);
     if (pending) return pending;
@@ -269,18 +283,19 @@ export class FactoryRuntime {
   }
   /** Refresh capacity from owned native identities, including remote and resting chats. */
   async reconcileCapacity(): Promise<void> {
-    const runs = this.store.list<FactoryRun>("runs").filter(run => activeConditions.has(run.condition) && run.pane_id && run.worktree && (run.machine_id !== "local" || run.condition === "ready"));
+    const runs = this.store.list<FactoryRun>("runs").filter(run => activeConditions.has(run.condition) && !this.dispatches.has(run.id));
     await Promise.all(runs.map(run => this.reconcile(run.id)));
-    const workers = this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers").filter(worker => activeConditions.has(worker.condition) && worker.pane_id && worker.worktree && (worker.condition === "ready" || this.store.get<FactoryRun>("runs", worker.run_id)?.machine_id !== "local"));
+    if (this.stopped) return;
+    const workers = this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers").filter(worker => activeConditions.has(worker.condition));
     await Promise.all(workers.map(async worker => {
       const run = this.store.get<FactoryRun>("runs", worker.run_id);
       if (!run) return;
       let next = worker;
       try {
         next = await this.operation(run, "reconcile-worker", { worker_id: worker.id });
-        if (!["accepted", "working", "ready", "needs_you", "blocked", "disconnected", "interrupted", "failed", "cancelled", "completed"].includes(next.condition) || next.id !== worker.id || next.run_id !== run.id || next.ticket_id !== worker.ticket_id || next.role !== worker.role || next.base !== worker.base || next.worktree !== worker.worktree || next.branch !== worker.branch || next.pane_id !== worker.pane_id || next.workspace_id !== worker.workspace_id) throw new FactoryError("worker_identity_changed", "The observed worker identity changed", 409);
+        if (!["accepted", "working", "ready", "needs_you", "blocked", "disconnected", "interrupted", "failed", "cancelled", "completed"].includes(next.condition) || next.id !== worker.id || next.run_id !== run.id || next.ticket_id !== worker.ticket_id || next.role !== worker.role || next.base !== worker.base || (["worktree", "branch", "pane_id", "workspace_id"] as const).some(key => worker[key] !== null && next[key] !== worker[key])) throw new FactoryError("worker_identity_changed", "The observed worker identity changed", 409);
       } catch { next = { ...worker, condition: "disconnected", waiting_reason: "Worker observation is uncertain; capacity remains reserved" }; }
-      if (JSON.stringify(this.store.get("workers", worker.id)) === JSON.stringify(worker)) this.store.put("workers", next, run.id);
+      if (!this.stopped && JSON.stringify(this.store.get("workers", worker.id)) === JSON.stringify(worker)) this.store.put("workers", next, run.id);
     }));
   }
   async reconcile(runId: string): Promise<FactoryRun> {
@@ -289,6 +304,7 @@ export class FactoryRuntime {
     const revision = hash(JSON.stringify(run));
     try { run = this.observed(run, run.machine_id === "local" ? await this.host.reconcile(run.id) : await this.remote<FactoryRun>(run.machine_id, `/runs/${run.id}/reconcile`, {})); }
     catch (error) { run = { ...run, condition: "disconnected", waiting_reason: error instanceof FactoryError ? error.message : "The Machine cannot currently be observed; ownership is retained", updated_at: new Date().toISOString() }; }
+    if (this.stopped) return run;
     const current = this.store.get<FactoryRun>("runs", runId);
     if (current && hash(JSON.stringify(current)) !== revision) return current;
     const question = this.store.list<import("../shared/protocol.ts").FactoryQuestion>("questions", run.implementation_id).find((entry) => entry.run_id === run!.id && entry.answer === null);
@@ -342,5 +358,5 @@ export class FactoryRuntime {
     }
   }
   async output(run: FactoryRun, output: FactoryOutput): Promise<{ content_base64: string }> { return run.machine_id === "local" ? this.host.output(run.id, output.name, output.hash) : this.remote(run.machine_id, `/runs/${run.id}/artifacts/content?name=${encodeURIComponent(output.name)}&hash=${encodeURIComponent(output.hash)}`); }
-  stop(): void { this.stopped = true; this.host.stop(); }
+  stop(): void { this.stopped = true; this.queue.stop(); this.host.stop(); }
 }

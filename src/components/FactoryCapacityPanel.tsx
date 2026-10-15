@@ -23,7 +23,8 @@ export function FactoryCapacityPanel({ capacity }: { capacity: FactoryCapacity }
         {build.uncertain && <p className="factory-capacity-uncertain">{t("Execution uncertain; reservation retained")}</p>}
       </li>)}
       {capacity.waiting.map(wait => <li key={wait.id}>
-        <a href={`#factory/${wait.implementation_id}`}>{wait.assignment_title}</a> · {t("Waiting for agent capacity")} · {wait.machine_id} · {wait.provider}
+        <a href={`#factory/${wait.implementation_id}`}>{wait.assignment_title}</a> · {wait.condition === "blocked" ? t("Needs you") : t("Waiting for agent capacity")} · {wait.machine_id} · {wait.provider}
+        <p>{wait.reason}</p>
       </li>)}
     </ul>
     {!capacity.contexts.length && !capacity.build_reservations.length && !capacity.waiting.length && <p className="field-hint">{t("No occupied reservations.")}</p>}

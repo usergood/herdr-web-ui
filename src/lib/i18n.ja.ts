@@ -13,6 +13,7 @@ export const JA: Record<string, string> = {
   "Reply accepted to approve this revision, or use Accept specification.": "この版を承認するには accepted と返信するか、仕様を承認を押してください。",
   "Send reply": "返信を送信",
 
+  "Queued work starts automatically when capacity is available.": "待機中の作業は実行枠が空くと自動的に開始されます。",
   "Continue workflow": "ワークフローを続行",
   "Native verification will run before implementation.": "実装の前にネイティブ検証を実行します。",
   "Review and continue from this chat. Finished steps keep their history.": "このチャットで確認して続行してください。完了したステップの履歴は保持されます。",

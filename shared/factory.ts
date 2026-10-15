@@ -106,6 +106,9 @@ export interface FactoryCapacityReservation {
 export interface FactoryCapacityWait extends FactoryRecord {
   implementation_id: string; assignment_title: string; action: FactoryAction;
   machine_id: string; provider: FactoryProvider; idempotency_key: string; reason: string;
+  condition: "queued" | "blocked";
+  purpose: "planning" | "execution";
+  run_id: string | null;
 }
 export interface FactoryCapacity {
   normal: { limit: number; used: number };
@@ -117,6 +120,7 @@ export interface FactoryCapacity {
 }
 export interface FactoryOverview { capacity: FactoryCapacity }
 export interface FactoryDetail {
+  capacity_waiting?: FactoryCapacityWait[];
   conversations?: FactoryConversation[];
   graph_hash: string; question_revision: string;
   /** Current decision scope; full historical questions remain in questions below. */

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { MessageSquare, Play, ListChecks } from "lucide-react";
-import type { FactoryAction, FactoryCapabilities, FactoryDetail, FactoryProject, FactoryProvider, FactoryRun } from "../../shared/protocol.ts";
+import type { FactoryAction, FactoryCapabilities, FactoryCapacityWait, FactoryDetail, FactoryProject, FactoryProvider, FactoryRun } from "../../shared/protocol.ts";
 import { factoryDetail, factoryRequest } from "../lib/factoryApi.ts";
 import { useT } from "../lib/i18n.ts";
 import { Markdown } from "./Markdown.tsx";
@@ -14,6 +14,7 @@ export function AssignmentActions({ preset, onPresetChange, detail, project, mac
   useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
   const capability = capabilities?.providers.find(entry => entry.provider === provider);
   const active = [...detail.runs].reverse().find(run => ["accepted", "working", "ready", "needs_you", "blocked", "disconnected", "interrupted"].includes(run.condition));
+  const queued = detail.capacity_waiting?.some(wait => wait.condition === "queued");
   const unconfirmedWork = active?.action === "work" && ["interrupted", "disconnected"].includes(active.condition);
   const specification = detail.specifications.at(-1);
   const approved = (kind: string, revision: string) => detail.approvals.some(a => a.kind === kind && a.revision === revision);
@@ -35,8 +36,9 @@ export function AssignmentActions({ preset, onPresetChange, detail, project, mac
   const nextAction = suggestedAction === active?.action ? null : suggestedAction;
   async function launch(action: FactoryAction) {
       if (!capability?.skills_verified) await factoryRequest(`/machines/${encodeURIComponent(machineId)}/prepare`, {});
-      const run = await factoryRequest<FactoryRun>(prefix + (action === "work" ? "/runs" : "/continue"), { ...(action === "work" ? {} : { run_id: active?.id ?? null, allow_partial_handoff: acknowledgedHandoff === active?.id }), action, execution_preset: preset, idempotency_key: crypto.randomUUID(), expected: { provider, machine_id: machineId, project_id: detail.implementation.project_id, specification_id: specification?.id ?? null, graph_hash: detail.graph_hash } });
+      const run = await factoryRequest<FactoryRun | FactoryCapacityWait>(prefix + (action === "work" ? "/runs" : "/continue"), { ...(action === "work" ? {} : { run_id: active?.id ?? null, allow_partial_handoff: acknowledgedHandoff === active?.id }), action, execution_preset: preset, idempotency_key: crypto.randomUUID(), expected: { provider, machine_id: machineId, project_id: detail.implementation.project_id, specification_id: specification?.id ?? null, graph_hash: detail.graph_hash } });
       if (!live.current) return;
+      if (run.condition === "queued" || !("pane_id" in run)) return;
       if (run.condition !== "working" || !run.pane_id) throw new Error(run.waiting_reason ?? t("The agent did not start. Open advanced controls to inspect the retained attempt."));
       onOpenPane(run.machine_id, run.pane_id);
   }
@@ -52,9 +54,11 @@ export function AssignmentActions({ preset, onPresetChange, detail, project, mac
       else if (spec && !updated.tickets.length && accepted("specification", spec.id) && accepted("testing_seams", spec.id)) await launch("to-tickets");
     });
   }
-  const disabled = busy || !project || !!project.removed_at || !!detail.implementation.archived_at || !capability?.installed;
+  const disabled = busy || queued || !project || !!project.removed_at || !!detail.implementation.archived_at || !capability?.installed;
   return <section className="assignment-actions factory-section" aria-label={t("Next step")}>
     <p role="status">{project ? t("Work uses {agent} on {machine} with this Project's settings.", { agent: provider, machine: machineName }) : t("Choose a Project to start work or plan implementation.")}</p>
+    {queued && <p role="status">{t("Queued work starts automatically when capacity is available.")}</p>}
+    {detail.capacity_waiting?.filter(wait => wait.condition === "blocked").map(wait => <p role="alert" key={wait.id}>{wait.reason}</p>)}
     {problem && <p role="alert">{problem}</p>}
     {continuationProblem && <p role="alert">{continuationProblem}</p>}
     {!active && project && <AgentModelPicker projectId={project.id} machineId={machineId} provider={provider} accountScope={JSON.stringify(project.account_bindings?.[machineId] ?? {})} value={preset} onChange={onPresetChange} disabled={busy} />}

@@ -1188,8 +1188,10 @@ export const DEFAULT_PORT = 7317;
  * POST .../accounts/:id/setup/(status|input|cancel) -> owner-only ephemeral AccountSetup.
  * POST /api/factory/projects/:id/accounts/verify -> credential-free AccountBindingSnapshot.
  * POST /api/factory/machines/:id/prepare (empty) -> FactoryCapabilities; pinned private source only.
- * POST /api/factory/implementations/:id/runs (start) -> FactoryRun, 202; scoped idempotent admission.
- * POST .../continue (continue_workflow) -> FactoryRun, 202; retain a resting step's chat/handoff
+ * POST /api/factory/implementations/:id/runs (start) -> FactoryRun | FactoryCapacityWait, 202;
+ * durably queues at capacity. Queued requests retain identity/age across restart and dispatch
+ * oldest eligible first. GET /api/factory exposes public capacity.waiting, including blocked reasons.
+ * POST .../continue (continue_workflow) -> FactoryRun | FactoryCapacityWait, 202; retain a resting step's chat/handoff
  * and start its approved successor. Implementation may first run genuine native verification
  * under retained owner intent. Missing approvals are never inferred.
  * Resting Runs/workers are ready: native capacity released, exclusive worktree ownership retained.
@@ -1206,7 +1208,8 @@ export const DEFAULT_PORT = 7317;
  * button -> FactoryApproval; owner_chat -> {message:FactoryMessage,approval:FactoryApproval|null}.
  * Requires the presented current ID/hash; repeat delivery is durable and never launches execution.
  * POST .../send-answers (send_answers) -> FactoryAnswerDelivery; uncertainty never replays.
- * POST .../workers (worker) -> FactoryWorker; frontier/rework and global reservation checked.
+ * POST .../workers (worker) -> FactoryWorker, or FactoryCapacityWait, 202 when queued;
+ * root and child requests share ordering; frontier/rework and global reservation checked.
  * POST .../workers/:worker/refresh|reconcile|integrate (empty) -> FactoryWorker;
  * POST .../workers/:worker/check (empty) -> FactoryCheck; stop (empty) -> {ok:true};
  * POST .../workers/:worker/review-evidence (empty) -> FactoryReviewEvidence; independent current-head report.

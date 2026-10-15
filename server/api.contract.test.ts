@@ -23,6 +23,7 @@ import { handleMachineRequest } from "./machine-api.ts";
 import type { MachineManager } from "./machines.ts";
 import { TailnetIdentitySource } from "./tailscale.ts";
 import { forgetTranscriptState } from "./conversation.ts";
+import { capacityFixture } from "../scripts/factory-capacity-fixture.ts";
 
 /**
  * Contract test for herdr-web-ui's HTTP + WS surface.
@@ -33,6 +34,27 @@ import { forgetTranscriptState } from "./conversation.ts";
  * user's ~/.config/herdr-web-ui holds their real devices, which a test must never page.
  */
 let server: { port: number; stop: () => void };
+
+it("accepts an authenticated durable factory queue request without exposing its private payload", async () => {
+  const f = await capacityFixture();
+  try {
+    await f.api("/settings", { max_agents: 1 });
+    const holder = await f.assignment("Contract holder"); const waiting = await f.assignment("Contract wait");
+    const body = { action: "work", idempotency_key: "public-queue" };
+    await f.api(`/implementations/${holder}/runs`, body);
+    const path = `/implementations/${waiting}/runs`;
+    const unauthorized = await fetch(`http://localhost:${f.app.port}/api/factory${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    expect(unauthorized.status).toBe(401);
+    const response = await f.api(path, body); expect(response.status).toBe(202);
+    const wait = await response.json();
+    expect(wait).toMatchObject({ condition: "queued", purpose: "execution", run_id: null, implementation_id: waiting });
+    expect(Object.keys(wait).sort()).toEqual(["id", "created_at", "updated_at", "implementation_id", "assignment_title", "action", "machine_id", "provider", "idempotency_key", "reason", "condition", "purpose", "run_id"].sort());
+    const conflict = await f.api(path, { ...body, action: "grill-with-docs" });
+    expect(conflict.status).toBe(409);
+    expect((await conflict.json()).error.code).toBe("idempotency_conflict");
+    expect((await f.api("").then(r => r.json())).capacity.waiting).toEqual([wait]);
+  } finally { f.close(); }
+});
 const stateDir = mkdtempSync(join(tmpdir(), "herdr-web-ui-contract-"));
 
 beforeAll(() => {
@@ -431,7 +453,9 @@ describe("factory records", () => {
       expect(worker.worktree).not.toBe(run.worktree); expect(worker.base).toBe(run.base);
       const specResponse = await request(`runs/${run.id}/workers`, { role: "spec", idempotency_key: "independent-spec" }); expect(specResponse.status).toBe(200);
       const specWorker = await specResponse.json(); workspaces.push(specWorker.workspace_id);
-      expect((await request(`runs/${run.id}/workers`, { role: "standards", idempotency_key: "another-review" })).status).toBe(409);
+      const queuedReview = await request(`runs/${run.id}/workers`, { role: "standards", idempotency_key: "another-review" });
+      expect(queuedReview.status).toBe(202);
+      expect(await queuedReview.json()).toMatchObject({ condition: "queued", purpose: "execution", run_id: run.id });
       expect((await request(`runs/${run.id}/workers`, { role: "standards", idempotency_key: "independent-standards" }).then((response) => response.json())).id).toBe(worker.id);
       expect((await request(`runs/${run.id}/workers/${worker.id}/review-evidence`, {})).status).toBe(409);
       const detail = await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then((response) => response.json()); expect(detail.review_evidence).toEqual([]);
@@ -670,7 +694,8 @@ describe("factory records", () => {
       const duplicate = await request(`implementations/${idea.id}/runs`, { action: "grill-me", idempotency_key: "remote-owner-click" }).then((response) => response.json());
       expect(duplicate.id).toBe(run.id);
       const elsewhere = await request(`implementations/${idea.id}/runs`, { action: "grill-me", idempotency_key: "new-click" });
-      expect(elsewhere.status).toBe(409);
+      expect(elsewhere.status).toBe(202);
+      expect(await elsewhere.json()).toMatchObject({ condition: "queued", reason: expect.stringContaining("ownership") });
       const retained = await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then((response) => response.json());
       expect(retained.messages).toMatchObject([{ content: "Keep the original host" }]);
       expect(retained.runs).toHaveLength(1);
