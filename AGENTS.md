@@ -98,4 +98,4 @@ When interpreting or publishing GitHub issue readiness, read `docs/agents/triage
 
 ### Domain docs
 
-Before designing factory lifecycle, queue or delivery changes, read the root `GLOSSARY.md` and applicable `docs/adr/` decisions; `docs/agents/domain.md` explains the historical records and design status.
+Before changing factory lifecycle, capacity/dispatch, approvals, board progress, conversation roles or Human Review/delivery, read the root `GLOSSARY.md`, applicable `docs/adr/` decisions and `docs/agents/domain.md` for accepted policy and its runtime status.
