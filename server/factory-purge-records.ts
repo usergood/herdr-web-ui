@@ -6,7 +6,8 @@ export function purgeAssignmentRecords(database: Database, assignmentId: string)
   const rows = database.query<{ kind: string; id: string; parent: string | null; data: string }, []>("SELECT kind,id,parent,data FROM records").all();
   const ids = new Set([assignmentId]);
   const previous = rows.find(row => row.kind === "deleted_assignments" && row.id === assignmentId);
-  for (const id of previous ? JSON.parse(previous.data).context_ids ?? [] : []) ids.add(id);
+  const contextIds = new Set<string>(previous ? JSON.parse(previous.data).context_ids ?? [] : []);
+  for (const id of contextIds) ids.add(id);
   const removed = new Set<typeof rows[number]>();
   let changed = true;
   while (changed) {
@@ -15,12 +16,13 @@ export function purgeAssignmentRecords(database: Database, assignmentId: string)
       if (removed.has(row) || row.kind === "deleted_assignments") continue;
       const data = JSON.parse(row.data);
       if (!ids.has(row.id) && !(row.parent && ids.has(row.parent)) && ![data.implementation_id, data.run_id, data.worker_id].some(value => ids.has(value))) continue;
+      if (["runs", "workers"].includes(row.kind)) contextIds.add(row.id);
       removed.add(row); ids.add(row.id); changed = true;
     }
   }
   for (const row of removed) database.query("DELETE FROM records WHERE kind=? AND id=?").run(row.kind, row.id);
   purgeAssignmentReferences(database, ids);
-  database.query("INSERT OR REPLACE INTO records(kind,id,parent,data) VALUES('deleted_assignments',?,NULL,?)").run(assignmentId, JSON.stringify({ id: assignmentId, context_ids: [...ids].filter(id => id !== assignmentId) }));
+  database.query("INSERT OR REPLACE INTO records(kind,id,parent,data) VALUES('deleted_assignments',?,NULL,?)").run(assignmentId, JSON.stringify({ id: assignmentId, context_ids: [...contextIds] }));
 }
 
 /** Shared records can embed owned evidence; remove those copies and invalidate its approval. */

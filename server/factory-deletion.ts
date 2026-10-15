@@ -90,7 +90,7 @@ export class FactoryDeletion {
         }
       }
       purgeAssignmentReferences(this.store.db, ids);
-      this.store.put("deleted_assignments", { id, context_ids: [...new Set([...(this.store.get<{ context_ids: string[] }>("deleted_assignments", id)?.context_ids ?? []), ...contextIds, ...ids].filter(contextId => contextId !== id))] });
+      this.store.put("deleted_assignments", { id, context_ids: [...new Set([...(this.store.get<{ context_ids: string[] }>("deleted_assignments", id)?.context_ids ?? []), ...contextIds])] });
       this.store.put("implementations", { ...idea, title: "Delete pending", description: "", outcome: "none", pause: undefined, deletion: { ...idea.deletion!, reasons: [], local_cleanup: undefined } });
       this.store.put("assignment_deletions", { ...journal!, local_done: true });
     }).immediate();
