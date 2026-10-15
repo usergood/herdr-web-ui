@@ -29,9 +29,10 @@ async function acceptedPlan(f: Awaited<ReturnType<typeof capacityFixture>>, cap 
 
 describe("Automatic Ticket execution through authenticated HTTP", () => {
   it("dispatches the accepted frontier and checks and integrates a dependency chain at cap one without owner continuation", async () => {
-    const f = await capacityFixture();
+    const f = await capacityFixture({ advancingHeads: true });
     try {
       const { detail, run, plan } = await acceptedPlan(f);
+      expect((await f.api(`/runs/${run.id}/checks`, {}).then(r => r.json())).condition).toBe("passed");
       f.runs.get(run.id)!.condition = "ready";
       const started = await until(detail, d => d.workers.some((w: any) => w.condition === "working"));
       expect(started.workers.map((w: any) => w.ticket_id)).toEqual([plan.tickets[0].id]);
@@ -42,7 +43,7 @@ describe("Automatic Ticket execution through authenticated HTTP", () => {
       f.workers.get(next.workers[1].id)!.condition = "ready";
       const checked = await until(detail, d => d.automatic_execution?.[0]?.condition === "checked");
       expect(checked.tickets.map((t: any) => t.status)).toEqual(["done", "done"]);
-      expect(checked.checks.map((c: any) => c.condition)).toEqual(["passed", "passed", "passed"]);
+      expect(checked.checks.map((c: any) => c.condition)).toEqual(["passed", "passed", "passed", "passed"]);
       expect(checked.implementation.stage).toBe("review");
       expect(checked.approvals.map((a: any) => a.kind)).toEqual(["specification"]);
       expect(f.workerLaunches).toHaveLength(2);
@@ -58,7 +59,7 @@ describe("Automatic Ticket execution through authenticated HTTP", () => {
     try {
       const { detail, run } = await acceptedPlan(f, 3, true);
       f.loseNextWorker();
-      const running = await until(detail, d => d.workers.length === 2);
+      const running = await until(detail, d => d.workers.length === 2 && d.workers[1].condition === "working");
       expect(new Set(running.workers.map((w: any) => w.id)).size).toBe(2);
       f.restart();
       f.runs.get(run.id)!.condition = "ready";
@@ -101,7 +102,7 @@ describe("Automatic Ticket execution through authenticated HTTP", () => {
       const waiting = await until(detail, d => d.automatic_execution?.[0]?.condition === "waiting");
       expect(waiting.workers).toEqual([]);
       await f.api(`/implementations/${id}/questions/${question.id}/answer`, { revision: question.revision, answer: "Retain the frozen Specification" });
-      const started = await until(detail, d => d.workers.length === 1);
+      const started = await until(detail, d => d.workers.length === 1 && d.workers[0].condition === "working");
       f.workers.get(started.workers[0].id)!.condition = "ready";
       await until(detail, d => d.automatic_execution?.[0]?.reason?.includes("exact answered context"));
       expect((await detail()).checks).toEqual([]);
@@ -124,7 +125,7 @@ describe("Automatic Ticket execution through authenticated HTTP", () => {
       await gate.started;
       const { detail, run } = await acceptedPlan(f, 3);
       f.runs.get(run.id)!.condition = "ready";
-      const started = await until(detail, d => d.workers.length === 1);
+      const started = await until(detail, d => d.workers.length === 1 && d.workers[0].condition === "working");
       f.workers.get(started.workers[0].id)!.condition = "ready";
       await until(detail, d => d.automatic_execution?.[0]?.reason?.includes("build capacity"));
       expect((await detail()).checks).toEqual([]);
@@ -146,7 +147,7 @@ describe("Automatic Ticket execution through authenticated HTTP", () => {
     try {
       const { detail, run } = await acceptedPlan(f);
       f.runs.get(run.id)!.condition = "ready";
-      const started = await until(detail, d => d.workers.length === 1);
+      const started = await until(detail, d => d.workers.length === 1 && d.workers[0].condition === "working");
       f.integrationConflict(true);
       f.workers.get(started.workers[0].id)!.condition = "ready";
       const blocked = await until(detail, d => d.automatic_execution?.[0]?.condition === "blocked");
@@ -162,7 +163,7 @@ describe("Automatic Ticket execution through authenticated HTTP", () => {
     try {
       const { detail, run } = await acceptedPlan(f);
       f.runs.get(run.id)!.condition = "ready";
-      const started = await until(detail, d => d.workers.length === 1);
+      const started = await until(detail, d => d.workers.length === 1 && d.workers[0].condition === "working");
       f.workers.get(started.workers[0].id)!.condition = "ready";
       await gate.started;
       f.restart(); gate.release();
@@ -179,7 +180,7 @@ describe("Automatic Ticket execution through authenticated HTTP", () => {
     try {
       const { detail, run } = await acceptedPlan(f);
       f.runs.get(run.id)!.condition = "ready";
-      const started = await until(detail, d => d.workers.length === 1);
+      const started = await until(detail, d => d.workers.length === 1 && d.workers[0].condition === "working");
       f.offline(true);
       const blocked = await until(detail, d => d.automatic_execution?.[0]?.condition === "blocked", 40000);
       expect(blocked.automatic_execution[0]).toMatchObject({ attempts: 6, reason: expect.stringContaining("exhausted after six observations") });
@@ -195,9 +196,9 @@ describe("Automatic Ticket execution through authenticated HTTP", () => {
     try {
       const { id, detail, run } = await acceptedPlan(f, 1);
       f.runs.get(run.id)!.condition = "ready";
-      const first = await until(detail, d => d.workers.length === 1);
+      const first = await until(detail, d => d.workers.length === 1 && d.workers[0].condition === "working");
       f.workers.get(first.workers[0].id)!.condition = "ready";
-      const second = await until(detail, d => d.workers.length === 2);
+      const second = await until(detail, d => d.workers.length === 2 && d.workers[1].condition === "working");
       expect(second.workers[0].condition).toBe("completed");
       expect((await f.api(`/implementations/${id}/pause`, {})).status).toBe(200);
       const deadline = Date.now() + 600;

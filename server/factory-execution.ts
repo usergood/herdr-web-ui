@@ -104,6 +104,8 @@ export class FactoryExecution {
   private async checked(plan: FactoryExecutionPlan, worker: FactoryWorker | null): Promise<FactoryCheck | null> {
     const run = this.live(plan);
     if (!run) return null;
+    const current = worker ? { head: worker.head, workspace_hash: undefined } : await this.runtime.operation<{ head: string; workspace_hash: string }>(run, "head");
+    if (!this.live(plan)) return null;
     let check = this.store.list<FactoryCheck>("checks", run.id).filter(c => c.worker_id === (worker?.id ?? null)).at(-1);
     if (check && ["working", "interrupted"].includes(check.condition)) {
       check = await this.pipeline.reconcileCheck(run.id, check.id);
@@ -111,7 +113,7 @@ export class FactoryExecution {
       if (check.condition === "working") return null;
       if (check.condition === "interrupted") throw new FactoryError("check_interrupted", `Check ${check.id} remains interrupted; its build reservation is retained`, 409);
     }
-    if (!check || worker && check.head !== worker.head) check = await this.pipeline.check(run.id, worker?.id ?? null);
+    if (!check || check.head !== current.head || current.workspace_hash !== undefined && check.workspace_hash !== current.workspace_hash) check = await this.pipeline.check(run.id, worker?.id ?? null);
     if (!this.live(plan)) return null;
     if (["working", "interrupted"].includes(check.condition)) return null;
     if (check.condition !== "passed") throw new FactoryError("checks_failed", `Check ${check.id} failed: ${check.commands.filter(c => c.exit_code !== 0).map(c => c.args.join(" ")).join(", ") || "the checked workspace changed"}`, 409);
