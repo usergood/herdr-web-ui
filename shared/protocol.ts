@@ -1313,6 +1313,10 @@ export type FactoryRequestBody = FactoryRequests[keyof FactoryRequests];
  * POST .../github/sync -> ProjectGitHubOverview; imports issue/fix records and applies opted-in PR policies.
  * Sources retain current issue scope, revision history and fetch evidence; incomplete inventories
  * preserve the last complete source state and last_sync, with a visible problem.
+ * Issue sources include native_dependencies in their current revision and dependencies evidence:
+ * revision/source_revision, account/policy, fetched_at, complete/fresh and edges with resolution
+ * and blocker. Native identities may resolve only in the same Project/repository; resolved
+ * identity still has delivery_unverified. Outages retain edges with fresh:false. Prose creates no edges.
  * GET .../github/pulls/:number/files?head=:sha -> ProjectGitHubFiles, bounded read-only patch inventory.
  * POST .../github/pulls/:number/(merge|update|rerequest|import) -> ProjectGitHubOverview;
  * mutations require the displayed head, base and policy_revision, same origin and x-herdr-machine: 1.

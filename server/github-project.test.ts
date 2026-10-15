@@ -21,7 +21,8 @@ async function fixture(remoteOnly = false) {
 const args = process.argv.slice(2); const data = JSON.parse(readFileSync(${JSON.stringify(state)}, "utf8"));
 appendFileSync(${JSON.stringify(log)}, JSON.stringify({args, scoped: Boolean(process.env.GH_CONFIG_DIR), token: process.env.GITHUB_TOKEN ?? null}) + "\\n");
 let result; const endpoint = args[1];
-const issue = Array.isArray(data.issues) ? data.issues[0] : null;
+const issueNumber = Number(args.find(arg => arg.startsWith("query="))?.match(/issue[(]number:([0-9]+)/)?.[1]);
+const issue = Array.isArray(data.issues) ? data.issues.find(issue => issue.number === issueNumber) ?? data.issues[0] : null;
 const issueProof = issue ? { id: issue.node_id, title: issue.title, body: issue.body ?? "", state: issue.state.toUpperCase(), createdAt: "2026-09-30T12:00:00Z", updatedAt: issue.updated_at, lastEditedAt: data.last_edited_at ?? null } : null;
 const users = readFileSync(${JSON.stringify(log)}, "utf8").trim().split("\\n").map((line) => JSON.parse(line)).filter((call) => call.args[1] === "user").length;
 if (endpoint === "graphql" && data.pause || endpoint === "user" && data.pause_user === users) {
@@ -33,6 +34,11 @@ if (endpoint === "user") result = { login: "fictional-owner", id: 1042 };
 else if (endpoint?.includes("/events?")) result = data.events ?? [];
 else if (endpoint?.match(/issues[/][0-9]+$/)) result = data.issues.find(issue => endpoint.endsWith("/" + issue.number));
 else if (endpoint?.includes("/issues?")) result = data.pages ? data.pages[Number(new URL("https://api.github.invalid/" + endpoint).searchParams.get("page")) - 1] : endpoint.includes("page=1&") ? data.issues : [];
+else if (endpoint?.includes("/dependencies/blocked_by")) {
+  const number = endpoint.split("/issues/")[1].split("/")[0];
+  const page = Number(new URL("https://api.github.invalid/" + endpoint).searchParams.get("page"));
+  result = data.dependency_pages?.[number]?.[page - 1] ?? (page === 1 ? data.dependencies?.[number] ?? [] : []);
+}
 else if (endpoint === "repos/fictional/project") result = { full_name: "fictional/project" };
 else if (endpoint === "graphql") result = { data: { repository: { issue: issueProof, viewerPermission: "ADMIN", pullRequests: { nodes: data.pulls, pageInfo: { hasNextPage: false, endCursor: null } }, pullRequest: data.pull ?? data.pulls[0] } } };
 else if (endpoint?.endsWith("/merge")) result = { merged: !data.fail_merge, sha: "fictional-merged" };
@@ -240,7 +246,7 @@ test("an incomplete or malformed issue inventory preserves the last complete sou
     writeFileSync(f.state, JSON.stringify({ issues: [], pulls: [], pages }));
     expect((await f.post(route + "/sync", {})).status).toBe(409);
     const after = await f.get(route);
-    expect(after.sources).toEqual(before.sources);
+    expect(after.sources).toEqual(before.sources.map((source: { dependencies: object }) => ({ ...source, dependencies: { ...source.dependencies, fresh: false } })));
     expect(after.last_sync).toBe(before.last_sync);
     expect(after.problem).toBeTruthy();
     expect((await f.get("")).implementations).toHaveLength(1);
@@ -285,7 +291,7 @@ test("remote-only Projects retain issue sources and refuse checkout drift", asyn
   execFileSync("git", ["-C", f.repo, "remote", "set-url", "origin", "https://github.com/fictional/different.git"]);
   expect((await f.post(route + "/sync", {})).status).toBe(409);
   const after = await f.get(route);
-  expect(after.sources).toEqual(before.sources);
+  expect(after.sources).toEqual(before.sources.map((source: { dependencies: object }) => ({ ...source, dependencies: { ...source.dependencies, fresh: false } })));
   expect(after.last_sync).toBe(before.last_sync); expect(after.problem).toBeTruthy();
 });
 
@@ -441,4 +447,192 @@ test("later edit evidence invalidates retained approvals even when the visible i
   data.events.push(readinessEvent(3, "fictional-reviewer")); writeFileSync(f.state, JSON.stringify(data));
   const relabeled = (await f.post(route + "/sync", {})).body.sources[0];
   expect(relabeled.readiness.eligible).toBe(false); expect(relabeled.readiness.blockers).toContain("untrusted");
+});
+
+function dependencyIssue(number: number, repository = "fictional/project") {
+  return { number, node_id: `fictional-issue-${number}`, title: `Prerequisite ${number}`, body: "Acceptance: independent prerequisite", html_url: `https://github.com/${repository}/issues/${number}`, repository_url: `https://api.github.com/repos/${repository}`, state: "open", labels: [], updated_at: "2026-10-01T12:00:00Z" };
+}
+
+test("native issue dependencies link same-Project Assignments without claiming delivery or parsing prose", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const issue = JSON.parse(readFileSync(f.state, "utf8")).issues[0];
+  issue.body = "Blocked by #999. See #24 for context.";
+  writeFileSync(f.state, JSON.stringify({ issues: [issue, dependencyIssue(24)], pulls: [], dependencies: { 12: [dependencyIssue(24)] } }));
+  await f.post(route + "/configure", f.policy);
+  expect((await f.post(route + "/sync", {})).status).toBe(200);
+  const sources = (await f.get(route)).sources;
+  const source = sources.find((s: { number: number }) => s.number === 12);
+  const target = sources.find((s: { number: number }) => s.number === 24);
+  const evidence = (await f.get(`/implementations/${source.implementation_id}`)).github_sources[0].dependencies;
+  expect(evidence).toMatchObject({ complete: true, source_revision: source.revision, account_profile_id: f.policy.account_profile_id });
+  expect(evidence.revision).toMatch(/^[a-f0-9]{64}$/);
+  expect(Number.isFinite(Date.parse(evidence.fetched_at))).toBe(true);
+  expect(evidence.edges).toEqual([{ external_id: "fictional-issue-24", repository: "fictional/project", number: 24, url: "https://github.com/fictional/project/issues/24", state: "open", source_updated_at: "2026-10-01T12:00:00Z", implementation_id: target.implementation_id, resolution: "resolved", blocker: "delivery_unverified" }]);
+  expect(target.dependencies.edges).toEqual([]);
+  expect(source.current.native_dependencies).toHaveLength(1);
+  const before = source.revision;
+  writeFileSync(f.state, JSON.stringify({ issues: [issue, dependencyIssue(24)], pulls: [], dependencies: {} }));
+  await f.post(route + "/sync", {});
+  const after = (await f.get(route)).sources.find((s: { number: number }) => s.number === 12);
+  expect(after.dependencies.edges).toEqual([]);
+  expect(after.revision).not.toBe(before);
+});
+
+test("native dependency cycles remain blocked with their issue identities visible", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const issues = [dependencyIssue(12), dependencyIssue(24), dependencyIssue(36)];
+  writeFileSync(f.state, JSON.stringify({ issues, pulls: [], dependencies: { 12: [issues[1]], 24: [issues[2]], 36: [issues[0]] } }));
+  await f.post(route + "/configure", f.policy);
+  expect((await f.post(route + "/sync", {})).status).toBe(200);
+  const sources = (await f.get(route)).sources;
+  expect(sources).toHaveLength(3);
+  for (const source of sources) {
+    expect(source.dependencies.edges).toHaveLength(1);
+    expect(source.dependencies.edges[0]).toMatchObject({ resolution: "cyclic", blocker: "cyclic", implementation_id: null });
+    expect(source.dependencies.edges[0].url).toMatch(/^https:\/\/github.com\/fictional\/project\/issues\//);
+  }
+});
+
+test("missing, cross-repository and inconsistent native identities cannot resolve to executable Assignments", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const issue = dependencyIssue(12); const own = dependencyIssue(24);
+  writeFileSync(f.state, JSON.stringify({ issues: [issue, own], pulls: [], dependencies: { 12: [dependencyIssue(36), { ...dependencyIssue(24, "fictional/other"), node_id: "fictional-other-24" }, { ...own, number: 48, html_url: "https://github.com/fictional/project/issues/48" }] } }));
+  await f.post(route + "/configure", f.policy);
+  expect((await f.post(route + "/sync", {})).status).toBe(200);
+  const source = (await f.get(route)).sources.find((s: { number: number }) => s.number === 12);
+  expect(source.dependencies.edges.map((edge: { repository: string; number: number; resolution: string; implementation_id: string | null; blocker: string }) => [edge.repository, edge.number, edge.resolution, edge.implementation_id, edge.blocker])).toEqual([
+    ["fictional/other", 24, "cross_boundary", null, "cross_boundary"],
+    ["fictional/project", 36, "missing", null, "missing"],
+    ["fictional/project", 48, "ambiguous", null, "ambiguous"],
+  ]);
+});
+
+test("partial dependency pages and unavailable native evidence preserve links while preventing admission", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const issues = [dependencyIssue(12), dependencyIssue(24)];
+  writeFileSync(f.state, JSON.stringify({ issues, pulls: [], dependencies: { 12: [issues[1]] } }));
+  await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
+  const before = await f.get(route); const source = before.sources.find((s: { number: number }) => s.number === 12);
+  expect(source.dependencies.fresh).toBe(true);
+  for (const pages of [
+    [Array.from({ length: 30 }, (_, i) => dependencyIssue(100 + i)), { message: "Partial page unavailable" }],
+    [{ message: "Not Found" }],
+    [[null]],
+  ]) {
+    writeFileSync(f.state, JSON.stringify({ issues, pulls: [], dependency_pages: { 12: pages } }));
+    const failed = await f.post(route + "/sync", {});
+    expect(failed.status).toBe(409);
+    expect(failed.body).toMatchObject({ error: { code: "github_dependencies_incomplete" } });
+    const after = await f.get(route); const retained = after.sources.find((s: { number: number }) => s.number === 12);
+    expect(after.last_sync).toBe(before.last_sync); expect(after.problem).toBeTruthy();
+    expect(retained.current).toEqual(source.current);
+    expect(retained.dependencies).toMatchObject({ fresh: false, revision: source.dependencies.revision, fetched_at: source.dependencies.fetched_at, edges: source.dependencies.edges });
+    expect((await f.get(`/implementations/${source.implementation_id}`)).github_sources[0].dependencies.fresh).toBe(false);
+  }
+  writeFileSync(f.state, JSON.stringify({ issues, pulls: [], dependencies: { 12: [issues[1]] } }));
+  await f.post(route + "/sync", {});
+  expect((await f.get(route)).sources.find((s: { number: number }) => s.number === 12).dependencies.fresh).toBe(true);
+});
+
+test("a native dependency in another Project remains an explicit cross-Project blocker", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const otherRepo = join(f.root, "other-checkout");
+  execFileSync("git", ["clone", f.repo, otherRepo], { stdio: "ignore" });
+  execFileSync("git", ["-C", otherRepo, "remote", "set-url", "origin", "https://github.com/fictional/project.git"]);
+  const other = (await f.post("/projects", { name: "Other Project", path: otherRepo, machine_id: "local", provider: "codex", tracker: "app" })).body;
+  const otherRoute = `/projects/${other.id}/github`;
+  writeFileSync(f.state, JSON.stringify({ issues: [dependencyIssue(24)], pulls: [] }));
+  expect((await f.post(otherRoute + "/configure", f.policy)).status).toBe(200);
+  await f.post(otherRoute + "/sync", {});
+  const issue = dependencyIssue(12);
+  writeFileSync(f.state, JSON.stringify({ issues: [issue], pulls: [], dependencies: { 12: [dependencyIssue(24)] } }));
+  await f.post(route + "/configure", f.policy);
+  expect((await f.post(route + "/sync", {})).status).toBe(200);
+  expect((await f.get(route)).sources[0].dependencies.edges[0]).toMatchObject({ number: 24, resolution: "cross_boundary", implementation_id: null, blocker: "cross_boundary" });
+});
+
+test("a dependency disappearing from the current inventory cannot reuse its historical resolved identity", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const issues = [dependencyIssue(12), dependencyIssue(24)];
+  writeFileSync(f.state, JSON.stringify({ issues, pulls: [], dependencies: { 12: [issues[1]] } }));
+  await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
+  writeFileSync(f.state, JSON.stringify({ issues: [issues[0]], pulls: [], dependencies: { 12: [issues[1]] } }));
+  expect((await f.post(route + "/sync", {})).status).toBe(200);
+  const sources = (await f.get(route)).sources;
+  expect(sources.find((s: { number: number }) => s.number === 12).dependencies.edges[0]).toMatchObject({ resolution: "missing", blocker: "missing", implementation_id: null });
+  expect(sources.find((s: { number: number }) => s.number === 24).dependencies.fresh).toBe(false);
+});
+
+test("dependency closure refreshes delivery context without rewriting the dependent issue scope", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const issues = [dependencyIssue(12), dependencyIssue(24)];
+  writeFileSync(f.state, JSON.stringify({ issues, pulls: [], dependencies: { 12: [issues[1]] } }));
+  await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
+  const before = (await f.get(route)).sources.find((s: { number: number }) => s.number === 12);
+  Object.assign(issues[1]!, { state: "closed", updated_at: "2026-10-02T12:00:00Z" });
+  writeFileSync(f.state, JSON.stringify({ issues, pulls: [], dependencies: { 12: [issues[1]] } }));
+  await f.post(route + "/sync", {});
+  const after = (await f.get(route)).sources.find((s: { number: number }) => s.number === 12);
+  expect(after.current.revision).toBe(before.current.revision);
+  expect(after.dependencies.edges[0]).toMatchObject({ state: "closed", resolution: "resolved", blocker: "delivery_unverified" });
+  expect(after.history).toHaveLength(1);
+});
+
+test("Project scope changes invalidate dependency freshness before another sync", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
+  const before = (await f.get(route)).sources[0];
+  expect(before.dependencies.fresh).toBe(true);
+  expect((await f.post(`/projects/${f.project.id}/configure`, { account_bindings: { local: { github: f.policy.account_profile_id } } })).status).toBe(200);
+  const after = (await f.get(`/implementations/${before.implementation_id}`)).github_sources[0];
+  expect(after.dependencies.fresh).toBe(false);
+  expect(after.current).toEqual(before.current);
+});
+
+test("moving a prerequisite Assignment to another Project preserves source history and blocks the old Project edge", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const issues = [dependencyIssue(12), dependencyIssue(24)];
+  writeFileSync(f.state, JSON.stringify({ issues, pulls: [], dependencies: { 12: [issues[1]] } }));
+  await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
+  const target = (await f.get(route)).sources.find((s: { number: number }) => s.number === 24);
+  const otherRepo = join(f.root, "other-checkout"); execFileSync("git", ["clone", f.repo, otherRepo], { stdio: "ignore" });
+  const other = (await f.post("/projects", { name: "Other Project", path: otherRepo, machine_id: "local", provider: "codex", tracker: "app" })).body;
+  expect((await f.post(`/implementations/${target.implementation_id}/configure`, { project_id: other.id })).status).toBe(200);
+  expect((await f.post(route + "/sync", {})).status).toBe(200);
+  expect((await f.get(route)).sources.find((s: { number: number }) => s.number === 12).dependencies.edges[0]).toMatchObject({ resolution: "cross_boundary", implementation_id: null, blocker: "cross_boundary" });
+  const detail = await f.get(`/implementations/${target.implementation_id}`);
+  expect(detail.github_sources[0].id).toBe(target.id);
+  expect(detail.github_sources[0].current).toMatchObject({ title: "Prerequisite 24" });
+  expect(detail.github_sources[0].dependencies.fresh).toBe(false);
+});
+
+test("unrelated historical closed issues do not require dependency access for current imports", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const closed = { ...dependencyIssue(24), state: "closed" };
+  writeFileSync(f.state, JSON.stringify({ issues: [dependencyIssue(12), closed], pulls: [], dependency_pages: { 24: [{ message: "Historical evidence unavailable" }] } }));
+  await f.post(route + "/configure", f.policy);
+  expect((await f.post(route + "/sync", {})).status).toBe(200);
+  expect((await f.get(route)).sources.map((source: { number: number }) => source.number)).toEqual([12]);
+});
+
+test("native relationship edits invalidate readiness and owner approval checks the displayed relationship scope", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy);
+  const policy = (await f.post(route + "/readiness", { expected_revision: null, account_profile_id: f.policy.account_profile_id, triage_labels: {}, blocked_label: "blocked" })).body;
+  const data = JSON.parse(readFileSync(f.state, "utf8")); data.issues[0].labels = [{ name: "ready-for-agent" }]; data.issues.push(dependencyIssue(24)); data.events = [readinessEvent()];
+  writeFileSync(f.state, JSON.stringify(data));
+  let source = (await f.post(route + "/sync", {})).body.sources.find((source: { number: number }) => source.number === 12);
+  expect(source.readiness.eligible).toBe(true); expect(source.dependencies.edges).toEqual([]);
+  data.dependencies = { 12: [dependencyIssue(24)] }; writeFileSync(f.state, JSON.stringify(data));
+  source = (await f.post(route + "/sync", {})).body.sources.find((source: { number: number }) => source.number === 12);
+  expect(source.readiness.eligible).toBe(false); expect(source.readiness.blockers).toContain("stale");
+  expect(source.dependencies.edges[0]).toMatchObject({ number: 24, blocker: "delivery_unverified" });
+  expect((await f.post(route + "/issues/12/approve", { source_revision: source.revision, policy_revision: policy.revision })).status).toBe(200);
+  expect((await f.get(route)).sources.find((source: { number: number }) => source.number === 12).readiness.eligible).toBe(true);
+  // A relationship edited after the displayed source loaded must not be approved silently.
+  data.dependencies = {}; writeFileSync(f.state, JSON.stringify(data));
+  expect((await f.post(route + "/issues/12/approve", { source_revision: source.revision, policy_revision: policy.revision })).status).toBe(409);
+  data.events.push(readinessEvent(2, "fictional-owner", "2026-10-02T12:00:00Z")); data.issues[0].updated_at = "2026-10-02T12:00:00Z"; writeFileSync(f.state, JSON.stringify(data));
+  source = (await f.post(route + "/sync", {})).body.sources.find((source: { number: number }) => source.number === 12);
+  expect(source.readiness.eligible).toBe(true); expect(source.dependencies.edges).toEqual([]);
 });

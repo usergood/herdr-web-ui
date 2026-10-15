@@ -19,6 +19,7 @@ writeFileSync(fixture, `if (process.argv.includes("login")) {
   process.stdout.write("First copy your one-time code: DEMO-1234\\nOpen https://github.com/login/device\\n"); process.stdin.once("data", () => process.exit(0));
 } else if (process.argv.includes("user/keys")) process.stdout.write(JSON.stringify(process.argv.includes("POST") ? { id: 1042, key: process.argv.find((arg) => arg.startsWith("key=")).slice(4) } : []));
 else if (process.argv[2] === "api" && process.argv[3] === "repos/fictional/project") process.stdout.write(JSON.stringify({full_name:"fictional/project",default_branch:"main"}));
+else if (process.argv[2] === "api" && process.argv[3]?.includes("/dependencies/blocked_by")) process.stdout.write("[]");
 else if (process.argv[2] === "api" && process.argv[3]?.includes("/issues?")) process.stdout.write(JSON.stringify([${JSON.stringify(fictionalGitHubIssue)}]));
 else if (process.argv[2] === "api" && process.argv[3]?.includes("/files?")) process.stdout.write(JSON.stringify([{ filename: "README.md", status: "modified", additions: 1, deletions: 0, patch: "@@ -1 +1,2 @@\\n # Fictional Project\\n+An example improvement." }]));
 else if (process.argv[2] === "api" && process.argv[3] === "graphql") process.stdout.write(JSON.stringify({ data: { repository: { pullRequest: ${JSON.stringify(fictionalGitHubPull)}, pullRequests: { nodes: [${JSON.stringify(fictionalGitHubPull)}], pageInfo: { hasNextPage: false, endCursor: null } } } } }));
