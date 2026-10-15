@@ -143,7 +143,11 @@ try {
       await actions.getByRole("button", { name: "Accept reviewed head", exact: true }).click();
       await actions.getByText("Reviewed head accepted. Delivery is still pending.", { exact: true }).waitFor();
       assert.equal((await reviewed.json(path)).implementation.stage, "review");
-      await page.goto(reviewed.origin + `/#projects/${project.id}/settings`);
+      await page.goto(reviewed.origin + `/#projects/${project.id}`);
+      await page.getByRole("heading", { name: project.name, exact: true }).waitFor();
+      const drawer = page.getByRole("button", { name: "Open workspace list", exact: true });
+      if (await drawer.isVisible()) await drawer.click();
+      await page.getByRole("button", { name: `Project settings for ${project.name}`, exact: true }).click();
       await page.getByRole("tab", { name: "GitHub", exact: true }).click();
       const queue = page.getByRole("region", { name: "Issue queue", exact: true });
       await queue.getByText("Project implementation slots available: 1", { exact: true }).waitFor();
