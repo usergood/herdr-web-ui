@@ -1,0 +1,3 @@
+# Approve the Specification once for automatic execution
+
+The owner expects a finished result after accepting a Specification, so acceptance authorizes internal Ticket/test planning and automatic execution through checked, independently reviewed PR publication without repeated planning or continuation approvals. This replaces manual gates with revision-bound authority while retaining native permissions, dependencies, configured checks, new-scope questions and observable bounded recovery; merge authority comes separately from Human Review. See the [accepted design](../factory/automatic-dispatch-pause-delete-design.md); this decision is an implementation target, not evidence of deployed automation.

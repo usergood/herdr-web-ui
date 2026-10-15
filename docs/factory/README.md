@@ -16,6 +16,10 @@ no longer consumes an execution slot. Continuing the chat counts it again. Pendi
 questions, background work and uncertain/disconnected execution retain capacity. Ready does
 not accept an implementation or integrate a Ticket; those still require the owner and checks.
 
+## Accepted automatic workflow design
+
+The [Q1–Q20 automatic workflow design](automatic-dispatch-pause-delete-design.md) records the accepted Specification for global Agent-context scheduling, one-operation Specification approval, automatic execution, Pause/Delete, named conversations and integrated Human Review with conditional merge authority. It supersedes conflicting earlier proposals, including repeated planning approvals and retained-history Discard. These are implementation targets; the operational descriptions in this guide and runtime.md remain current until the corresponding behavior ships.
+
 ## Interface cleanup design
 
 The [interface-cleanup design](interface-cleanup-design.md) records the agreed five-lane board, delivery-based completion, planned GitHub issue batches, opt-in implementation queue and scheduled upstream intake. These are planned changes pending Specification, Tickets and implementation. Existing runtime behavior remains documented below. Confirmed terms live in the [root glossary](../../GLOSSARY.md); the older proposal remains in the planning history.
