@@ -124,7 +124,8 @@ export class FactoryContinuation {
       return run;
     } catch (error) {
       if (this.stopped) throw error;
-      if (error instanceof FactoryError && error.code === "capacity_exhausted") {
+      const predecessorFinished = !source || ["completed", "cancelled", "failed"].includes(this.store.get<FactoryRun>("runs", source.id)?.condition ?? "");
+      if (error instanceof FactoryError && (error.code === "capacity_exhausted" || predecessorFinished && ["machine_offline", "machine_disconnected", "remote_factory_unavailable"].includes(error.code))) {
         this.store.put("workflow_continuations", { ...record, condition: "queued", queued_request: { ...body, action }, problem: null }, id);
         return this.runtime.requestStart(id, { ...body, action }, origin);
       }

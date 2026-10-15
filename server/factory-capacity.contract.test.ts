@@ -157,6 +157,18 @@ describe("global factory capacity through authenticated HTTP", () => {
       expect((await f.api("").then(r => r.json())).capacity.waiting).toEqual([]);
     } finally { f.close(); }
   });
+  it("retains a new planning request while its Machine reconnects", async () => {
+    const f = await capacityFixture();
+    try {
+      const id = await f.assignment("Offline planning"); f.offline(true);
+      const request = await f.api(`/implementations/${id}/continue`, { action: "grill-with-docs", run_id: null, idempotency_key: "offline-planning" });
+      expect(request.status).toBe(202);
+      expect((await request.json()).condition).toBe("queued");
+      f.offline(false);
+      await eventually(() => f.api(`/implementations/${id}`).then(r => r.json()), d => d.runs[0]?.condition === "working");
+      expect(f.launches).toHaveLength(1);
+    } finally { f.close(); }
+  });
   it("admits one shared extra planning context across Projects, providers and Machines", async () => {
     const f = await capacityFixture();
     const start = (id: string, action: string) => f.api(`/implementations/${id}/runs`, { action, idempotency_key: "start" });
