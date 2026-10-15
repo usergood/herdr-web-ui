@@ -1,5 +1,5 @@
 import { FactoryWorkflow } from "./factory-workflow.ts";
-import { prepareIssuePlan } from "./issue-planning.ts";
+import { prepareIssuePlan, reconcileIssuePlan } from "./issue-planning.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -65,7 +65,7 @@ export class ProjectGitHub {
     const planning = this.store.get<import("../shared/issue-planning.ts").IssuePlanning>("github_plans", source.id);
     const workflow = new FactoryWorkflow(this.store);
     const current = planning && readiness.eligible && planning.source_revision === source.revision && planning.authorization.approval.id === readiness.approval?.id && (planning.condition !== "prepared" || planning.specification_id === workflow.specification(source.implementation_id)?.id && planning.graph_hash === workflow.graphHash(source.implementation_id) && (!workflow.questions(source.implementation_id).length || planning.consumed_question_revision === workflow.questionRevision(source.implementation_id)));
-    return { ...source, readiness, planning: planning ? { ...planning, condition: current ? planning.condition : "stale" } : undefined };
+    return { ...source, readiness, planning: planning ? { ...planning, condition: planning.condition === "needs_you" && workflow.questions(source.implementation_id).some(question => question.answer === null) ? "needs_you" : current ? planning.condition : "stale" } : undefined };
   }
   private project(id: string): FactoryProject {
     const project = this.store.get<FactoryProject>("projects", id);
@@ -474,6 +474,7 @@ export class ProjectGitHub {
           const observed: ProjectGitHubIssueRevision = { ...content, revision, fetched_at: new Date().toISOString(), account_profile_id: policy.account_profile_id, policy_revision: policy.revision };
           const source = this.import(id, issue.node_id, issue.number, revision, issue.title, `GitHub issue: ${issue.html_url}\n\n${issue.body ?? ""}\n\nProject review context:\n${policy.review_context}`, issue.html_url, issue.state, "issue", observed);
           await this.collectReadiness(policy, scope, source);
+          reconcileIssuePlan(this.store, source);
         }
         const sources = this.store.list<ProjectGitHubSource>("github_sources", id).filter(source => source.kind === "issue");
         const cyclic = (sourceId: string, targetId: string): boolean => {

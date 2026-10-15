@@ -162,6 +162,9 @@ describe("factory records", () => {
       expect(source.current.native_dependencies).toEqual([{ external_id: "fictional-dependency-24", repository: "fictional/project", number: 24, url: "https://github.com/fictional/project/issues/24" }]);
       expect(source.current.revision).toMatch(/^[a-f0-9]{64}$/); expect(source.history).toEqual([source.current]);
       expect(Number.isFinite(Date.parse(source.current.fetched_at))).toBe(true);
+      const unready = await fetch(`http://localhost:${app.port}/api/factory${route}/issues/12/prepare`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1", "x-herdr-machine": "1" }, body: JSON.stringify({ source_revision: source.revision }) });
+      expect(unready.status).toBe(409);
+      expect(await unready.json()).toEqual({ error: { code: "issue_not_ready", message: "Resolve current issue readiness before reusing planning" } });
       const detail = await request(`/implementations/${source.implementation_id}`);
       expect(detail.github_sources).toEqual(synced.sources);
       expect(detail.github_sync).toEqual({ last_sync: synced.last_sync, problem: null });

@@ -7,6 +7,16 @@
  * keep their English names.
  */
 export const TR: Record<string, string> = {
+  "Issue planning": "Konu planlaması",
+  "Planning prepared": "Plan hazırlandı",
+  "Planning changed. Review the current scope and readiness.": "Plan değişti. Geçerli kapsamı ve hazırlık durumunu inceleyin.",
+  "Reused approved app plan": "Onaylı uygulama planı yeniden kullanıldı",
+  "Reused trusted issue plan": "Güvenilir konu planı yeniden kullanıldı",
+  "Required checks and independent Standards and Spec reviews still apply.": "Gerekli kontroller ve bağımsız Standards ile Spec incelemeleri geçerliliğini korur.",
+  "Reused planning": "Yeniden kullanılan planlama",
+  "Declared dependencies": "Bildirilen bağımlılıklar",
+  "Blocked by: {tickets}": "Engelleyen: {tickets}",
+  "Prepare issue plan": "Konu planını hazırla",
   "Continue workflow": "İş akışına devam et",
   "Native verification will run before implementation.": "Uygulamadan önce yerel doğrulama çalıştırılacak.",
   "Review and continue from this chat. Finished steps keep their history.": "Bu sohbetten inceleyip devam edin. Tamamlanan adımların geçmişi korunur.",

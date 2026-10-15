@@ -8,6 +8,16 @@
  * in English. Placeholders in braces keep their English names.
  */
 export const JA: Record<string, string> = {
+  "Issue planning": "Issue の計画",
+  "Planning prepared": "計画を準備しました",
+  "Planning changed. Review the current scope and readiness.": "計画が変更されました。現在の範囲と準備状況を確認してください。",
+  "Reused approved app plan": "承認済みのアプリ計画を再利用",
+  "Reused trusted issue plan": "信頼済みの Issue 計画を再利用",
+  "Required checks and independent Standards and Spec reviews still apply.": "必須チェックと独立した Standards・Spec レビューは引き続き必要です。",
+  "Reused planning": "再利用した計画",
+  "Declared dependencies": "明示された依存関係",
+  "Blocked by: {tickets}": "ブロック元: {tickets}",
+  "Prepare issue plan": "Issue 計画を準備",
   "Continue workflow": "ワークフローを続行",
   "Native verification will run before implementation.": "実装の前にネイティブ検証を実行します。",
   "Review and continue from this chat. Finished steps keep their history.": "このチャットで確認して続行してください。完了したステップの履歴は保持されます。",

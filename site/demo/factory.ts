@@ -57,7 +57,7 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
     const next = { ...(previous ?? record()), ...(body.archived && pane ? { terminal_id: pane.terminal_id, session_ref: nativeSessionRef(pane), title: pane.label || pane.title || pane.pane_id } : {}), machine_id: String(body.machine_id), pane_id: String(body.pane_id), archived_at: body.archived ? new Date().toISOString() : null };
     paneArchives = [...paneArchives.filter((a) => a.id !== previous?.id), next]; save(); return json(next);
   }
-  const githubRoute = /^\/api\/factory\/projects\/([^/]+)\/github(?:\/(configure|sync|readiness)|\/pulls\/(\d+)\/(merge|update|rerequest|import|files)|\/issues\/(\d+)\/approve)?$/.exec(path);
+  const githubRoute = /^\/api\/factory\/projects\/([^/]+)\/github(?:\/(configure|sync|readiness)|\/pulls\/(\d+)\/(merge|update|rerequest|import|files)|\/issues\/(\d+)\/(approve|prepare))?$/.exec(path);
   if (githubRoute) {
     const id = githubRoute[1]!; if (!projects.some((project) => project.id === id)) return failure("not_found", "Fictional Project not found", 404);
     const view: ProjectGitHubOverview = githubViews.get(id) ?? { policy: null, pulls: [], sources: [], mutations: [], last_sync: null, problem: null };
@@ -79,6 +79,7 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
       view.readiness_policy = { ...record(), id, project_id: id, revision: crypto.randomUUID(), repository: view.policy.repository, project_scope: view.policy.project_scope, account_profile_id: account.id, owner: account.verified_identity!, triage_labels: labels, blocked_label: String(body.blocked_label) } satisfies ProjectReadinessPolicy;
       githubViews.set(id, view); save(); return json(view.readiness_policy);
     }
+    if (githubRoute[5] && githubRoute[6] === "prepare") return failure("demo_unavailable", "Issue plan preparation needs retained trusted planning; the demo keeps fictional records only", 409);
     if (githubRoute[5]) {
       const source = view.sources.find(source => source.kind === "issue" && source.number === Number(githubRoute[5]));
       const policy = view.readiness_policy;

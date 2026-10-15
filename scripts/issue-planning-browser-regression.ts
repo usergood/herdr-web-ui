@@ -15,7 +15,6 @@ writeFileSync(join(repo, "README.md"), "# Fictional issue source\n");
 for (const args of [["add", "."], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "fixture"], ["remote", "add", "origin", "https://github.com/fictional/project.git"]]) execFileSync("git", ["-C", repo, ...args], { stdio: "ignore" });
 const responses = join(root, "issues.json");
 const issue = { repository_url: "https://api.github.com/repos/fictional/project", number: 12, node_id: "fictional-issue", title: "Fictional source title", body: "## Scope\nShow a greeting.\n\n## Acceptance criteria\nShow hello.\n\n## Dependencies\nNone.", labels: [{ name: "ready-for-agent" }], state: "open", updated_at: "2026-10-01T12:00:00Z", html_url: "https://github.com/fictional/project/issues/12" };
-const prerequisite = { ...issue, number: 24, node_id: "fictional-issue-24", title: "Prerequisite source", html_url: "https://github.com/fictional/project/issues/24" };
 function saveIssues(dependencies: Record<string, unknown[]> = {}) { writeFileSync(responses, JSON.stringify({ issues: [issue], dependencies })); }
 saveIssues();
 const cli = join(root, "gh.mjs");

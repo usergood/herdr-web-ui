@@ -6,6 +6,16 @@
  * braces keep their English names.
  */
 export const KO: Record<string, string> = {
+  "Issue planning": "이슈 계획",
+  "Planning prepared": "계획 준비 완료",
+  "Planning changed. Review the current scope and readiness.": "계획이 변경되었습니다. 현재 범위와 준비 상태를 검토하세요.",
+  "Reused approved app plan": "승인된 앱 계획 재사용",
+  "Reused trusted issue plan": "신뢰할 수 있는 이슈 계획 재사용",
+  "Required checks and independent Standards and Spec reviews still apply.": "필수 검사와 독립적인 Standards 및 Spec 검토는 계속 적용됩니다.",
+  "Reused planning": "재사용된 계획",
+  "Declared dependencies": "명시된 종속성",
+  "Blocked by: {tickets}": "차단 사유: {tickets}",
+  "Prepare issue plan": "이슈 계획 준비",
   "Continue workflow": "워크플로 계속",
   "Native verification will run before implementation.": "구현 전에 네이티브 검증이 실행됩니다.",
   "Review and continue from this chat. Finished steps keep their history.": "이 채팅에서 검토하고 계속하세요. 완료된 단계의 기록은 보존됩니다.",

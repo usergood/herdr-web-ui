@@ -26,7 +26,7 @@ test("readiness endpoints retain their public contract and require explicit owne
     const route = `/projects/${project.id}/github`;
     await post(route + "/configure", { expected_revision: null, repository: "fictional/project", account_profile_id: account.id, sync_enabled: false, import_issues: true, import_fixes: false, auto_update: false, auto_merge: false, trusted_reviewers: ["fictional-reviewer"], required_checks: [], review_context: "Fictional standards", poll_minutes: 5 });
     const config = { expected_revision: null, account_profile_id: account.id, triage_labels: {}, blocked_label: "blocked" };
-    for (const path of ["/readiness", "/issues/1/approve"]) {
+    for (const path of ["/readiness", "/issues/1/approve", "/issues/1/prepare"]) {
       const refused = await post(route + path, config, { ...headers, "x-herdr-machine": "" });
       expect(refused.status).toBe(403); expect(await refused.json()).toEqual({ error: { code: "invalid_origin", message: "Use GitHub controls from this app" } });
       expect((await post(route + path, config, { ...headers, origin: "https://fictional.invalid" })).status).toBe(403);
@@ -38,6 +38,11 @@ test("readiness endpoints retain their public contract and require explicit owne
     expect(synced.sources[0]!.readiness).toMatchObject({ eligible: false, blockers: ["evidence_missing"], approval: null });
     const approved = await post(route + "/issues/1/approve", { source_revision: synced.sources[0]!.revision, policy_revision: policy.revision }); expect(approved.status).toBe(200);
     expect((await approved.json() as ProjectGitHubOverview).sources[0]!.readiness).toMatchObject({ eligible: true, blockers: [], approval: { provenance: "app_owner", source_revision: synced.sources[0]!.revision, policy_revision: policy.revision } });
+    const prepare = await post(route + "/issues/1/prepare", { source_revision: synced.sources[0]!.revision });
+    expect(prepare.status).toBe(200);
+    const planning = (await prepare.json() as ProjectGitHubOverview).sources[0]!.planning;
+    expect(planning).toMatchObject({ condition: "needs_you", origin: "issue_body", content: issue.body, source_revision: synced.sources[0]!.revision, authorization: { checks_required: true, independent_reviews: ["standards", "spec"], approval: { provenance: "app_owner" } } });
+    expect(planning!.question_ids.length).toBeGreaterThan(0);
     const detail = await fetch(origin + `/api/factory/implementations/${synced.sources[0]!.implementation_id}`, { headers }).then(response => response.json());
     expect(detail.runs).toEqual([]); expect(detail.implementation.outcome).toBe("none");
   } finally { app.stop(); rmSync(root, { recursive: true, force: true }); }

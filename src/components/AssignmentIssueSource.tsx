@@ -1,4 +1,5 @@
 import type { GitHubDependencyEdge, ProjectGitHubIssueRevision, ProjectGitHubSource } from "../../shared/github-project.ts";
+import type { FactoryTicket } from "../../shared/factory.ts";
 import { useT } from "../lib/i18n.ts";
 import { IssueReadiness } from "./IssueReadiness.tsx";
 import { accountRequest } from "../lib/accountsApi.ts";
@@ -49,7 +50,7 @@ function NativeDependencies({ source }: { source: ProjectGitHubSource }) {
   </section>;
 }
 
-export function AssignmentIssueSource({ sources, problem, busy, perform }: { sources: ProjectGitHubSource[]; problem: string | null; busy: boolean; perform: (action: () => Promise<void>) => Promise<void> }) {
+export function AssignmentIssueSource({ sources, problem, busy, perform, tickets, questionRevision }: { sources: ProjectGitHubSource[]; problem: string | null; busy: boolean; perform: (action: () => Promise<void>) => Promise<void>; tickets: FactoryTicket[]; questionRevision: string }) {
   const t = useT(); const issues = sources.filter(source => source.kind === "issue");
   if (!issues.length) return null;
   return <section className="factory-section assignment-issue-source" aria-label={t("GitHub issue source")}>
@@ -65,6 +66,25 @@ export function AssignmentIssueSource({ sources, problem, busy, perform }: { sou
         <button className="btn" disabled={busy} onClick={() => void perform(async () => { await accountRequest(`/projects/${source.project_id}/github/issues/${source.number}/approve`, { source_revision: source.revision, policy_revision: source.readiness_evidence!.policy_revision }); })}>{t("Approve this issue revision")}</button>
       </>}
       <NativeDependencies source={source} />
+      {(source.readiness?.eligible || source.planning) && <section aria-label={t("Issue planning")} className="assignment-issue-planning">
+        <h4>{t("Issue planning")}</h4>
+        {source.planning && <>
+          <p role="status">{source.planning.condition === "prepared" ? t("Planning prepared") : source.planning.condition === "needs_you" ? t("Needs you") : t("Planning changed. Review the current scope and readiness.")}</p>
+          <p>{source.planning.origin === "app_plan" ? t("Reused approved app plan") : t("Reused trusted issue plan")}</p>
+          <p>{t("Approved by {login}", { login: source.planning.authorization.approval.actor.login })} · {source.planning.authorization.approval.provenance === "app_owner" ? t("Owner approval in app") : t("Trusted GitHub label")}</p>
+          <p>{t("Required checks and independent Standards and Spec reviews still apply.")}</p>
+          <details><summary>{t("Reused planning")}</summary><Markdown>{source.planning.content}</Markdown>
+            <p>{source.planning.source_revision}</p><p>{source.planning.graph_hash}</p>
+            <p>{t("Declared dependencies")}</p><Markdown>{source.planning.dependencies}</Markdown>
+            <p>{t("Testing seams")}</p><Markdown>{source.planning.testing_seams}</Markdown>
+          </details>
+          {source.planning.condition === "prepared" && <div><h4>{t("Tickets")}</h4>{tickets.filter(ticket => ticket.specification_id === source.planning!.specification_id).map(ticket => <article key={ticket.id}>
+            <strong>{ticket.title}</strong><Markdown>{ticket.acceptance}</Markdown>
+            {!!ticket.dependencies.length && <p>{t("Blocked by: {tickets}", { tickets: ticket.dependencies.map(id => tickets.find(ticket => ticket.id === id)?.title ?? id).join(", ") })}</p>}
+          </article>)}</div>}
+        </>}
+        {source.readiness?.eligible && source.planning?.condition !== "prepared" && <button className="btn" disabled={busy} onClick={() => void perform(async () => { await accountRequest(`/projects/${source.project_id}/github/issues/${source.number}/prepare`, { source_revision: source.revision, question_revision: questionRevision }); })}>{t("Prepare issue plan")}</button>}
+      </section>}
       {!!source.history?.length && <details><summary>{t("Source history")}</summary>
         {source.history.map((revision, index) => <IssueRevision key={`${revision.revision}:${index}`} revision={revision} />)}
       </details>}

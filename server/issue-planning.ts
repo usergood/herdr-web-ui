@@ -33,9 +33,22 @@ function ticketBreakdown(text: string): PlannedTicket[] | null {
 /** Conservative structured-plan reader. Source text is data, never agent instructions. */
 function sections(content: string): Record<string, string> {
   const result: Record<string, string> = {};
-  const headings = [...content.matchAll(/^##\s+([^\n]+)\r?$/gm)];
-  for (const [index, heading] of headings.entries()) result[heading[1]!.trim().toLowerCase()] = content.slice(heading.index! + heading[0].length, headings[index + 1]?.index ?? content.length).trim();
+  const aliases: Record<string, string> = { scope: "scope", "what to build": "scope", "acceptance criteria": "acceptance criteria", dependencies: "dependencies", "testing seams": "testing seams", "test plan": "testing seams", tickets: "tickets" };
+  const headings = [...content.matchAll(/^#{1,6}\s+([^\n]+)\r?$/gm)];
+  for (const [index, heading] of headings.entries()) {
+    const key = aliases[heading[1]!.trim().toLowerCase()];
+    if (key) result[key] = key in result ? "" : content.slice(heading.index! + heading[0].length, headings[index + 1]?.index ?? content.length).trim();
+  }
   return result;
+}
+
+/** A known edit to selected scope asks the owner while preserving the previous graph. */
+export function reconcileIssuePlan(store: FactoryStore, source: ProjectGitHubSource): void {
+  const prior = store.get<IssuePlanning>("github_plans", source.id);
+  if (prior?.condition !== "prepared" || !source.current || prior.trusted_scope.body === source.current.body && prior.trusted_scope.title === source.current.title && JSON.stringify(prior.trusted_scope.native_dependencies) === JSON.stringify(source.current.native_dependencies)) return;
+  const workflow = new FactoryWorkflow(store);
+  const question = workflow.mutate(source.implementation_id, "questions", { question: "Resolve only these planning decisions: changed scope or testing seams. Review the current issue plan and renew trusted readiness, or retain an explicitly approved app plan. Answers alone do not authorize changed scope." }) as import("../shared/factory.ts").FactoryQuestion;
+  store.put("github_plans", { ...prior, condition: "needs_you", question_ids: [...prior.question_ids, question.id] }, source.implementation_id);
 }
 
 /** Selected planning only: this operation never launches a Run. */
@@ -54,13 +67,14 @@ export function prepareIssuePlan(store: FactoryStore, source: ProjectGitHubSourc
     const plan = sections(content);
     const breakdown = plan.tickets ? ticketBreakdown(plan.tickets) : null;
     const id = source.implementation_id;
-    const missing = ["scope", "acceptance criteria", "dependencies", "testing seams"].filter(key => !plan[key] || /\b(?:TBD|TODO)\b|\?/.test(plan[key]!));
+    const retainedGraph = appPlan && workflow.tickets(id).length && workflow.approved(id, "ticket_graph", workflow.graphHash(id));
+    const missing = ["scope", "acceptance criteria", "dependencies", "testing seams"].filter(key => !plan[key] || /\b(?:TBD|TODO|undecided|to be decided)\b/.test(plan[key]!));
     if (prior?.condition === "prepared" && (prior.trusted_scope.body !== source.current.body || prior.content !== content)) missing.push("changed scope or testing seams");
-    if (plan.tickets && !breakdown || content.length > 20_000 && !breakdown) missing.push("an unambiguous bounded Ticket breakdown with acceptance criteria and acyclic dependency keys");
+    if (!retainedGraph && ("tickets" in plan || content.length > 20_000) && !breakdown) missing.push("an unambiguous bounded Ticket breakdown with acceptance criteria and acyclic dependency keys");
     if (missing.length || pending.length) {
       const questionIds = prior?.question_ids ?? [];
       const prompt = `Resolve only these planning decisions: ${missing.join(", ")}. Update the issue plan and renew trusted readiness, or retain an explicitly approved app plan. Answers alone do not authorize changed scope.`;
-      if (missing.length && !questions.some(question => questionIds.includes(question.id) && question.answer === null && question.question === prompt)) {
+      if (missing.length && !questions.some(question => questionIds.includes(question.id) && question.answer === null)) {
         const question = workflow.mutate(id, "questions", { question: prompt }) as import("../shared/factory.ts").FactoryQuestion;
         questionIds.push(question.id);
       }
@@ -71,7 +85,6 @@ export function prepareIssuePlan(store: FactoryStore, source: ProjectGitHubSourc
     const answeredRevision = workflow.questionRevision(id);
     if (questions.length && questionRevision !== answeredRevision) throw new FactoryError("answers_unconsumed", "Consume the exact answered question revision before preparing planning", 409);
     const specification = appPlan ?? workflow.mutate(id, "specifications", { content }) as import("../shared/factory.ts").SpecificationVersion;
-    const retainedGraph = appPlan && workflow.tickets(id).length && workflow.approved(id, "ticket_graph", workflow.graphHash(id));
     const planned = breakdown ?? [{ key: "scope", title: source.current.title.slice(0, 200), acceptance: content, dependencies: [] }];
     const keys = new Map(planned.map(ticket => [ticket.key, store.record().id]));
     const tickets: FactoryTicket[] = planned.map(ticket => ({ ...store.record(), id: keys.get(ticket.key)!, implementation_id: id, specification_id: specification.id, title: ticket.title, acceptance: ticket.acceptance, dependencies: [...new Set(ticket.dependencies)].map(key => keys.get(key)!), status: "proposed", tracker_reference: null }));
@@ -80,7 +93,7 @@ export function prepareIssuePlan(store: FactoryStore, source: ProjectGitHubSourc
       store.put("graphs", { id, specification_id: specification.id, hash: graphHash, tickets }, id);
       store.put("graph_versions", { ...store.record(), specification_id: specification.id, hash: graphHash, tickets }, id);
     }
-    const prepared: IssuePlanning = { ...store.record(), id: source.id, implementation_id: id, source_id: source.id, source_revision: source.revision, trusted_scope: source.current, condition: "prepared", origin: appPlan ? "app_plan" : "issue_body", content, dependencies: plan.dependencies, testing_seams: plan["testing seams"], specification_id: specification.id, graph_hash: graphHash, question_ids: prior?.question_ids ?? [], consumed_question_revision: questions.length ? answeredRevision : null, ...(appPlan ? { app_approval_ids: store.list<import("../shared/factory.ts").FactoryApproval>("approvals", id).filter(approval => approval.revision === specification.id || approval.kind === "ticket_graph" && approval.revision === graphHash).map(approval => approval.id) } : {}), authorization: { approval, checks_required: true, independent_reviews: ["standards", "spec"] } };
+    const prepared: IssuePlanning = { ...store.record(), id: source.id, implementation_id: id, source_id: source.id, source_revision: source.revision, trusted_scope: source.current, condition: "prepared", origin: appPlan ? "app_plan" : "issue_body", content, dependencies: plan.dependencies!, testing_seams: plan["testing seams"]!, specification_id: specification.id, graph_hash: graphHash, question_ids: prior?.question_ids ?? [], consumed_question_revision: questions.length ? answeredRevision : null, ...(appPlan ? { app_approval_ids: store.list<import("../shared/factory.ts").FactoryApproval>("approvals", id).filter(approval => approval.revision === specification.id || approval.kind === "ticket_graph" && approval.revision === graphHash).map(approval => approval.id) } : {}), authorization: { approval, checks_required: true, independent_reviews: ["standards", "spec"] } };
     store.put("github_plans", prepared, id);
     store.put("github_plan_versions", { ...prepared, id: store.record().id }, id);
     store.event(id, "issue_plan_prepared", prepared);

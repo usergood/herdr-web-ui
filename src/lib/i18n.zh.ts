@@ -10,6 +10,16 @@
  * Placeholders in braces keep their English names.
  */
 export const ZH: Record<string, string> = {
+  "Issue planning": "议题规划",
+  "Planning prepared": "规划已准备",
+  "Planning changed. Review the current scope and readiness.": "规划已更改。请检查当前范围和就绪状态。",
+  "Reused approved app plan": "复用已批准的应用规划",
+  "Reused trusted issue plan": "复用可信议题规划",
+  "Required checks and independent Standards and Spec reviews still apply.": "仍须进行必要检查及独立的 Standards 和 Spec 审查。",
+  "Reused planning": "复用的规划",
+  "Declared dependencies": "声明的依赖关系",
+  "Blocked by: {tickets}": "被阻塞于：{tickets}",
+  "Prepare issue plan": "准备议题规划",
   "Continue workflow": "继续工作流程",
   "Native verification will run before implementation.": "实施前将运行原生验证。",
   "Review and continue from this chat. Finished steps keep their history.": "在此聊天中审阅并继续。已完成步骤的历史记录会保留。",
