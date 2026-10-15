@@ -8,6 +8,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 ## [Unreleased]
 
 ### Fixed
+- Continue checked factory work through independent Standards/Spec reviews, bounded automatic repairs and repeat-safe PR publication, with retained reports and desktop/mobile progress.
 - Execute accepted Ticket frontiers automatically with fresh workers, backend integration,
   reserved checks and restart recovery. Show named workers, gates and check results in the Assignment.
 - Pause and resume whole Assignments, preserving unfinished work and history across restart, with visible pending Machine shutdown and automatic queued continuation.

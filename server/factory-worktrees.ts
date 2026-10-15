@@ -45,6 +45,14 @@ export class FactoryWorktrees {
     const run = this.run(id, false); const path = await this.identity(run);
     return { head: (await git(path, ["rev-parse", "HEAD"])).trim(), workspace_hash: await this.workspaceHash(path) };
   }
+  async reviewHead(id: string, workerId: string): Promise<string> {
+    const run = this.run(id, false); const worker = this.store.get<FactoryWorker>("host_workers", workerId);
+    if (!worker || worker.run_id !== id || worker.role === "implementer") throw new FactoryError("independent_review_required", "Select an independent review context", 409);
+    const path = await this.identity(run, worker); await this.quiescent(worker);
+    const head = (await git(path, ["rev-parse", "HEAD"])).trim();
+    if (head !== worker.base || (await git(path, ["diff", "--no-ext-diff", "--no-textconv", "HEAD", "--"])).trim()) throw new FactoryError("review_stale", "The independent reviewer changed its checked candidate", 409);
+    return head;
+  }
   private async workspaceHash(path: string): Promise<string> {
     const diff = await git(path, ["diff", "--binary", "--no-ext-diff", "--no-textconv", "HEAD", "--"]);
     const untracked = (await git(path, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0").filter((name) => name && !name.startsWith(".saurons-eye-") && !/^(\.agents|\.claude|\.opencode)\/skills\//.test(name));
@@ -92,7 +100,7 @@ export class FactoryWorktrees {
       const selected = worker.role === "implementer" ? "tdd" : "code-review";
       provisionFactoryAgent(path, run.provider, selected, verifySkills(this.skillsPath()), worker.role !== "implementer", (run.manifest as { project?: FactoryProject }).project?.permission_mode, (run.manifest as { execution_preset?: import("../shared/agent-models.ts").AgentExecutionPreset }).execution_preset);
       const skillPrefix = `${run.provider === "codex" ? "$" : run.provider === "opencode" ? "@" : "/"}${selected}`;
-      const prompt = `${skillPrefix} Read .saurons-eye-context.json. ${worker.role === "implementer" ? "Implement only the accepted Ticket using its confirmed seams; the app's merger owns integration." : `Review only the ${worker.role === "standards" ? "Standards" : "Spec"} axis against the frozen scope. Keep this context independent of the other axis. Make no repository changes. End with FACTORY_REVIEW: PASS or FACTORY_REVIEW: FAIL and explain findings.`}${referenceContext ? ` ${referenceContext.prompt}` : ""}`;
+      const prompt = `${skillPrefix} Read .saurons-eye-context.json. ${worker.role === "implementer" ? (worker.rework_batch_id ? "Read context.review_batch and its immutable original reports. Repair only findings relevant to the accepted Ticket within its frozen scope; retain original anchors and do not resolve or rewrite reports. " : "") + "Implement only the accepted Ticket using its confirmed seams; the app's merger owns integration." : `Review only the ${worker.role === "standards" ? "Standards" : "Spec"} axis against the frozen scope. The fixed point is ${run.base}; review git diff ${run.base}...HEAD at the checked candidate ${worker.base}. The accepted Specification and execution plan in context are the Spec source. This app already supplies the separate Standards and Spec contexts: override the skill’s ordinary subagent-dispatch and aggregation steps, review only this assigned axis, and never spawn children or ask for a new fixed point. Keep this context independent of the other axis. Make no repository changes. End with FACTORY_REVIEW: PASS or FACTORY_REVIEW: FAIL and explain findings.`}${referenceContext ? ` ${referenceContext.prompt}` : ""}`;
       const launchPrompt = prepareFactoryPrompt(path, prompt + projectWorkflowPrompt((run.manifest as { project?: FactoryProject }).project), skillPrefix);
       recordScaffolding(this.store, worker.id, path, run.provider, verifySkills(this.skillsPath()));
       const args = factoryAgentArguments(run.provider, path, launchPrompt, worker.role !== "implementer", Boolean((run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot?.profiles.some((entry) => entry.service === run.provider)), (run.manifest as { project?: import("../shared/factory.ts").FactoryProject }).project?.permission_mode, false, (run.manifest as { execution_preset?: import("../shared/agent-models.ts").AgentExecutionPreset }).execution_preset);

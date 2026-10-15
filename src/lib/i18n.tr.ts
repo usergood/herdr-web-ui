@@ -7,8 +7,19 @@
  * keep their English names.
  */
 export const TR: Record<string, string> = {
+  "Automatic review and PR": "Otomatik inceleme ve PR",
+  "Reviewing": "İnceleniyor",
+  "Fixing": "Düzeltiliyor",
+  "Publishing PR": "PR yayımlanıyor",
+  "PR published": "PR yayımlandı",
+  "Waiting": "Bekliyor",
+  "Blocked": "Engellendi",
+  "Open PR": "PR aç",
+  "PR repository (owner/repository)": "PR deposu (sahip/depo)",
+  "PR target branch": "PR hedef dalı",
+  "Publish a checked PR automatically after Specification approval.": "Şartname onayından sonra doğrulanmış bir PR otomatik yayımlanır.",
+  "Tickets, checks, reviews, repairs and PR publication continue automatically.": "Biletler, kontroller, incelemeler, düzeltmeler ve PR yayını otomatik olarak devam eder.",
   "Automatic execution": "Otomatik yürütme",
-  "Tickets, checks and integration continue automatically.": "Biletler, kontroller ve entegrasyon otomatik olarak devam eder.",
 
   "Assignment execution": "Assignment yürütmesi",
   "Pause pending": "Duraklatma bekleniyor",

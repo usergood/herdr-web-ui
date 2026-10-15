@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { FactoryAutomaticExecution, FactoryCheck, FactoryExecutionPlan, FactoryProject, FactoryRun, FactoryWorker, Implementation } from "../shared/factory.ts";
+import type { FactoryAutomaticExecution, FactoryAutomaticReview, FactoryCheck, FactoryExecutionPlan, FactoryProject, FactoryReviewEvidence, FactoryRun, FactoryWorker, Implementation } from "../shared/factory.ts";
 import { FactoryError } from "./factory-host.ts";
 import type { FactoryPipeline } from "./factory-pipeline.ts";
 import type { FactoryRuntime } from "./factory-runtime.ts";
@@ -45,7 +45,8 @@ export class FactoryExecution {
     let run = this.live(plan);
     if (!run) return;
     const progress = this.store.get<FactoryAutomaticExecution>("automatic_execution", run.id);
-    if (["blocked", "checked"].includes(progress?.condition ?? "") || (progress?.next_attempt_at ?? 0) > Date.now()) return;
+    if (progress?.condition === "checked") { await this.reviewed(plan); return; }
+    if (progress?.condition === "blocked" || (progress?.next_attempt_at ?? 0) > Date.now()) return;
     try {
       run = await this.runtime.reconcile(run.id);
       if (!this.live(plan)) return;
@@ -100,6 +101,124 @@ export class FactoryExecution {
       const attempts = (progress?.attempts ?? 0) + 1;
       this.save(plan, retry && attempts < 6 ? "waiting" : "blocked", `${reason}${retry && attempts >= 6 ? "; automatic recovery exhausted after six observations" : ""}`, attempts, retry ? Date.now() + Math.min(30_000, 1000 * 2 ** (attempts - 1)) : 0);
     }
+  }
+  private async reviewed(plan: FactoryExecutionPlan): Promise<void> {
+    const live = this.live(plan);
+    if (!live) return;
+    let run: FactoryRun = live;
+    const previous = this.store.get<FactoryAutomaticReview>("automatic_review", run.id);
+    if (["blocked", "published"].includes(previous?.condition ?? "") || (previous?.next_attempt_at ?? 0) > Date.now()) return;
+    const lastCheck = this.store.list<FactoryCheck>("checks", run.id).filter(c => c.worker_id === null).at(-1);
+    let state: FactoryAutomaticReview = previous ?? { ...this.store.record(), id: run.id, run_id: run.id, head: lastCheck?.head ?? "", round: 0, condition: "reviewing", reason: null, attempts: 0, next_attempt_at: 0, check_id: lastCheck?.id ?? "", evidence_ids: [], batch_id: null };
+    try {
+      run = await this.runtime.reconcile(run.id);
+      if (!this.live(plan)) return;
+      const question = this.workflow.questions(run.implementation_id, run.id).find(q => q.answer === null);
+      if (question || ["needs_you", "blocked"].includes(run.condition)) { this.store.put("automatic_review", { ...state, condition: "waiting", reason: question?.question ?? run.waiting_reason ?? "The Orchestrator is waiting for native permission" }, run.implementation_id); return; }
+      if (["accepted", "disconnected", "interrupted"].includes(run.condition)) throw new FactoryError("execution_uncertain", "Orchestrator identity is uncertain; retain its reservation", 409);
+      const revision = this.workflow.questionRevision(run.implementation_id, run.id);
+      if (state.context_revision && state.context_revision !== revision) {
+        for (const worker of this.store.list<FactoryWorker>("workers", run.id).filter(w => w.role !== "implementer" && !["completed", "cancelled", "failed"].includes(w.condition))) { await this.pipeline.workerAction(run.id, worker.id, "stop"); if (!this.live(plan)) return; }
+        state = { ...state, generation: (state.generation ?? 0) + 1, evidence_ids: [] };
+      }
+      state = { ...state, context_revision: revision };
+      if (state?.condition === "repairing" || state?.batch_id) { await this.repair(plan, state); return; }
+      const head = await this.runtime.operation<{ head: string; workspace_hash: string }>(run, "head");
+      if (!this.live(plan)) return;
+      const check = this.store.list<FactoryCheck>("checks", run.id).filter(c => c.worker_id === null).at(-1);
+      if (!check || check.condition !== "passed" || check.head !== head.head || check.workspace_hash !== head.workspace_hash) throw new FactoryError("review_stale", "Final checks must cover the current integration workspace", 409);
+      if (state.head !== head.head) throw new FactoryError("review_stale", "The candidate changed outside the automatic repair lineage", 409);
+      state = { ...state, condition: "reviewing", reason: null, check_id: check.id };
+      this.store.put("automatic_review", state, run.implementation_id);
+      for (const axis of ["standards", "spec"] as const) {
+        const key = `automatic-review-${state.round}-${state.generation ?? 0}-${axis}`;
+        let worker: FactoryWorker | undefined = this.store.list<FactoryWorker & { key: string }>("workers", run.id).find(w => w.key === key);
+        if (!worker) {
+          const request = await this.pipeline.requestWorker(run.id, { role: axis, idempotency_key: key });
+          if (this.live(plan) && "reason" in request) this.store.put("automatic_review", { ...state, condition: "waiting", reason: request.reason }, run.implementation_id);
+          return;
+        }
+        let evidence = this.store.list<FactoryReviewEvidence>("review_evidence", run.id).find(r => r.worker_id === worker!.id);
+        if (!evidence) {
+          worker = await this.pipeline.workerAction(run.id, worker.id, "reconcile") as FactoryWorker;
+          if (!this.live(plan)) return;
+          if (["needs_you", "blocked"].includes(worker.condition)) { this.store.put("automatic_review", { ...state, condition: "waiting", reason: worker.waiting_reason ?? "Independent review is waiting for native permission" }, run.implementation_id); return; }
+          if (["accepted", "disconnected", "interrupted"].includes(worker.condition)) throw new FactoryError("execution_uncertain", "Independent review identity is uncertain; its reservation is retained", 409);
+          if (worker.condition === "working") return;
+          if (worker.condition !== "ready") throw new FactoryError("review_stopped", "Independent reviewer stopped before retaining its report", 409);
+          if (this.workflow.questions(run.implementation_id, run.id).length && !this.store.list<{ worker_id: string; revision: string }>("answer_consumption", run.id).some(r => r.worker_id === worker!.id && r.revision === revision)) throw new FactoryError("answers_unconsumed", "Independent reviewer must consume the exact answered context before reporting", 409);
+          evidence = await this.pipeline.workerAction(run.id, worker.id, "review-evidence") as FactoryReviewEvidence;
+          if (!this.live(plan)) return;
+        }
+        if (evidence && worker.condition !== "completed") { evidence = await this.pipeline.workerAction(run.id, worker.id, "review-evidence") as FactoryReviewEvidence; if (!this.live(plan)) return; }
+        if (evidence.head !== state.head) throw new FactoryError("review_stale", "Independent reports must cover the checked head", 409);
+        state = { ...state, condition: "reviewing", reason: null, attempts: 0, evidence_ids: [...new Set([...state.evidence_ids, evidence.id])] };
+        this.store.put("automatic_review", state, run.implementation_id);
+      }
+      const reports = this.store.list<FactoryReviewEvidence>("review_evidence", run.id).filter(r => state!.evidence_ids.includes(r.id));
+      if (reports.some(r => r.outcome === "failed")) {
+        if (state.round >= 3) throw new FactoryError("repair_exhausted", "Automatic repair exhausted after three rounds; inspect the retained independent findings", 409);
+        const batch: import("../shared/factory.ts").FactoryAutomaticReviewBatch = { ...this.store.record(), implementation_id: run.implementation_id, run_id: run.id, origin: "automatic", status: "sent", head: state.head, round: state.round, reports, ticket_ids: plan.tickets.map(t => t.id) };
+        this.store.db.transaction(() => {
+          this.store.put("automatic_review_batches", batch, run.implementation_id);
+          this.store.put("automatic_review", { ...state!, condition: "repairing", batch_id: batch.id }, run.implementation_id);
+          this.store.event(run.implementation_id, "automatic_findings_retained", { run_id: run.id, batch_id: batch.id, head: state!.head });
+        }).immediate();
+      } else {
+        for (const batch of this.store.list<import("../shared/factory.ts").FactoryAutomaticReviewBatch>("automatic_review_batches", run.implementation_id).filter(b => b.run_id === run.id && !b.resolution)) this.store.put("automatic_review_batches", { ...batch, resolution: { head: state.head, check_id: state.check_id, evidence_ids: state.evidence_ids } }, run.implementation_id);
+        const policy = (run.manifest as { project: FactoryProject }).project.pull_request;
+        if (!policy) { this.store.put("automatic_review", { ...state, condition: "waiting", reason: "Configure a PR repository and target branch before accepting the Specification for publication" }, run.implementation_id); return; }
+        this.store.put("automatic_review", { ...state, condition: "publishing", reason: null }, run.implementation_id);
+        const result = await this.runtime.operation<import("../shared/factory.ts").FactoryPullRequest>(run, "publish", { head: head.head, workspace_hash: check.workspace_hash, check_id: check.id, evidence_ids: state.evidence_ids, reports: reports.map(r => ({ worker_id: r.worker_id, source_id: r.source_id })) } satisfies import("../shared/factory.ts").FactoryPublicationRequest);
+        if (!this.live(plan)) return;
+        if (result.run_id !== run.id || result.head !== head.head || result.repository !== policy.repository || result.base_branch !== policy.base_branch || result.branch !== run.branch || !Number.isSafeInteger(result.number) || result.number < 1 || result.url !== `https://github.com/${policy.repository}/pull/${result.number}`) throw new FactoryError("publication_changed", "The PR does not match the authorized checked candidate and target", 409);
+        const current = await this.runtime.operation<{ head: string; workspace_hash: string }>(run, "head");
+        if (!this.live(plan)) return;
+        if (current.head !== head.head || current.workspace_hash !== check.workspace_hash) throw new FactoryError("review_stale", "The workspace changed during publication; inspect the retained PR", 409);
+        this.store.db.transaction(() => {
+          const pr = { ...this.store.record(), ...result, id: run.id, check_id: check.id, evidence_ids: state.evidence_ids };
+          this.store.put("pull_requests", pr, run.implementation_id);
+          this.store.put("automatic_review", { ...state, condition: "published", reason: null, attempts: 0 }, run.implementation_id);
+          const assignment = this.store.get<Implementation>("implementations", run.implementation_id)!;
+          this.store.put("implementations", { ...assignment, stage: "review", outcome: "pr_open" });
+          this.store.event(run.implementation_id, "pull_request_published", { run_id: run.id, head: head.head, number: pr.number, check_id: check.id, evidence_ids: state.evidence_ids });
+        }).immediate();
+      }
+    } catch (error) {
+      if (!this.live(plan) || !state) return;
+      const code = error instanceof FactoryError ? error.code : "execution_uncertain";
+      const waiting = ["capacity_exhausted", "build_capacity_exhausted", "shared_writer_owned", "integration_busy", "publication_busy", "worker_busy", "answers_unready", "answers_unconsumed"].includes(code);
+      const retry = ["execution_uncertain", "machine_offline", "machine_disconnected", "remote_factory_unavailable", "publication_uncertain", "review_evidence_required"].includes(code);
+      const attempts = (previous?.attempts ?? 0) + 1;
+      this.store.put("automatic_review", { ...state, condition: waiting || retry && attempts < 6 ? "waiting" : "blocked", reason: `${error instanceof FactoryError ? error.message : "Automatic review could not be verified"}${retry && attempts >= 6 ? "; automatic recovery exhausted after six observations" : ""}`, attempts: waiting ? 0 : attempts, next_attempt_at: retry ? Date.now() + Math.min(30000, 1000 * 2 ** (attempts - 1)) : 0 }, run.implementation_id);
+    }
+  }
+  private async repair(plan: FactoryExecutionPlan, state: FactoryAutomaticReview): Promise<void> {
+    const run = this.live(plan);
+    if (!run || !state.batch_id) return;
+    const batch = this.store.get<import("../shared/factory.ts").FactoryAutomaticReviewBatch>("automatic_review_batches", state.batch_id)!;
+    for (const ticketId of batch.ticket_ids) {
+      let worker = this.store.list<FactoryWorker>("workers", run.id).find(w => w.rework_batch_id === batch.id && w.ticket_id === ticketId);
+      if (worker?.condition === "completed") continue;
+      if (!worker) {
+        const request = await this.pipeline.requestWorker(run.id, { role: "implementer", ticket_id: ticketId, review_batch_id: batch.id, idempotency_key: `automatic-fix-${state.round}-${ticketId}`, shared_paths: (run.manifest as { project: FactoryProject }).project.shared_paths ?? [] });
+        if (this.live(plan) && "reason" in request) this.store.put("automatic_review", { ...state, condition: "waiting", reason: request.reason }, run.implementation_id);
+        return;
+      }
+      worker = await this.pipeline.workerAction(run.id, worker.id, "reconcile") as FactoryWorker;
+      if (!this.live(plan)) return;
+      if (["needs_you", "blocked"].includes(worker.condition)) { this.store.put("automatic_review", { ...state, condition: "waiting", reason: worker.waiting_reason ?? "Review-fixes is waiting for native permission" }, run.implementation_id); return; }
+      if (["accepted", "disconnected", "interrupted"].includes(worker.condition)) throw new FactoryError("execution_uncertain", "Review-fixes identity is uncertain; retain its reservation", 409);
+      if (worker.condition === "working" || worker.suspension) { this.store.put("automatic_review", { ...state, condition: "repairing", reason: null }, run.implementation_id); return; }
+      if (worker.condition !== "ready") throw new FactoryError("repair_stopped", "Review-fixes stopped before integration", 409);
+      if (!worker.integration_pending) worker = await this.pipeline.workerAction(run.id, worker.id, "refresh") as FactoryWorker;
+      if (!this.live(plan) || !await this.checked(plan, worker) || !this.live(plan)) return;
+      await this.pipeline.integrate(run.id, worker.id);
+      if (!this.live(plan)) return;
+    }
+    const check = await this.checked(plan, null);
+    if (!check || !this.live(plan)) return;
+    this.store.put("automatic_review", { ...state, condition: "reviewing", reason: null, attempts: 0, next_attempt_at: 0, head: check.head, check_id: check.id, round: state.round + 1, evidence_ids: [], batch_id: null }, run.implementation_id);
   }
   private async checked(plan: FactoryExecutionPlan, worker: FactoryWorker | null): Promise<FactoryCheck | null> {
     const run = this.live(plan);

@@ -10,8 +10,19 @@
  * Placeholders in braces keep their English names.
  */
 export const ZH: Record<string, string> = {
+  "Automatic review and PR": "自动审查和PR",
+  "Reviewing": "审查中",
+  "Fixing": "修复中",
+  "Publishing PR": "正在发布PR",
+  "PR published": "PR已发布",
+  "Waiting": "等待中",
+  "Blocked": "已阻止",
+  "Open PR": "打开PR",
+  "PR repository (owner/repository)": "PR仓库 (所有者/仓库)",
+  "PR target branch": "PR目标分支",
+  "Publish a checked PR automatically after Specification approval.": "规格获批后自动发布已验证的PR。",
+  "Tickets, checks, reviews, repairs and PR publication continue automatically.": "工单、检查、审查、修复和PR发布将自动继续。",
   "Automatic execution": "自动执行",
-  "Tickets, checks and integration continue automatically.": "工单、检查和集成将自动继续。",
 
   "Assignment execution": "Assignment 执行",
   "Pause pending": "等待暂停",

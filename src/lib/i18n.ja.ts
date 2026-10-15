@@ -8,8 +8,19 @@
  * in English. Placeholders in braces keep their English names.
  */
 export const JA: Record<string, string> = {
+  "Automatic review and PR": "自動レビューとPR",
+  "Reviewing": "レビュー中",
+  "Fixing": "修正中",
+  "Publishing PR": "PRを公開中",
+  "PR published": "PRを公開しました",
+  "Waiting": "待機中",
+  "Blocked": "ブロック中",
+  "Open PR": "PRを開く",
+  "PR repository (owner/repository)": "PRリポジトリ (所有者/リポジトリ)",
+  "PR target branch": "PRの対象ブランチ",
+  "Publish a checked PR automatically after Specification approval.": "仕様の承認後、検証済みPRを自動で公開します。",
+  "Tickets, checks, reviews, repairs and PR publication continue automatically.": "チケット、チェック、レビュー、修正、PR公開は自動的に進みます。",
   "Automatic execution": "自動実行",
-  "Tickets, checks and integration continue automatically.": "チケット、チェック、統合は自動的に進みます。",
 
   "Assignment execution": "Assignment の実行",
   "Pause pending": "一時停止を待機中",
