@@ -34,12 +34,16 @@ export class FactoryParking {
       this.store.remove("capacity_waits", waitId);
       return { ...run, continuation: { ...park, condition: "parked", reason: "Waiting for owner answers; execution capacity released" } };
     }
-    if (park.kind === "children" && (waits.length || (park.worker_keys ?? []).some(key => {
-      const worker = workers.find(worker => worker.key === key);
-      return !worker || !["completed", "cancelled", "failed"].includes(worker.condition) && (worker.condition !== "ready" || !!worker.continuation && worker.continuation.condition !== "resumed");
-    }))) {
-      this.store.remove("capacity_waits", waitId);
-      return { ...run, continuation: { ...park, condition: "parked", worker_keys: [...new Set([...(park.worker_keys ?? []), ...keys])], reason: waits.find(wait => wait.condition === "blocked")?.reason ?? "Waiting for child work; execution capacity released" } };
+    if (park.kind === "children") {
+      park = { ...park, worker_keys: [...new Set([...(park.worker_keys ?? []), ...keys])] };
+      const children = workers.filter(worker => park!.worker_keys!.includes(worker.key));
+      const restingChild = (worker: FactoryWorker): boolean => ["completed", "cancelled", "failed"].includes(worker.condition) || worker.condition === "ready" && (!worker.continuation || worker.continuation.condition === "resumed");
+      // A queued dependency may need the coordinator to integrate a ready result.
+      // Wait for executing children, but never let an ineligible request hide that result.
+      if (children.some(worker => !restingChild(worker)) || waits.length && !children.some(restingChild)) {
+        this.store.remove("capacity_waits", waitId);
+        return { ...run, continuation: { ...park, condition: "parked", reason: waits.find(wait => wait.condition === "blocked")?.reason ?? "Waiting for child work; execution capacity released" } };
+      }
     }
     const revision = this.workflow.questionRevision(run.implementation_id, run.id);
     if (park.kind === "owner" && this.consumed(run, revision, null)) { this.store.remove("capacity_waits", waitId); return { ...run, continuation: { ...park, condition: "resumed", question_revision: revision, reason: "The native conversation consumed the current answered context" } }; }

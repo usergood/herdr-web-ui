@@ -225,4 +225,37 @@ describe("waiting factory conversations through authenticated HTTP", () => {
     } finally { f.close(); }
   });
 
+  it("resumes the coordinator to integrate a ready child while a dependent child remains queued", async () => {
+    const f = await capacityFixture();
+    try {
+      await f.api("/settings", { max_agents: 1 });
+      const id = await f.assignment("Dependent handoff");
+      const prefix = `/implementations/${id}`;
+      const assignment = await f.api(prefix).then(r => r.json());
+      await f.api(`/projects/${assignment.implementation.project_id}/configure`, { checks: [["bun", "test"]], permissions: "Owned fixtures" });
+      const specification = await f.api(`${prefix}/specifications`, { content: "Integrate First before Second" }).then(r => r.json());
+      for (const kind of ["specification", "testing_seams"]) await f.api(`${prefix}/approvals`, { kind, revision: specification.id, scope: "Owned dependent handoff" });
+      const graph = await f.api(`${prefix}/tickets`, { specification_id: specification.id, tickets: [{ key: "first", title: "First", acceptance: "Integrate first", dependencies: [] }, { key: "second", title: "Second", acceptance: "Requires First", dependencies: ["first"] }] }).then(r => r.json());
+      await f.api(`${prefix}/approvals`, { kind: "ticket_graph", revision: graph.hash, scope: "Owned dependent handoff" });
+      const run = await f.api(`${prefix}/runs`, { action: "implement-spec", idempotency_key: "parent" }).then(r => r.json());
+      const request = (index: number) => f.api(`/runs/${run.id}/workers`, { role: "implementer", ticket_id: graph.tickets[index].id, idempotency_key: `child-${index}` });
+      expect((await request(1)).status).toBe(202);
+      await request(0);
+      f.runs.get(run.id)!.condition = "ready";
+      const detail = () => f.api(prefix).then(r => r.json());
+      const working = await eventually(detail, d => d.workers[0]?.condition === "working");
+      const first = working.workers[0];
+      f.workers.get(first.id)!.condition = "ready";
+      await f.api(`/runs/${run.id}/workers/${first.id}/refresh`, {});
+      await eventually(detail, d => d.runs[0].continuation?.condition === "resumed");
+      expect(f.workerLaunches).toHaveLength(1);
+      expect((await f.api(`/runs/${run.id}/workers/${first.id}/check`, {}).then(r => r.json())).condition).toBe("passed");
+      expect((await f.api(`/runs/${run.id}/workers/${first.id}/integrate`, {}).then(r => r.json())).condition).toBe("completed");
+      f.runs.get(run.id)!.condition = "ready";
+      await eventually(detail, d => d.workers.some((w: { ticket_id: string; condition: string }) => w.ticket_id === graph.tickets[1].id && w.condition === "working"));
+      expect(f.workerLaunches).toHaveLength(2);
+      expect(f.prompts).toHaveLength(1);
+    } finally { f.close(); }
+  });
+
 });
