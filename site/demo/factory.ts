@@ -173,7 +173,9 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
         }
         let approval = detail.approvals.find(a => a.kind === "specification" && a.revision === spec.id) ?? null;
         if (!approval && (!message || isSpecificationAcceptance(message.content))) {
-          approval = { ...record(), implementation_id: detail.implementation.id, kind: "specification", revision: spec.id, scope: `Specification ${spec.id}, SHA-256 ${spec.hash}`, provenance: { kind: message ? "owner_chat" : "button", specification_hash: spec.hash, ...(message ? { message_id: message.id } : {}) } }; detail.approvals.push(approval);
+          approval = { ...record(), implementation_id: detail.implementation.id, kind: "specification", automatic_execution: true, revision: spec.id, scope: `Specification ${spec.id}, SHA-256 ${spec.hash}`, provenance: { kind: message ? "owner_chat" : "button", specification_hash: spec.hash, ...(message ? { message_id: message.id } : {}) } }; detail.approvals.push(approval);
+          detail.automatic_planning ??= [];
+          detail.automatic_planning.push({ ...record(), implementation_id: detail.implementation.id, specification_id: spec.id, approval_id: approval.id, scope_hash: spec.hash, condition: "blocked", reason: "Native agents and automatic planning require a real execution Machine. The demo retains fictional records only.", run_id: null });
         }
         result = message ? { message, approval } : approval;
       }

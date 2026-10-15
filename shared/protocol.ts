@@ -1209,7 +1209,9 @@ export const DEFAULT_PORT = 7317;
  * presentation can grant Specification approval; shared understanding always needs its explicit control.
  * POST /api/factory/implementations/:id/specification-acceptance (specification_acceptance), 201:
  * button -> FactoryApproval; owner_chat -> {message:FactoryMessage,approval:FactoryApproval|null}.
- * Requires the presented current ID/hash; repeat delivery is durable and never launches execution.
+ * Requires the presented current ID/hash; repeat delivery retains one durable automatic planning request. Specification authority
+ * starts Orchestrator through normal capacity, without testing-plan or Ticket-graph owner gates.
+ * Detail exposes automatic_planning waits and execution_plans with Specification-derived authority.
  * POST .../send-answers (send_answers) -> FactoryAnswerDelivery; queued continuations share admission with Start; uncertainty never replays.
  * POST .../workers (worker) -> FactoryWorker, or FactoryCapacityWait, 202 when queued;
  * root and child requests share ordering; frontier/rework and global reservation checked.
@@ -1344,6 +1346,7 @@ export interface FactoryBackupManifest {
 export interface FactoryRestore { id: string; state_dir: string; execution_enabled: false }
 export interface FactoryCleanup { removed: string[]; branches_retained: true; notes_retained: true }
 export interface FactoryAgentContract {
+  execution_plan?: import("./factory.ts").FactoryExecutionPlan | null;
   tracker_guide: string;
   run: import("./factory.ts").FactoryRun; workers: import("./factory.ts").FactoryWorker[];
   checks: import("./factory.ts").FactoryCheck[]; review_batches: FactoryBatchReceipt[];
@@ -1351,6 +1354,10 @@ export interface FactoryAgentContract {
   questions: import("./factory.ts").FactoryQuestion[]; frontier: import("./factory.ts").FactoryTicket[];
   artifacts: import("./factory.ts").FactoryArtifact[];
 }
+/** Scoped tickets on an automatically admitted implement-spec Run additionally require
+ * testing_plan and return FactoryExecutionPlan (201). One immutable graph per Run;
+ * pending/unconsumed owner answers block submission. The contract/frontier reads that
+ * plan while run.manifest stays frozen. Legacy to-tickets returns {hash,tickets}. */
 export interface FactoryAgentRequests {
   question: FactoryRequests["question"];
   sync_answers: { before?: string; worker_id?: string };
@@ -1358,7 +1365,7 @@ export interface FactoryAgentRequests {
   worker: FactoryRequests["worker"];
   artifact: Omit<FactoryRequests["artifact"], "chat_id">;
   specification: FactoryRequests["specification"];
-  tickets: FactoryRequests["tickets"];
+  tickets: FactoryRequests["tickets"] & { testing_plan?: string };
   proposal: { proposal: string };
 }
 export interface FactoryNativeAnswers {

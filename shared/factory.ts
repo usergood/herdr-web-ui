@@ -54,8 +54,20 @@ export interface FactoryTicket extends FactoryRecord {
   tracker_reference: string | null;
 }
 export interface FactoryApproval extends FactoryRecord {
+  /** Specification acceptance authorizes internal planning without further owner receipts. */
+  automatic_execution?: boolean;
   implementation_id: string; kind: "specification" | "testing_seams" | "ticket_graph" | "review" | "shared_understanding"; revision: string; scope: string;
   provenance?: { kind: "button" | "owner_chat" | "native_chat"; specification_hash: string; message_id?: string; run_id?: string; snapshot_id?: string; source_id?: string; turn_ts?: string };
+}
+export interface FactoryExecutionPlan extends FactoryRecord {
+  run_id: string; specification_id: string; hash: string; testing_plan: string; tickets: FactoryTicket[];
+  authority: { kind: "specification"; approval_id: string; specification_id: string; specification_hash: string; run_id: string; contract_hash: string };
+}
+export interface FactoryPlanningRequest extends FactoryRecord {
+  implementation_id: string; specification_id: string; approval_id: string; scope_hash: string;
+  origin?: string;
+  attempts?: number; next_attempt_at?: number;
+  condition: "pending" | "queued" | "started" | "blocked"; reason: string | null; run_id: string | null;
 }
 export interface FactoryQuestion extends FactoryRecord { implementation_id: string; run_id: string | null; worker_id?: string | null; question: string; answer_kind?: "text" | "confirmation"; answer: string | null; revision: string }
 export interface FactoryArtifact extends FactoryRecord {
@@ -132,6 +144,8 @@ export interface FactoryCapacity {
 }
 export interface FactoryOverview { capacity: FactoryCapacity }
 export interface FactoryDetail {
+  automatic_planning?: FactoryPlanningRequest[];
+  execution_plans?: FactoryExecutionPlan[];
   capacity_waiting?: FactoryCapacityWait[];
   conversations?: FactoryConversation[];
   graph_hash: string; question_revision: string;

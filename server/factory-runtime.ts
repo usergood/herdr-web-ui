@@ -192,11 +192,15 @@ export class FactoryRuntime {
     const executionPreset = selection.model && inspected ? resolveModelSelection(selection, await this.modelCatalog(machineId, provider, inspected.path, inspected.repository, accountSnapshot)) : selection;
     if (selection.model && !inspected) throw new FactoryError("checkout_required", "Select a Project checkout before choosing a model", 409);
     const specification = this.workflow.specification(id); const graphHash = this.workflow.graphHash(id);
+    const automatic = this.workflow.planningRequest(id, body.idempotency_key);
+    const planningAuthority = automatic ? this.store.get<FactoryApproval>("approvals", automatic.approval_id) : null;
+    if (automatic && this.workflow.questions(id).some(question => question.answer === null)) throw new FactoryError("answers_unready", "Answer the pending owner questions before automatic planning", 409);
+    if (automatic && (automatic.scope_hash !== this.workflow.planningScope(id) || planningAuthority?.automatic_execution !== true || planningAuthority.revision !== specification?.id)) throw new FactoryError("scope_changed", "The accepted Specification execution scope changed", 409);
     if (action === "to-tickets" || action === "implement-spec") {
-      if (!specification || !this.workflow.approved(id, "specification", specification.id) || !this.workflow.approved(id, "testing_seams", specification.id)) throw new FactoryError("scope_unaccepted", "Accept the current specification and testing seams", 409);
+      if (!specification || !this.workflow.approved(id, "specification", specification.id) || (!planningAuthority && !this.workflow.approved(id, "testing_seams", specification.id))) throw new FactoryError("scope_unaccepted", "Accept the current specification and testing seams", 409);
     }
     if (action === "implement-spec") {
-      if (!this.workflow.tickets(id).length || !this.workflow.approved(id, "ticket_graph", graphHash)) throw new FactoryError("scope_unaccepted", "Accept the current Ticket graph", 409);
+      if (!planningAuthority && (!this.workflow.tickets(id).length || !this.workflow.approved(id, "ticket_graph", graphHash))) throw new FactoryError("scope_unaccepted", "Accept the current Ticket graph", 409);
       if (!project?.checks?.length || !project.permissions?.trim()) throw new FactoryError("project_setup_required", "Configure known Project checks and execution permissions before factory admission", 409);
     }
     // Validate the next action before releasing the resting predecessor. Retained context
@@ -227,10 +231,10 @@ export class FactoryRuntime {
     if (projectReferences?.entries.length && provider !== "codex") throw new FactoryError("reference_provider_unavailable", "Project references currently require Codex; keep the selected provider or explicitly choose Codex", 409);
     if (artifacts.reduce((size, artifact) => size + artifact.size, 0) + (projectReferences?.entries.reduce((size, entry) => size + entry.size, 0) ?? 0) > 64 * 1024 * 1024) throw new FactoryError("context_too_large", "Retained inputs exceed this Run's 64 MiB materialization budget", 413);
     if (action === "implement-spec") {
-      if (!specification || !this.workflow.approved(id, "specification", specification.id) || !this.workflow.approved(id, "testing_seams", specification.id) || !this.workflow.tickets(id).length || !this.workflow.approved(id, "ticket_graph", graphHash)) throw new FactoryError("scope_unaccepted", "Accept the current specification, testing seams and Ticket graph", 409);
+      if (!specification || !this.workflow.approved(id, "specification", specification.id) || (!planningAuthority && !this.workflow.approved(id, "testing_seams", specification.id)) || !planningAuthority && (!this.workflow.tickets(id).length || !this.workflow.approved(id, "ticket_graph", graphHash))) throw new FactoryError("scope_unaccepted", "Accept the current specification, testing seams and Ticket graph", 409);
       if (!project?.checks?.length || !project.permissions?.trim()) throw new FactoryError("project_setup_required", "Configure known Project checks and execution permissions before factory admission", 409);
     }
-    const api = new URL(this.publicUrl ?? origin);
+    const api = new URL(this.publicUrl ?? automatic?.origin ?? origin);
     if (!["http:", "https:"].includes(api.protocol) || api.username || api.password) throw new FactoryError("invalid_factory_url", "Use an authenticated HTTP(S) app address for the tracker");
     const contractHash = hash(JSON.stringify({ implementation, project, checkout, specification, graphHash, settings: this.settings(), skills: skills.hash, artifacts, messages, projectReferences }));
     await this.reconcileCapacity();
@@ -239,6 +243,8 @@ export class FactoryRuntime {
       const raced = this.store.list<FactoryRun>("runs", id).find((entry) => entry.idempotency_key === body.idempotency_key);
       if (raced) return { run: raced, accepted: false };
       if (this.stopped) throw new FactoryError("stopping", "The bridge is stopping; reconcile before retrying", 409);
+      if (automatic && this.workflow.questions(id).some(question => question.answer === null)) throw new FactoryError("answers_unready", "Answer the pending owner questions before automatic planning", 409);
+      if (automatic && automatic.scope_hash !== this.workflow.planningScope(id)) throw new FactoryError("scope_changed", "The accepted execution scope changed during admission", 409);
       const currentHash = hash(JSON.stringify({ implementation: this.store.get("implementations", id), project: project ? this.store.get("projects", project.id) : null, checkout: checkout ? this.store.get("checkouts", checkout.id) : null, specification: this.workflow.specification(id), graphHash: this.workflow.graphHash(id), settings: this.settings(), skills: skills.hash, artifacts: selectedArtifacts(), messages: this.store.list<FactoryMessage>("messages", id), projectReferences: project ? this.references.current(project.id) : null }));
       if (currentHash !== contractHash) throw new FactoryError("scope_changed", "The selected execution scope changed during admission", 409);
       const owned = this.store.list<FactoryRun>("runs").filter((entry) => activeConditions.has(entry.condition));
@@ -246,7 +252,7 @@ export class FactoryRuntime {
       const planning = ["grill-me", "grill-with-docs"].includes(action) || action === "to-spec" && (!specification || !this.workflow.approved(id, "specification", specification.id));
       const capacityPool = agentCapacityPool(this.store, this.settings(), planning);
       const record: FactoryRun = { ...this.store.record(), implementation_id: id, action, provider, machine_id: machineId, capacity_pool: capacityPool, condition: "accepted", waiting_reason: null, idempotency_key: body.idempotency_key as string, specification_id: specification?.id ?? null, graph_hash: graphHash, base: inspected?.head ?? null, checkout: inspected?.path ?? null, worktree: null, branch: null, workspace_id: null, pane_id: null, manifest: { skills, artifacts, context_message_ids: messages.map(message => message.id), retrospective, retrospective_evidence: retrospective ? this.store.get("retro_evidence", retrospective.id) : null, implementation, project, checkout: inspected, specification, tickets: this.workflow.tickets(id), approvals: this.store.list<FactoryApproval>("approvals", id), effective_settings: this.settings(), provider_version: capability.version, permissions: "Retain native controls; publication, merge, deployment and destructive cleanup are separate owner actions", contract_hash: contractHash } };
-      record.manifest = { ...(record.manifest as object), execution_preset: executionPreset, project_references: projectReferences, account_snapshot: accountSnapshot };
+      record.manifest = { ...(record.manifest as object), ...(planningAuthority ? { planning_authority: planningAuthority } : {}), execution_preset: executionPreset, project_references: projectReferences, account_snapshot: accountSnapshot };
       if (projectReferences) this.references.freeze(projectReferences.project_id);
       this.store.remove("capacity_waits", `${id}:${body.idempotency_key}`);
       this.store.put("runs", record, id); this.store.event(id, "dispatch_accepted", { run_id: record.id, action }); return { run: record, accepted: true };

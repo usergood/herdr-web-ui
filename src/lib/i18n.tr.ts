@@ -7,6 +7,10 @@
  * keep their English names.
  */
 export const TR: Record<string, string> = {
+  "Internal planning continues automatically after Specification approval.": "Belirtim onayından sonra iç planlama otomatik olarak devam eder.",
+  "Execution plan": "Yürütme planı",
+  "Testing plan": "Test planı",
+
   "Specification accepted": "Şartname kabul edildi",
   "Specification reply": "Şartname yanıtı",
   "Reply accepted to approve this revision, or use Accept specification.": "Bu revizyonu onaylamak için accepted yazın veya Şartnameyi kabul et düğmesini kullanın.",

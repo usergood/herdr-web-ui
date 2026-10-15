@@ -6,6 +6,10 @@
  * braces keep their English names.
  */
 export const KO: Record<string, string> = {
+  "Internal planning continues automatically after Specification approval.": "명세 승인 후 내부 계획이 자동으로 진행됩니다.",
+  "Execution plan": "실행 계획",
+  "Testing plan": "테스트 계획",
+
   "Specification accepted": "명세 승인됨",
   "Specification reply": "명세 답변",
   "Reply accepted to approve this revision, or use Accept specification.": "이 버전을 승인하려면 accepted라고 답하거나 명세 승인을 누르세요.",

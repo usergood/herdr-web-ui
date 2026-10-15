@@ -8,6 +8,10 @@
  * in English. Placeholders in braces keep their English names.
  */
 export const JA: Record<string, string> = {
+  "Internal planning continues automatically after Specification approval.": "仕様の承認後、内部計画は自動で進みます。",
+  "Execution plan": "実行計画",
+  "Testing plan": "テスト計画",
+
   "Specification accepted": "仕様を承認しました",
   "Specification reply": "仕様への返信",
   "Reply accepted to approve this revision, or use Accept specification.": "この版を承認するには accepted と返信するか、仕様を承認を押してください。",

@@ -8,6 +8,8 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 ## [Unreleased]
 
 ### Fixed
+- Start internal Ticket and test planning automatically after Specification approval,
+  retaining an inspectable plan without repeated planning approvals.
 - Let waiting factory conversations release execution capacity after verified native rest
   and resume through the global queue, preserving history, exact answer revisions and
   reservations for uncertain execution. Show waiting and resuming conversations in Inbox.

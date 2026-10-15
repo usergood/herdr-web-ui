@@ -11,6 +11,7 @@ import { FactoryError, hash, inspectCheckout } from "./factory-host.ts";
 import { FactoryArtifacts } from "./factory-artifacts.ts";
 import { FactoryWorkflow } from "./factory-workflow.ts";
 import { FactoryBackup } from "./factory-backup.ts";
+import { FactoryPlanning } from "./factory-planning.ts";
 import { FactoryRuntime, type MachineEndpoint } from "./factory-runtime.ts";
 import type { FactoryNative } from "./factory-native.ts";
 import { FactoryExecutionHost } from "./factory-execution-host.ts";
@@ -42,6 +43,7 @@ export class FactoryService {
   private readonly executionHost: FactoryExecutionHost;
   private readonly pipeline: FactoryPipeline;
   private readonly continuation: FactoryContinuation;
+  private readonly planning: FactoryPlanning;
   private readonly retrospectives: FactoryRetrospectives;
   private readonly references: FactoryReferences;
   private readonly accounts: MachineAccounts;
@@ -60,6 +62,13 @@ export class FactoryService {
       const events = this.store.list<import("../shared/protocol.ts").FactoryEvent>("events", this.store.get<FactoryRun>("runs", id)!.implementation_id).filter(event => (event.data as { run_id?: string })?.run_id === id);
       const latest = (kinds: string[]) => events.filter(event => kinds.includes(event.kind)).at(-1)?.kind;
       if (!allowPartial && (latest(["native_snapshot_unavailable", "planning_handoff_retained"]) === "native_snapshot_unavailable" || latest(["planning_documents_unavailable", "planning_documents_retained"]) === "planning_documents_unavailable")) throw new FactoryError("handoff_incomplete", "Some planning context could not be retained. Review the warning and choose Continue with available context", 409);
+    });
+    this.planning = new FactoryPlanning(this.store, this.workflow, this.runtime, async id => {
+      await this.retainHandoff(id);
+      const run = this.store.get<FactoryRun>("runs", id)!;
+      const events = this.store.list<import("../shared/protocol.ts").FactoryEvent>("events", run.implementation_id).filter(event => (event.data as { run_id?: string })?.run_id === id);
+      const latest = (kinds: string[]) => events.filter(event => kinds.includes(event.kind)).at(-1)?.kind;
+      if (latest(["native_snapshot_unavailable", "planning_handoff_retained"]) === "native_snapshot_unavailable" || latest(["planning_documents_unavailable", "planning_documents_retained"]) === "planning_documents_unavailable") throw new FactoryError("handoff_incomplete", "The accepted Specification is retained, but some native planning evidence is unavailable; inspect the preserved conversation before continuing", 409);
     });
     this.retrospectives = new FactoryRetrospectives(this.store);
     this.github = new ProjectGitHub(this.store, this.accounts, (machineId, path) => this.runtime.discover(machineId, path));
@@ -113,7 +122,7 @@ export class FactoryService {
     const runs = this.store.list<FactoryRun>("runs", id); const runIds = new Set(runs.map((run) => run.id));
     const active = [...runs].reverse().find(run => !["completed", "cancelled", "failed"].includes(run.condition));
     const questionRunId = active?.action === "verify-provider" ? active.id : undefined;
-    const detail: FactoryDetail = { implementation, capacity_waiting: factoryCapacity(this.store, this.settings()).waiting.filter(wait => wait.implementation_id === id), question_context: { run_id: questionRunId ?? null, revision: this.workflow.questionRevision(id, questionRunId), questions: this.workflow.questions(id, questionRunId) }, graph_hash: this.workflow.graphHash(id), question_revision: this.workflow.questionRevision(id), chats: this.store.list("chats", id), messages: this.store.list("messages", id), specifications: this.store.list("specifications", id), tickets: this.workflow.tickets(id), approvals: this.store.list("approvals", id), questions: this.store.list("questions", id), artifacts: this.store.list("artifacts", id), runs, snapshots: this.store.list("snapshots", id), comments: this.store.list("comments", id), events: this.store.list("events", id), native_snapshots: this.store.list<import("../shared/protocol.ts").NativeConversationSnapshot>("native_snapshots").filter((record) => runIds.has(record.run_id)), workers: this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers").filter((worker) => runIds.has(worker.run_id)), checks: this.store.list<import("../shared/protocol.ts").FactoryCheck>("checks").filter((check) => runIds.has(check.run_id)), review_evidence: this.store.list<import("../shared/protocol.ts").FactoryReviewEvidence>("review_evidence").filter((report) => runIds.has(report.run_id)), retrospectives: implementation.project_id ? this.store.list("retrospectives", implementation.project_id) : [], frontier: runs.at(-1)?.action === "implement-spec" ? this.pipeline.frontier(runs.at(-1)!) : [] };
+    const detail: FactoryDetail = { automatic_planning: this.store.list("automatic_planning", id), execution_plans: this.store.list("execution_plans", id), implementation, capacity_waiting: factoryCapacity(this.store, this.settings()).waiting.filter(wait => wait.implementation_id === id), question_context: { run_id: questionRunId ?? null, revision: this.workflow.questionRevision(id, questionRunId), questions: this.workflow.questions(id, questionRunId) }, graph_hash: this.workflow.graphHash(id), question_revision: this.workflow.questionRevision(id), chats: this.store.list("chats", id), messages: this.store.list("messages", id), specifications: this.store.list("specifications", id), tickets: this.workflow.tickets(id), approvals: this.store.list("approvals", id), questions: this.store.list("questions", id), artifacts: this.store.list("artifacts", id), runs, snapshots: this.store.list("snapshots", id), comments: this.store.list("comments", id), events: this.store.list("events", id), native_snapshots: this.store.list<import("../shared/protocol.ts").NativeConversationSnapshot>("native_snapshots").filter((record) => runIds.has(record.run_id)), workers: this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers").filter((worker) => runIds.has(worker.run_id)), checks: this.store.list<import("../shared/protocol.ts").FactoryCheck>("checks").filter((check) => runIds.has(check.run_id)), review_evidence: this.store.list<import("../shared/protocol.ts").FactoryReviewEvidence>("review_evidence").filter((report) => runIds.has(report.run_id)), retrospectives: implementation.project_id ? this.store.list("retrospectives", implementation.project_id) : [], frontier: runs.at(-1)?.action === "implement-spec" ? this.pipeline.frontier(runs.at(-1)!) : [] };
     return { ...detail, conversations: workflowConversations(detail) };
   }
   agentAuthenticated(request: Request, url: URL): boolean {
@@ -132,15 +141,16 @@ export class FactoryService {
       if (!run || ["completed", "cancelled", "failed"].includes(run.condition)) throw new FactoryError("run_closed", "This Run's control scope has ended", 409);
       if (request.headers.has("origin") && request.headers.get("origin") !== url.origin) throw new FactoryError("invalid_origin", "Use the scoped tracker on its authenticated app origin", 403);
       const action = route[2]!;
-      if (action === "contract" && request.method === "GET") return jsonResponse({ tracker_guide: factoryTrackerGuide, run, workers: this.store.list("workers", run.id), checks: this.store.list("checks", run.id), review_batches: this.store.list("review_batches", run.implementation_id), messages: this.store.list<FactoryMessage>("messages", run.implementation_id).filter((message) => (run.manifest as { context_message_ids?: string[] }).context_message_ids?.includes(message.id)), question_revision: this.workflow.questionRevision(run.implementation_id, run.id), questions: this.workflow.questions(run.implementation_id, run.id), frontier: run.action === "implement-spec" ? this.pipeline.frontier(run) : [], artifacts: (run.manifest as { artifacts?: FactoryArtifact[] }).artifacts ?? [] });
+      if (action === "contract" && request.method === "GET") return jsonResponse({ tracker_guide: factoryTrackerGuide, execution_plan: this.store.get("execution_plans", run.id), run, workers: this.store.list("workers", run.id), checks: this.store.list("checks", run.id), review_batches: this.store.list("review_batches", run.implementation_id), messages: this.store.list<FactoryMessage>("messages", run.implementation_id).filter((message) => (run.manifest as { context_message_ids?: string[] }).context_message_ids?.includes(message.id)), question_revision: this.workflow.questionRevision(run.implementation_id, run.id), questions: this.workflow.questions(run.implementation_id, run.id), frontier: run.action === "implement-spec" ? this.pipeline.frontier(run) : [], artifacts: (run.manifest as { artifacts?: FactoryArtifact[] }).artifacts ?? [] });
       if (action.startsWith("ticket/") && request.method === "GET") {
-        const ticket = (run.manifest as { tickets: import("../shared/protocol.ts").FactoryTicket[] }).tickets.find((ticket) => ticket.id === action.slice(7));
+        const ticket = this.workflow.executionTickets(run).find((ticket) => ticket.id === action.slice(7));
         if (!ticket) throw new FactoryError("not_found", "Ticket is outside this Run's frozen graph", 404);
         return jsonResponse(ticket);
       }
       if (request.method !== "POST" || request.headers.get("x-herdr-factory") !== "1") throw new FactoryError("invalid_operation", "Use an explicit scoped tracker operation", 400);
       const body = await this.body(request, action === "artifact" ? Math.ceil(this.settings().max_artifact_bytes / 3) * 4 + 64 * 1024 : 512 * 1024);
       if (action === "specification" && run.action === "to-spec") return jsonResponse(this.workflow.mutate(run.implementation_id, "specifications", { content: body.content, presentation_run_id: run.id }), 201);
+      if (action === "tickets" && run.action === "implement-spec") return jsonResponse(this.workflow.plan(run, body), 201);
       if (action === "tickets" && run.action === "to-tickets") return jsonResponse(this.workflow.mutate(run.implementation_id, "tickets", body), 201);
       if (action === "proposal" && run.action === "retro") {
         const scope = (run.manifest as { retrospective: import("../shared/protocol.ts").FactoryRetrospective }).retrospective;
@@ -171,6 +181,11 @@ export class FactoryService {
       throw new FactoryError("not_found", "This operation is outside the Run's granted scope", 404);
     } catch (error) { return error instanceof FactoryError ? httpError(error.status, error.code, error.message) : errorResponse(error); }
   }
+  private planningOrigin(run: FactoryRun): void {
+    const access = this.store.get<{ url: string }>("run_access", run.id);
+    if (!access) return;
+    for (const request of this.store.list<import("../shared/factory.ts").FactoryPlanningRequest & { origin?: string }>("automatic_planning", run.implementation_id)) if (!request.origin) this.store.put("automatic_planning", { ...request, origin: new URL(access.url).origin }, run.implementation_id);
+  }
   private async retainNative(id: string, before?: string, workerId?: string): Promise<import("../shared/protocol.ts").NativeConversationSnapshot> {
     const run = this.store.get<FactoryRun>("runs", id);
     if (!run) throw new FactoryError("not_found", "Run not found", 404);
@@ -181,9 +196,9 @@ export class FactoryService {
     return this.store.db.transaction(() => {
       const snapshots = this.store.list<import("../shared/protocol.ts").NativeConversationSnapshot>("native_snapshots", id);
       const previous = snapshots.find((entry) => entry.source_id === captured.source_id && entry.version === captured.version && entry.cursor === captured.cursor && (entry.worker_id ?? null) === (workerId ?? null));
-      if (previous) { this.workflow.retainNativeAnswers(run, previous, before === undefined); return previous; }
+      if (previous) { this.workflow.retainNativeAnswers(run, previous, before === undefined); this.planningOrigin(run); return previous; }
       const record = { ...this.store.record(), ...captured, run_id: id, sequence: snapshots.filter((entry) => entry.source_id === captured.source_id).length };
-      this.store.put("native_snapshots", record, id); this.store.event(run.implementation_id, "native_snapshot_retained", { snapshot_id: record.id, source_id: record.source_id, sequence: record.sequence, version: record.version }); this.workflow.retainNativeAnswers(run, record, before === undefined); return record;
+      this.store.put("native_snapshots", record, id); this.store.event(run.implementation_id, "native_snapshot_retained", { snapshot_id: record.id, source_id: record.source_id, sequence: record.sequence, version: record.version }); this.workflow.retainNativeAnswers(run, record, before === undefined); this.planningOrigin(run); return record;
     }).immediate();
   }
   private async retainHandoff(id: string): Promise<void> {
@@ -568,7 +583,9 @@ export class FactoryService {
       const workflowRoute = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/(specifications|specification-acceptance|tickets|approvals|order|questions)$/.exec(url.pathname);
       if (workflowRoute && request.method === "POST") {
         const body = await this.body(request);
-        return jsonResponse(this.workflow.mutate(workflowRoute[1]!, workflowRoute[2]!, workflowRoute[2] === "specifications" ? { content: body.content } : body), workflowRoute[2] === "order" ? 200 : 201);
+        const result = this.workflow.mutate(workflowRoute[1]!, workflowRoute[2]!, workflowRoute[2] === "specifications" ? { content: body.content } : body);
+        for (const request of this.store.list<import("../shared/factory.ts").FactoryPlanningRequest & { origin?: string }>("automatic_planning", workflowRoute[1]!)) if (!request.origin) this.store.put("automatic_planning", { ...request, origin: url.origin }, workflowRoute[1]!);
+        return jsonResponse(result, workflowRoute[2] === "order" ? 200 : 201);
       }
       const answerRoute = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/questions\/([a-zA-Z0-9-]+)\/answer$/.exec(url.pathname);
       if (answerRoute && request.method === "POST") {
@@ -706,5 +723,5 @@ export class FactoryService {
       return httpError(404, "not_found", "Unknown factory endpoint");
     } catch (error) { return error instanceof FactoryError ? httpError(error.status, error.code, error.message) : error instanceof SyntaxError ? badRequest("invalid_json", "Enter valid JSON") : errorResponse(error); }
   }
-  stop(): void { if (this.stopped) return; this.stopped = true; this.continuation.stop(); this.github.stop(); this.accounts.stop(); this.runtime.stop(); this.store.close(); }
+  stop(): void { if (this.stopped) return; this.stopped = true; this.continuation.stop(); this.planning.stop(); this.github.stop(); this.accounts.stop(); this.runtime.stop(); this.store.close(); }
 }

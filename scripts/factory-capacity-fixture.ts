@@ -43,6 +43,8 @@ export async function capacityFixture() {
       const action = route![2];
       if (action === "operations/transcript") return Response.json(transcript);
       if (action === "reconcile") return Response.json(run);
+      if (action === "artifacts") return Response.json([]);
+      if (action === "finish") { run.condition = "completed"; return Response.json(run); }
       if (action === "send") { if (rejectSend) { rejectSend = false; run.condition = "needs_you"; return Response.json({ error: { code: "agent_blocked", message: "Owned native permission arrived before delivery" } }, { status: 409 }); } prompts.push({ run_id: run.id, text: body.text }); run.condition = "working"; if (loseSend) { loseSend = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost continuation acknowledgment" } }, { status: 503 }); } return Response.json({ ok: true }); }
       if (action === "stop") { run.condition = "cancelled"; return Response.json(run); }
       if (action === "operations/check") {

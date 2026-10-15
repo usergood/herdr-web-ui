@@ -10,6 +10,10 @@
  * Placeholders in braces keep their English names.
  */
 export const ZH: Record<string, string> = {
+  "Internal planning continues automatically after Specification approval.": "规格获批后，内部规划会自动继续。",
+  "Execution plan": "执行计划",
+  "Testing plan": "测试计划",
+
   "Specification accepted": "规格已批准",
   "Specification reply": "规格回复",
   "Reply accepted to approve this revision, or use Accept specification.": "回复 accepted 或点击批准规格，即可批准此版本。",

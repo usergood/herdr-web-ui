@@ -80,18 +80,20 @@ try {
   await workflow.getByRole("button",{name:"Confirm shared understanding",exact:true}).click();
   const confirmed=await page.request.get(`http://localhost:${app.port}/api/factory/implementations/${planningId}`).then(r=>r.json());
   assert.equal(confirmed.questions.find((q:any)=>q.id===confirmation.id).answer,"Confirmed");
-  await workflow.getByRole("button",{name:"Accept specification",exact:true}).click();await workflow.getByRole("button",{name:"Confirm testing seams",exact:true}).click();
-  const ticketRun=await continueStep();assert.equal(ticketRun.action,"to-tickets");
-  await openWorkflow();await workflow.getByText("Add the receipt preview",{exact:true}).waitFor();
-  await workflow.getByRole("button",{name:"Approve Ticket graph",exact:true}).click();
-  const verifyRun=await continueStep();assert.equal(verifyRun.action,"verify-provider");
-  await openWorkflow();await workflow.getByRole("textbox",{name:"Your answer",exact:true}).fill("Confirmed for this owned read-only fixture.");await workflow.getByRole("button",{name:"Save answer",exact:true}).click();
-  await workflow.getByText("Native verification will run before implementation.",{exact:true}).waitFor();
-  assert.equal(await workflow.getByRole("button",{name:"Finish this step",exact:true}).count(),0);
+  await workflow.getByRole("button",{name:"Accept specification",exact:true}).click();
+  await workflow.getByText("Internal planning continues automatically after Specification approval.",{exact:true}).waitFor();
+  assert.equal(await workflow.getByRole("button",{name:"Confirm testing seams",exact:true}).count(),0);
+  assert.equal(await workflow.getByRole("button",{name:"Approve Ticket graph",exact:true}).count(),0);
+  assert.equal(await workflow.getByRole("button",{name:"Continue workflow",exact:true}).count(),0);
+  // This native stand-in cannot certify factory readiness or a complete native handoff.
+  // The automatic request exposes that concrete blocker rather than inventing receipts.
+  await page.waitForFunction(async id=>{const d=await fetch(`/api/factory/implementations/${id}`).then(r=>r.json());return d.automatic_planning?.some((r:{condition:string})=>r.condition==="blocked");},planningId);
+  const automatic=await page.request.get(`http://localhost:${app.port}/api/factory/implementations/${planningId}`).then(r=>r.json());
+  assert.equal(automatic.approvals.filter((a:any)=>a.kind==="testing_seams"||a.kind==="ticket_graph").length,0);
+  const verifyRun=specRun; // Retained identity for the independent reviewed-head UI fixture below.
   assert.equal(await workflow.getByRole("button",{name:"Stop Run",exact:true}).count(),0);
-  assert.equal(await page.locator(".factory-panel").isVisible(),false);
   const snapshot=await page.request.get(`http://localhost:${app.port}/api/session`).then(r=>r.json()).then(result=>result.snapshot);
-  for(const run of [plan,specRun,ticketRun])assert(snapshot.panes.some((pane:any)=>pane.pane_id===run.pane_id),"Finished planning chats must remain available");
+  for(const run of [plan,specRun])assert(snapshot.panes.some((pane:any)=>pane.pane_id===run.pane_id),"Finished planning chats must remain available");
   await shot("inbox-workflow-desktop.png");await page.setViewportSize({width:390,height:844});
   assert(await workflow.evaluate(el=>el.scrollWidth<=el.clientWidth),"Workflow must fit a phone");
   await shot("inbox-workflow-mobile.png");await page.setViewportSize({width:1440,height:1000});
