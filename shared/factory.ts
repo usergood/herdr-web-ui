@@ -3,15 +3,43 @@ import type { ConversationTurn } from "./protocol.ts";
 import type { ProjectAccountBindings } from "./accounts.ts";
 export type FactoryProvider = "codex" | "claude" | "opencode";
 export type FactoryStage = "inbox" | "specifying" | "ready" | "running" | "review" | "done";
+export type FactoryBoardLane = "inbox" | "queued" | "running" | "needs_you" | "done";
+export type FactoryActivity = "specifying" | "implementing" | "validating" | "reviewing" | "researching" | "setting_up" | "reflecting" | "awaiting_checks" | "awaiting_release" | "awaiting_merge" | "discard_pending";
+/** A current projection; persisted stages, Runs and events remain historical records. */
+export interface FactoryBoardItem {
+  implementation_id: string; lane: FactoryBoardLane; activity: FactoryActivity | null;
+  condition: RunCondition | null; run_id: string | null; busy: boolean; waiting_reason: string | null;
+  ticket_progress: { completed: number; total: number } | null;
+  /** Hide finished sidebar entries only after all owned work is reconciled. */
+  sidebar_hidden?: boolean;
+}
 export type RunCondition = "accepted" | "working" | "ready" | "needs_you" | "blocked" | "disconnected" | "interrupted" | "failed" | "cancelled" | "completed";
 export type FactoryAction = "work" | "setup" | "grill-me" | "grill-with-docs" | "to-spec" | "to-tickets" | "implement-spec" | "retro" | "apply-retro" | "verify-provider";
 export interface FactoryRecord { id: string; created_at: string; updated_at: string }
 export interface Implementation extends FactoryRecord {
   title: string; description: string; project_id: string | null; provider: FactoryProvider | null;
   machine_id: string | null; stage: FactoryStage; position: number;
-  outcome: "none" | "implementation_complete" | "pr_open" | "merged" | "released";
+  outcome: "none" | "implementation_complete" | "research_accepted" | "pr_open" | "merged" | "released" | "discarded";
   archived_at?: string | null;
+  discard_requested_at?: string | null;
+  /** Fixed at the first accepted Run, including its committed repository baseline. */
+  delivery_scope?: { milestone: "merge" | "release"; repository: string | null; branch: string | null; base: string | null; github_repository?: string | null };
+  completion_evidence?: { repository_changes: "none" | "changes" | "unknown"; quiescent: boolean; reason: string | null; checked_at: string };
+  delivery?: AssignmentDelivery;
+  upstream_update?: import("./upstream-releases.ts").UpstreamRelease;
 }
+export interface DeliveryChange { path: string; oid: string | null; mode: string | null; old_path?: string }
+export interface AssignmentDelivery {
+  revision: string; machine_id: string; account_profile_id: string; repository: string; branch: string;
+  pull_numbers: number[]; condition: "linked" | "needs_you" | "merged" | "released";
+  changes: DeliveryChange[];
+  pulls: { number: number; url: string; head: string; merge_commit: string; covered_paths: string[] }[];
+  branch_head?: string;
+  /** Published release whose resolved tag contains every verified delivery merge. */
+  release?: { id: number; tag: string; url: string; commit: string; published_at: string; merge_commits: string[] };
+  problem: string | null; checked_at: string | null;
+}
+export interface AssignmentDeliveryConfiguration { expected_revision: string | null; machine_id: string; account_profile_id: string; pull_numbers: number[] }
 export interface FactoryProject extends FactoryRecord {
   name: string; repository: string; provider: FactoryProvider; machine_id: string;
   tracker: "app" | "github" | "gitlab" | "local"; tracker_reference: string;
@@ -24,6 +52,10 @@ export interface FactoryProject extends FactoryRecord {
   removed_at?: string | null;
   workflow_instructions?: string;
   context_target_tokens?: number;
+  delivery_policy?: "merge" | "release";
+  delivery_branch?: string;
+  /** Separate publication authority. Missing on older Projects means disabled. */
+  auto_publish_pr?: boolean;
 }
 export interface ProjectCheckout extends FactoryRecord {
   project_id: string; machine_id: string; path: string; repository: string; head: string;
@@ -35,13 +67,17 @@ export interface FactoryMessage extends FactoryRecord {
   content: string; source_id: string | null; sequence: number | null;
 }
 export interface FactoryEvent extends FactoryRecord { implementation_id: string | null; kind: string; data: unknown }
-export interface SpecificationVersion extends FactoryRecord { implementation_id: string; revision: number; content: string; hash: string }
+export interface SpecificationVersion extends FactoryRecord {
+  implementation_id: string; revision: number; content: string; hash: string;
+  /** The detected release this revision proposes to prepare; never a moving candidate. */
+  upstream_update?: import("./upstream-releases.ts").UpstreamRelease;
+}
 export interface FactoryTicket extends FactoryRecord {
   implementation_id: string; specification_id: string; title: string; acceptance: string;
   dependencies: string[]; status: "proposed" | "ready" | "working" | "review" | "done";
   tracker_reference: string | null;
 }
-export interface FactoryApproval extends FactoryRecord { implementation_id: string; kind: "specification" | "testing_seams" | "ticket_graph" | "review" | "shared_understanding"; revision: string; scope: string }
+export interface FactoryApproval extends FactoryRecord { implementation_id: string; kind: "specification" | "testing_seams" | "ticket_graph" | "review" | "shared_understanding"; revision: string; scope: string; /** Existing trusted readiness receipt, when a decision was reused rather than newly approved. */ source_approval_id?: string }
 export interface FactoryQuestion extends FactoryRecord { implementation_id: string; run_id: string | null; question: string; answer_kind?: "text" | "confirmation"; answer: string | null; revision: string }
 export interface FactoryArtifact extends FactoryRecord {
   implementation_id: string; chat_id: string; name: string; media_type: string;
@@ -61,11 +97,13 @@ export interface FactoryRun extends FactoryRecord {
   specification_id: string | null; graph_hash: string | null; base: string | null;
   checkout: string | null; worktree: string | null; branch: string | null;
   workspace_id: string | null; pane_id: string | null; manifest: unknown;
+  scope_pause?: { source_id: string; approved_revision: string; observed_revision: string; condition: "requested" | "paused" | "uncertain"; reason: string };
+  accepted_result?: { head: string; workspace_hash: string; check_id: string; review_ids: string[]; question_revision: string };
 }
 export interface ReviewSnapshot extends FactoryRecord {
   implementation_id: string; run_id: string | null; machine_id: string; repository: string;
   mode: "branch" | "workspace"; base: string; head: string; hash: string;
-  files: { path: string; status: string; diff: string; binary: boolean; oversized: boolean }[];
+  files: { path: string; status: string; diff: string; binary: boolean; oversized: boolean; new_oid?: string | null; new_mode?: string | null; old_path?: string }[];
 }
 export interface ReviewComment extends FactoryRecord {
   implementation_id: string; run_id: string | null; snapshot_id: string; path: string; change: string;
@@ -79,6 +117,8 @@ export interface FactorySettings {
   max_artifact_bytes: number; max_storage_bytes: number; skills_path: string | null;
 }
 export interface FactoryDetail {
+  /** Absent on older bridges. */
+  board?: FactoryBoardItem;
   graph_hash: string; question_revision: string;
   /** Current decision scope; full historical questions remain in questions below. */
   question_context?: { revision: string; questions: FactoryQuestion[]; run_id: string | null };
@@ -87,6 +127,7 @@ export interface FactoryDetail {
   questions: FactoryQuestion[]; artifacts: FactoryArtifact[]; runs: FactoryRun[];
   snapshots: ReviewSnapshot[]; comments: ReviewComment[]; events: FactoryEvent[];
   workers: FactoryWorker[]; checks: FactoryCheck[]; review_evidence: FactoryReviewEvidence[];
+  review_batches?: import("./protocol.ts").FactoryBatchReceipt[];
   frontier: FactoryTicket[];
   retrospectives: FactoryRetrospective[];
   native_snapshots: NativeConversationSnapshot[];
@@ -101,6 +142,7 @@ export interface FactoryPaneLink {
 }
 export interface FactoryPaneArchive extends FactoryRecord { machine_id: string; pane_id: string; terminal_id?: string; session_ref?: string | null; title?: string; archived_at: string | null }
 export interface FactoryOverview { pane_links?: FactoryPaneLink[]; pane_archives?: FactoryPaneArchive[] }
+export interface FactoryOverview { /** Absent on older bridges. */ board?: FactoryBoardItem[] }
 export interface FactoryProviderCapability { provider: FactoryProvider; version: string | null; installed: boolean; skills_verified: boolean; factory_ready: boolean; reasons: string[] }
 export interface FactoryCapabilities { providers: FactoryProviderCapability[]; skill_manifest: { commit: string; hash: string; file_count: number } | null; factory_host_protocol: 1; project_reference_protocol?: 1; account_profile_protocol?: 1 }
 export interface FactoryOutput { name: string; media_type: string; hash: string; size: number }

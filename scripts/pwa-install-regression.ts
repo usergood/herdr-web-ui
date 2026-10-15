@@ -9,29 +9,30 @@ import { createServer } from "../server/index.ts";
 const state = mkdtempSync(join(tmpdir(), "saurons-pwa-install-"));
 const app = createServer({ port: 0, stateDir: state, machines: false, token: "owned-pwa-gate-fixture" });
 const authorization = `Basic ${Buffer.from("fixture:fixture-only").toString("base64")}`;
-const manifestRequests: { authorized: boolean }[] = [];
+const manifestRequests: { authorized: boolean; credentialed: boolean }[] = [];
 const iconRequests: { path: string; authorized: boolean }[] = [];
 const proxy = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(request) {
   if (new URL(request.url).pathname.startsWith("/icons/")) iconRequests.push({ path: new URL(request.url).pathname, authorized: request.headers.get("authorization") === authorization });
-  if (new URL(request.url).pathname === "/manifest.webmanifest") manifestRequests.push({ authorized: request.headers.get("authorization") === authorization });
+  if (new URL(request.url).pathname === "/manifest.webmanifest") manifestRequests.push({ authorized: request.headers.get("authorization") === authorization, credentialed: request.headers.get("cookie")?.split("; ").includes("pwa-fixture=authenticated") ?? false });
   if (request.headers.get("authorization") !== authorization) return new Response("Authentication required", { status: 401, headers: { "www-authenticate": 'Basic realm="PWA fixture"' } });
   const url = new URL(request.url);
+  // The cookie independently exercises the manifest credentials mode; an explicit
+  // Authorization header alone would hide a missing use-credentials attribute.
+  if (url.pathname === "/manifest.webmanifest" && !manifestRequests.at(-1)?.credentialed) return new Response("Manifest credentials required", { status: 401 });
   const headers = new Headers(request.headers); headers.delete("authorization");
   const response = await fetch(`http://localhost:${app.port}${url.pathname}${url.search}`, { headers, redirect: "manual" });
   const passed = new Headers(response.headers); passed.delete("content-encoding"); passed.delete("content-length");
-  // Native URL login supplies install-icon credentials. Keep the fixture app's
-  // relative fetch URLs free of userinfo, which Fetch rejects.
-  const body = url.pathname === "/" ? (await response.text()).replace("<head>", `<head><base href="http://localhost:${proxy.port}/">`) : response.body;
-  return new Response(body, { status: response.status, headers: passed });
+  return new Response(response.body, { status: response.status, headers: passed });
 } });
-const context = await chromium.launchPersistentContext(join(state, "chrome-profile"), { executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"], httpCredentials: { username: "fixture", password: "fixture-only" }, viewport: { width: 390, height: 844 } });
+const context = await chromium.launchPersistentContext(join(state, "chrome-profile"), { executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"], extraHTTPHeaders: { authorization }, viewport: { width: 390, height: 844 } });
 try {
   const origin = `http://localhost:${proxy.port}`;
+  await context.addCookies([{ name: "pwa-fixture", value: "authenticated", url: origin, httpOnly: true, sameSite: "Lax" }]);
   const page = await context.newPage(); page.setDefaultTimeout(5000);
   const cdp = await context.newCDPSession(page);
-  // The installability icon loader needs native browser authentication too;
-  // page-scoped Playwright challenge handling misses those requests.
-  await page.goto(`http://fixture:fixture-only@localhost:${proxy.port}`, { waitUntil: "load" });
+  // Supply the authenticated proxy header to browser requests without page-level
+  // challenge interception, which misses Chrome's install-icon loader.
+  await page.goto(origin, { waitUntil: "load" });
   await page.locator('link[rel="manifest"]').waitFor({ state: "attached" });
   const manifest = await cdp.send("Page.getAppManifest");
   assert(manifest.data && !manifest.errors.some((error) => error.critical), "Chrome can read the manifest behind BasicAuth");
@@ -45,7 +46,7 @@ try {
     for (const purpose of ["any", "maskable"]) {
       const icon = parsed.icons.find((entry: { sizes: string; purpose: string }) => entry.sizes === `${size}x${size}` && entry.purpose === purpose);
       assert(icon, `${purpose} install icon at ${size}px`);
-      const dimensions = await page.evaluate(async (src) => { const image = new Image(); image.src = src; await image.decode(); return { width: image.naturalWidth, height: image.naturalHeight }; }, icon.src);
+      const dimensions = await page.evaluate(async (src) => { const image = new Image(); image.src = src; await Promise.race([image.decode(), new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Image decode exceeded 5 seconds")), 5000))]); return { width: image.naturalWidth, height: image.naturalHeight }; }, icon.src);
       assert.deepEqual(dimensions, { width: size, height: size });
     }
   }
@@ -58,9 +59,9 @@ try {
     installability = await cdp.send("Page.getInstallabilityErrors");
   }
   assert.deepEqual(installability.installabilityErrors, [], `Chrome reports no installability errors behind BasicAuth; icon requests: ${JSON.stringify(iconRequests)}`);
-  assert(manifestRequests.some((request) => request.authorized), "The manifest carries login credentials after its BasicAuth challenge");
+  assert(manifestRequests.some((request) => request.authorized && request.credentialed), "The manifest carries Basic authentication and browser-managed credentials");
   const badge = await page.evaluate(async () => {
-    const image = new Image(); image.src = "/icons/badge-96.png?v=eye1"; await image.decode();
+    const image = new Image(); image.src = "/icons/badge-96.png?v=eye1"; await Promise.race([image.decode(), new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Image decode exceeded 5 seconds")), 5000))]);
     const canvas = document.createElement("canvas"); canvas.width = 96; canvas.height = 96;
     const context = canvas.getContext("2d")!; context.drawImage(image, 0, 0);
     const pixels = context.getImageData(0, 0, 96, 96).data; let transparent = 0; let white = 0; let colored = 0;

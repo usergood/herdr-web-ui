@@ -58,7 +58,22 @@ export HERDR_DEMO_BUILD
 run_script scripts/demo-build.ts "$HERDR_DEMO_BUILD"
 run_script scripts/ui-regression.ts
 run_script scripts/factory-browser-regression.ts
+run_script scripts/factory-board-browser-regression.ts
+run_script scripts/factory-delivery-browser-regression.ts
+run_script scripts/factory-merge-browser-regression.ts
+run_script scripts/factory-publication-browser-regression.ts
+run_script scripts/factory-review-rework-browser-regression.ts
+run_script scripts/factory-history-browser-regression.ts
 run_script scripts/project-setup-browser-regression.ts
+run_script scripts/project-navigation-browser-regression.ts
+run_script scripts/project-schedules-browser-regression.ts
+run_script scripts/upstream-releases-browser-regression.ts
+run_script scripts/upstream-preparation-browser-regression.ts
+run_script scripts/project-queue-browser-regression.ts
+run_script scripts/ready-issues-browser-regression.ts
+run_script scripts/github-readiness-browser-regression.ts
+run_script scripts/github-scope-browser-regression.ts
+run_script scripts/github-issue-batches-browser-regression.ts
 run_script scripts/inbox-start-browser-regression.ts
 run_script scripts/account-profiles-browser-regression.ts
 run_script scripts/plan-browser-regression.ts

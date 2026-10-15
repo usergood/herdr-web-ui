@@ -66,8 +66,8 @@ try {
   assert.equal(await page.getByRole("combobox",{name:"GitHub account",exact:true}).inputValue(),accountId);
   await page.unroute("**/api/factory/project-discovery");
   await page.getByRole("button",{name:"Close settings",exact:true}).click();
-  const group=page.locator(".project-navigation-group").filter({has:page.locator("summary").filter({hasText:"storefront"})});await group.locator('summary [data-status="working"]').waitFor();
-  await group.locator("summary").click();await herdrRpc("pane.report_agent",{pane_id:workspace.root_pane.pane_id,source:"manual",agent:"codex",state:"blocked"});await group.locator('summary [data-status="blocked"]').waitFor();assert.equal(await group.getAttribute("open"),null);
+  const group=page.locator(".project-navigation-group").filter({has:page.getByRole("button",{name:"storefront",exact:true})});await group.locator('.project-navigation-heading [data-status="working"]').waitFor();
+  const chats=group.getByRole("button",{name:"Project chats for storefront",exact:true});await chats.press("Enter");await herdrRpc("pane.report_agent",{pane_id:workspace.root_pane.pane_id,source:"manual",agent:"codex",state:"blocked"});await group.locator('.project-navigation-heading [data-status="blocked"]').waitFor();assert.equal(await chats.getAttribute("aria-expanded"),"false");
   if(evidence)await page.screenshot({path:join(evidence,"project-status-desktop.png"),animations:"disabled"});
   assert.deepEqual(errors,[]);console.log("Project setup browser: folder-only picker, defaults, account import, save and folded native statuses passed");
 } finally {await browser.close();app.stop();await workspaceClose(workspace.workspace.workspace_id);rmSync(root,{recursive:true,force:true});}

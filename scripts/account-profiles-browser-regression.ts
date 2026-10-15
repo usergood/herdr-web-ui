@@ -41,6 +41,7 @@ try {
   assert(!frames.some((frame) => frame.type === "attach"), "Inbox presence does not allocate a terminal attachment");
   await page.getByRole("textbox", { name: "Idea title", exact: true }).fill("Scoped account walkthrough"); await page.getByRole("button", { name: "Capture idea", exact: true }).click();
   await page.locator(".factory-detail").getByRole("combobox", { name: "Project", exact: true }).selectOption(project.id);
+  await page.getByRole("navigation", { name: "Projects", exact: true }).getByRole("button", { name: "Fictional account Project", exact: true }).click();
   await page.getByRole("button", { name: "Project settings for Fictional account Project", exact: true }).click();
   await page.getByRole("tab", { name: "Accounts", exact: true }).click();
   const accounts = page.getByRole("region", { name: "Project accounts", exact: true });

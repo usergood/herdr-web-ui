@@ -1,0 +1,3 @@
+.factory-activity, .factory-attention { display: flex; align-items: center; gap: var(--space-2); font-size: var(--fs-sm); }
+.factory-activity svg, .factory-attention svg { width: var(--icon-size); height: var(--icon-size); flex-shrink: 0; }
+.factory-attention { color: var(--status-blocked); }

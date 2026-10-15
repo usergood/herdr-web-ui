@@ -1,0 +1,48 @@
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createServer } from "./index.ts";
+import { herdrRpc, workspaceClose, type WorkspaceCreateResult } from "./herdr/client.ts";
+import type { FactoryRun } from "../shared/factory.ts";
+import type { FactoryNative } from "./factory-native.ts";
+
+/** Owned external repository and native workspace; every observation uses HTTP. */
+export async function factoryDeliveryFixture(remote = false, reviewReports = false, native: Partial<FactoryNative> = {}, options: { githubRepository?: string; accountTools?: import("./account-tools.ts").AccountTools } = {}) {
+  const root = mkdtempSync(join(tmpdir(), "saurons-delivery-"));
+  const repo = join(root, "repo"); mkdirSync(repo);
+  writeFileSync(join(repo, "README.md"), "Owned delivery fixture\n");
+  const git = (args: string[], cwd = repo) => execFileSync("git", args, { cwd, encoding: "utf8" });
+  git(["init", "-b", "main"]); git(["add", "."]);
+  git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "initial"]);
+  if (options.githubRepository) git(["remote", "add", "origin", `https://github.com/${options.githubRepository}.git`]);
+  const owned: string[] = [];
+  const host = createServer({ port: 0, token: remote ? "owned-delivery-host" : "", stateDir: join(root, "state"), ...(remote ? { machines: false as const } : {}), factory: { accountTools: options.accountTools, accountDiscoveryHome: root, native: {
+    version: async () => "owned-delivery-fixture",
+    createWorkspace: async options => { const result = await herdrRpc<WorkspaceCreateResult>("workspace.create", { ...options, focus: false }); owned.push(result.workspace.workspace_id); return result; },
+    startAgent: async options => { await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "idle" }); },
+    ...native,
+  } } });
+  let offline = false;
+  let reviewHead = "";
+  let reviewOutcome: "passed" | "failed" = "passed";
+  let handoffWrite: (() => void | Promise<void>) | null = null;
+  let loseCheckResponse = false;
+  const proxy = remote ? Bun.serve({ port: 0, async fetch(request) {
+    const url = new URL(request.url);
+    if (url.pathname.endsWith("/operations/transcript") && handoffWrite) { const write = handoffWrite; handoffWrite = null; await write(); }
+    if (reviewReports && url.pathname.endsWith("/operations/review-evidence")) return Response.json({ head: reviewHead, source_id: "owned-external-review", content: `Owned external review ${reviewOutcome}`, outcome: reviewOutcome });
+    const response = await fetch(`http://localhost:${host.port}${url.pathname}${url.search}`, request);
+    if (loseCheckResponse && url.pathname.endsWith("/operations/check")) { await response.arrayBuffer(); return new Response(null, { status: 503 }); }
+    const headers = new Headers(response.headers); headers.delete("content-encoding"); headers.delete("content-length");
+    return new Response(response.body, { status: response.status, headers });
+  } }) : null;
+  const coordinator = () => createServer({ port: 0, token: "", stateDir: join(root, "coordinator"), machines: false, factory: { accountTools: options.accountTools, accountDiscoveryHome: root, machineEndpoint: id => id === "delivery-host" && !offline ? { url: `http://localhost:${proxy!.port}`, token: "owned-delivery-host" } : undefined } });
+  let app = remote ? coordinator() : host;
+  const request = (path: string, body?: unknown) => fetch(`http://localhost:${app.port}/api/factory${path}`, { method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1", "x-herdr-machine": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  const project = await request("/projects", { name: "Delivery Project", path: repo, machine_id: remote ? "delivery-host" : "local", provider: "codex", tracker: "app" }).then(r => r.json());
+  const idea = await request("/implementations", { title: "Retained research", description: "", project_id: project.id }).then(r => r.json());
+  const prefix = `/implementations/${idea.id}`;
+  const start = (key = "delivery-work"): Promise<FactoryRun> => request(`${prefix}/runs`, { action: "work", idempotency_key: key }).then(r => r.json());
+  return { root, repo, git, get app() { return app; }, project, prefix, request, start, restart: () => { if (!remote) throw new Error("Restart requires the owned remote fixture"); app.stop(); app = coordinator(); }, loseCheckResponse: () => { loseCheckResponse = true; }, changeDuringHandoff: (write: () => void | Promise<void>) => { handoffWrite = write; }, setReviewOutcome: (outcome: "passed" | "failed") => { reviewOutcome = outcome; }, setReviewHead: (head: string) => { reviewHead = head; }, disconnect: () => { offline = true; }, reconnect: () => { offline = false; }, close: async () => { app.stop(); proxy?.stop(); if (app !== host) host.stop(); for (const id of owned) await workspaceClose(id).catch(() => {}); rmSync(root, { recursive: true, force: true }); } };
+}

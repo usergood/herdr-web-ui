@@ -29,6 +29,8 @@ if (endpoint === "graphql" && data.pause || endpoint === "user" && data.pause_us
 }
 if (endpoint === "user") result = { login: "fictional-owner", id: 1042 };
 else if (endpoint?.includes("/issues?")) result = endpoint.includes("page=1&") ? data.issues : [];
+else if (endpoint?.includes("/issues/") && !endpoint.includes("?")) result = data.issues.find(issue => endpoint.endsWith("/" + issue.number));
+else if (endpoint === "graphql" && args.some(arg => arg.includes("issue(number:"))) result = { data: { repository: { issue: { comments: { nodes: data.comments ?? [], pageInfo: { hasNextPage: false, endCursor: null } } } } } };
 else if (endpoint === "graphql") result = { data: { repository: { viewerPermission: "ADMIN", pullRequests: { nodes: data.pulls, pageInfo: { hasNextPage: false, endCursor: null } }, pullRequest: data.pull ?? data.pulls[0] } } };
 else if (endpoint?.endsWith("/merge")) result = { merged: !data.fail_merge, sha: "fictional-merged" };
 else if (endpoint?.endsWith("/update-branch")) result = { message: "Updating pull request branch", url: "https://api.github.com/fictional/update" };
@@ -61,6 +63,152 @@ test("scoped GitHub tickets arrive once in Inbox while owner notes survive later
   expect((await f.post(route + "/sync", {})).status).toBe(200);
   expect((await f.get("")).implementations).toHaveLength(1);
   expect((await f.get(`/implementations/${idea.id}`)).messages.some((message: { content: string }) => message.content === "My local decision")).toBe(true);
+});
+
+
+test("Project triage roles inherit defaults, override individually and keep implementation opt-in separate", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  let saved = await f.post(route + "/configure", f.policy);
+  expect(saved.status).toBe(200);
+  expect(saved.body.triage_labels).toEqual({ "needs-triage": "needs-triage", "needs-info": "needs-info", "ready-for-agent": "ready-for-agent", "ready-for-human": "ready-for-human", wontfix: "wontfix" });
+  expect(saved.body.auto_implement).toBe(false);
+  expect(saved.body.trusted_issue_approvers).toEqual([]);
+  saved = await f.post(route + "/configure", { ...f.policy, expected_revision: saved.body.revision, triage_labels: { "ready-for-agent": "factory-ready" }, auto_implement: true, trusted_issue_approvers: ["fictional-maintainer", "fictional-bot[bot]"] });
+  expect(saved.status).toBe(200);
+  expect(saved.body.triage_labels["ready-for-agent"]).toBe("factory-ready");
+  expect(saved.body.triage_labels["needs-info"]).toBe("needs-info");
+  expect(saved.body.auto_implement).toBe(true);
+  expect(saved.body.auto_merge).toBe(false);
+  const rejected = await f.post(route + "/configure", { ...f.policy, expected_revision: saved.body.revision, triage_labels: { "ready-for-agent": "needs-info" } });
+  expect(rejected.status).toBe(400);
+  expect(rejected.body.error.code).toBe("invalid_github_policy");
+});
+
+
+test("mapped triage roles expose why imported issues need planning or approval without starting agents", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", { ...f.policy, triage_labels: { "ready-for-agent": "factory-ready" }, auto_implement: true });
+  const base = JSON.parse(readFileSync(f.state, "utf8")).issues[0];
+  for (const [labels, roles, reason] of [
+    [[], [], "start_planning"],
+    [["ready-for-agent"], [], "start_planning"],
+    [["needs-info"], ["needs-info"], "start_planning"],
+    [["ready-for-human"], ["ready-for-human"], "human_only"],
+    [["wontfix"], ["wontfix"], "wontfix"],
+    [["factory-ready", "needs-triage"], ["needs-triage", "ready-for-agent"], "conflicting_triage"],
+    [["factory-ready"], ["ready-for-agent"], "approval_required"],
+  ] as const) {
+    writeFileSync(f.state, JSON.stringify({ issues: [{ ...base, labels: labels.map(name => ({ name })) }], pulls: [] }));
+    const synced = await f.post(route + "/sync", {}); expect(synced.status).toBe(200);
+    const source = synced.body.sources[0];
+    expect(source.triage_roles).toEqual(roles);
+    expect(source.readiness.eligible).toBe(false);
+    expect(source.readiness.reasons).toContain(reason);
+  }
+  const overview = await f.get(""); expect(overview.implementations).toHaveLength(1);
+  expect(overview.implementations[0].stage).toBe("inbox");
+  expect((await f.get(`/implementations/${overview.implementations[0].id}`)).runs).toHaveLength(0);
+});
+
+
+test("owner readiness freezes the current issue scope and planning decisions without dispatch", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const data = JSON.parse(readFileSync(f.state, "utf8")); data.issues[0].labels = [{ name: "ready-for-agent" }];
+  writeFileSync(f.state, JSON.stringify(data));
+  const policy = (await f.post(route + "/configure", f.policy)).body;
+  const source = (await f.post(route + "/sync", {})).body.sources[0];
+  const plan = { acceptance_criteria: "Owner notes survive repeated import.", dependencies: [{ repository: "fictional/project", issue_number: 8, requires: "merge" }], testing_seams: ["Public HTTP with disposable native fixtures"], planning_decisions: ["Use one Assignment per issue"] };
+  const proof = { policy_revision: policy.revision, issue_revision: source.revision, plan };
+  const approved = await f.post(route + "/issues/12/approve", proof);
+  expect(approved.status).toBe(200);
+  const readiness = approved.body.sources[0].readiness;
+  expect(readiness.approval.plan).toEqual(plan);
+  expect(readiness.approval.issue_revision).toBe(source.revision);
+  expect(readiness.approval.actor).toBe("owner");
+  expect(readiness.approval.policy_revision).toBe(policy.revision);
+  expect(readiness.eligible).toBe(false);
+  expect(readiness.reasons).toEqual(["automatic_implementation_disabled"]);
+  const resynced = (await f.post(route + "/sync", {})).body;
+  expect(resynced.sources[0].readiness.approval.id).toBe(readiness.approval.id);
+  expect((await f.get(`/implementations/${source.implementation_id}`)).runs).toHaveLength(0);
+  data.issues[0].body = "Changed acceptance"; writeFileSync(f.state, JSON.stringify(data));
+  const stale = await f.post(route + "/issues/12/approve", proof);
+  expect(stale.status).toBe(409); expect(stale.body.error.code).toBe("github_issue_changed");
+  expect((await f.get(route)).sources[0].readiness.eligible).toBe(false);
+});
+
+
+test("only a trusted GitHub actor approving the exact issue scope and complete plan grants eligibility", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const plan = { acceptance_criteria: "Keep owner notes", dependencies: [], testing_seams: ["Public HTTP"], planning_decisions: [] };
+  const issue = { ...JSON.parse(readFileSync(f.state, "utf8")).issues[0], labels: [{ name: "ready-for-agent" }], updated_at: "2026-10-14T12:00:00Z" };
+  const policy = (await f.post(route + "/configure", { ...f.policy, auto_implement: true, trusted_issue_approvers: ["fictional-maintainer"] })).body;
+  writeFileSync(f.state, JSON.stringify({ issues: [issue], pulls: [] }));
+  const source = (await f.post(route + "/sync", {})).body.sources[0];
+  const comment = { id: "IC_1234", author: { login: "fictional-maintainer" }, editor: null, lastEditedAt: null, body: "```saurons-eye-readiness\n" + JSON.stringify({ issue_revision: source.revision, plan }) + "\n```" };
+  for (const comments of [[{ ...comment, author: { login: "unknown-contributor" } }], [{ ...comment, body: "```saurons-eye-readiness\n" + JSON.stringify({ issue_revision: "another-scope", plan }) + "\n```" }], [{ ...comment, editor: { login: "unknown-contributor" } }]]) {
+    writeFileSync(f.state, JSON.stringify({ issues: [issue], comments, pulls: [] }));
+    const result = await f.post(route + "/sync", {}); expect(result.status).toBe(200);
+    expect(result.body.sources[0].readiness.eligible).toBe(false);
+  }
+  writeFileSync(f.state, JSON.stringify({ issues: [issue], comments: [comment], pulls: [] }));
+  const result = await f.post(route + "/sync", {}); expect(result.status).toBe(200);
+  expect(result.body.sources[0].readiness.eligible).toBe(true);
+  expect(result.body.sources[0].readiness.approval).toMatchObject({ actor: "fictional-maintainer", origin: "github_comment", evidence_id: "IC_1234", issue_revision: source.revision, policy_revision: policy.revision, plan });
+  expect((await f.get(`/implementations/${source.implementation_id}`)).runs).toHaveLength(0);
+  // A source author can edit within GitHub's one-second timestamp resolution. The digest must change.
+  issue.body = "Broader acceptance at the same timestamp";
+  writeFileSync(f.state, JSON.stringify({ issues: [issue], comments: [comment], pulls: [] }));
+  expect((await f.post(route + "/sync", {})).body.sources[0].readiness.eligible).toBe(false);
+});
+
+test("readiness removal remains revoked after the label returns until the owner approves again", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const data = JSON.parse(readFileSync(f.state, "utf8"));
+  data.issues[0].labels = [{ name: "ready-for-agent" }]; writeFileSync(f.state, JSON.stringify(data));
+  const policy = (await f.post(route + "/configure", { ...f.policy, auto_implement: true })).body;
+  const source = (await f.post(route + "/sync", {})).body.sources[0];
+  const proof = { policy_revision: policy.revision, issue_revision: source.revision, plan: { acceptance_criteria: "Preserve notes", dependencies: [], testing_seams: ["Public HTTP"], planning_decisions: [] } };
+  expect((await f.post(route + "/issues/12/approve", proof)).body.sources[0].readiness.eligible).toBe(true);
+  data.issues[0].labels = []; writeFileSync(f.state, JSON.stringify(data));
+  expect((await f.post(route + "/sync", {})).body.sources[0].readiness.eligible).toBe(false);
+  data.issues[0].labels = [{ name: "ready-for-agent" }]; writeFileSync(f.state, JSON.stringify(data));
+  const restored = (await f.post(route + "/sync", {})).body.sources[0];
+  expect(restored.readiness.eligible).toBe(false);
+  expect((await f.post(route + "/issues/12/approve", proof)).body.sources[0].readiness.eligible).toBe(true);
+  expect((await f.get(`/implementations/${source.implementation_id}`)).runs).toHaveLength(0);
+});
+
+test("reverting edited scope cannot replay a trusted approval comment but a fresh receipt renews readiness", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const data = JSON.parse(readFileSync(f.state, "utf8")); data.issues[0].labels = [{ name: "ready-for-agent" }];
+  writeFileSync(f.state, JSON.stringify(data));
+  await f.post(route + "/configure", { ...f.policy, auto_implement: true });
+  const source = (await f.post(route + "/sync", {})).body.sources[0];
+  const plan = { acceptance_criteria: "Preserve notes", dependencies: [], testing_seams: ["Public HTTP"], planning_decisions: [] };
+  const comment = { id: "IC_original", author: { login: "fictional-owner" }, editor: null, lastEditedAt: null, body: "```saurons-eye-readiness\n" + JSON.stringify({ issue_revision: source.revision, plan }) + "\n```" };
+  data.comments = [comment]; writeFileSync(f.state, JSON.stringify(data));
+  expect((await f.post(route + "/sync", {})).body.sources[0].readiness.eligible).toBe(true);
+  const body = data.issues[0].body; data.issues[0].body = "Different requirements"; writeFileSync(f.state, JSON.stringify(data));
+  expect((await f.post(route + "/sync", {})).body.sources[0].readiness.eligible).toBe(false);
+  data.issues[0].body = body; writeFileSync(f.state, JSON.stringify(data));
+  expect((await f.post(route + "/sync", {})).body.sources[0].readiness.eligible).toBe(false);
+  data.comments.push({ ...comment, id: "IC_renewed" }); writeFileSync(f.state, JSON.stringify(data));
+  expect((await f.post(route + "/sync", {})).body.sources[0].readiness.eligible).toBe(true);
+});
+
+test("a ready label and external plan prose cannot substitute for trusted approval", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", { ...f.policy, auto_implement: true });
+  const plan = { acceptance_criteria: "Preserve owner notes", dependencies: [], testing_seams: ["Public HTTP"], planning_decisions: [] };
+  const block = "```saurons-eye-plan\n" + JSON.stringify(plan) + "\n```";
+  const base = { ...JSON.parse(readFileSync(f.state, "utf8")).issues[0], labels: [{ name: "ready-for-agent" }], updated_at: "2026-10-14T12:00:00Z" };
+  const event = { id: 1234, event: "labeled", label: { name: "ready-for-agent" }, actor: { login: "fictional-owner" }, created_at: "2026-10-14T12:00:00Z" };
+  for (const body of ["Acceptance is not a testing approval", "```saurons-eye-plan\n{}\n```", block + "\n" + block]) {
+    writeFileSync(f.state, JSON.stringify({ issues: [{ ...base, body }], events: [event], pulls: [] }));
+    const result = await f.post(route + "/sync", {}); expect(result.status).toBe(200);
+    expect(result.body.sources[0].readiness.eligible).toBe(false);
+  }
 });
 
 function connection<T>(nodes: T[]) { return { nodes, pageInfo: { hasNextPage: false, endCursor: null } }; }
