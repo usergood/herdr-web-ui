@@ -1,0 +1,8 @@
+.workflow-conversation-tree { list-style: none; margin: 0; padding: 0; }
+.workflow-conversation-tree .workflow-conversation-tree { margin-left: var(--space-3); padding-left: var(--space-2); border-left: var(--hairline) solid var(--border); }
+.workflow-conversation-tree .project-navigation-row { white-space: normal; overflow-wrap: anywhere; }
+.workflow-conversation-tree [aria-current="page"] { background: var(--bg-elevated); color: var(--text-strong); }
+.workflow-conversation-group { display: block; padding: var(--space-2); color: var(--text-dim); }
+.workflow-conversations > nav { margin-bottom: var(--space-3); }
+.workflow-conversation-history { min-width: 0; overflow-wrap: anywhere; }
+.workflow-conversation-history pre { max-width: 100%; overflow: auto; }
