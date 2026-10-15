@@ -18,6 +18,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean } = {
   let checkGate: { entered: () => void; wait: Promise<void> } | null = null;
   let rejectSend = false;
   let loseResume = false;
+  let loseDelete = false;
   const resumptions: string[] = [];
   const resumeHistories: unknown[] = [];
   let loseSend = false; let loseLaunch = false; let loseWorker = false; let loseCheck = false; let offline = false; let uncertain = false;
@@ -47,6 +48,14 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean } = {
       if (allocationGate && !allocationGate.worker) { const gate = allocationGate; allocationGate = null; gate.entered(run.id); await gate.wait; }
       if (loseLaunch) { loseLaunch = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost acknowledgment" } }, { status: 503 }); }
       return Response.json(run);
+    }
+    const deleteRoute = /^\/runs\/([^/]+)\/operations\/delete$/.exec(path);
+    if (deleteRoute) {
+      const runId = deleteRoute[1]!;
+      runs.delete(runId);
+      for (const worker of workers.values()) if (worker.run_id === runId) workers.delete(worker.id);
+      if (loseDelete) { loseDelete = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost deletion acknowledgment" } }, { status: 503 }); }
+      return Response.json({ run_id: runId, deletion_id: body.deletion_id, condition: "deleted" });
     }
     const route = /^\/runs\/([^/]+)\/(.*)$/.exec(path);
     const run = route ? runs.get(route[1]!) : undefined;
@@ -140,6 +149,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean } = {
     blockNextSend: () => { rejectSend = true; },
     loseNextSend: () => { loseSend = true; },
     loseNextResume: () => { loseResume = true; },
+    loseNextDelete: () => { loseDelete = true; },
     loseNextLaunch: () => { loseLaunch = true; },
     loseNextWorker: () => { loseWorker = true; },
     loseNextCheck: () => { loseCheck = true; },

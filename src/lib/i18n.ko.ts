@@ -6,6 +6,14 @@
  * braces keep their English names.
  */
 export const KO: Record<string, string> = {
+  "Assignment deletion": "Assignment 삭제",
+  "Delete pending": "삭제 대기 중",
+  "Local cleanup is complete. Required external cleanup is still pending.": "로컬 정리가 완료되었습니다. 필요한 외부 정리는 아직 대기 중입니다.",
+  "Permanently delete this Assignment and all its owned work?": "이 Assignment와 소유한 모든 작업을 영구 삭제하시겠습니까?",
+  "This stops execution and removes owned history, dirty worktrees, local branches, linked issues and app-managed recovery data. Shared resources, primary checkouts, pushed branches and PRs are preserved.": "실행을 중지하고 소유한 기록, 변경된 워크트리, 로컬 브랜치, 연결된 이슈 및 앱 관리 복구 데이터를 삭제합니다. 공유 리소스, 기본 체크아웃, 푸시된 브랜치 및 PR은 보존됩니다.",
+  "Exported copies and external provider history are excluded from Delete.": "내보낸 사본과 외부 제공자의 기록은 삭제 대상에서 제외됩니다.",
+  "Delete all owned work": "소유한 모든 작업 삭제",
+  "Delete Assignment": "Assignment 삭제",
   "Automatic execution": "자동 실행",
   "Tickets, checks and integration continue automatically.": "티켓, 검사 및 통합이 자동으로 계속됩니다.",
 

@@ -7,6 +7,8 @@ import type { FactoryDetail, FactoryOverview, FactoryProvider, FactoryStage, Imp
 import type { AgentModelSelection } from "../../shared/agent-models.ts";
 import type { Machine } from "../../shared/machines.ts";
 import { factoryDetail, factoryOverview, factoryRequest } from "../lib/factoryApi.ts";
+import { AssignmentDelete } from "./AssignmentDelete.tsx";
+import { ApiError } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { OpenFileContext } from "../lib/filePaths.ts";
 import { base64FromBytes } from "../lib/api.ts";
@@ -62,9 +64,10 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
 
   async function refresh(): Promise<void> {
     const current = ++generation.current; const id = selection.current;
-    const [board, item] = await Promise.all([factoryOverview(), id ? factoryDetail(id) : Promise.resolve(null)]);
+    const [board, item] = await Promise.all([factoryOverview(), id ? factoryDetail(id).catch(error => { if (error instanceof ApiError && error.status === 404) return null; throw error; }) : Promise.resolve(null)]);
     if (current !== generation.current || id !== selection.current) return;
     setOverview(board); setDetail(item);
+    if (id && !item) { window.dispatchEvent(new Event("factory-changed")); choose(null); }
   }
   useEffect(() => {
     let live = true;
@@ -154,6 +157,7 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
       </section>
       <AssignmentActions preset={preset} onPresetChange={setPreset} key={detail.implementation.id} detail={detail} project={selectedProject} machineId={effectiveMachine} machineName={machines.find(m=>m.id===effectiveMachine)?.name??effectiveMachine} provider={effectiveProvider??"codex"} busy={busy} perform={perform} onOpenPane={onOpenPane} capabilities={execution.capabilities} problem={execution.problem} onCapabilities={execution.apply} />
       <AssignmentPause assignment={detail.implementation} busy={busy} perform={perform} />
+      <AssignmentDelete key={detail.implementation.id} assignment={detail.implementation} busy={busy} perform={perform} onDeleted={() => choose(null)} />
       <WorkflowConversations detail={detail} machines={machines} selectedId={conversationId} onSelect={id => onConversation?.(id)} onOpenPane={onOpenPane} busy={busy} perform={perform} />
       <FactoryAutomaticExecution detail={detail} onOpenPane={onOpenPane} />
       <details className="factory-section"><summary>{t("Advanced controls")}</summary>

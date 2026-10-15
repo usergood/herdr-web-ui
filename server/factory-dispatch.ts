@@ -44,7 +44,9 @@ export class FactoryDispatch {
     if (failures.has(wait.id)) throw failures.get(wait.id);
     const run = wait.run_id ? this.store.list<FactoryWorker & { key: string }>("workers", wait.run_id).find(worker => worker.key === wait.idempotency_key) : this.store.list<FactoryRun>("runs", wait.implementation_id).find(run => run.idempotency_key === wait.idempotency_key);
     if (run) return run;
-    return this.public(this.store.get<Request>("capacity_waits", wait.id)!);
+    const current = this.store.get<Request>("capacity_waits", wait.id);
+    if (!current) throw new FactoryError("assignment_deleting", "The Assignment was deleted while its accepted request settled", 409);
+    return this.public(current);
   }
   enqueueContinuation(wait: FactoryCapacityWait, body: Record<string, unknown>): void {
     const previous = this.store.get<Request>("capacity_waits", wait.id);

@@ -62,6 +62,10 @@ Resume queues only retained unfinished contexts at global capacity. The native c
 
 Retrospectives use only a selected retained Project evidence set. Candidates are immutable records. Approval and Apply in a new worktree are separate actions; the pinned retro action presents candidates without applying them.
 
+Delete Assignment is available on every Assignment, including failed, stopped, paused and unfinished work. Its confirmation lists the destructive scope and exclusions. Delete durably blocks dispatch and further writes without consuming an agent slot, reconciles every attempt's owned native contexts and builds, and removes verified owned dirty/ignored worktrees, Assignment-only local branches, notes, caches and temporary data. The primary checkout, sibling work, shared Project resources, independently referenced attachments, pushed branches and PRs survive. Exported copies and external provider history are excluded.
+
+Offline or uncertain execution and changed resource identities remain Delete pending with Machine/Run reasons; reconnect and restart automatically reconcile the retained cleanup journal. Uncertain reservations remain held until the Machine confirms shutdown and cleanup. Repeated Delete and late allocation/check responses cannot restart work or restore purged records. With no linked GitHub source or app-managed recovery obligation, final deletion purges owned history/records and removes the Assignment from navigation without certifying delivery. Existing backup/recovery copies containing the Assignment and linked GitHub sources keep it visibly pending after local cleanup: recovery purging and linked-issue deletion/source suppression still require their implementation Tickets. Local cleanup is not a claim that those obligations finished.
+
 ## Board progress
 
 Assignments use five board lanes: Inbox, Queued, Running, Needs you and Done. Cards with Tickets show named active work and an expandable complete Ticket list with waiting/running/completed counts and dependency, capacity or failure reasons. The disclosure supports keyboard activation and stays open when changing progress moves a card between lanes.

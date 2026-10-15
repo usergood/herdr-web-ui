@@ -64,6 +64,20 @@ test("scoped GitHub tickets arrive once in Inbox while owner notes survive later
 });
 
 function connection<T>(nodes: T[]) { return { nodes, pageInfo: { hasNextPage: false, endCursor: null } }; }
+test("Delete retains only pending local identity until linked GitHub cleanup is confirmed", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
+  const idea = (await f.get("")).implementations[0];
+  const removed = await f.post(`/implementations/${idea.id}/delete`, {});
+  expect(removed.status).toBe(202); expect(removed.body.condition).toBe("pending");
+  expect(removed.body.reasons.join(" ")).toContain("GitHub");
+  const pending = await f.get(`/implementations/${idea.id}`);
+  expect(pending.implementation.description).toBe(""); expect(pending.messages).toEqual([]);
+  expect(pending.implementation.deletion.local_cleanup).toBe("complete");
+  await f.post(route + "/sync", {});
+  expect((await f.get("")).implementations.map((entry: { id: string }) => entry.id)).toEqual([idea.id]);
+  expect(readFileSync(f.log, "utf8")).not.toContain("deleteIssue");
+});
 function pull(state = "APPROVED") {
   return { number: 27, id: "fictional-pr-27", title: "Improve imports", body: "Fictional patch", url: "https://github.com/fictional/project/pull/27", state: "OPEN", isDraft: false, headRefOid: "a".repeat(40), baseRefOid: "b".repeat(40), headRefName: "feature", baseRefName: "main", author: { login: "fictional-owner" }, headRepository: { nameWithOwner: "fictional/project" }, viewerCanUpdate: true, mergeStateStatus: "CLEAN", reviewDecision: state === "APPROVED" ? "APPROVED" : "CHANGES_REQUESTED",
     reviews: connection([{ id: "review-1", state, body: "Please validate the acceptance cases", submittedAt: "2026-10-11T12:00:00Z", author: { login: "fictional-reviewer" }, commit: { oid: "a".repeat(40) } }]), reviewRequests: connection([]), reviewThreads: connection([]),

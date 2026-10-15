@@ -6,6 +6,7 @@ import "./AssignmentPause.css";
 export function AssignmentPause({ assignment, busy, perform }: { assignment: Implementation; busy: boolean; perform: (action: () => Promise<void>) => Promise<void> }) {
   const t = useT();
   const pause = assignment.pause;
+  if (assignment.deletion) return null;
   return <section className="assignment-pause factory-section" aria-label={t("Assignment execution")}>
     {pause && <p role="status" className="assignment-pause-status">{pause.condition === "pending" ? t("Pause pending") : t("Paused")}</p>}
     {pause?.reasons.map(reason => <p role="status" key={reason}>{reason}</p>)}

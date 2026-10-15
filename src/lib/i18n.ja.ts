@@ -8,6 +8,14 @@
  * in English. Placeholders in braces keep their English names.
  */
 export const JA: Record<string, string> = {
+  "Assignment deletion": "Assignment の削除",
+  "Delete pending": "削除待ち",
+  "Local cleanup is complete. Required external cleanup is still pending.": "ローカルの削除は完了しました。必要な外部の削除はまだ保留中です。",
+  "Permanently delete this Assignment and all its owned work?": "この Assignment とそれに属するすべての作業を完全に削除しますか？",
+  "This stops execution and removes owned history, dirty worktrees, local branches, linked issues and app-managed recovery data. Shared resources, primary checkouts, pushed branches and PRs are preserved.": "実行を停止し、所有する履歴、未保存の変更を含むワークツリー、ローカルブランチ、関連 Issue、アプリ管理の復元データを削除します。共有リソース、メインのチェックアウト、プッシュ済みブランチ、PR は保持されます。",
+  "Exported copies and external provider history are excluded from Delete.": "エクスポートしたコピーと外部プロバイダーの履歴は削除対象外です。",
+  "Delete all owned work": "所有するすべての作業を削除",
+  "Delete Assignment": "Assignment を削除",
   "Automatic execution": "自動実行",
   "Tickets, checks and integration continue automatically.": "チケット、チェック、統合は自動的に進みます。",
 
