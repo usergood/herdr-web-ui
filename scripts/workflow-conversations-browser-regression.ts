@@ -98,6 +98,19 @@ try {
     await post("questions", { question: `Earlier confirmation ${viewport.width}`, answer_kind: "confirmation" });
     await post("questions", { question: `Final owner question ${viewport.width}` });
     await page.reload();
+    // Replacing an accepted but unstarted Specification now asks the owner which
+    // execution scope to retain. Resolve those actual questions through the UI.
+    await page.waitForFunction(async prefix => {
+      const detail = await fetch(prefix).then(r => r.json());
+      return detail.automatic_planning.every((request: { specification_id: string; condition: string }) => request.specification_id === detail.specifications.at(-1).id || ["blocked", "started"].includes(request.condition));
+    }, prefix);
+    const pending = await page.request.get(`http://localhost:${app.port}${prefix}`).then(r => r.json());
+    for (const entry of pending.questions.filter((q: { answer: string | null; question: string }) => q.answer === null && q.question.includes("Which Specification and execution settings"))) {
+      const scopeQuestion = page.locator(".assignment-proposal article").filter({ hasText: entry.question });
+      await scopeQuestion.getByRole("textbox", { name: "Your answer", exact: true }).fill("Use the latest explicitly accepted Specification and preserve older frozen contracts.");
+      await scopeQuestion.getByRole("button", { name: "Save answer", exact: true }).click();
+      await scopeQuestion.getByRole("textbox", { name: "Your answer", exact: true }).waitFor({ state: "detached" });
+    }
     const question = page.locator(".assignment-proposal article").filter({ hasText: `Final owner question ${viewport.width}` });
     await question.getByRole("textbox", { name: "Your answer", exact: true }).fill("Keep the accepted scope");
     await question.getByRole("button", { name: "Save answer", exact: true }).click();

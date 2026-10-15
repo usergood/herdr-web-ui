@@ -56,7 +56,7 @@ export class FactoryPlanning {
         if (this.stopped) return;
         this.store.db.transaction(() => {
           const reason = error instanceof FactoryError ? error.message : "Automatic planning could not be verified; inspect the retained request";
-          if (error instanceof FactoryError && error.code === "scope_changed") this.workflow.mutate(id, "questions", { question: `${reason}. Which Specification and execution settings should govern the next attempt?` });
+          if (error instanceof FactoryError && error.code === "scope_changed") this.workflow.mutate(id, "questions", { question: `${reason} (Specification ${request.specification_id}). Which Specification and execution settings should govern the next attempt?` });
           this.store.put("automatic_planning", { ...request, condition: "blocked", reason }, id);
         }).immediate();
       }
