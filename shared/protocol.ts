@@ -1166,6 +1166,10 @@ export const DEFAULT_PORT = 7317;
  * POST .../order (order) -> {ok:true}; reordering never dispatches.
  * POST .../complete-work (complete_work) -> Implementation; explicit owner completion of the
  * latest direct-work Run after confirmed native stop, with its worktree retained.
+ * POST .../pause|resume (empty) -> Implementation; same-origin owner controls need no agent slot.
+ * pause.pending retains reservations and Machine/resource reasons until every attempt stops;
+ * pause.paused preserves board lane, worktrees, edits, history, approvals and completed Tickets.
+ * Resume durably queues retained unfinished contexts, revalidating scope before admission.
  * POST /api/factory/settings (settings) -> FactorySettings; global agent/build limits and future defaults.
  * The removed max_implementations setting is rejected; saved agent/build limits migrate unchanged.
  * POST /api/factory/projects/:id/configure (project_settings) -> FactoryProject;
@@ -1243,6 +1247,10 @@ export const DEFAULT_PORT = 7317;
  * POST .../runs/:id/send (send) -> {ok:true}; GET .../runs/:id/artifacts -> FactoryOutput[];
  * GET .../runs/:id/artifacts/content?name=&hash= -> {content_base64:string}; owned notes only.
  * POST .../runs/:id/operations/:action (operation) -> FactoryWorker (worker/refresh/integrate/reconcile-worker),
+ * FactoryPauseResult (pause; pause_id required), FactoryRun|FactoryWorker (resume-context;
+ * pause_id, bounded history and optional worker_id; repeat-safe retained worktree continuation),
+ * FactoryRun|FactoryWorker (resume-status; pause_id and optional worker_id; observation only,
+ * stopped suspension proves no continuation was accepted and permits safe queue recovery),
  * FactoryCheck (check/check-reconcile), FactoryCleanup (cleanup), {ok:true} (stop-worker),
  * {head:string,workspace_hash:string} (head), Omit<NativeConversationSnapshot,id|timestamps|sequence|run_id>
  * (transcript), or {head:string,source_id:string,content:string,outcome:passed|failed} (review-evidence).
@@ -1261,7 +1269,7 @@ export const DEFAULT_PORT = 7317;
  * POST .../worker/:id/:action (empty) has the corresponding owner worker response above.
  */
 export type { FactoryOverview, FactoryDetail, Implementation, FactoryProject, ProjectCheckout, FactoryChat, FactoryMessage, FactoryEvent, SpecificationVersion, FactoryTicket, FactoryApproval, FactoryQuestion, FactoryArtifact, FactoryRun, ReviewSnapshot, ReviewComment, FactorySettings, FactoryProvider, FactoryStage, FactoryAction, RunCondition, FactoryCapabilities, FactoryProviderCapability, FactoryOutput } from "./factory.ts";
-export type { FactoryWorker, FactoryCheck, FactoryReviewEvidence, FactoryRetrospective } from "./factory.ts";
+export type { FactoryWorker, FactoryCheck, FactoryReviewEvidence, FactoryRetrospective, FactoryPauseResult, FactorySuspension } from "./factory.ts";
 export type { NativeConversationSnapshot } from "./factory.ts";
 export type { FactoryCapacity, FactoryCapacityReservation, FactoryCapacityWait, FactoryPaneLink, FactoryPaneArchive } from "./factory.ts";
 export type { ProjectReference, ProjectReferenceLibrary, CodexReferenceContext, ProjectReferencePayload } from "./factory.ts";
@@ -1376,7 +1384,7 @@ export interface FactoryHostRequests {
   review: { path: string; base: string; mode: "branch" | "workspace" };
   launch: { run: import("./factory.ts").FactoryRun; access?: { token: string; url: string }; attachments?: (Pick<import("./factory.ts").FactoryArtifact, "id" | "name" | "hash" | "size"> & { content_base64: string })[]; references?: import("./factory.ts").ProjectReferencePayload };
   send: { text: string };
-  operation: { text?: string; worker_id?: string | null; check_id?: string; tip?: string; before?: string; worker?: import("./factory.ts").FactoryWorker; check?: import("./factory.ts").FactoryCheck; context?: unknown };
+  operation: { pause_id?: string; history?: string; text?: string; worker_id?: string | null; check_id?: string; tip?: string; before?: string; worker?: import("./factory.ts").FactoryWorker; check?: import("./factory.ts").FactoryCheck; context?: unknown };
 }
 
 /** GET /api/factory/implementations/:id -> FactoryDetail, including stable workflow

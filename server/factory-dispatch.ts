@@ -12,6 +12,8 @@ interface Request extends FactoryCapacityWait {
 /** A queued intent is not an executing reservation. Admission records the native
  * identity before launch; an uncertain launch is observed, never replayed. */
 export class FactoryDispatch {
+  resumeSuspension: ((id: string, body: Record<string, unknown>) => Promise<void>) | null = null;
+  maintenance: (() => Promise<void>) | null = null;
   worker: ((id: string, body: Record<string, unknown>) => Promise<FactoryWorker>) | null = null;
   resume: ((id: string, body: Record<string, unknown>) => Promise<void>) | null = null;
   onRun: ((run: FactoryRun) => void) | null = null;
@@ -56,18 +58,22 @@ export class FactoryDispatch {
     if (this.pending) return this.pending.then(() => this.drain(failures));
     const operation = Promise.resolve().then(async () => {
       if (this.stopped || existsSync(join(this.store.root, "recovery-copy.json"))) return;
+      await this.maintenance?.();
       if (!this.store.list("capacity_waits").length && !this.store.list<FactoryRun>("runs").some(run => run.continuation && !["resumed", "blocked", "uncertain"].includes(run.continuation.condition)) && !this.store.list<FactoryWorker>("workers").some(worker => worker.continuation && !["resumed", "blocked", "uncertain"].includes(worker.continuation.condition))) return;
       await this.reconcile();
       const requests = this.store.list<Request>("capacity_waits").sort((a, b) => a.created_at.localeCompare(b.created_at));
       if (!requests.length) return;
       for (const request of requests) {
         if (this.stopped) return;
+        const idea = this.store.get<Implementation>("implementations", request.implementation_id);
+        if (idea?.pause || idea?.deletion) continue;
         if (request.condition === "blocked" || request.next_attempt_at > Date.now()) continue;
         try {
           if (!request.run_id && request.scope_hash && request.scope_hash !== this.scope(request.implementation_id)) throw new FactoryError("scope_changed", "The queued execution scope changed; inspect it and submit a new Start request", 409);
           if (request.continuation && request.run_id) {
-            if (!this.resume) continue;
-            await this.resume(request.run_id, request.request);
+            const resume = request.request.suspension ? this.resumeSuspension : this.resume;
+            if (!resume) continue;
+            await resume(request.run_id, request.request);
           } else if (request.run_id) {
             if (!this.worker) continue;
             await this.worker(request.run_id, request.request);
@@ -80,7 +86,7 @@ export class FactoryDispatch {
           if (this.stopped) return;
           const code = error instanceof FactoryError ? error.code : "dispatch_unavailable";
           const capacity = code === "capacity_exhausted";
-          const ineligible = ["ticket_not_ready", "ticket_owned", "writers_active", "shared_writer_owned", "answers_unready", "implementation_owned", "inactive_assignment", "continuation_waiting"].includes(code);
+          const ineligible = ["assignment_paused", "assignment_deleting", "ticket_not_ready", "ticket_owned", "writers_active", "shared_writer_owned", "answers_unready", "implementation_owned", "inactive_assignment", "continuation_waiting"].includes(code);
           const retry = ["machine_offline", "machine_disconnected", "remote_factory_unavailable"].includes(code);
           const attempts = request.attempts + (retry ? 1 : 0);
           const blocked = !capacity && !ineligible && (!retry || attempts >= 6);

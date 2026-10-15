@@ -10,7 +10,11 @@ export async function capacityFixture() {
   const token = "owned-capacity-fixture";
   const runs = new Map<string, FactoryRun>(); const workers = new Map<string, FactoryWorker>();
   let allocationGate: { worker: boolean; entered: (id: string) => void; wait: Promise<void> } | null = null;
+  let admissionGate: { entered: () => void; wait: Promise<void> } | null = null;
   let rejectSend = false;
+  let loseResume = false;
+  const resumptions: string[] = [];
+  const resumeHistories: unknown[] = [];
   let loseSend = false; let loseLaunch = false; let loseWorker = false; let loseCheck = false; let offline = false; let uncertain = false;
   const prompts: { run_id: string; text: string; worker_id?: string }[] = [];
   const launches: string[] = [];
@@ -22,9 +26,10 @@ export async function capacityFixture() {
   const machine = Bun.serve({ port: 0, async fetch(request) {
     if (request.headers.get("authorization") !== `Bearer ${token}`) return Response.json({ error: { code: "unauthorized", message: "Owned fixture credential required" } }, { status: 401 });
     const path = new URL(request.url).pathname.replace("/api/factory-host", "");
-    if (offline || uncertain && path.endsWith("/reconcile")) return Response.json({ error: { code: "disconnected", message: "Owned unavailable Machine" } }, { status: 503 });
+    if (offline || uncertain && (path.endsWith("/reconcile") || path.endsWith("/resume-status"))) return Response.json({ error: { code: "disconnected", message: "Owned unavailable Machine" } }, { status: 503 });
     const body = request.method === "POST" ? await request.json() as Record<string, any> : {};
     if (path === "/capabilities") {
+      if (admissionGate) { const gate = admissionGate; admissionGate = null; gate.entered(); await gate.wait; }
       capabilities ??= await api("/providers").then(r => r.json());
       return Response.json({ ...capabilities, providers: capabilities!.providers.map((p: object) => ({ ...p, factory_ready: true })) });
     }
@@ -41,6 +46,23 @@ export async function capacityFixture() {
     const run = route ? runs.get(route[1]!) : undefined;
     if (run) {
       const action = route![2];
+      if (action === "operations/pause") {
+        const suspension = { pause_id: body.pause_id, condition: "stopped" as const, previous_condition: run.condition };
+        run.suspension ??= suspension;
+        run.condition = "ready";
+        const children = [...workers.values()].filter(w => w.run_id === run.id && !["completed", "cancelled", "failed"].includes(w.condition));
+        for (const worker of children) { worker.suspension ??= { ...suspension, previous_condition: worker.condition }; worker.condition = "ready"; }
+        return Response.json({ run, workers: children, checks: [] });
+      }
+      if (action === "operations/resume-context") {
+        const target = body.worker_id ? workers.get(body.worker_id)! : run;
+        resumptions.push(target.id);
+        resumeHistories.push(body.history);
+        delete target.suspension; target.condition = "working";
+        if (loseResume) { loseResume = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost continuation acknowledgment" } }, { status: 503 }); }
+        return Response.json(target);
+      }
+      if (action === "operations/resume-status") return Response.json(body.worker_id ? workers.get(body.worker_id)! : run);
       if (action === "operations/transcript") return Response.json(transcript);
       if (action === "reconcile") return Response.json(run);
       if (action === "send") { if (rejectSend) { rejectSend = false; run.condition = "needs_you"; return Response.json({ error: { code: "agent_blocked", message: "Owned native permission arrived before delivery" } }, { status: 409 }); } prompts.push({ run_id: run.id, text: body.text }); run.condition = "working"; if (loseSend) { loseSend = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost continuation acknowledgment" } }, { status: 503 }); } return Response.json({ ok: true }); }
@@ -54,9 +76,10 @@ export async function capacityFixture() {
         workerLaunches.push(body.worker.id);
         const worker = { ...body.worker, condition: "working", worktree: join(state, body.worker.id), branch: `owned-${body.worker.id}` } as FactoryWorker;
         workers.set(worker.id, worker);
+        const launchResponse = structuredClone(worker);
         if (allocationGate?.worker) { const gate = allocationGate; allocationGate = null; gate.entered(worker.id); await gate.wait; }
         if (loseWorker) { loseWorker = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost worker acknowledgment" } }, { status: 503 }); }
-        return Response.json(worker);
+        return Response.json(launchResponse);
       }
       if (action === "operations/send-worker") { prompts.push({ run_id: run.id, worker_id: body.worker_id, text: body.text }); workers.get(body.worker_id)!.condition = "working"; return Response.json({ ok: true }); }
       if (action === "operations/refresh") { const worker = workers.get(body.worker_id)!; worker.head = "1".repeat(40); return Response.json(worker); }
@@ -80,7 +103,13 @@ export async function capacityFixture() {
     const credential = access.get(id)!;
     return fetch(`http://localhost:${app.port}${new URL(credential.url).pathname}/${path}`, { method: body === undefined ? "GET" : "POST", headers: { authorization: `Bearer ${credential.token}`, "content-type": "application/json", "x-herdr-factory": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   };
-  return { api, agent, assignment, runs, workers, launches, workerLaunches, prompts, state, token, get app() { return app; },
+  return { api, agent, assignment, runs, workers, launches, workerLaunches, resumptions, resumeHistories, prompts, state, token, get app() { return app; },
+    holdNextAdmission: () => {
+      let entered!: () => void; let release!: () => void;
+      const started = new Promise<void>(resolve => { entered = resolve; });
+      const wait = new Promise<void>(resolve => { release = resolve; });
+      admissionGate = { entered, wait }; return { started, release };
+    },
     holdNextAllocation: (worker = false) => {
       let entered!: (id: string) => void; let release!: () => void;
       const started = new Promise<string>(resolve => { entered = resolve; });
@@ -93,6 +122,7 @@ export async function capacityFixture() {
     uncertain: (value: boolean) => { uncertain = value; },
     blockNextSend: () => { rejectSend = true; },
     loseNextSend: () => { loseSend = true; },
+    loseNextResume: () => { loseResume = true; },
     loseNextLaunch: () => { loseLaunch = true; },
     loseNextWorker: () => { loseWorker = true; },
     loseNextCheck: () => { loseCheck = true; },

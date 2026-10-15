@@ -1,0 +1,2 @@
+.assignment-pause-status { display: inline-block; padding: var(--space-1) var(--space-2); border: var(--hairline) solid var(--border); border-radius: var(--radius-md); color: var(--text); background: var(--bg); }
+.assignment-pause p { overflow-wrap: anywhere; }

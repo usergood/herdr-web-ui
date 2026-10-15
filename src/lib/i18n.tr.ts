@@ -7,6 +7,12 @@
  * keep their English names.
  */
 export const TR: Record<string, string> = {
+  "Assignment execution": "Assignment yürütmesi",
+  "Pause pending": "Duraklatma bekleniyor",
+  "Paused": "Duraklatıldı",
+  "Resume Assignment": "Assignment devam ettir",
+  "Pause Assignment": "Assignment duraklat",
+
   "Specification accepted": "Şartname kabul edildi",
   "Specification reply": "Şartname yanıtı",
   "Reply accepted to approve this revision, or use Accept specification.": "Bu revizyonu onaylamak için accepted yazın veya Şartnameyi kabul et düğmesini kullanın.",

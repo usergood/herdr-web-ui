@@ -10,6 +10,12 @@
  * Placeholders in braces keep their English names.
  */
 export const ZH: Record<string, string> = {
+  "Assignment execution": "Assignment 执行",
+  "Pause pending": "等待暂停",
+  "Paused": "已暂停",
+  "Resume Assignment": "恢复 Assignment",
+  "Pause Assignment": "暂停 Assignment",
+
   "Specification accepted": "规格已批准",
   "Specification reply": "规格回复",
   "Reply accepted to approve this revision, or use Accept specification.": "回复 accepted 或点击批准规格，即可批准此版本。",

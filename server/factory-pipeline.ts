@@ -20,6 +20,7 @@ export class FactoryPipeline {
   }
   private run(id: string, factoryRequired = true): FactoryRun {
     const run = this.store.get<FactoryRun>("runs", id);
+    if (run) this.runtime.assertExecuting(run.implementation_id);
     if (!run || factoryRequired && run.action !== "implement-spec" || !run.checkout || !["working", "ready", "needs_you", "blocked"].includes(run.condition)) throw new FactoryError("factory_run_required", "Reconcile an admitted repository Run first", 409);
     return run;
   }
@@ -68,6 +69,8 @@ export class FactoryPipeline {
     }
     const current = this.store.get<FactoryWorker>("workers", worker.id);
     if (current && !owns(current.condition)) worker = current;
+    if (current?.suspension) worker = { ...worker, suspension: current.suspension, condition: current.condition, waiting_reason: current.waiting_reason };
+    if (current?.suspension?.condition === "stopped") worker = current;
     worker = { ...worker, continuation: current?.continuation ?? worker.continuation, ...(current?.continuation && ["working", "ready"].includes(worker.condition) ? { condition: current.condition, waiting_reason: current.waiting_reason } : {}) };
     this.store.put("workers", { ...worker, key: claimed.worker.key }, id);
     if (run.action === "implement-spec" && role === "implementer" && owns(parent.condition) && owns(worker.condition)) {

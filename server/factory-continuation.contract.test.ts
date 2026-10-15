@@ -7,6 +7,7 @@ import { createServer } from "./index.ts";
 import { herdrRpc, sessionSnapshot, workspaceClose, type WorkspaceCreateResult } from "./herdr/client.ts";
 import type { FactoryRun } from "../shared/protocol.ts";
 import type { FactoryNative } from "./factory-native.ts";
+import { FactoryStore } from "./factory-store.ts";
 
 async function fixture(hostToken = "", overrides: Partial<FactoryNative> = {}) {
   const root = mkdtempSync(join(tmpdir(), "saurons-continuation-"));
@@ -32,6 +33,141 @@ async function fixture(hostToken = "", overrides: Partial<FactoryNative> = {}) {
 }
 
 describe("continuing approved workflow steps", () => {
+  it("pauses native owned execution while keeping its dirty worktree and retained Run available", async () => {
+    const f = await fixture("owned-pause");
+    try {
+      const run = await f.start("work", "pause-native");
+      expect(run.worktree).toBeTruthy();
+      writeFileSync(join(run.worktree!, "README.md"), "Unfinished owner-preserved work\n");
+      writeFileSync(join(run.worktree!, ".gitignore"), "ignored-work.txt\n");
+      writeFileSync(join(run.worktree!, "ignored-work.txt"), "Owned ignored progress\n");
+      const paused = await f.request(`${f.prefix}/pause`, {}).then(r => r.json());
+      expect(paused.pause).toMatchObject({ condition: "paused", reasons: [] });
+      const detail = await f.request(f.prefix).then(r => r.json());
+      expect(detail.runs[0]).toMatchObject({ id: run.id, worktree: run.worktree, suspension: { condition: "stopped" } });
+      for (const [name, content] of [["README.md", "Unfinished owner-preserved work\n"], ["ignored-work.txt", "Owned ignored progress\n"]]) {
+        const response = await fetch(`http://localhost:${f.app.port}/api/fs/file?path=${encodeURIComponent(join(run.worktree!, name!))}`, { headers: { authorization: "Bearer owned-pause" } });
+        expect(await response.text()).toBe(content!);
+      }
+      const native = await fetch(`http://localhost:${f.app.port}/api/session`, { headers: { authorization: "Bearer owned-pause" } }).then(r => r.json());
+      expect(native.snapshot.panes.some((p: { pane_id: string }) => p.pane_id === run.pane_id)).toBe(false);
+    } finally { await f.close(); }
+  }, 60_000);
+  it("resumes native execution in the retained worktree without replacing the Run or discarding dirty progress", async () => {
+    const f = await fixture("owned-native-resume");
+    try {
+      const run = await f.start("work", "native-resume");
+      writeFileSync(join(run.worktree!, "README.md"), "Retained unfinished work\n");
+      await f.request(`${f.prefix}/pause`, {});
+      await f.request(`${f.prefix}/resume`, {});
+      let detail: any;
+      const deadline = Date.now() + 8_000;
+      do {
+        detail = await f.request(f.prefix).then(r => r.json());
+        if (!detail.runs[0].suspension) break;
+        await Bun.sleep(30);
+      } while (Date.now() < deadline);
+      expect(detail.runs[0].suspension).toBeUndefined();
+      expect(detail.runs).toHaveLength(1);
+      expect(detail.runs[0]).toMatchObject({ id: run.id, worktree: run.worktree });
+      expect(detail.runs[0].pane_id).not.toBe(run.pane_id);
+      const response = await fetch(`http://localhost:${f.app.port}/api/fs/file?path=${encodeURIComponent(join(run.worktree!, "README.md"))}`, { headers: { authorization: "Bearer owned-native-resume" } });
+      expect(await response.text()).toBe("Retained unfinished work\n");
+    } finally { await f.close(); }
+  }, 60_000);
+  it.skipIf(process.platform === "win32")("stops an owned child and running build before acknowledging the whole Assignment as Paused", async () => {
+    const f = await fixture("owned-child-build-pause");
+    try {
+      const detail = await f.request(f.prefix).then(r => r.json());
+      await f.request(`/projects/${detail.implementation.project_id}/configure`, { checks: [["bun", "-e", "setInterval(() => {}, 1000)"]], permissions: "Owned unpaid test fixtures only" });
+      const run = await f.start("work", "child-build-pause");
+      const worker = await f.request(`/runs/${run.id}/workers`, { role: "standards", idempotency_key: "owned-reviewer" }).then(r => r.json());
+      const checking = f.request(`/runs/${run.id}/checks`, {});
+      const deadline = Date.now() + 8_000;
+      let running: any;
+      do {
+        running = await f.request(f.prefix).then(r => r.json());
+        if (running.checks.some((c: any) => c.condition === "working")) break;
+        await Bun.sleep(30);
+      } while (Date.now() < deadline);
+      expect(running.checks[0].condition).toBe("working");
+      expect((await f.request(`${f.prefix}/pause`, {}).then(r => r.json())).pause.condition).toBe("paused");
+      await checking;
+      const paused = await f.request(f.prefix).then(r => r.json());
+      expect(paused.workers[0]).toMatchObject({ id: worker.id, suspension: { condition: "stopped" } });
+      expect(paused.checks[0].condition).toBe("failed");
+      expect((await f.request("").then(r => r.json())).capacity.builds.used).toBe(0);
+    } finally { await f.close(); }
+  }, 60_000);
+  it("replays the confirmed Machine shutdown acknowledgment after a lost response without stopping the child twice", async () => {
+    const f = await fixture("owned-pause-replay");
+    try {
+      const run = await f.start("work", "pause-replay");
+      await f.request(`/runs/${run.id}/workers`, { role: "standards", idempotency_key: "reviewer" });
+      const paused = await f.request(`${f.prefix}/pause`, {}).then(r => r.json());
+      expect(paused.pause.condition).toBe("paused");
+      const response = await fetch(`http://localhost:${f.app.port}/api/factory-host/runs/${run.id}/operations/pause`, { method: "POST", headers: { authorization: "Bearer owned-pause-replay", "x-herdr-machine": "1", "x-herdr-factory": "1", "content-type": "application/json" }, body: JSON.stringify({ pause_id: paused.pause.id }) });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ run: { id: run.id, suspension: { pause_id: paused.pause.id, condition: "stopped" } } });
+    } finally { await f.close(); }
+  }, 60_000);
+  it("still stops native contexts when a restored build has no cancellation proof", async () => {
+    const f = await fixture("owned-uncertain-build");
+    try {
+      const run = await f.start("work", "uncertain-build");
+      const store = new FactoryStore(join(f.repo, "..", "state"));
+      store.put("host_checks", { ...store.record(), run_id: run.id, worker_id: null, head: run.base, workspace_hash: "", commands: [], condition: "interrupted" }, run.id);
+      store.close();
+      const paused = await f.request(`${f.prefix}/pause`, {}).then(r => r.json());
+      expect(paused.pause.condition).toBe("pending");
+      expect(paused.pause.reasons.join(" ")).toContain("build");
+      const native = await fetch(`http://localhost:${f.app.port}/api/session`, { headers: { authorization: "Bearer owned-uncertain-build" } }).then(r => r.json());
+      expect(native.snapshot.panes.some((p: { pane_id: string }) => p.pane_id === run.pane_id)).toBe(false);
+    } finally { await f.close(); }
+  }, 60_000);
+  it("stops the known root while retaining a changed child identity for reconciliation", async () => {
+    const f = await fixture("owned-uncertain-child");
+    try {
+      const run = await f.start("work", "uncertain-child");
+      const store = new FactoryStore(join(f.repo, "..", "state"));
+      store.put("host_workers", { ...store.record(), run_id: run.id, ticket_id: run.id, role: "standards", condition: "disconnected", base: run.base, head: null, integration_tip: run.base, worktree: run.worktree, branch: run.branch, workspace_id: "missing-owned-child", pane_id: "missing-owned-child:p1", shared_paths: [], waiting_reason: "Unknown restored native identity", rework_batch_id: null }, run.id);
+      store.close();
+      expect((await f.request(`${f.prefix}/pause`, {}).then(r => r.json())).pause.condition).toBe("pending");
+      const native = await fetch(`http://localhost:${f.app.port}/api/session`, { headers: { authorization: "Bearer owned-uncertain-child" } }).then(r => r.json());
+      expect(native.snapshot.panes.some((p: { pane_id: string }) => p.pane_id === run.pane_id)).toBe(false);
+    } finally { await f.close(); }
+  }, 60_000);
+  it("automatically confirms a child shutdown whose native close acknowledgment was lost", async () => {
+    let loseClose = false;
+    const f = await fixture("owned-close-recovery", { closeWorkspace: async id => { const result = await workspaceClose(id); if (loseClose) { loseClose = false; throw new Error("Owned lost native close acknowledgment"); } return result; } });
+    try {
+      const run = await f.start("work", "close-recovery");
+      await f.request(`/runs/${run.id}/workers`, { role: "standards", idempotency_key: "reviewer" });
+      loseClose = true;
+      expect((await f.request(`${f.prefix}/pause`, {}).then(r => r.json())).pause.condition).toBe("pending");
+      let detail: any;
+      const deadline = Date.now() + 8_000;
+      do { detail = await f.request(f.prefix).then(r => r.json()); if (detail.implementation.pause.condition === "paused") break; await Bun.sleep(30); } while (Date.now() < deadline);
+      expect(detail.implementation.pause.condition).toBe("paused");
+      expect((await f.request("").then(r => r.json())).capacity.normal.used).toBe(0);
+    } finally { await f.close(); }
+  }, 60_000);
+  it("accounts for a child workspace whose allocation acknowledgment was lost before native IDs were saved", async () => {
+    const owned: string[] = [];
+    const f = await fixture("owned-lost-child-allocation", { createWorkspace: async options => {
+      const result = await herdrRpc<WorkspaceCreateResult>("workspace.create", { ...options, focus: false });
+      owned.push(result.workspace.workspace_id);
+      if (options.label?.startsWith("saurons-eye-worker-")) throw new Error("Owned lost child allocation acknowledgment");
+      return result;
+    } });
+    try {
+      const run = await f.start("work", "lost-child-allocation");
+      const worker = await f.request(`/runs/${run.id}/workers`, { role: "standards", idempotency_key: "reviewer" }).then(r => r.json());
+      await f.request(`${f.prefix}/pause`, {});
+      const native = await fetch(`http://localhost:${f.app.port}/api/session`, { headers: { authorization: "Bearer owned-lost-child-allocation" } }).then(r => r.json());
+      expect(native.snapshot.workspaces.some((w: { label: string }) => w.label === `saurons-eye-worker-${worker.id}`)).toBe(false);
+    } finally { await f.close(); for (const id of owned) await workspaceClose(id).catch(() => {}); }
+  }, 60_000);
   it("sends answered context to a decorated finished turn but refuses background work", async () => {
     let prompted = 0; let background = false;
     const f = await fixture("", {

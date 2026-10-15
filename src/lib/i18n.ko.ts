@@ -6,6 +6,12 @@
  * braces keep their English names.
  */
 export const KO: Record<string, string> = {
+  "Assignment execution": "Assignment 실행",
+  "Pause pending": "일시 정지 대기 중",
+  "Paused": "일시 정지됨",
+  "Resume Assignment": "Assignment 재개",
+  "Pause Assignment": "Assignment 일시 정지",
+
   "Specification accepted": "명세 승인됨",
   "Specification reply": "명세 답변",
   "Reply accepted to approve this revision, or use Accept specification.": "이 버전을 승인하려면 accepted라고 답하거나 명세 승인을 누르세요.",

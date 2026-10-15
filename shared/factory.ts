@@ -7,6 +7,10 @@ export type RunCondition = "accepted" | "working" | "ready" | "needs_you" | "blo
 export type FactoryAction = "work" | "setup" | "grill-me" | "grill-with-docs" | "to-spec" | "to-tickets" | "implement-spec" | "retro" | "apply-retro" | "verify-provider";
 export interface FactoryRecord { id: string; created_at: string; updated_at: string }
 export interface Implementation extends FactoryRecord {
+  /** Owner suspension is independent of board position and scheduler parking. */
+  pause?: { id: string; condition: "pending" | "paused" | "resuming"; reasons: string[] };
+  /** A pending permanent deletion takes precedence over execution controls. */
+  deletion?: { id: string; condition: "pending"; reasons: string[] };
   title: string; description: string; project_id: string | null; provider: FactoryProvider | null;
   machine_id: string | null; stage: FactoryStage; position: number;
   outcome: "none" | "implementation_complete" | "pr_open" | "merged" | "released";
@@ -80,6 +84,7 @@ export interface FactoryPark extends FactoryRecord {
   queued_at?: string;
 }
 export interface FactoryRun extends FactoryRecord {
+  suspension?: FactorySuspension;
   continuation?: FactoryPark;
   /** Set by the owned workflow when creating an assistant-backed Human Review context. */
   conversation_kind?: "human_review";
@@ -160,6 +165,7 @@ export interface FactoryProviderCapability { provider: FactoryProvider; version:
 export interface FactoryCapabilities { providers: FactoryProviderCapability[]; skill_manifest: { commit: string; hash: string; file_count: number } | null; factory_host_protocol: 1; project_reference_protocol?: 1; account_profile_protocol?: 1 }
 export interface FactoryOutput { name: string; media_type: string; hash: string; size: number }
 export interface FactoryWorker extends FactoryRecord {
+  suspension?: FactorySuspension;
   continuation?: FactoryPark;
   /** Frozen when repair work is accepted; never inferred from the latest review stage. */
   review_origin?: "automatic" | "human";
@@ -169,6 +175,12 @@ export interface FactoryWorker extends FactoryRecord {
   shared_paths: string[]; waiting_reason: string | null;
   rework_batch_id: string | null;
 }
+export interface FactorySuspension {
+  queued_at?: string;
+  pause_id: string; condition: "stopped" | "resuming" | "uncertain";
+  previous_condition: RunCondition;
+}
+export interface FactoryPauseResult { run: FactoryRun; workers: FactoryWorker[]; checks: FactoryCheck[] }
 export interface FactoryCheck extends FactoryRecord {
   run_id: string; worker_id: string | null; head: string; workspace_hash: string;
   commands: { args: string[]; exit_code: number; output: string }[];

@@ -54,6 +54,7 @@ export class FactoryService {
     this.references = new FactoryReferences(this.store, this.artifacts);
     this.executionHost = new FactoryExecutionHost(this.store, () => this.settings().skills_path, native, this.accounts);
     this.runtime = new FactoryRuntime(this.store, this.workflow, () => this.settings(), this.executionHost, endpoint, (record) => this.artifacts.read(record), publicUrl, this.references, this.accounts); this.review = new FactoryReview(this.store, (machine, path, base, mode) => this.runtime.capture(machine, path, base, mode), (machine, path) => this.runtime.inspect(machine, path));
+    this.runtime.retainBeforePause = async (id, workerId) => { await this.retainNative(id, undefined, workerId); };
     this.pipeline = new FactoryPipeline(this.store, this.runtime, this.workflow, () => this.settings(), id => this.retainHandoff(id));
     this.continuation = new FactoryContinuation(this.store, this.workflow, this.runtime, async (id, allowPartial) => {
       await this.retainHandoff(id);
@@ -226,6 +227,7 @@ export class FactoryService {
     const nextCondition = ended ? "interrupted" : status === "blocked" ? "needs_you" : ["idle", "done"].includes(status) && !backgroundWorking ? "ready" : "working";
     const reason = ended ? "The native pane ended without an accepted outcome; retained work needs reconciliation" : status === "blocked" ? "The native agent is waiting for an owner answer" : null;
     for (const run of this.store.list<FactoryRun>("runs")) if (run.machine_id === "local" && run.pane_id === paneId && ["working", "ready", "needs_you", "blocked"].includes(run.condition)) {
+      if (this.store.get<Implementation>("implementations", run.implementation_id)?.pause) continue;
       if (!ended && agent !== run.provider) continue;
       const pending = this.store.list<import("../shared/protocol.ts").FactoryQuestion>("questions", run.implementation_id).find((question) => question.run_id === run.id && question.answer === null);
       const condition = pending && !ended ? "needs_you" : nextCondition;
@@ -235,6 +237,7 @@ export class FactoryService {
     }
     for (const worker of this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers")) if (worker.pane_id === paneId && ["working", "ready", "needs_you", "blocked"].includes(worker.condition)) {
       const run = this.store.get<FactoryRun>("runs", worker.run_id);
+      if (run && this.store.get<Implementation>("implementations", run.implementation_id)?.pause) continue;
       if (run?.machine_id !== "local" || !ended && agent !== run.provider) continue;
       const condition = ended ? "interrupted" : status === "blocked" ? "needs_you" : ["idle", "done"].includes(status) && !backgroundWorking ? "ready" : "working";
       const waiting = !ended && ["idle", "done"].includes(status) ? "Native worker is ready; reconcile its candidate and explicitly refresh, check and integrate it" : reason;
@@ -244,6 +247,12 @@ export class FactoryService {
   async handle(request: Request, url: URL): Promise<Response> {
     try {
       if (request.method !== "GET" && request.headers.get("x-herdr-factory") !== "1") return httpError(403, "invalid_origin", "Use factory controls from this app");
+      const pauseRoute = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/(pause|resume)$/.exec(url.pathname);
+      if (pauseRoute && request.method === "POST") {
+        if (!sameOrigin(request)) return httpError(403, "invalid_origin", "Use Assignment controls from this app");
+        await this.body(request);
+        return jsonResponse(await this.runtime.pauseAssignment(pauseRoute[1]!, pauseRoute[2] === "resume"));
+      }
       if (url.pathname === "/api/factory-host/pane-state" && request.method === "POST") {
         const body = await this.body(request); if (typeof body.pane_id !== "string" || (!body.pane_id || body.pane_id.length > 200 || /[\0\r\n]/.test(body.pane_id))) throw new FactoryError("invalid_pane", "Select a native pane");
         return jsonResponse(await this.executionHost.paneState(body.pane_id));
@@ -332,6 +341,7 @@ export class FactoryService {
       }
       if (url.pathname === "/api/factory-host/launch" && request.method === "POST") { const body = await this.body(request, 90 * 1024 * 1024); if (!isJsonObject(body.run)) throw new FactoryError("invalid_launch", "Enter an accepted Run identity"); return jsonResponse(await this.executionHost.launch(body.run as unknown as import("../shared/protocol.ts").FactoryRun, isJsonObject(body.access) && typeof body.access.token === "string" && typeof body.access.url === "string" ? { token: body.access.token, url: body.access.url } : undefined, Array.isArray(body.attachments) ? body.attachments : [], isJsonObject(body.references) ? body.references as unknown as import("../shared/protocol.ts").ProjectReferencePayload : undefined), 202); }
       const operation = /^\/api\/factory-host\/runs\/([a-zA-Z0-9-]+)\/operations\/([a-z-]+)$/.exec(url.pathname);
+      if (operation && request.method === "POST" && ["pause", "resume-context", "resume-status"].includes(operation[2]!) && (!sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1")) return httpError(403, "invalid_origin", "Use authenticated Machine suspension controls from this app");
       if (operation && request.method === "POST") return jsonResponse(await this.executionHost.operation(operation[1]!, operation[2]!, await this.body(request)));
       const hostReconcile = /^\/api\/factory-host\/runs\/([a-zA-Z0-9-]+)\/reconcile$/.exec(url.pathname);
       if (hostReconcile && request.method === "POST") return jsonResponse(await this.executionHost.reconcile(hostReconcile[1]!));

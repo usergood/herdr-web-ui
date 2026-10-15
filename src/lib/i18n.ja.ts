@@ -8,6 +8,12 @@
  * in English. Placeholders in braces keep their English names.
  */
 export const JA: Record<string, string> = {
+  "Assignment execution": "Assignment の実行",
+  "Pause pending": "一時停止を待機中",
+  "Paused": "一時停止中",
+  "Resume Assignment": "Assignment を再開",
+  "Pause Assignment": "Assignment を一時停止",
+
   "Specification accepted": "仕様を承認しました",
   "Specification reply": "仕様への返信",
   "Reply accepted to approve this revision, or use Accept specification.": "この版を承認するには accepted と返信するか、仕様を承認を押してください。",

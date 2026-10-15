@@ -34,6 +34,52 @@ import { forgetTranscriptState } from "./conversation.ts";
  */
 let server: { port: number; stop: () => void };
 
+it("keeps restored pending Delete authority above authenticated Assignment Resume", async () => {
+  const f = await capacityFixture();
+  try {
+    const id = await f.assignment("Delete takes precedence");
+    const paused = await f.api(`/implementations/${id}/pause`, {}).then(r => r.json());
+    // Restore a persisted lifecycle intent; all behavior is observed through HTTP below.
+    const store = new FactoryStore(f.state);
+    store.put("implementations", { ...paused, deletion: { id: "owned-delete-intent", condition: "pending", reasons: ["Owned Machine cleanup pending"] } });
+    store.close(); f.restart();
+    const response = await f.api(`/implementations/${id}/resume`, {});
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toMatchObject({ code: "assignment_deleting", message: expect.any(String) });
+    const detail = await f.api(`/implementations/${id}`).then(r => r.json());
+    expect(detail.implementation).toMatchObject({ pause: { id: paused.pause.id, condition: "paused" }, deletion: { condition: "pending" } });
+  } finally { f.close(); }
+});
+it("authenticates Assignment suspension and requires same-origin Machine headers for native suspension controls", async () => {
+  const f = await capacityFixture();
+  try {
+    const id = await f.assignment("Authenticated suspension");
+    const origin = `http://localhost:${f.app.port}`;
+    const request = (path: string, headers: Record<string, string>) => fetch(`${origin}${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1", ...headers }, body: "{}" });
+    expect((await request(`/api/factory/implementations/${id}/pause`, {})).status).toBe(401);
+    expect((await request(`/api/factory/implementations/${id}/pause`, { authorization: `Bearer ${f.token}`, origin: "https://foreign.invalid" })).status).toBe(403);
+    const path = `/api/factory-host/runs/${id}/operations/pause`;
+    const denied = await request(path, { authorization: `Bearer ${f.token}` });
+    expect(denied.status).toBe(403);
+    expect((await denied.json()).error).toMatchObject({ code: "invalid_origin", message: expect.any(String) });
+    expect((await request(path, { authorization: `Bearer ${f.token}`, "x-herdr-machine": "1", origin: "https://foreign.invalid" })).status).toBe(403);
+    expect((await f.api(`/implementations/${id}`).then(r => r.json())).implementation.pause).toBeUndefined();
+  } finally { f.close(); }
+});
+it("does not reserve execution for a confirmed stopped Run restored with older suspension metadata", async () => {
+  const f = await capacityFixture();
+  try {
+    const id = await f.assignment("Stopped suspension metadata");
+    const run = await f.api(`/implementations/${id}/runs`, { action: "work", idempotency_key: "root" }).then(r => r.json());
+    await f.api(`/runs/${run.id}/stop`, {});
+    const stopped = await f.api(`/implementations/${id}`).then(r => r.json());
+    const store = new FactoryStore(f.state);
+    store.put("runs", { ...stopped.runs[0], suspension: { pause_id: "owned-prior-pause", condition: "uncertain", previous_condition: "working" } }, id);
+    store.close(); f.restart();
+    expect((await f.api("").then(r => r.json())).capacity.normal.used).toBe(0);
+  } finally { f.close(); }
+});
+
 it("accepts an authenticated durable factory queue request without exposing its private payload", async () => {
   const f = await capacityFixture();
   try {

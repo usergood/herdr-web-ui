@@ -89,6 +89,7 @@ export class FactoryParking {
     const target = this.store.db.transaction(() => {
       const current = this.store.get<FactoryRun | FactoryWorker>(collection, targetId);
       if (!current || !current.continuation || ["completed", "cancelled", "failed"].includes(current.condition) || current.continuation.id !== body.park_id) return null;
+      if (current.suspension || this.store.get<Implementation>("implementations", parent.implementation_id)?.pause) throw new FactoryError("continuation_waiting", "Owner suspension must be resumed before scheduler delivery", 409);
       if (current.continuation.condition !== "queued") throw new FactoryError("continuation_waiting", current.continuation.reason, 409);
       if (this.workflow.questionRevision(parent.implementation_id, id) !== body.revision || this.workflow.questions(parent.implementation_id, id).some(question => question.answer === null)) throw new FactoryError("continuation_waiting", "Waiting for the current answered revision", 409);
       const pool = this.reserve(!workerId && this.planning(parent));

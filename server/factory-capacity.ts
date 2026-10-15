@@ -3,8 +3,9 @@ import { FactoryError } from "./factory-host.ts";
 import type { FactoryStore } from "./factory-store.ts";
 
 /** Retained ownership is independent of observed execution. */
-function consumesCapacity(context: Pick<FactoryRun, "condition" | "continuation">): boolean {
+function consumesCapacity(context: Pick<FactoryRun, "condition" | "continuation" | "suspension">): boolean {
   if (["completed", "cancelled", "failed"].includes(context.condition)) return false;
+  if (context.suspension) return context.suspension.condition !== "stopped";
   if (["sending", "uncertain"].includes(context.continuation?.condition ?? "")) return true;
   if (["ready", "needs_you"].includes(context.condition) && ["parked", "queued"].includes(context.continuation?.condition ?? "")) return false;
   return context.condition !== "ready";

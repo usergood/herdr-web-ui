@@ -33,6 +33,7 @@ function providerProofId(provider: string, snapshot?: AccountBindingSnapshot | n
 
 /** Machine-owned execution leases, not a second writable tracker or conversation history. */
 export class FactoryExecutionHost {
+  private readonly operations = new Map<string, Set<Promise<unknown>>>();
   private readonly launches = new Map<string, Promise<FactoryRun>>();
   private readonly sends = new Set<string>();
   private promptBound = false;
@@ -76,12 +77,65 @@ export class FactoryExecutionHost {
     return { pane_id: decorated.pane_id, terminal_id: decorated.terminal_id, session_ref: nativeSessionRef(decorated), title: decorated.label?.trim() || decorated.terminal_title_stripped?.trim() || decorated.title?.trim() || decorated.pane_id, agent_status: decorated.agent_status, background_tasks: decorated.background_tasks, background_wait: decorated.background_wait };
   }
   async operation(id: string, action: string, body: Record<string, unknown>): Promise<unknown> {
+    if (action === "pause") return this.pauseRun(id, String(body.pause_id));
     const run = this.store.get<{ run: FactoryRun }>("host_leases", id)?.run;
-    const controlOnly = ["cleanup", "check-reconcile", "reconcile-worker", "stop-worker", "head", "transcript"].includes(action);
+    const controlOnly = ["cleanup", "resume-status", "check-reconcile", "reconcile-worker", "stop-worker", "head", "transcript"].includes(action);
     const environment = controlOnly ? {} : await this.accounts?.environment((run?.manifest as { account_snapshot?: AccountBindingSnapshot } | undefined)?.account_snapshot, true) ?? {};
-    return withAccountEnvironment(environment, () => this.performOperation(id, action, body));
+    const operation = withAccountEnvironment(environment, () => this.performOperation(id, action, body));
+    const pending = this.operations.get(id) ?? new Set();
+    pending.add(operation); this.operations.set(id, pending);
+    try { return await operation; } finally { pending.delete(operation); if (!pending.size) this.operations.delete(id); }
+  }
+  private async pauseRun(id: string, pauseId: string): Promise<import("../shared/factory.ts").FactoryPauseResult> {
+    if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Native control is disabled on a restored copy", 409);
+    if (!/^[a-f0-9-]{36}$/.test(pauseId)) throw new FactoryError("invalid_pause", "Select a durable Assignment Pause identity");
+    const confirmed = this.store.get<{ id: string; result: import("../shared/factory.ts").FactoryPauseResult }>("host_pause_results", `${id}:${pauseId}`);
+    if (confirmed) return confirmed.result;
+    let lease = this.store.get<{ id: string; signature: string; run: FactoryRun; closing?: boolean }>("host_leases", id);
+    if (!lease) throw new FactoryError("native_identity_uncertain", "No owned execution lease is available for shutdown", 409);
+    this.store.put("host_leases", { ...lease, closing: true });
+    let buildFailure: unknown;
+    try { await this.worktrees.stopChecks(id); } catch (error) { buildFailure = error; }
+    await this.launches.get(id);
+    await Promise.allSettled([...(this.operations.get(id) ?? [])]);
+    lease = this.store.get<typeof lease>("host_leases", id)!;
+    type Intent = { id: string; pause_id: string; run: FactoryRun; workers: FactoryWorker[] };
+    let intent = this.store.get<Intent>("host_pause_intents", id);
+    if (intent?.pause_id !== pauseId) {
+      intent = { id, pause_id: pauseId, run: lease.run, workers: this.store.list<FactoryWorker>("host_workers", id) };
+      this.store.put("host_pause_intents", intent);
+    }
+    let childFailure: unknown;
+    try { await this.worktrees.stopWorkers(id); } catch (error) { childFailure = error; }
+    await this.stopRun(id, true);
+    if (childFailure) throw childFailure;
+    if (buildFailure) throw buildFailure;
+    const suspension = (condition: FactoryRun["condition"]) => ({ pause_id: pauseId, condition: "stopped" as const, previous_condition: condition });
+    const run = { ...intent.run, suspension: suspension(intent.run.condition), condition: ["completed", "cancelled", "failed"].includes(intent.run.condition) ? intent.run.condition : "ready" as const };
+    const workers = intent.workers.map(worker => {
+      const current = this.store.get<FactoryWorker>("host_workers", worker.id)!;
+      if (["completed", "cancelled", "failed"].includes(worker.condition)) return { ...worker, ...current, condition: worker.condition };
+      const next: FactoryWorker = { ...current, suspension: suspension(worker.condition), condition: "ready" };
+      this.store.put("host_workers", next, id); return next;
+    });
+    this.store.put("host_leases", { ...lease, closing: true, run });
+    const checks = this.store.list<FactoryCheck>("host_checks", id).map(check => {
+      const next: FactoryCheck = ["working", "interrupted"].includes(check.condition) ? { ...check, condition: "failed" } : check;
+      this.store.put("host_checks", next, id); return next;
+    });
+    const result = { run, workers, checks };
+    this.store.put("host_pause_results", { id: `${id}:${pauseId}`, result }, id);
+    return result;
   }
   private async performOperation(id: string, action: string, body: Record<string, unknown>): Promise<unknown> {
+    if (action === "resume-status") {
+      const prior = this.store.get<{ context: FactoryRun | FactoryWorker }>("host_resumptions", `${body.pause_id}:${body.worker_id ?? id}`);
+      const target = typeof body.worker_id === "string" ? this.store.get<FactoryWorker>("host_workers", body.worker_id) : this.store.get<{ run: FactoryRun }>("host_leases", id)?.run;
+      if (!prior && target?.suspension?.condition === "stopped" && target.suspension.pause_id === body.pause_id && (!("run_id" in target) || target.run_id === id)) return target;
+      if (!prior || prior.context.suspension) throw new FactoryError("resume_uncertain", "The native continuation has not been confirmed; do not replay it", 409);
+      return typeof body.worker_id === "string" ? this.worktrees.reconcile(id, body.worker_id) : this.reconcile(id);
+    }
+    if (action === "resume-context") return this.resumeContext(id, body);
     if (action === "cleanup") {
       const lease = this.store.get<{ run: FactoryRun }>("host_leases", id);
       if (!lease) throw new FactoryError("not_found", "Owned Run not found", 404);
@@ -131,6 +185,52 @@ export class FactoryExecutionHost {
       return { content: this.accounts?.sanitize(content) ?? content, source_id: hash(conversation.history_id), outcome: /FACTORY_REVIEW: FAIL/.test(content) ? "failed" : "passed", head: (await git(worker.worktree!, ["rev-parse", "HEAD"])).trim() };
     }
     throw new FactoryError("not_found", "Unknown worktree operation", 404);
+  }
+  private async resumeContext(id: string, body: Record<string, unknown>): Promise<FactoryRun | FactoryWorker> {
+    if (this.stopped || existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Native continuation is disabled on this bridge", 409);
+    if (typeof body.history !== "string" || body.history.length > 52_000) throw new FactoryError("invalid_history", "Supply the bounded retained continuation handoff");
+    const lease = this.store.get<{ id: string; signature: string; run: FactoryRun; closing?: boolean }>("host_leases", id);
+    const run = lease?.run;
+    const workerId = typeof body.worker_id === "string" ? body.worker_id : null;
+    const worker = workerId ? this.store.get<FactoryWorker>("host_workers", workerId) : null;
+    const target = worker ?? run;
+    if (!lease || !run || !target?.worktree || workerId && worker?.run_id !== id) throw new FactoryError("native_identity_uncertain", "Select a retained owned continuation", 409);
+    const key = `${body.pause_id}:${target.id}`;
+    const previous = this.store.get<{ id: string; context: FactoryRun | FactoryWorker }>("host_resumptions", key);
+    if (previous) return previous.context;
+    const suspension = target.suspension;
+    if (!suspension || suspension.pause_id !== body.pause_id || suspension.condition !== "stopped" || realpathSync(target.worktree) !== target.worktree) throw new FactoryError("native_identity_uncertain", "The retained suspension changed", 409);
+    let context: FactoryRun | FactoryWorker = { ...target, suspension: { ...suspension, condition: "resuming" } };
+    const save = (value: FactoryRun | FactoryWorker) => {
+      this.store.put("host_resumptions", { id: key, context: value }, id);
+      if (workerId) this.store.put("host_workers", value, id);
+      else { const current = this.store.get<typeof lease>("host_leases", id)!; this.store.put("host_leases", { ...current, run: value }); }
+    };
+    save(context);
+    this.store.put("host_leases", { ...this.store.get<typeof lease>("host_leases", id)!, closing: false });
+    if (run.checkout) {
+      const checkout = await inspectCheckout(target.worktree);
+      if (checkout.repository !== (run.manifest as { checkout: { repository: string } }).checkout.repository || checkout.branch !== target.branch) throw new FactoryError("worktree_changed", "The retained repository or branch changed", 409);
+    }
+    const project = (run.manifest as { project?: import("../shared/factory.ts").FactoryProject }).project;
+    const root = dirname(target.worktree);
+    const environment = { ...factoryEnvironment(root, id, project?.environment, workerId ?? undefined), ...await this.accounts?.environment((run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot, true, target.worktree) };
+    const workspace = await this.native.createWorkspace({ cwd: target.worktree, label: workerId ? `saurons-eye-worker-${workerId}` : `saurons-eye-run-${id}`, env: environment });
+    context = { ...context, workspace_id: workspace.workspace.workspace_id, pane_id: workspace.root_pane.pane_id };
+    save(context);
+    if (this.store.get<{ closing?: boolean }>("host_leases", id)?.closing) throw new FactoryError("run_stopping", "Pause arrived during continuation allocation", 409);
+    const skill = worker ? worker.role === "implementer" ? "tdd" : "code-review" : run.action === "work" ? "" : run.action === "setup" ? "setup-matt-pocock-skills" : run.action === "apply-retro" ? "tdd" : run.action === "verify-provider" ? "" : run.action;
+    const skillPrefix = skill ? `${run.provider === "codex" ? "$" : run.provider === "opencode" ? "@" : "/"}${skill}` : "";
+    const prompt = `${skillPrefix} Continue this retained ${worker ? "Ticket worker" : "Run"} after owner Resume. Read .saurons-eye-context.json and the current app-native tracker contract, consume the exact answered revision, inspect retained dirty/ignored edits and completed Ticket evidence, and continue only unfinished work within the accepted scope. Earlier native history and captured conversations are retained. Do not repeat completed Tickets or request renewed approval of unchanged scope. The backend merger owns integration; retain all native permissions.\n\n${body.history}${projectWorkflowPrompt(project)}`;
+    const promptPath = join(root, "state", `resume-${suspension.pause_id}-${target.id}.md`);
+    writePrivateFile(promptPath, prompt);
+    const launchPrompt = `${skillPrefix ? `${skillPrefix} ` : ""}Read ${JSON.stringify(promptPath)} for the retained continuation, history and frozen Project scope.`;
+    const args = factoryAgentArguments(run.provider, target.worktree, launchPrompt, worker ? worker.role !== "implementer" : ["implement-spec", "verify-provider"].includes(run.action), Boolean((run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot?.profiles.some(p => p.service === run.provider)), project?.permission_mode, run.action === "work", (run.manifest as { execution_preset?: import("../shared/agent-models.ts").AgentExecutionPreset }).execution_preset);
+    await this.native.startAgent({ kind: run.provider, paneId: context.pane_id!, name: `eye-${target.id.replaceAll("-", "").slice(0, 21)}`, args, timeoutMs: 60_000 });
+    const { suspension: _suspension, ...continued } = context;
+    const next = { ...continued, condition: "working" as const, waiting_reason: null };
+    this.store.remove("host_native_identity", target.id);
+    save(next); return next;
   }
   prepare(body: Record<string, unknown>): void { this.preparedPath = materializeSkills(this.store.root, body); this.store.put("host_skills", { id: "default", path: this.preparedPath }); }
   async capabilities(snapshot?: AccountBindingSnapshot | null): Promise<FactoryCapabilities> {
@@ -310,7 +410,7 @@ export class FactoryExecutionHost {
     if (current && JSON.stringify(current) !== JSON.stringify(lease)) return current.run;
     run.updated_at = new Date().toISOString(); this.store.put("host_leases", { ...lease, run }); return run;
   }
-  async stopRun(id: string): Promise<FactoryRun> {
+  async stopRun(id: string, childrenAttempted = false): Promise<FactoryRun> {
     if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Native control is disabled on a restored copy", 409);
     const lease = this.store.get<{ id: string; signature: string; run: FactoryRun }>("host_leases", id);
     if (!lease) throw new FactoryError("native_identity_uncertain", "This host has no owned lease to stop", 409);
@@ -335,7 +435,7 @@ export class FactoryExecutionHost {
       && !snapshot.workspaces.some(entry => entry.label === `saurons-eye-run-${id}`)
       && !snapshot.panes.some(entry => !entry.cwd && !entry.foreground_cwd || couldOwnDirectory(entry.cwd) || couldOwnDirectory(entry.foreground_cwd));
     if (!alreadyClosed && (!workspace || workspace.label !== `saurons-eye-run-${id}` || !pane?.cwd || realpathSync(pane.cwd) !== run.worktree)) throw new FactoryError("native_identity_uncertain", "Verify the recorded native identity before stopping it; ownership is retained", 409);
-    await this.worktrees.stopWorkers(id);
+    if (!childrenAttempted) await this.worktrees.stopWorkers(id);
     if (!alreadyClosed) await this.native.closeWorkspace(workspace!.workspace_id);
     await this.worktrees.stopChecks(id);
     const stopped: FactoryRun = { ...run, condition: "cancelled", waiting_reason: null, updated_at: new Date().toISOString() };
