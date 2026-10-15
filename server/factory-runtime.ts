@@ -87,6 +87,11 @@ export class FactoryRuntime {
       const deadline = AbortSignal.timeout(path.endsWith("/operations/check") ? 325_000 : path === "/launch" ? 75_000 : path === "/model-catalog" ? 30_000 : 15_000);
       const response = await fetch(`${endpoint.url}/api/factory-host${path}`, { method: body === undefined ? "GET" : "POST", headers: { authorization: `Bearer ${endpoint.token}`, "x-herdr-factory": "1", "x-herdr-machine": "1", "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), redirect: "error", signal: signal ? AbortSignal.any([signal, deadline]) : deadline });
       if (!response.ok) {
+        if (response.status === 409 && (path.endsWith("/send") || path.endsWith("/operations/send-worker"))) {
+          const failure = await response.json().catch(() => null) as { error?: { code?: string } } | null;
+          const code = failure?.error?.code;
+          if (code && ["agent_busy", "worker_busy", "delivery_busy", "input_draft", "agent_blocked", "agent_not_ready", "run_unavailable"].includes(code)) throw new FactoryError(code, code === "input_draft" ? "The native input contains a draft; inspect it before resuming" : "Native delivery is waiting for the owned conversation to become ready", 409);
+        }
         // Verification may be resting before its native transcript is fully recorded.
         // Preserve only known retry semantics, never a remote diagnostic or credential.
         if (response.status === 409 && path.endsWith("/verify-provider")) {

@@ -9,6 +9,7 @@ export async function capacityFixture() {
   const state = mkdtempSync(join(tmpdir(), "factory-capacity-"));
   const token = "owned-capacity-fixture";
   const runs = new Map<string, FactoryRun>(); const workers = new Map<string, FactoryWorker>();
+  let rejectSend = false;
   let loseSend = false; let loseLaunch = false; let loseWorker = false; let loseCheck = false; let offline = false; let uncertain = false;
   const prompts: { run_id: string; text: string; worker_id?: string }[] = [];
   const launches: string[] = [];
@@ -40,7 +41,7 @@ export async function capacityFixture() {
       const action = route![2];
       if (action === "operations/transcript") return Response.json(transcript);
       if (action === "reconcile") return Response.json(run);
-      if (action === "send") { prompts.push({ run_id: run.id, text: body.text }); run.condition = "working"; if (loseSend) { loseSend = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost continuation acknowledgment" } }, { status: 503 }); } return Response.json({ ok: true }); }
+      if (action === "send") { if (rejectSend) { rejectSend = false; run.condition = "needs_you"; return Response.json({ error: { code: "agent_blocked", message: "Owned native permission arrived before delivery" } }, { status: 409 }); } prompts.push({ run_id: run.id, text: body.text }); run.condition = "working"; if (loseSend) { loseSend = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost continuation acknowledgment" } }, { status: 503 }); } return Response.json({ ok: true }); }
       if (action === "stop") { run.condition = "cancelled"; return Response.json(run); }
       if (action === "operations/check") {
         if (loseCheck) { loseCheck = false; return Response.json({ error: { code: "lost_ack", message: "Owned uncertain check" } }, { status: 503 }); }
@@ -80,6 +81,7 @@ export async function capacityFixture() {
     setTranscript: (value: typeof transcript) => { transcript = value; },
     offline: (value: boolean) => { offline = value; },
     uncertain: (value: boolean) => { uncertain = value; },
+    blockNextSend: () => { rejectSend = true; },
     loseNextSend: () => { loseSend = true; },
     loseNextLaunch: () => { loseLaunch = true; },
     loseNextWorker: () => { loseWorker = true; },

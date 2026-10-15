@@ -203,4 +203,26 @@ describe("waiting factory conversations through authenticated HTTP", () => {
     } finally { f.close(); }
   });
 
+  it("automatically recovers when a native permission prompt arrives between park acknowledgment and delivery", async () => {
+    const f = await capacityFixture();
+    try {
+      await f.api("/settings", { max_agents: 1 });
+      const id = await f.assignment("Late native permission");
+      const run = await f.api(`/implementations/${id}/runs`, { action: "work", idempotency_key: "late-permission" }).then(r => r.json());
+      const q = await f.agent(run.id, "question", { question: "Which owned scope?" }).then(r => r.json());
+      f.runs.get(run.id)!.condition = "ready";
+      const detail = () => f.api(`/implementations/${id}`).then(r => r.json());
+      await eventually(detail, d => d.runs[0].continuation?.condition === "parked");
+      f.blockNextSend();
+      await f.api(`/implementations/${id}/questions/${q.id}/answer`, { revision: q.revision, answer: "Retain native permissions" });
+      await eventually(detail, d => d.runs[0].continuation?.condition === "parking" && d.runs[0].condition === "needs_you");
+      expect((await f.api("").then(r => r.json())).capacity.normal.used).toBe(1);
+      expect(f.prompts).toHaveLength(0);
+      f.runs.get(run.id)!.condition = "ready";
+      await eventually(detail, d => d.runs[0].continuation?.condition === "resumed");
+      expect(f.prompts).toHaveLength(1);
+      expect(f.launches).toEqual([run.id]);
+    } finally { f.close(); }
+  });
+
 });

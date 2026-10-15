@@ -1,5 +1,6 @@
 import type { FactoryCapacityWait, FactoryRun, FactoryWorker, Implementation } from "../shared/factory.ts";
 import type { FactoryDispatch } from "./factory-dispatch.ts";
+import { HerdrError } from "./herdr/client.ts";
 import { FactoryError } from "./factory-host.ts";
 import type { FactoryStore } from "./factory-store.ts";
 import type { FactoryWorkflow } from "./factory-workflow.ts";
@@ -99,8 +100,8 @@ export class FactoryParking {
       this.settle(run, target, workerId, "resumed", "The retained conversation resumed", "working");
       if (!this.abort.signal.aborted) this.store.event(run.implementation_id, "conversation_resumed", { run_id: id, continuation_id: body.park_id, revision: body.revision });
     } catch (error) {
-      const safe = error instanceof FactoryError && ["agent_busy", "worker_busy", "delivery_busy", "input_draft", "run_unavailable", "recovery_copy"].includes(error.code);
-      this.settle(run, target, workerId, safe ? error instanceof FactoryError && ["agent_busy", "worker_busy", "delivery_busy"].includes(error.code) ? "parking" : "blocked" : "uncertain", error instanceof Error ? error.message : "Continuation delivery is uncertain; inspect the native conversation", safe ? "working" : "disconnected");
+      const safe = (error instanceof FactoryError || error instanceof HerdrError) && ["agent_busy", "worker_busy", "delivery_busy", "agent_blocked", "agent_not_ready", "input_draft", "run_unavailable", "recovery_copy"].includes(error.code);
+      this.settle(run, target, workerId, safe ? (error instanceof FactoryError || error instanceof HerdrError) && ["agent_busy", "worker_busy", "delivery_busy", "agent_blocked", "agent_not_ready"].includes(error.code) ? "parking" : "blocked" : "uncertain", error instanceof Error ? error.message : "Continuation delivery is uncertain; inspect the native conversation", safe ? "working" : "disconnected");
     } finally { this.sending.delete(targetId); }
   }
   private settle(run: FactoryRun, target: FactoryRun | FactoryWorker, workerId: string | null, condition: NonNullable<FactoryRun["continuation"]>["condition"], reason: string, nativeCondition: FactoryRun["condition"]): void {
