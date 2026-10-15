@@ -13,7 +13,20 @@ export class FactoryArtifacts {
   retained(): RetainedBlob[] {
     const evidenceIds = new Set(this.store.list<{ evidence_ids: string[] }>("retrospectives").flatMap((entry) => entry.evidence_ids));
     const runArtifacts = this.store.list<{ artifacts: FactoryArtifact[] }>("run_artifacts").flatMap((entry) => entry.artifacts);
-    return [...this.store.list<FactoryArtifact>("artifacts"), ...runArtifacts, ...this.store.list<FactoryArtifact>("deleted_artifacts").filter((entry) => evidenceIds.has(entry.id)), ...this.store.list<ProjectReference>("project_reference_versions")];
+    const sharedEvidence: RetainedBlob[] = [];
+    const visit = (value: unknown): void => {
+      if (!value || typeof value !== "object") return;
+      if (Array.isArray(value)) { for (const entry of value) visit(entry); return; }
+      const entry = value as Record<string, unknown>;
+      if (typeof entry.hash === "string" && /^[a-f0-9]{64}$/.test(entry.hash) && typeof entry.size === "number" && Number.isSafeInteger(entry.size) && entry.size >= 0 && typeof entry.name === "string" && typeof entry.media_type === "string") {
+        sharedEvidence.push({ hash: entry.hash, size: entry.size, name: entry.name, media_type: entry.media_type });
+      }
+      for (const child of Object.values(entry)) visit(child);
+    };
+    // Selected Project evidence owns its imported blobs independently of the
+    // source Assignment, including artifacts embedded in a selected Run.
+    for (const evidence of this.store.list<{ records: unknown[] }>("retro_evidence")) visit(evidence.records);
+    return [...this.store.list<FactoryArtifact>("artifacts"), ...runArtifacts, ...sharedEvidence, ...this.store.list<FactoryArtifact>("deleted_artifacts").filter((entry) => evidenceIds.has(entry.id)), ...this.store.list<ProjectReference>("project_reference_versions")];
   }
   create(implementationId: string, body: Record<string, unknown>, settings: FactorySettings): FactoryArtifact {
     const chat = typeof body.chat_id === "string" ? this.store.get<FactoryChat>("chats", body.chat_id) : null;

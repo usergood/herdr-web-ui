@@ -136,7 +136,7 @@ describe("Assignment deletion from app-managed recovery through authenticated HT
       expect((await read(sibling)).status).toBe(200);
     } finally { copy?.stop(); f.close(); }
   });
-  it("removes copied evidence and references from shared Project retrospectives without discarding sibling evidence", async () => {
+  it("preserves independently retained Project evidence and valid approval while removing exclusive history", async () => {
     const f = await capacityFixture();
     let copy: ReturnType<typeof createServer> | undefined;
     try {
@@ -149,8 +149,9 @@ describe("Assignment deletion from app-managed recovery through authenticated HT
         return f.api(`/implementations/${id}/artifacts`, { chat_id: view.chats[0].id, name: "retrospective.txt", note, media_type: "text/plain", content_base64: Buffer.from(note).toString("base64") }).then(r => r.json());
       };
       const exclusive = await attach(deleted, "Exclusive private retrospective annotation");
+      const sharedEvidence = await attach(deleted, "Independently retained Project annotation");
       const retained = await attach(sibling, "Retain sibling retrospective annotation");
-      const retro = await f.api(`/projects/${detail.implementation.project_id}/retrospectives`, { evidence_ids: [exclusive.id, retained.id], proposal: "Retain shared Project lessons" }).then(r => r.json());
+      const retro = await f.api(`/projects/${detail.implementation.project_id}/retrospectives`, { evidence_ids: [sharedEvidence.id, retained.id], proposal: "Retain shared Project lessons" }).then(r => r.json());
       expect((await f.api(`/retrospectives/${retro.id}/approve`, { scope_hash: retro.scope_hash })).status).toBe(200);
       const snapshot = await f.api("/backups", {}).then(r => r.json());
       expect((await f.api(`/implementations/${deleted}/delete`, {}).then(r => r.json())).condition).toBe("deleted");
@@ -158,12 +159,14 @@ describe("Assignment deletion from app-managed recovery through authenticated HT
       copy = createServer({ port: 0, token: f.token, stateDir: restored.state_dir, machines: false, factory: { accountDiscoveryHome: f.state } });
       const view = await fetch(`http://localhost:${copy.port}/api/factory/implementations/${sibling}`, { headers: { authorization: `Bearer ${f.token}` } }).then(r => r.json());
       const recoveredRetro = view.retrospectives.find((entry: { id: string }) => entry.id === retro.id);
-      expect(recoveredRetro.evidence_ids).toEqual([retained.id]);
-      expect(recoveredRetro.approved).toBe(false);
-      expect(recoveredRetro.scope_hash).not.toBe(retro.scope_hash);
+      expect(recoveredRetro.evidence_ids).toEqual([sharedEvidence.id, retained.id]);
+      expect(recoveredRetro.approved).toBe(true);
+      expect(recoveredRetro.scope_hash).toBe(retro.scope_hash);
       const response = await fetch(`http://localhost:${f.app.port}/api/fs/file?path=${encodeURIComponent(join(restored.state_dir, "factory", "records.sqlite"))}`, { headers: { authorization: `Bearer ${f.token}` } });
       expect(response.status).toBe(200);
-      expect(Buffer.from(await response.arrayBuffer()).includes(Buffer.from(exclusive.note))).toBe(false);
+      const records = Buffer.from(await response.arrayBuffer());
+      expect(records.includes(Buffer.from(exclusive.note))).toBe(false);
+      expect(records.includes(Buffer.from(sharedEvidence.note))).toBe(true);
     } finally { copy?.stop(); f.close(); }
   });
   it("keeps Machine cleanup pending while new backups and restores exclude the fenced Assignment", async () => {
@@ -195,4 +198,22 @@ describe("Assignment deletion from app-managed recovery through authenticated HT
       expect((await f.api(`/implementations/${deleted}`)).status).toBe(404);
     } finally { for (const app of copies.reverse()) app.stop(); f.close(); }
   }, 15_000);
+  it("keeps independently retained Project blobs recoverable in backups created after Assignment deletion", async () => {
+    const f = await capacityFixture();
+    try {
+      const deleted = await f.assignment("Origin of shared Project evidence");
+      const sibling = await f.assignment("Independent Project owner");
+      const detail = await f.api(`/implementations/${deleted}`).then(r => r.json());
+      await f.api(`/implementations/${sibling}/configure`, { project_id: detail.implementation.project_id });
+      const artifact = await f.api(`/implementations/${deleted}/artifacts`, { chat_id: detail.chats[0].id, name: "shared.txt", media_type: "text/plain", content_base64: Buffer.from("Independently retained Project bytes").toString("base64") }).then(r => r.json());
+      await f.api(`/projects/${detail.implementation.project_id}/retrospectives`, { evidence_ids: [artifact.id], proposal: "Preserve Project-owned evidence" });
+      expect((await f.api(`/implementations/${deleted}/delete`, {}).then(r => r.json())).condition).toBe("deleted");
+      const backup = await f.api("/backups", {}).then(r => r.json());
+      expect(backup.blobs).toEqual([{ hash: artifact.hash, size: artifact.size }]);
+      const restored = await f.api(`/backups/${backup.id}/restore`, {}).then(r => r.json());
+      const response = await fetch(`http://localhost:${f.app.port}/api/fs/file?path=${encodeURIComponent(join(restored.state_dir, "factory", "blobs", artifact.hash))}`, { headers: { authorization: `Bearer ${f.token}` } });
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("Independently retained Project bytes");
+    } finally { f.close(); }
+  });
 });

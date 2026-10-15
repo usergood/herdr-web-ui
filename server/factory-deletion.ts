@@ -3,7 +3,6 @@ import { join } from "node:path";
 import type { FactoryDeleteResult, FactoryRun, Implementation } from "../shared/factory.ts";
 import { FactoryError } from "./factory-host.ts";
 import { FactoryStore } from "./factory-store.ts";
-import { purgeAssignmentReferences } from "./factory-purge-records.ts";
 
 /** Durable ownership fence and cleanup journal. External obligations finish separately. */
 export class FactoryDeletion {
@@ -89,7 +88,6 @@ export class FactoryDeletion {
           this.store.remove(row.kind, row.id); ids.add(row.id); changed = true;
         }
       }
-      purgeAssignmentReferences(this.store.db, ids);
       this.store.put("deleted_assignments", { id, context_ids: [...new Set([...(this.store.get<{ context_ids: string[] }>("deleted_assignments", id)?.context_ids ?? []), ...contextIds])] });
       this.store.put("implementations", { ...idea, title: "Delete pending", description: "", outcome: "none", pause: undefined, deletion: { ...idea.deletion!, reasons: [], local_cleanup: undefined } });
       this.store.put("assignment_deletions", { ...journal!, local_done: true });
