@@ -543,3 +543,25 @@ Full decisions, accepted test seams and immutable dependency pins are in
 | [`docs/`](.) | Remote PCs, updates, flow control, chat audit, brand assets and README media (`docs/media/`) |
 | [`site/`](../site/) | The website, built by `scripts/build-site.ts` and deployed by GitHub Pages |
 | [`DESIGN.md`](../DESIGN.md) | Design tokens and UI conventions |
+
+### Workflow and board loading measurements
+
+The deterministic `server/factory-loading.fixture.ts` contains eight Assignments with four
+retained attempts each. Each attempt includes a 435,447-character frozen-context field,
+100 KB of check output, 50 KB of review text, a 100 KB diff, a 100 KB transcript, and notes/events.
+It contains fictional data and does not read the owner's factory state. `server/factory-loading.test.ts`
+measures UTF-8 response-body bytes from the HTTP handler (uncompressed, not latency).
+
+| Read | Before (`bf368e6`) | After | Reduction |
+| --- | ---: | ---: | ---: |
+| Board/navigation overview | 92,609 B | 12,473 B | 86.5% |
+| Workflow selected Assignment poll | 3,600,229 B | 53,869 B | 98.5% |
+
+The legacy full-detail response remains 3,600,229 B. The review index is 15,033 B; individual
+reports and snapshot bodies load when opened/selected. Current decisions retain the latest
+Specification, current Ticket graph and scoped questions. Current Run summaries retain model
+selection and status, not frozen context. History is loaded only while Advanced controls is open,
+and is reused until the process-scoped retained-data revision changes. No persisted data changes.
+The app and board share one overview poll; concurrent identical reads share an in-flight request,
+and successful mutations invalidate those reads. These figures describe this fixture, not
+production latency or a universal response-size bound.

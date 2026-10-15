@@ -5,7 +5,7 @@ import { accountRequest } from "../lib/accountsApi.ts";
 import { useT } from "../lib/i18n.ts";
 import "./AssignmentDeliveryPanel.css";
 
-export function AssignmentDeliveryPanel({ detail, project, busy, perform }: { detail: FactoryDetail; project?: FactoryProject; busy: boolean; perform: (action: () => Promise<void>) => Promise<void> }) {
+export function AssignmentDeliveryPanel({ detail, project, busy, perform }: { detail: Pick<FactoryDetail, "implementation" | "runs">; project?: FactoryProject; busy: boolean; perform: (action: () => Promise<void>) => Promise<void> }) {
   const t = useT();
   const idea = detail.implementation, delivery = idea.delivery;
   const machineId = delivery?.machine_id ?? detail.runs.at(-1)?.machine_id ?? project?.machine_id ?? "local";

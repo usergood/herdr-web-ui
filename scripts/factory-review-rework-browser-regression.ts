@@ -14,6 +14,7 @@ try {
       try {
         if (outcome === "uncertain") f.uncertainDelivery(true);
         await page.goto(f.origin() + `/#factory/${f.run.implementation_id}`);
+        await page.locator("summary").filter({ hasText: /^Review changes$/ }).click();
         const review = page.locator("section").filter({ has: page.getByRole("heading", { name: "Review changes", exact: true }) }).last();
         const standards = review.getByRole("checkbox", { name: /^standards · failed/ });
         const spec = review.getByRole("checkbox", { name: /^spec · failed/ });
@@ -32,7 +33,7 @@ try {
           assert.equal(f.deliveries.length, 0);
         } else {
           const receipt = await received.json(); assert.equal(receipt.status, outcome);
-          await page.reload(); await standards.waitFor();
+          await page.reload(); await page.locator("summary").filter({ hasText: /^Review changes$/ }).click(); await standards.waitFor();
           assert(await standards.isDisabled()); assert(await spec.isDisabled());
           await review.getByText(`${receipt.id} · ${outcome}`, { exact: true }).first().waitFor();
           assert.equal(f.deliveries.length, 1);

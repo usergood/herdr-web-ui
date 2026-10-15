@@ -7,6 +7,10 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 
 ## [Unreleased]
 
+### Improved
+- Load Workflow and board current state without retained transcripts, frozen Run context or diffs.
+  Read history and review evidence when opened, and share the board overview with navigation.
+
 ## [0.5.0] - 2026-10-15
 
 ### Added

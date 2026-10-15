@@ -7,6 +7,8 @@ import { migrateFactoryHistory } from "./factory-history.ts";
 
 /** One transactional record/event store, never a provider's native transcript database. */
 export class FactoryStore {
+  /** Process-scoped invalidation token for on-demand owner views; never persisted state. */
+  revision = randomUUID();
   readonly root: string;
   readonly db: Database;
   constructor(stateDir: string) {
@@ -38,9 +40,10 @@ export class FactoryStore {
   }
   put<T extends { id: string }>(kind: string, record: T, parent: string | null = null): T {
     this.db.query("INSERT INTO records(kind,id,parent,data) VALUES(?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET parent=excluded.parent,data=excluded.data").run(kind, record.id, parent, JSON.stringify(record));
+    this.revision = randomUUID();
     return record;
   }
-  remove(kind: string, id: string): void { this.db.query("DELETE FROM records WHERE kind=? AND id=?").run(kind, id); }
+  remove(kind: string, id: string): void { this.db.query("DELETE FROM records WHERE kind=? AND id=?").run(kind, id); this.revision = randomUUID(); }
   record(): FactoryRecord { const now = new Date().toISOString(); return { id: randomUUID(), created_at: now, updated_at: now }; }
   event(parent: string | null, kind: string, data: unknown): void {
     const record = this.record();

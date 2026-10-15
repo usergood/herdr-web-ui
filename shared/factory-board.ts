@@ -11,7 +11,7 @@ export function factoryRunActivity(action: FactoryAction): FactoryActivity {
 }
 
 /** Shared presentation policy for the bridge and fictional browser demo. */
-export function projectFactoryBoard(implementation: Implementation, context: { tickets?: FactoryTicket[]; runs?: FactoryRun[]; workers?: FactoryWorker[]; checks?: FactoryCheck[]; questions?: FactoryQuestion[]; admission_problem?: string | null; selected?: boolean; readiness_problem?: string | null } = {}): FactoryBoardItem {
+export function projectFactoryBoard(implementation: Implementation, context: { tickets?: FactoryTicket[]; runs?: FactoryRun[]; workers?: FactoryWorker[]; checks?: Omit<FactoryCheck, "commands">[]; questions?: FactoryQuestion[]; admission_problem?: string | null; selected?: boolean; readiness_problem?: string | null } = {}): FactoryBoardItem {
   const tickets = context.tickets ?? [];
   const runIds = new Set(context.runs?.map(entry => entry.id));
   const quiescent = !(context.runs ?? []).some(entry => !["completed", "cancelled", "failed"].includes(entry.condition))
