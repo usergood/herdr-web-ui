@@ -2,7 +2,9 @@
 
 Product choices confirmed during the owner's Q1–Q29 interview on 2026-10-13. This is a design record for subsequent Specification and Ticket planning; it does not claim the capabilities are implemented or activate any live policy. It revises the earlier manual-start, board-lane and implementation-completion direction while preserving existing unrelated contracts.
 
-## Agreed behavior
+The accepted 2026-10-15 Q1–Q20 [automatic workflow design](automatic-dispatch-pause-delete-design.md) supersedes conflicting clauses below: retained-history Discard, extra Assignment caps, manual priority/recovery and repeated planning/publication gates. It adds Specifications interview/to-spec, stable conversation roles and conditional Human Review merge authority. Unrelated delivery, trusted intake, dependency, batch-publication and schedule decisions remain applicable; planned upstream approval policy is unchanged. The earlier interview remains here as provenance, not authority to reinstate superseded behavior.
+
+## Earlier agreed behavior
 
 - Completion defaults to verified merge into the Project's delivery branch. A Project can instead require a release containing the merge. Freeze that setting when an Assignment starts. Repository changes, including documentation and already-committed changes, require this delivery milestone; a clean working directory is insufficient evidence. Research retained as app artifacts without repository changes can be accepted manually. An unreachable Machine means the change set is unknown.
 - Discard explicitly stops and reconciles active work, then moves the Assignment to Done with a Discarded outcome and hides its sidebar entries. Retain history, artifacts and branches; do not automatically delete files or close remote PRs. Unconfirmed stopping leaves Needs you / Discard pending. Archiving finished Assignments remains a separate later action.
