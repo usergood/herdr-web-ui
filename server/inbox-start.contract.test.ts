@@ -20,7 +20,7 @@ describe("starting an Inbox idea through the public API", () => {
     } } });
     const post = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
     try {
-      await post("/settings", { max_implementations: 1, max_agents: 6 });
+      await post("/settings", { max_agents: 1 });
       const project = await post("/projects", { name: "Child Project", path: repo, machine_id: "local", provider: "claude", tracker: "app" }).then(response => response.json());
       const a = await post("/implementations", { title: "Coordinator A", description: "", project_id: project.id }).then(response => response.json());
       const b = await post("/implementations", { title: "Other task B", description: "", project_id: project.id }).then(response => response.json());
@@ -59,7 +59,11 @@ describe("starting an Inbox idea through the public API", () => {
     };
     try {
       const overview = await fetch(`http://localhost:${app.port}/api/factory`).then(response => response.json());
-      expect(overview.settings.max_implementations).toBe(6); expect(overview.settings.max_agents).toBe(6);
+      expect(overview.settings.max_agents).toBe(6);
+      const independent = await workspaceCreate({ label: "herdr-web-ui-test-capacity-independent" }); owned.push(independent.workspace.workspace_id);
+      expect((await fetch(`http://localhost:${app.port}/api/factory`).then(r => r.json())).capacity.contexts).toEqual([]);
+      await herdrRpc("pane.report_agent", { pane_id: independent.root_pane.pane_id, source: "manual", agent: "claude", state: "working" });
+      expect((await fetch(`http://localhost:${app.port}/api/factory`).then(r => r.json())).capacity.contexts).toEqual([]);
       const project = await post("/projects", { name: "Capacity Project", path: repo, machine_id: "local", provider: "codex", tracker: "app" }).then(response => response.json());
       const ideas: { id: string }[] = [];
       for (let index = 0; index < 8; index++) ideas.push(await post("/implementations", { title: `Owned task ${index}`, description: "", project_id: project.id }).then(response => response.json()));

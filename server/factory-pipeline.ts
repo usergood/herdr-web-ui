@@ -1,4 +1,4 @@
-import { factoryCapacity } from "./factory-capacity.ts";
+import { agentCapacityPool, factoryCapacity } from "./factory-capacity.ts";
 import type { FactoryCheck, FactoryProject, FactoryReviewEvidence, FactoryRun, FactorySettings, FactoryTicket, FactoryWorker, Implementation } from "../shared/protocol.ts";
 import { FactoryError } from "./factory-host.ts";
 import { FactoryRuntime } from "./factory-runtime.ts";
@@ -39,9 +39,7 @@ export class FactoryPipeline {
       if (role === "implementer" && !ticket && !rework) throw new FactoryError("ticket_not_ready", "Select a ready Ticket or an explicitly delivered rework batch", 409);
       if (rework && this.store.list<FactoryWorker>("workers", id).some((worker) => worker.ticket_id === rework.id && owns(worker.condition))) throw new FactoryError("ticket_owned", "This Ticket already has an active or uncertain writer", 409);
       if (role !== "implementer" && this.store.list<FactoryWorker>("workers", id).some((worker) => worker.role === "implementer" && owns(worker.condition))) throw new FactoryError("writers_active", "Quiesce repository writers before independent final reviews", 409);
-      const capacity = factoryCapacity(this.store);
-      capacity.implementations.add(run.implementation_id);
-      if (capacity.implementations.size > this.settings().max_implementations || capacity.agents >= this.settings().max_agents) throw new FactoryError("capacity_exhausted", "Global native context capacity is in use", 409);
+      agentCapacityPool(this.store, this.settings());
       const shared = body.shared_paths ?? [];
       const configured = (run.manifest as { project: FactoryProject }).project.shared_paths ?? [];
       if (!Array.isArray(shared) || shared.some((path) => typeof path !== "string" || !configured.includes(path))) throw new FactoryError("invalid_shared_paths", "Claim only configured shared document paths");
@@ -95,7 +93,8 @@ export class FactoryPipeline {
     const run = this.run(id, false);
     if (process.platform === "win32" && run.machine_id === "local") throw new FactoryError("build_contract_unverified", "This platform's owned build process contract is not verified", 409);
     const check = this.store.db.transaction(() => {
-      if (this.store.list<FactoryCheck>("checks").filter((entry) => ["working", "interrupted"].includes(entry.condition)).length >= this.settings().max_builds) throw new FactoryError("build_capacity_exhausted", "Global build capacity is reserved, including uncertain builds", 409);
+      const capacity = factoryCapacity(this.store, this.settings());
+      if (capacity.builds.used >= capacity.builds.limit) throw new FactoryError("build_capacity_exhausted", `Waiting for build capacity: ${capacity.builds.used}/${capacity.builds.limit}. ${capacity.build_reservations.map(build => `${build.assignment_title} [${build.machine_id}, ${build.condition}${build.uncertain ? ", uncertain" : ""}]`).join("; ")}`, 409);
       const record: FactoryCheck = { ...this.store.record(), run_id: id, worker_id: workerId, head: "", workspace_hash: "", commands: [], condition: "working" };
       this.store.put("checks", record, id); return record;
     }).immediate();

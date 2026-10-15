@@ -56,6 +56,8 @@ export interface ProjectReferenceLibrary { project_id: string; revision: string;
 export interface CodexReferenceContext { project_id: string; machine_id: string; revision: string; index_path: string; prompt: string }
 export interface ProjectReferencePayload { library: ProjectReferenceLibrary; files: { id: string; content_base64: string }[] }
 export interface FactoryRun extends FactoryRecord {
+  /** Missing on saved Runs from before the shared planning allowance: normal. */
+  capacity_pool?: "normal" | "planning";
   implementation_id: string; action: FactoryAction; provider: FactoryProvider; machine_id: string;
   condition: RunCondition; waiting_reason: string | null; idempotency_key: string;
   specification_id: string | null; graph_hash: string | null; base: string | null;
@@ -75,9 +77,28 @@ export interface ReviewComment extends FactoryRecord {
   resolution?: { head: string; check_id: string; summary: string };
 }
 export interface FactorySettings {
-  provider: FactoryProvider; max_implementations: number; max_agents: number; max_builds: number;
+  provider: FactoryProvider; max_agents: number; max_builds: number;
   max_artifact_bytes: number; max_storage_bytes: number; skills_path: string | null;
 }
+export interface FactoryCapacityReservation {
+  id: string; run_id: string; worker_id: string | null;
+  implementation_id: string; assignment_title: string; project_id: string | null;
+  machine_id: string; provider: FactoryProvider; label: string;
+  condition: string; uncertain: boolean; reason: string | null;
+}
+export interface FactoryCapacityWait extends FactoryRecord {
+  implementation_id: string; assignment_title: string; action: FactoryAction;
+  machine_id: string; provider: FactoryProvider; idempotency_key: string; reason: string;
+}
+export interface FactoryCapacity {
+  normal: { limit: number; used: number };
+  planning: { limit: 1; used: number };
+  builds: { limit: number; used: number };
+  contexts: (FactoryCapacityReservation & { pool: "normal" | "planning" })[];
+  build_reservations: FactoryCapacityReservation[];
+  waiting: FactoryCapacityWait[];
+}
+export interface FactoryOverview { capacity: FactoryCapacity }
 export interface FactoryDetail {
   graph_hash: string; question_revision: string;
   /** Current decision scope; full historical questions remain in questions below. */

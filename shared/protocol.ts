@@ -1125,7 +1125,13 @@ export const DEFAULT_PORT = 7317;
  * Factory routes use connection-server records. Mutation bodies are FactoryRequests
  * keys below; all JSON errors are ApiError. Mutations require same-origin and
  * x-herdr-factory: 1; reads and writes require owner access.
- * GET /api/factory -> FactoryOverview; GET /api/factory/implementations/:id -> FactoryDetail.
+ * GET /api/factory -> FactoryOverview with global normal/planning/build limits,
+ * occupied/uncertain reservations and retained capacity waits.
+ * Normal contexts share max_agents across Projects, providers and Machines. One additional
+ * interview/pre-approval Specification context may execute globally; workers cannot use it.
+ * Ordinary terminals and independently launched agents are excluded. Ready chats consume
+ * no slot; uncertain execution retains its reservation. Builds have a separate max_builds.
+ * GET /api/factory/implementations/:id -> FactoryDetail.
  * GET /api/factory?navigation=1 -> FactoryOverview without checkout instruction contents;
  * sidebar/page polling uses metadata; full instructions remain in frozen Run context.
  * POST /api/factory/implementations (implementation) -> Implementation, 201, initial Chat retained.
@@ -1160,7 +1166,8 @@ export const DEFAULT_PORT = 7317;
  * POST .../order (order) -> {ok:true}; reordering never dispatches.
  * POST .../complete-work (complete_work) -> Implementation; explicit owner completion of the
  * latest direct-work Run after confirmed native stop, with its worktree retained.
- * POST /api/factory/settings (settings) -> FactorySettings; validated limits and future defaults.
+ * POST /api/factory/settings (settings) -> FactorySettings; global agent/build limits and future defaults.
+ * The removed max_implementations setting is rejected; saved agent/build limits migrate unchanged.
  * POST /api/factory/projects/:id/configure (project_settings) -> FactoryProject;
  * GET /api/factory/projects/:id/references -> ProjectReferenceLibrary; current immutable versions.
  * POST .../references (project_reference) -> ProjectReference, 201; displayed revision required.
@@ -1244,7 +1251,7 @@ export const DEFAULT_PORT = 7317;
 export type { FactoryOverview, FactoryDetail, Implementation, FactoryProject, ProjectCheckout, FactoryChat, FactoryMessage, FactoryEvent, SpecificationVersion, FactoryTicket, FactoryApproval, FactoryQuestion, FactoryArtifact, FactoryRun, ReviewSnapshot, ReviewComment, FactorySettings, FactoryProvider, FactoryStage, FactoryAction, RunCondition, FactoryCapabilities, FactoryProviderCapability, FactoryOutput } from "./factory.ts";
 export type { FactoryWorker, FactoryCheck, FactoryReviewEvidence, FactoryRetrospective } from "./factory.ts";
 export type { NativeConversationSnapshot } from "./factory.ts";
-export type { FactoryPaneLink, FactoryPaneArchive } from "./factory.ts";
+export type { FactoryCapacity, FactoryCapacityReservation, FactoryCapacityWait, FactoryPaneLink, FactoryPaneArchive } from "./factory.ts";
 export type { ProjectReference, ProjectReferenceLibrary, CodexReferenceContext, ProjectReferencePayload } from "./factory.ts";
 
 /** Factory mutation bodies. Runtime validation still treats incoming JSON as untrusted. */

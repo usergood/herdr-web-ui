@@ -57,6 +57,25 @@ describe("continuing approved workflow steps", () => {
     } finally { await f.close(); }
   }, 60_000);
 
+  it("retains execution capacity when native background work appears before answer delivery", async () => {
+    let background = false;
+    const f = await fixture("", { paneState: async id => { const pane = (await sessionSnapshot()).panes.find(pane => pane.pane_id === id); return pane ? { ...pane, background_tasks: background ? 1 : 0 } : null; } });
+    try {
+      await f.request("/settings", { max_agents: 1 });
+      const run = await f.start("work", "background-capacity-race");
+      const question = await f.agent(run, "question", { question: "Which owned behavior?" }).then(r => r.json());
+      await f.request(`${f.prefix}/questions/${question.id}/answer`, { revision: question.revision, answer: "The accepted capacity behavior" });
+      expect((await f.request(`/runs/${run.id}/reconcile`, {}).then(r => r.json())).condition).toBe("ready");
+      background = true;
+      const detail = await f.request(f.prefix).then(r => r.json());
+      const delivery = await f.request(`/runs/${run.id}/send-answers`, { revision: detail.question_revision, idempotency_key: "background-send" }).then(r => r.json());
+      expect(delivery.condition).toBe("blocked");
+      const overview = await f.request("").then(r => r.json());
+      expect(overview.capacity.normal.used).toBe(1);
+      expect(overview.capacity.contexts[0].condition).toBe("working");
+    } finally { await f.close(); }
+  }, 60_000);
+
   it("rejects a checkout changed during asynchronous handoff before successor admission", async () => {
     let armed = false; let reads = 0; let release!: () => void; let entered!: () => void;
     const waiting = new Promise<void>(resolve => entered = resolve);

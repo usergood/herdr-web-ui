@@ -1,4 +1,4 @@
-import { factoryCapacity } from "./factory-capacity.ts";
+import { agentCapacityPool } from "./factory-capacity.ts";
 import { existsSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
@@ -203,7 +203,8 @@ export class FactoryRuntime {
     if (!["http:", "https:"].includes(api.protocol) || api.username || api.password) throw new FactoryError("invalid_factory_url", "Use an authenticated HTTP(S) app address for the tracker");
     const contractHash = hash(JSON.stringify({ implementation, project, checkout, specification, graphHash, settings: this.settings(), skills: skills.hash, artifacts, messages, projectReferences }));
     await this.reconcileCapacity();
-    const run = this.store.db.transaction(() => {
+    let run: { run: FactoryRun; accepted: boolean };
+    try { run = this.store.db.transaction(() => {
       continuation?.validateScope?.();
       const raced = this.store.list<FactoryRun>("runs", id).find((entry) => entry.idempotency_key === body.idempotency_key);
       if (raced) return { run: raced, accepted: false };
@@ -212,13 +213,22 @@ export class FactoryRuntime {
       if (currentHash !== contractHash) throw new FactoryError("scope_changed", "The selected execution scope changed during admission", 409);
       const owned = this.store.list<FactoryRun>("runs").filter((entry) => activeConditions.has(entry.condition));
       if (owned.some((entry) => entry.implementation_id === id)) throw new FactoryError("implementation_owned", "An existing or uncertain Run still owns this Implementation", 409);
-      const capacity = factoryCapacity(this.store);
-      if (capacity.implementations.size >= this.settings().max_implementations || capacity.agents >= this.settings().max_agents) throw new FactoryError("capacity_exhausted", "Global execution capacity is in use; start manually after capacity is released", 409);
-      const record: FactoryRun = { ...this.store.record(), implementation_id: id, action, provider, machine_id: machineId, condition: "accepted", waiting_reason: null, idempotency_key: body.idempotency_key as string, specification_id: specification?.id ?? null, graph_hash: graphHash, base: inspected?.head ?? null, checkout: inspected?.path ?? null, worktree: null, branch: null, workspace_id: null, pane_id: null, manifest: { skills, artifacts, context_message_ids: messages.map(message => message.id), retrospective, retrospective_evidence: retrospective ? this.store.get("retro_evidence", retrospective.id) : null, implementation, project, checkout: inspected, specification, tickets: this.workflow.tickets(id), approvals: this.store.list<FactoryApproval>("approvals", id), effective_settings: this.settings(), provider_version: capability.version, permissions: "Retain native controls; publication, merge, deployment and destructive cleanup are separate owner actions", contract_hash: contractHash } };
+      const planning = ["grill-me", "grill-with-docs"].includes(action) || action === "to-spec" && (!specification || !this.workflow.approved(id, "specification", specification.id));
+      const capacityPool = agentCapacityPool(this.store, this.settings(), planning);
+      const record: FactoryRun = { ...this.store.record(), implementation_id: id, action, provider, machine_id: machineId, capacity_pool: capacityPool, condition: "accepted", waiting_reason: null, idempotency_key: body.idempotency_key as string, specification_id: specification?.id ?? null, graph_hash: graphHash, base: inspected?.head ?? null, checkout: inspected?.path ?? null, worktree: null, branch: null, workspace_id: null, pane_id: null, manifest: { skills, artifacts, context_message_ids: messages.map(message => message.id), retrospective, retrospective_evidence: retrospective ? this.store.get("retro_evidence", retrospective.id) : null, implementation, project, checkout: inspected, specification, tickets: this.workflow.tickets(id), approvals: this.store.list<FactoryApproval>("approvals", id), effective_settings: this.settings(), provider_version: capability.version, permissions: "Retain native controls; publication, merge, deployment and destructive cleanup are separate owner actions", contract_hash: contractHash } };
       record.manifest = { ...(record.manifest as object), execution_preset: executionPreset, project_references: projectReferences, account_snapshot: accountSnapshot };
       if (projectReferences) this.references.freeze(projectReferences.project_id);
+      this.store.remove("capacity_waits", `${id}:${body.idempotency_key}`);
       this.store.put("runs", record, id); this.store.event(id, "dispatch_accepted", { run_id: record.id, action }); return { run: record, accepted: true };
-    }).immediate();
+    }).immediate(); }
+    catch (error) {
+      if (error instanceof FactoryError && error.code === "capacity_exhausted") {
+        const waitId = `${id}:${body.idempotency_key}`;
+        const previous = this.store.get<import("../shared/factory.ts").FactoryCapacityWait>("capacity_waits", waitId);
+        this.store.put("capacity_waits", { ...(previous ?? this.store.record()), id: waitId, updated_at: new Date().toISOString(), implementation_id: id, assignment_title: implementation.title, action, machine_id: machineId, provider, idempotency_key: body.idempotency_key as string, reason: error.message, request: body, origin, contract_hash: contractHash }, id);
+      }
+      throw error;
+    }
     const accepted = run;
     const pending = this.dispatches.get(accepted.run.id);
     if (pending) return pending;
@@ -254,7 +264,8 @@ export class FactoryRuntime {
     for (const key of ["id", "implementation_id", "action", "provider", "machine_id", "idempotency_key", "specification_id", "graph_hash", "base", "checkout", "created_at"] as const) if (actual?.[key] !== expected[key]) throw new FactoryError("run_identity_changed", "The Machine returned another accepted Run identity; preserve ownership", 409);
     if (hash(JSON.stringify(actual.manifest)) !== hash(JSON.stringify(expected.manifest)) || !["accepted", "working", "ready", "needs_you", "blocked", "disconnected", "interrupted", "failed", "cancelled", "completed"].includes(actual.condition)) throw new FactoryError("run_identity_changed", "The Machine changed the accepted contract; preserve ownership", 409);
     if (expected.worktree && (actual.worktree !== expected.worktree || actual.branch !== expected.branch || expected.workspace_id !== null && actual.workspace_id !== expected.workspace_id || expected.pane_id !== null && actual.pane_id !== expected.pane_id)) throw new FactoryError("run_identity_changed", "The Machine changed the owned working directory or native identity", 409);
-    return actual;
+    // Admission and reactivation own the pool centrally; the Machine observes execution.
+    return { ...actual, capacity_pool: expected.capacity_pool };
   }
   /** Refresh capacity from owned native identities, including remote and resting chats. */
   async reconcileCapacity(): Promise<void> {
@@ -305,7 +316,31 @@ export class FactoryRuntime {
     return finished;
   }
   async outputs(run: FactoryRun): Promise<FactoryOutput[]> { return run.machine_id === "local" ? this.host.outputs(run.id) : this.remote(run.machine_id, `/runs/${run.id}/artifacts`); }
-  async send(run: FactoryRun, text: string, signal: AbortSignal): Promise<void> { if (run.machine_id === "local") await this.host.send(run.id, text, signal); else await this.remote(run.machine_id, `/runs/${run.id}/send`, { text }, signal); }
+  async send(run: FactoryRun, text: string, signal: AbortSignal): Promise<void> {
+    const reservation = this.store.db.transaction(() => {
+      const current = this.store.get<FactoryRun>("runs", run.id);
+      if (!current || !["working", "ready", "needs_you", "blocked"].includes(current.condition)) throw new FactoryError("run_unavailable", "Reconcile the Run before submitting changes", 409);
+      if (current.condition !== "ready") return null;
+      const specification = this.workflow.specification(current.implementation_id);
+      const planning = ["grill-me", "grill-with-docs"].includes(current.action) || current.action === "to-spec" && (!specification || !this.workflow.approved(current.implementation_id, "specification", specification.id));
+      const pool = agentCapacityPool(this.store, this.settings(), planning);
+      const reserved: FactoryRun = { ...current, capacity_pool: pool, condition: "accepted", waiting_reason: null, updated_at: new Date().toISOString() };
+      this.store.put("runs", reserved, run.implementation_id); return reserved;
+    }).immediate();
+    const settle = (condition: FactoryRun["condition"], reason: string | null): void => {
+      if (reservation && JSON.stringify(this.store.get("runs", run.id)) === JSON.stringify(reservation)) this.store.put("runs", { ...reservation, condition, waiting_reason: reason, updated_at: new Date().toISOString() }, run.implementation_id);
+    };
+    try {
+      if (run.machine_id === "local") await this.host.send(run.id, text, signal);
+      else await this.remote(run.machine_id, `/runs/${run.id}/send`, { text }, signal);
+      settle("working", null);
+    } catch (error) {
+      const busy = error instanceof FactoryError && ["agent_busy", "delivery_busy"].includes(error.code);
+      const unsent = error instanceof FactoryError && ["input_draft", "disconnected", "recovery_copy"].includes(error.code);
+      settle(busy ? "working" : unsent ? "ready" : "disconnected", busy || unsent ? null : "Answer delivery outcome is uncertain; execution capacity remains reserved");
+      throw error;
+    }
+  }
   async output(run: FactoryRun, output: FactoryOutput): Promise<{ content_base64: string }> { return run.machine_id === "local" ? this.host.output(run.id, output.name, output.hash) : this.remote(run.machine_id, `/runs/${run.id}/artifacts/content?name=${encodeURIComponent(output.name)}&hash=${encodeURIComponent(output.hash)}`); }
   stop(): void { this.stopped = true; this.host.stop(); }
 }
