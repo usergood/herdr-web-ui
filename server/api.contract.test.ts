@@ -442,9 +442,10 @@ describe("factory records", () => {
     const state = mkdtempSync(join(tmpdir(), "saurons-eye-stop-child-")); const repo = join(state, "repo");
     const { mkdirSync } = await import("node:fs"); mkdirSync(repo); writeFileSync(join(repo, "notes.txt"), "base\n");
     for (const args of [["init", "-b", "main"], ["add", "."], ["-c", "user.name=Factory test", "-c", "user.email=factory@example.invalid", "commit", "-m", "initial"]]) expect(Bun.spawnSync(["git", ...args], { cwd: repo }).exitCode).toBe(0);
-    let release!: () => void; let allocated!: () => void; let starts = 0; let holdSnapshot = false; let held = false; const workspaces: string[] = [];
+    let release!: () => void; let allocated!: () => void; let starts = 0; let holdReconciliation = false; let childPaneId: string | null = null; const workspaces: string[] = [];
     const gate = new Promise<void>((resolve) => { release = resolve; }); const allocation = new Promise<void>((resolve) => { allocated = resolve; });
-    const app = createServer({ port: 0, stateDir: state, machines: false, factory: { native: { version: async () => "owned-fixture", snapshot: async () => { const snapshot = await sessionSnapshot(); if (holdSnapshot && !held) { held = true; allocated(); await gate; } return snapshot; }, createWorkspace: async (options) => { const result = await workspaceCreate(options); workspaces.push(result.workspace.workspace_id); if (phase === "allocation" && options.label?.startsWith("saurons-eye-worker-")) { allocated(); await gate; } return result; }, startAgent: async (options) => { starts++; await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "idle" }); if (phase === "launch response" && options.name.startsWith("eye-worker-")) { allocated(); await gate; } } } } });
+    // Hold child rest observations, including background ones; a parent snapshot must not satisfy this barrier.
+    const app = createServer({ port: 0, stateDir: state, machines: false, factory: { native: { version: async () => "owned-fixture", ...(phase === "reconciliation" ? { paneState: async (paneId: string) => { const snapshot = await sessionSnapshot(); const pane = snapshot.panes.find(entry => entry.pane_id === paneId); if (holdReconciliation && paneId === childPaneId) { allocated(); await gate; } return pane ?? null; } } : {}), createWorkspace: async (options) => { const result = await workspaceCreate(options); workspaces.push(result.workspace.workspace_id); if (phase === "allocation" && options.label?.startsWith("saurons-eye-worker-")) { allocated(); await gate; } return result; }, startAgent: async (options) => { starts++; await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "idle" }); if (phase === "launch response" && options.name.startsWith("eye-worker-")) { allocated(); await gate; } } } } });
     const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
     try {
       const project = await request("projects", { name: "Owned Stop race", path: repo, machine_id: "local", provider: "codex", tracker: "app" }).then((response) => response.json());
@@ -452,7 +453,7 @@ describe("factory records", () => {
       await request(`implementations/${idea.id}/configure`, { project_id: project.id });
       const run = await request(`implementations/${idea.id}/runs`, { action: "grill-with-docs", idempotency_key: "parent-stop" }).then((response) => response.json());
       let child = request(`runs/${run.id}/workers`, { role: "standards", idempotency_key: "accepted-child" });
-      if (phase === "reconciliation") { const worker = await child.then((response) => response.json()); holdSnapshot = true; child = request(`runs/${run.id}/workers/${worker.id}/reconcile`, {}); }
+      if (phase === "reconciliation") { const worker = await child.then((response) => response.json()); childPaneId = worker.pane_id; holdReconciliation = true; child = request(`runs/${run.id}/workers/${worker.id}/reconcile`, {}); }
       await allocation;
       expect((await request(`runs/${run.id}/stop`, {})).status).toBe(200);
       release(); const worker = await child.then((response) => response.json());
