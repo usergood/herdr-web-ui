@@ -42,7 +42,7 @@ The integration branch and worktree belong to the Run. Implementers receive sepa
 
 Only the dependency frontier can start ordinary Ticket work. Shared document claims exclude competing writers. Workers reconcile the current integration tip, run the configured checks and submit a committed candidate. The serialized backend merger rejects stale tips, changed cwd/branch/repository, dirty tracked changes, unclaimed shared documents and committed application scaffolding. It retains the branch and never updates the default branch.
 
-The native adapter includes an exact request guide and `bun .saurons-eye-tracker.mjs help`. A blocked worker remains an owner-answer gate; a ready worker is a candidate awaiting explicit checks/integration. Integrating all accepted Tickets moves the card to Review; acceptance still requires current evidence and does not infer publication.
+The native adapter includes an exact request guide and `bun .saurons-eye-tracker.mjs help`. For historical Runs, a blocked worker remains an owner-answer gate and a ready worker awaits explicit checks/integration. New Specification-authorized plans are driven automatically as described below. Integrating all accepted Tickets moves the stored lifecycle stage to review; the board presents its lane and current activities separately; acceptance still requires current evidence and does not infer publication.
 
 Agent-context reservations cover active and uncertain app-managed execution globally across Projects, providers and Machines. The default normal limit is six Agent contexts, with one additional shared interview/pre-approval Specification context; implementation and review cannot use that allowance. Builds have a separate default limit of two. Inbox exposes Factory settings and recovery. Ready chats consume no execution slot but retain their worktree ownership. Ordinary terminals and independently launched agents are excluded.
 
@@ -61,6 +61,24 @@ Assignment execution controls provide Pause and Resume without requiring agent c
 Resume queues only retained unfinished contexts at global capacity. The native continuation uses the same Run/worker and worktree and receives a bounded handoff from its captured history; earlier captured pages remain available. Changed accepted Specification/graph authority blocks continuation for reconciliation rather than silently reusing stale evidence. Completed work is not restarted, and unchanged scope requires no renewed approval. Pending Delete authority takes precedence over Resume. Lost continuation responses are observed without replay; a Machine's durable proof that continuation never started permits safe automatic requeueing.
 
 Retrospectives use only a selected retained Project evidence set. Candidates are immutable records. Approval and Apply in a new worktree are separate actions; the pinned retro action presents candidates without applying them.
+
+## Board progress
+
+Assignments use five board lanes: Inbox, Queued, Running, Needs you and Done. Cards with Tickets show named active work and an expandable complete Ticket list with waiting/running/completed counts and dependency, capacity or failure reasons. The disclosure supports keyboard activation and stays open when changing progress moves a card between lanes.
+
+Activity tags reflect retained Run, worker and check evidence: Specifying, Implementing, Testing, Auto-Review and Fixing can overlap. A failed repair remains unfinished even after earlier integration. Automatic reconnects remain Running without claiming current execution; blocked requests requiring owner correction use Needs you. Paused is independent of the lane, including parked owner conversations. Verified suspension clears execution tags, while pending lifecycle operations show their reasons on the card. A newer Specification draft does not hide an executing Run's frozen Ticket scope.
+
+Cards use the oldest retained waiting-request age, falling back to capture time. Priority arrows and drag controls are removed. The legacy order endpoint returns 409 automatic_order; dispatch continues to select the oldest eligible request globally.
+
+GET /api/factory exposes these projections in progress, alongside existing capacity and activity metadata. The browser demo uses the same projection policy. Public HTTP regressions and the factory-board-browser-regression desktop/mobile journey use disposable state and owned Machine responses without launching paid agents.
+
+## Automatic Ticket execution
+
+After an automatically authorized Orchestrator retains its execution plan, it ends its native turn at rest. The backend submits the dependency frontier to the same durable capacity queue with stable request keys, fresh tdd workers and isolated worktrees. Configured shared document paths are claimed conservatively for each worker, so competing shared writers wait. The coordinator releases capacity only after verified rest and remains parked while the backend processes candidates, including at a cap of one.
+
+Native rest is a candidate signal. The backend reconciles identity, refreshes against the integration tip, runs Project setup/check recipes under the separate build reservation and integrates through the serialized merger. Only retained integration receipts complete Tickets. Completed Tickets and check identities survive restart; uncertain launches, check replies and merger replies are reconciled rather than replayed. A stopped or failed worker, native permission, unresolved scope question, unconsumed answer revision, failing/interrupted check or integration conflict stays visible with its owned work preserved. Machine uncertainty uses six observations with exponential backoff before exposing exhausted recovery.
+
+The normal Assignment view shows **Automatic execution**, named workers, waiting reasons and expandable check output. Detail and the scoped contract retain plan-bound progress; `checked` means all accepted Tickets are integrated and integration checks passed. It does not certify independent review, PR publication or delivery. Automatic final review/repair/publication is the following implementation slice; historical Runs retain their explicit controls. Recovery copies never dispatch or build.
 
 ## Backup, restore and rollback
 

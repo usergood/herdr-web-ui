@@ -8,6 +8,9 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 ## [Unreleased]
 
 ### Fixed
+- Show named Ticket progress, concurrent workflow activities and blocking reasons across five Assignment board lanes; preserve paused progress and use automatic queue age instead of manual priority.
+- Execute accepted Ticket frontiers automatically with fresh workers, backend integration,
+  reserved checks and restart recovery. Show named workers, gates and check results in the Assignment.
 - Pause and resume whole Assignments, preserving unfinished work and history across restart, with visible pending Machine shutdown and automatic queued continuation.
 - Start internal Ticket and test planning automatically after Specification approval,
   retaining an inspectable plan without repeated planning approvals.
