@@ -7,6 +7,9 @@ export type RunCondition = "accepted" | "working" | "ready" | "needs_you" | "blo
 export type FactoryAction = "work" | "setup" | "grill-me" | "grill-with-docs" | "to-spec" | "to-tickets" | "implement-spec" | "retro" | "apply-retro" | "verify-provider";
 export interface FactoryRecord { id: string; created_at: string; updated_at: string }
 export interface Implementation extends FactoryRecord {
+  /** Workflow activity is separate from verified delivery and the Board lane. */
+  activity?: "awaiting_merge";
+  delivery_evidence?: NonNullable<import("./github-project.ts").GitHubDependencyEdge["delivery"]> & { source_id: string; source_revision: string; requires: "merge" | "release" };
   intake?: import("./issue-queue.ts").IssueQueueEntry;
   title: string; description: string; project_id: string | null; provider: FactoryProvider | null;
   machine_id: string | null; stage: FactoryStage; position: number;
@@ -57,6 +60,9 @@ export interface ProjectReferenceLibrary { project_id: string; revision: string;
 export interface CodexReferenceContext { project_id: string; machine_id: string; revision: string; index_path: string; prompt: string }
 export interface ProjectReferencePayload { library: ProjectReferenceLibrary; files: { id: string; content_base64: string }[] }
 export interface FactoryRun extends FactoryRecord {
+  /** Execution was reconciled at this checked revision; owner acceptance remains separate. */
+  implementation_completion?: { head: string; workspace_hash: string; check_id: string; standards_id: string; spec_id: string };
+  implementation_completion_pending?: boolean;
   implementation_id: string; action: FactoryAction; provider: FactoryProvider; machine_id: string;
   condition: RunCondition; waiting_reason: string | null; idempotency_key: string;
   specification_id: string | null; graph_hash: string | null; base: string | null;

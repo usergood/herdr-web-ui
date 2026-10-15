@@ -51,7 +51,7 @@ export class FactoryService {
     this.accounts.usage((id) => [...this.store.list<FactoryRun>("runs"), ...this.store.list<{ run: FactoryRun; closing?: boolean }>("host_leases").map((lease) => lease.run)].some((run) => ["accepted", "working", "ready", "needs_you", "blocked", "disconnected", "interrupted"].includes(run.condition) && (run.manifest as { account_snapshot?: import("../shared/accounts.ts").AccountBindingSnapshot })?.account_snapshot?.profiles.some((profile) => profile.id === id)));
     this.references = new FactoryReferences(this.store, this.artifacts);
     this.executionHost = new FactoryExecutionHost(this.store, () => this.settings().skills_path, native, this.accounts);
-    this.runtime = new FactoryRuntime(this.store, this.workflow, () => this.settings(), this.executionHost, endpoint, (record) => this.artifacts.read(record), publicUrl, this.references, this.accounts, (id, scope) => this.github.admission(id, scope)); this.review = new FactoryReview(this.store, (machine, path, base, mode) => this.runtime.capture(machine, path, base, mode), (machine, path) => this.runtime.inspect(machine, path));
+    this.runtime = new FactoryRuntime(this.store, this.workflow, () => this.settings(), this.executionHost, endpoint, (record) => this.artifacts.read(record), publicUrl, this.references, this.accounts, (id, scope) => this.github.admission(id, scope), id => this.pipeline.reconcileCompletion(id)); this.review = new FactoryReview(this.store, (machine, path, base, mode) => this.runtime.capture(machine, path, base, mode), (machine, path) => this.runtime.inspect(machine, path));
     this.pipeline = new FactoryPipeline(this.store, this.runtime, this.workflow, () => this.settings(), id => this.retainHandoff(id));
     this.continuation = new FactoryContinuation(this.store, this.workflow, this.runtime, async (id, allowPartial) => {
       await this.retainHandoff(id);
@@ -647,7 +647,9 @@ export class FactoryService {
         return jsonResponse(this.store.db.transaction(() => {
           const current = this.store.get<Implementation>("implementations", id)!;
           if (this.store.list<FactoryRun>("runs", id).at(-1)?.id !== run.id || this.activeWork(id) || hash(JSON.stringify({project_id:current.project_id,provider:current.provider,machine_id:current.machine_id,archived_at:current.archived_at})) !== scope) throw new FactoryError("scope_changed", "The Assignment changed during completion; refresh it before continuing", 409);
-          const next: Implementation = {...current,stage:"done",outcome:"implementation_complete",updated_at:new Date().toISOString()};
+          const admittedIssue = this.store.list<FactoryRun>("runs", id).some(attempt => !!(attempt.manifest as { issue_admission?: unknown }).issue_admission);
+          const delivered = ["merged", "released"].includes(current.outcome) && !!current.delivery_evidence;
+          const next: Implementation = {...current,...(delivered ? {} : admittedIssue ? {stage:"review" as const,activity:"awaiting_merge" as const,outcome:"implementation_complete" as const} : {stage:"done" as const,outcome:"implementation_complete" as const}),updated_at:new Date().toISOString()};
           this.store.put("implementations",next);this.store.event(id,"direct_work_completed",{run_id:run.id,owner_accepted:true});return next;
         })());
       }

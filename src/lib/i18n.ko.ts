@@ -1457,4 +1457,10 @@ export const KO: Record<string, string> = {
   "This Assignment already has an implementation outcome.": "이 Assignment에는 이미 구현 결과가 있습니다.",
   "This Assignment already has an execution attempt. Review it before retrying.": "이 Assignment에는 이미 실행 시도가 있습니다. 다시 시도하기 전에 검토하세요.",
   "Review the issue before implementation.": "구현 전에 이슈를 검토하세요.",
+  "Awaiting merge": "병합 대기 중",
+  "Delivery requires verified merge coverage and any required containing release.": "제공 완료에는 검증된 병합 범위와 필요한 경우 이를 포함하는 릴리스가 필요합니다.",
+  "Reviewed head accepted. Delivery is still pending.": "검토된 커밋을 수락했습니다. 제공 완료는 아직 대기 중입니다.",
+  "Owner acceptance is still required.": "소유자의 수락이 아직 필요합니다.",
+  "Project implementation slots available: {count}": "사용 가능한 프로젝트 구현 슬롯: {count}",
+  "Implementing Assignments: {count}": "구현 중인 할당: {count}",
 };

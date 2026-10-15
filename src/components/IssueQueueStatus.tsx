@@ -29,7 +29,8 @@ export function IssueQueueStatus({ entry, showReasons = true }: { entry: IssueQu
     }
   }
   return <div role="status">
-    <p>{entry.lane === "needs_you" ? t("Needs you") : entry.lane === "queued" ? t("Queued") : t("Inbox")} · {entry.eligible ? t("Eligible") : t("Ineligible")}</p>
+    <p>{entry.lane === "needs_you" ? t("Needs you") : entry.lane === "queued" ? t("Queued") : entry.lane === "review" ? t("Review") : entry.lane === "running" ? t("Running") : entry.lane === "done" ? t("Done") : t("Inbox")} · {entry.eligible ? t("Eligible") : t("Ineligible")}</p>
+    {entry.activity === "awaiting_merge" && <p>{t("Awaiting merge")}</p>}
     {showReasons && !!entry.reasons.length && <ul>{entry.reasons.map((item, index) => <li key={`${item.code}:${index}`}>{reason(item.code)}{item.detail && <span> · {item.detail}</span>}</li>)}</ul>}
   </div>;
 }

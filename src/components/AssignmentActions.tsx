@@ -25,6 +25,8 @@ export function AssignmentActions({ preset, onPresetChange, detail, project, mac
   const discussed = detail.runs.some(run => run.action === "grill-with-docs" || run.action === "grill-me");
   const verification = [...detail.runs].reverse().find(run => run.action === "verify-provider");
   const latest = detail.runs.at(-1);
+  const reviewed = latest?.implementation_completion;
+  const acceptedReview = !!reviewed && approved("review", reviewed.head);
   const waitingEvent = detail.events.filter(event => event.kind === "continuation_waiting" && (event.data as { run_id?: string } | null)?.run_id === (active?.id ?? latest?.id)).at(-1);
   const continuationProblem = (waitingEvent?.data as { message?: string } | undefined)?.message;
   const lastHandoffEvent = (kinds: string[]) => latest && detail.events.filter(event => kinds.includes(event.kind) && (event.data as { run_id?: string }).run_id === latest.id).at(-1)?.kind;
@@ -55,6 +57,12 @@ export function AssignmentActions({ preset, onPresetChange, detail, project, mac
   }
   const disabled = busy || !project || !!project.removed_at || !!detail.implementation.archived_at || !capability?.installed;
   return <section className="assignment-actions factory-section" aria-label={t("Next step")}>
+    {detail.implementation.activity === "awaiting_merge" && <div role="status">
+      <p>{t("Awaiting merge")}</p>
+      <p>{t("Delivery requires verified merge coverage and any required containing release.")}</p>
+      {reviewed && <p>{acceptedReview ? t("Reviewed head accepted. Delivery is still pending.") : t("Owner acceptance is still required.")}</p>}
+      {!active && reviewed && !acceptedReview && <button className="btn" disabled={busy} onClick={() => void perform(async () => { await factoryRequest(`/runs/${latest!.id}/accept`, { head: reviewed.head }); })}>{t("Accept reviewed head")}</button>}
+    </div>}
     <p role="status">{project ? t("Work uses {agent} on {machine} with this Project's settings.", { agent: provider, machine: machineName }) : t("Choose a Project to start work or plan implementation.")}</p>
     {problem && <p role="alert">{problem}</p>}
     {continuationProblem && <p role="alert">{continuationProblem}</p>}

@@ -27,8 +27,11 @@ const issue = data.issues.find(issue => issue.number === number) ?? data.issues[
 console.log(JSON.stringify(endpoint === "user" ? {login:"fictional-owner",id:1042} : endpoint.includes("/dependencies/blocked_by") ? data.dependencies[number] ?? [] : endpoint.includes("/issues?") ? data.fail ? {} : data.issues : endpoint.includes("/events?") ? [] : endpoint.includes("/issues/") ? issue : endpoint === "graphql" ? {data:{repository:{pullRequests:{nodes:[],pageInfo:{hasNextPage:false,endCursor:null}},issue:{id:issue.node_id,title:issue.title,body:issue.body,state:issue.state.toUpperCase(),createdAt:"2026-09-30T12:00:00Z",updatedAt:issue.updated_at,lastEditedAt:null}}}} : {full_name:"fictional/project"}));`);
   // Owned remote native transport: no CLI agent, worktree or live herdr is launched.
   let checkout: unknown; let capabilities: unknown;
+  let executionHandler: ((request: Request) => Promise<Response | null>) | null = null;
   let capabilityGate: (() => Promise<void>) | null = null;
   const host = execution ? Bun.serve({ port: 0, async fetch(request) {
+    const handled = await executionHandler?.(request.clone());
+    if (handled) return handled;
     const path = new URL(request.url).pathname;
     if (path.endsWith("/capabilities")) { await capabilityGate?.(); return Response.json(capabilities); }
     if (path.endsWith("/inspect")) return Response.json(checkout);
@@ -78,5 +81,5 @@ console.log(JSON.stringify(endpoint === "user" ? {login:"fictional-owner",id:104
     const waiting = (async () => { const deadline = Date.now() + 5000; while (!existsSync(syncEntered)) { if (Date.now() > deadline) throw new Error("Owned GitHub observation did not reach its gate"); await new Promise(resolve => setTimeout(resolve, 10)); } })();
     return { waiting, release: () => rmSync(syncGate, { force: true }) };
   }
-  return { root, issue, save, post, get, json, setup, restart, headers, holdCapabilities, holdSync, get origin() { return origin; }, close() { app.stop(); host?.stop(true); rmSync(root, { recursive: true, force: true }); } };
+  return { root, issue, save, post, get, json, setup, restart, headers, holdCapabilities, holdSync, setExecutionHandler(handler: typeof executionHandler) { executionHandler = handler; }, get origin() { return origin; }, close() { app.stop(); host?.stop(true); rmSync(root, { recursive: true, force: true }); } };
 }

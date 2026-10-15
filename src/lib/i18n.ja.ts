@@ -1459,4 +1459,10 @@ export const JA: Record<string, string> = {
   "This Assignment already has an implementation outcome.": "この Assignment には既に実装結果があります。",
   "This Assignment already has an execution attempt. Review it before retrying.": "この Assignment には既に実行試行があります。再試行前に確認してください。",
   "Review the issue before implementation.": "実装前に課題を確認してください。",
+  "Awaiting merge": "マージ待ち",
+  "Delivery requires verified merge coverage and any required containing release.": "完了には意図した変更のマージ確認と、必要な場合はそれを含むリリースが必要です。",
+  "Reviewed head accepted. Delivery is still pending.": "レビュー済みのコミットを承認しました。提供完了はまだ保留中です。",
+  "Owner acceptance is still required.": "所有者の承認がまだ必要です。",
+  "Project implementation slots available: {count}": "利用可能なプロジェクト実装枠: {count}",
+  "Implementing Assignments: {count}": "実装中の割り当て: {count}",
 };

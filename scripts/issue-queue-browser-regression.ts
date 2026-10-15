@@ -5,6 +5,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { githubQueueFixture } from "./fixtures/github-queue.ts";
+import { githubReviewFixture } from "./fixtures/github-review.ts";
 
 const fixture = githubQueueFixture();
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
@@ -122,4 +123,40 @@ try {
   }
   assert.deepEqual(errors, []);
   console.log("PASS: desktop/mobile explicit trusted Start, admitted contract, outage continuation and controlled pause");
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    const reviewed = githubReviewFixture();
+    const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });
+    page.setDefaultTimeout(10_000); page.on("pageerror", error => errors.push(error.message));
+    try {
+      reviewed.save([reviewed.issue, { ...reviewed.issue, number: 2, node_id: "fictional-2", title: "Unrelated reviewed backlog" }]);
+      const { run, path, project, route, readiness } = await reviewed.prepare();
+      const second = await reviewed.second(route, readiness);
+      await reviewed.integrate(run); await reviewed.json(`/runs/${run.id}/checks`, {});
+      await reviewed.review(run, "standards"); await reviewed.review(run, "spec");
+      await reviewed.json(`/runs/${run.id}/reconcile`, {});
+      await page.goto(reviewed.origin + `/#factory/${run.implementation_id}`);
+      const actions = page.getByRole("region", { name: "Next step", exact: true });
+      await actions.getByText("Awaiting merge", { exact: true }).waitFor();
+      await actions.getByText("Owner acceptance is still required.", { exact: true }).waitFor();
+      assert.equal((await reviewed.json(path)).implementation.stage, "review");
+      assert.deepEqual((await reviewed.json(path)).approvals, []);
+      await actions.getByRole("button", { name: "Accept reviewed head", exact: true }).click();
+      await actions.getByText("Reviewed head accepted. Delivery is still pending.", { exact: true }).waitFor();
+      assert.equal((await reviewed.json(path)).implementation.stage, "review");
+      await page.goto(reviewed.origin + `/#projects/${project.id}/settings`);
+      await page.getByRole("tab", { name: "GitHub", exact: true }).click();
+      const queue = page.getByRole("region", { name: "Issue queue", exact: true });
+      await queue.getByText("Project implementation slots available: 1", { exact: true }).waitFor();
+      await queue.getByText("Implementing Assignments: 0", { exact: true }).waitFor();
+      assert(await queue.evaluate(element => element.scrollWidth <= element.clientWidth));
+      if (evidence) await page.screenshot({ path: join(evidence, `issue-completion-${viewport.width}.png`), fullPage: true });
+      await page.goto(reviewed.origin + `/#factory/${second.path.split("/").at(-1)}`);
+      await page.getByRole("button", { name: "Start prepared issue", exact: true }).click();
+      await page.getByRole("region", { name: "Admitted issue contract", exact: true }).waitFor();
+      assert.equal((await reviewed.json(second.path)).runs.length, 1);
+      assert.equal((await reviewed.json(path)).implementation.stage, "review");
+    } finally { await page.close(); reviewed.close(); }
+  }
+  assert.deepEqual(errors, []);
+  console.log("PASS: desktop/mobile awaiting merge, separate owner acceptance, available Project capacity and unrelated admission without false delivery");
 } finally { await browser.close(); fixture.close(); }

@@ -45,6 +45,8 @@ export function ProjectIssueQueue({ projectId, busy, perform }: QueueProps) {
       <p role="status">{queue.policy.automatic_implementation ? t("Automatic implementation is on.") : t("Automatic implementation is off.")}</p>
       <p>{t("Previewing and saving queue settings do not start work.")}</p>
       <p role="status">{queue.policy.paused ? t("Queue paused. Admitted work continues.") : t("Queue is not paused.")}</p>
+      {typeof queue.available_slots === "number" && <p role="status">{t("Project implementation slots available: {count}", { count: queue.available_slots })}</p>}
+      {typeof queue.implementing_count === "number" && <p>{t("Implementing Assignments: {count}", { count: queue.implementing_count })}</p>}
       <QueueSettings key={`${queue.policy.revision}:${queue.global_limit}`} queue={queue} busy={busy} save={(paused, limit) => void perform(async () => { accept(await accountRequest<IssueQueue>(route + "/queue", { expected_revision: queue.policy.revision, automatic_implementation: false, paused, max_implementations: limit })); })} />
       <button className="btn" disabled={busy} onClick={() => void perform(async () => { accept(await accountRequest<IssueQueue>(route + "/preview", {})); })}>{t("Preview eligible backlog")}</button>
       <p role="status">{t("Eligible issues: {count}", { count: queue.eligible_count })}</p>

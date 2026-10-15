@@ -859,7 +859,7 @@ test("linking intended PR coverage never fabricates delivery and only verified t
   writeFileSync(f.state, JSON.stringify(data)); await f.post(route + "/sync", {});
   const satisfied = (await f.get(route)).sources.find((s: { number: number }) => s.number === 12).dependencies;
   expect(satisfied).toMatchObject({ satisfied: true, target_branch: "main", edges: [{ blocker: null, delivery: { merges: [{ number: 27, head: "a".repeat(40), merge_commit: "c".repeat(40), target_branch: "main" }] } }] });
-  expect((await f.get(`/implementations/${target.implementation_id}`)).implementation.outcome).toBe("none");
+  expect((await f.get(`/implementations/${target.implementation_id}`)).implementation).toMatchObject({ stage: "done", outcome: "merged" });
   const retainedTarget = (await f.get(route)).sources.find((s: { number: number }) => s.number === 24);
   expect(retainedTarget.delivery_history).toHaveLength(2);
   expect(retainedTarget.delivery_history[0]).toMatchObject({ source_revision: target.revision, target_branch: "main", intended_prs: [{ number: 27, head: "a".repeat(40) }] });
@@ -867,6 +867,38 @@ test("linking intended PR coverage never fabricates delivery and only verified t
 });
 
 function deliveryPull() { return { number: 27, html_url: "https://github.com/fictional/project/pull/27", merged: true, merged_at: "2026-10-03T12:00:00Z", merge_commit_sha: "c".repeat(40), head: { sha: "a".repeat(40) }, base: { ref: "main", repo: { full_name: "fictional/project" } } }; }
+
+test("an Assignment becomes Done only after all linked intended coverage is verified on its target branch", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const data = { issues: [dependencyIssue(24)], pulls: [], dependencies: {}, delivery_pulls: { 27: { ...deliveryPull(), merged: false } }, comparisons: { ["c".repeat(40) + "..." + "f".repeat(40)]: { status: "ahead", base_commit: { sha: "c".repeat(40) }, merge_base_commit: { sha: "c".repeat(40) } } } };
+  writeFileSync(f.state, JSON.stringify(data)); await f.post(route + "/configure", f.policy);
+  await f.post(route + "/sync", {});
+  const source = (await f.get(route)).sources[0]; const path = `/implementations/${source.implementation_id}`;
+  await f.post(route + "/issues/24/delivery", { source_revision: source.revision, expected_revision: null, target_branch: "main", intended_prs: [{ number: 27, head: "a".repeat(40) }], release_tag: null });
+  await f.post(route + "/sync", {});
+  expect((await f.get(path)).implementation.stage).not.toBe("done");
+  data.delivery_pulls[27].merged = true; writeFileSync(f.state, JSON.stringify(data)); await f.post(route + "/sync", {});
+  expect((await f.get(path)).implementation).toMatchObject({ stage: "done", outcome: "merged", delivery_evidence: { source_id: source.id, source_revision: source.revision, requires: "merge", merges: [{ number: 27, head: "a".repeat(40), target_branch: "main" }] } });
+}, 20_000);
+
+test("a retained release requirement cannot become Done from a merge or a non-containing release", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const comparison = { status: "ahead", base_commit: { sha: "c".repeat(40) }, merge_base_commit: { sha: "c".repeat(40) } };
+  const data = { issues: [dependencyIssue(24)], pulls: [], dependencies: {}, delivery_pulls: { 27: deliveryPull() }, comparisons: { ["c".repeat(40) + "..." + "f".repeat(40)]: comparison, ["c".repeat(40) + "..." + "d".repeat(40)]: { ...comparison, status: "behind" } }, tag_ref: { ref: "refs/tags/v1", object: { type: "commit", sha: "d".repeat(40) } }, releases: { v1: { tag_name: "v1", html_url: "https://github.com/fictional/project/releases/tag/v1", draft: false, published_at: "2026-10-04T12:00:00Z" } } };
+  writeFileSync(f.state, JSON.stringify(data)); await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
+  const source = (await f.get(route)).sources[0]; const path = `/implementations/${source.implementation_id}`;
+  const coverage = { source_revision: source.revision, expected_revision: null as string | null, target_branch: "main", intended_prs: [{ number: 27, head: "a".repeat(40) }], release_tag: "v1" as string | null };
+  await f.post(route + "/issues/24/delivery", coverage); await f.post(route + "/sync", {});
+  expect((await f.get(path)).implementation.stage).not.toBe("done");
+  coverage.expected_revision = (await f.get(route)).sources[0].delivery.revision; coverage.release_tag = null;
+  await f.post(route + "/issues/24/delivery", coverage); await f.post(route + "/sync", {});
+  expect((await f.get(path)).implementation.stage).not.toBe("done");
+  coverage.expected_revision = (await f.get(route)).sources[0].delivery.revision; coverage.release_tag = "v1";
+  await f.post(route + "/issues/24/delivery", coverage);
+  data.comparisons["c".repeat(40) + "..." + "d".repeat(40)]!.status = "ahead";
+  writeFileSync(f.state, JSON.stringify(data)); await f.post(route + "/sync", {});
+  expect((await f.get(path)).implementation).toMatchObject({ stage: "done", outcome: "released", delivery_evidence: { requires: "release", release: { tag: "v1", commit: "d".repeat(40) } } });
+}, 20_000);
 
 test("an explicit release dependency waits for a published release containing every intended merge", async () => {
   const f = await fixture(); const route = `/projects/${f.project.id}/github`;

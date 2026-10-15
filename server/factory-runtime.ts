@@ -29,7 +29,7 @@ export class FactoryRuntime {
   private readonly dispatches = new Map<string, Promise<FactoryRun>>();
   private readonly starts = new Map<string, { scope: string; pending: Promise<FactoryRun> }>();
   private stopped = false;
-  constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly host: FactoryExecutionHost, private readonly endpoint: MachineEndpoint, private readonly readArtifact: (record: FactoryArtifact) => Buffer, private readonly publicUrl: string | null, private readonly references: FactoryReferences, private readonly accounts: MachineAccounts, private readonly issueAdmission: (id: string, scope: unknown) => import("../shared/issue-admission.ts").IssueAdmission) {}
+  constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly host: FactoryExecutionHost, private readonly endpoint: MachineEndpoint, private readonly readArtifact: (record: FactoryArtifact) => Buffer, private readonly publicUrl: string | null, private readonly references: FactoryReferences, private readonly accounts: MachineAccounts, private readonly issueAdmission: (id: string, scope: unknown) => import("../shared/issue-admission.ts").IssueAdmission, private readonly reconcileImplementation: (id: string) => Promise<FactoryRun>) {}
   async discover(machineId: string, path: string): Promise<import("../shared/project-setup.ts").ProjectDiscovery> { return machineId === "local" ? this.host.discover(path) : this.remote(machineId, "/project-discovery", { path }); }
   async modelCatalog(machineId: string, provider: FactoryProvider, path: string, repository: string, snapshot?: AccountBindingSnapshot | null): Promise<import("../shared/agent-models.ts").AgentModelCatalog> {
     const result = machineId === "local" ? await this.host.modelCatalog(provider, path, repository, snapshot) : await this.remote<import("../shared/agent-models.ts").AgentModelCatalog>(machineId, "/model-catalog", { provider, path, repository, account_snapshot: snapshot } satisfies FactoryHostRequests["model_catalog"]);
@@ -288,7 +288,7 @@ export class FactoryRuntime {
   }
   /** Refresh capacity from owned native identities, including remote and resting chats. */
   async reconcileCapacity(): Promise<void> {
-    const runs = this.store.list<FactoryRun>("runs").filter(run => activeConditions.has(run.condition) && run.pane_id && run.worktree && (run.machine_id !== "local" || run.condition === "ready"));
+    const runs = this.store.list<FactoryRun>("runs").filter(run => run.implementation_completion || run.implementation_completion_pending || run.action === "implement-spec" && run.condition === "completed" || activeConditions.has(run.condition) && run.pane_id && run.worktree && (run.machine_id !== "local" || run.condition === "ready"));
     await Promise.all(runs.map(run => this.reconcile(run.id)));
     const workers = this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers").filter(worker => activeConditions.has(worker.condition) && worker.pane_id && worker.worktree && (worker.condition === "ready" || this.store.get<FactoryRun>("runs", worker.run_id)?.machine_id !== "local"));
     await Promise.all(workers.map(async worker => {
@@ -304,16 +304,17 @@ export class FactoryRuntime {
   }
   async reconcile(runId: string): Promise<FactoryRun> {
     let run = this.store.get<FactoryRun>("runs", runId); if (!run) throw new FactoryError("not_found", "Run not found", 404);
-    if (["completed", "cancelled", "failed"].includes(run.condition)) return run;
+    if (["completed", "cancelled", "failed"].includes(run.condition)) return run.implementation_completion || run.implementation_completion_pending || run.action === "implement-spec" && run.condition === "completed" ? this.reconcileImplementation(runId) : run;
     const revision = hash(JSON.stringify(run));
     try { run = this.observed(run, run.machine_id === "local" ? await this.host.reconcile(run.id) : await this.remote<FactoryRun>(run.machine_id, `/runs/${run.id}/reconcile`, {})); }
     catch (error) { run = { ...run, condition: "disconnected", waiting_reason: error instanceof FactoryError ? error.message : "The Machine cannot currently be observed; ownership is retained", updated_at: new Date().toISOString() }; }
     const current = this.store.get<FactoryRun>("runs", runId);
     if (current && hash(JSON.stringify(current)) !== revision) return current;
+    if (current?.implementation_completion_pending) run = { ...run, implementation_completion_pending: true };
     if (current?.issue_pause) run = { ...run, issue_pause: current.issue_pause, condition: "needs_you", waiting_reason: current.waiting_reason };
     const question = this.store.list<import("../shared/protocol.ts").FactoryQuestion>("questions", run.implementation_id).find((entry) => entry.run_id === run!.id && entry.answer === null);
     if (question && ["working", "ready"].includes(run.condition)) run = { ...run, condition: "needs_you", waiting_reason: question.question };
-    this.store.put("runs", run, run.implementation_id); this.store.event(run.implementation_id, "run_reconciled", { run_id: run.id, condition: run.condition }); return run;
+    this.store.put("runs", run, run.implementation_id); this.store.event(run.implementation_id, "run_reconciled", { run_id: run.id, condition: run.condition }); return run.action === "implement-spec" ? this.reconcileImplementation(runId) : run;
   }
   async stopRun(id: string, body: Record<string, unknown>): Promise<FactoryRun> {
     if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Native control is disabled on a restored copy", 409);
@@ -321,7 +322,9 @@ export class FactoryRuntime {
     if (!run) throw new FactoryError("not_found", "Run not found", 404);
     if (body.summary !== undefined && (typeof body.summary !== "string" || body.summary.length > 100_000)) throw new FactoryError("invalid_summary", "Enter a bounded Stop summary");
     for (const worker of this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers", id)) if (worker.workspace_id && worker.condition !== "cancelled") { await this.operation(run, "stop-worker", { worker_id: worker.id }); this.store.put("workers", { ...worker, condition: worker.condition === "completed" ? "completed" : "cancelled" }, id); }
-    const stopped = this.observed(run, run.machine_id === "local" ? await this.host.stopRun(id) : await this.remote<FactoryRun>(run.machine_id, `/runs/${id}/stop`, {}));
+    const stopped = { ...this.observed(run, run.machine_id === "local" ? await this.host.stopRun(id) : await this.remote<FactoryRun>(run.machine_id, `/runs/${id}/stop`, {})), ...(run.implementation_completion_pending ? { implementation_completion_pending: true } : {}) };
+    const current = this.store.get<FactoryRun>("runs", id);
+    if (current?.issue_pause) stopped.issue_pause = current.issue_pause;
     this.store.db.transaction(() => { this.store.put("runs", stopped, run.implementation_id); this.store.event(run.implementation_id, "run_stopped", { run_id: id, summary: body.summary ?? "Owner stopped this attempt", worktree_retained: true }); })();
     return stopped;
   }

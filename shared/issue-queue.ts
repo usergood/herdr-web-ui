@@ -9,10 +9,12 @@ export interface QueueConfiguration {
 }
 export interface IssueQueueEntry {
   source_id: string; implementation_id: string; number: number; title: string; position: number;
-  eligible: boolean; lane: "inbox" | "queued" | "needs_you";
+  eligible: boolean; lane: "inbox" | "queued" | "needs_you" | "running" | "review" | "done";
+  activity?: "awaiting_merge";
   reasons: { code: string; detail: string }[];
 }
 export interface IssueQueue {
+  implementing_count: number; available_slots: number;
   policy: ProjectQueuePolicy; global_limit: number; effective_limit: number; revision: string;
   eligible_count: number; entries: IssueQueueEntry[];
   preview: { revision: string; created_at: string; eligible_count: number } | null;

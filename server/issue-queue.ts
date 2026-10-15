@@ -24,5 +24,6 @@ export function issueQueueEntry(store: FactoryStore, source: ProjectGitHubSource
   for (const conflict of source.dependencies?.conflicts ?? []) reason("dependencies_conflict", conflict);
   for (const edge of source.dependencies?.edges ?? []) if (edge.blocker) reason("dependency_" + edge.blocker, `${edge.repository} #${edge.number}`);
   const eligible = reasons.length === 0;
-  return { source_id: source.id, implementation_id: source.implementation_id, number: source.number, title: source.current?.title ?? idea?.title ?? "", position: idea?.position ?? 0, eligible, lane: pending || source.planning?.condition === "needs_you" ? "needs_you" : eligible && policy.automatic_implementation ? "queued" : "inbox", reasons };
+  const lane = pending || source.planning?.condition === "needs_you" ? "needs_you" : idea?.stage === "running" || idea?.stage === "review" || idea?.stage === "done" ? idea.stage : eligible && policy.automatic_implementation ? "queued" : "inbox";
+  return { source_id: source.id, implementation_id: source.implementation_id, number: source.number, title: source.current?.title ?? idea?.title ?? "", position: idea?.position ?? 0, eligible, lane, activity: idea?.activity, reasons };
 }

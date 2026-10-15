@@ -1,4 +1,5 @@
 import { issueQueueEntry } from "./issue-queue.ts";
+import { implementingAssignments } from "./factory-capacity.ts";
 import { FactoryWorkflow } from "./factory-workflow.ts";
 import { prepareIssuePlan, reconcileIssuePlan } from "./issue-planning.ts";
 import { combinedDependencies, dependencyPlan } from "./issue-dependencies.ts";
@@ -67,7 +68,8 @@ export class ProjectGitHub {
     const entries = sources.map(source => issueQueueEntry(this.store, source, policy, accountReady)).sort((a, b) => a.position - b.position || a.source_id.localeCompare(b.source_id));
     const revision = hash(JSON.stringify({ policy, global_limit: globalLimit, github_policy: githubPolicy, readiness_policy: readinessPolicy, profiles: profiles.map(profile => [profile.id, profile.revision, profile.state, profile.verified_identity]), scope: this.projectScope(id), sources, entries, contracts: entries.map(entry => [this.workflowScope(entry.implementation_id)]) }));
     const preview = this.store.get<{ id: string; revision: string; created_at: string; eligible_count: number }>("github_queue_previews", id);
-    return { policy, global_limit: globalLimit, effective_limit: Math.min(policy.max_implementations, globalLimit), revision, eligible_count: entries.filter(entry => entry.eligible).length, entries, preview: preview ? { revision: preview.revision, created_at: preview.created_at, eligible_count: preview.eligible_count } : null, preview_current: preview?.revision === revision };
+    const implementingCount = implementingAssignments(this.store, this.store.list<import("../shared/factory.ts").FactoryRun>("runs").filter(run => run.action === "implement-spec" && (run.manifest as { project?: FactoryProject }).project?.id === id)).size;
+    return { policy, global_limit: globalLimit, effective_limit: Math.min(policy.max_implementations, globalLimit), implementing_count: implementingCount, available_slots: Math.max(0, Math.min(policy.max_implementations, globalLimit) - implementingCount), revision, eligible_count: entries.filter(entry => entry.eligible).length, entries, preview: preview ? { revision: preview.revision, created_at: preview.created_at, eligible_count: preview.eligible_count } : null, preview_current: preview?.revision === revision };
   }
   private workflowScope(id: string): unknown {
     const workflow = new FactoryWorkflow(this.store);
@@ -96,10 +98,7 @@ export class ProjectGitHub {
     if (!entry?.eligible || source.planning?.condition !== "prepared") throw new FactoryError("issue_not_eligible", "Resolve current issue eligibility before starting", 409);
     if (queue.entries.find(entry => entry.eligible)?.source_id !== source.id) throw new FactoryError("queue_priority_changed", "Start the first eligible issue in board order", 409);
     const runs = this.store.list<import("../shared/factory.ts").FactoryRun>("runs").filter(run => run.action === "implement-spec" && (run.manifest as { project?: FactoryProject }).project?.id === idea.project_id);
-    const owners = new Set(runs.filter(run => !["completed", "failed", "cancelled"].includes(run.condition)).map(run => run.implementation_id));
-    const parents = new Map(runs.map(run => [run.id, run.implementation_id]));
-    for (const worker of this.store.list<import("../shared/factory.ts").FactoryWorker>("workers")) if (parents.has(worker.run_id) && !["completed", "failed", "cancelled"].includes(worker.condition)) owners.add(parents.get(worker.run_id)!);
-    for (const check of this.store.list<import("../shared/factory.ts").FactoryCheck>("checks")) if (parents.has(check.run_id) && ["working", "interrupted"].includes(check.condition)) owners.add(parents.get(check.run_id)!);
+    const owners = implementingAssignments(this.store, runs);
     if (owners.size >= queue.effective_limit) throw new FactoryError("project_capacity_exhausted", "Project implementation capacity is reserved; reconcile active and uncertain work", 409);
     return { source, planning: source.planning, github_policy: this.store.get<ProjectGitHubPolicy>("github_policies", idea.project_id)!, readiness_policy: this.store.get<ProjectReadinessPolicy>("github_readiness_policies", idea.project_id)!, queue_policy: queue.policy, queue_revision: queue.revision };
   }
@@ -584,6 +583,15 @@ export class ProjectGitHub {
         }
         const sources = this.store.list<ProjectGitHubSource>("github_sources", id).filter(source => source.kind === "issue");
         const verificationScope = coverageRevision(this.store, id);
+        // Dependency satisfaction and Assignment completion use the same immutable sync evidence.
+        const deliveryProofs = new Map<string, Promise<GitHubDependencyEdge>>();
+        const verifyDelivery = async (edge: GitHubDependencyEdge, target: ProjectGitHubSource, branch: string | null): Promise<GitHubDependencyEdge> => {
+          const key = JSON.stringify([target.id, branch, edge.requires ?? "merge"]);
+          let proof = deliveryProofs.get(key);
+          if (!proof) { proof = verifyIssueDelivery(this.store, edge, target, branch, path => this.api(policy, scope, path)); deliveryProofs.set(key, proof); }
+          const result = await proof;
+          return { ...edge, blocker: result.blocker, delivery: result.delivery };
+        };
         const combined = new Map(sources.map(source => [source.external_id, combinedDependencies(this.store, source, dependencies.get(source.external_id) ?? [], sources)]));
         const cyclic = (sourceId: string, targetId: string): boolean => {
           const pending = [targetId]; const visited = new Set<string>();
@@ -596,6 +604,7 @@ export class ProjectGitHub {
           }
           return false;
         };
+        const delivered: { source: ProjectGitHubSource; evidence: NonNullable<Implementation["delivery_evidence"]> }[] = [];
         for (const source of sources) {
           const native = dependencies.get(source.external_id);
           if (!native) {
@@ -618,7 +627,13 @@ export class ProjectGitHub {
           const targetBranch = this.store.get<import("../shared/github-project.ts").IssueDeliveryLink>("github_delivery_links", source.id)?.target_branch ?? source.dependency_target_branch ?? null;
           for (const [index, edge] of edges.entries()) {
             const target = sources.find(target => target.implementation_id === edge.implementation_id);
-            if (edge.resolution === "resolved" && target) edges[index] = await verifyIssueDelivery(this.store, edge, target, targetBranch, path => this.api(policy, scope, path));
+            if (edge.resolution === "resolved" && target) edges[index] = await verifyDelivery(edge, target, targetBranch);
+          }
+          const link = this.store.get<import("../shared/github-project.ts").IssueDeliveryLink>("github_delivery_links", source.id);
+          if (link?.source_revision === source.revision && link.intended_prs.length) {
+            const requires = source.delivery_requires === "release" || link.release_tag ? "release" : "merge";
+            const proof = await verifyDelivery({ external_id: source.external_id, repository: policy.repository, number: source.number, url: source.url, state: source.state === "closed" ? "closed" : "open", source_updated_at: source.current!.source_updated_at, implementation_id: source.implementation_id, resolution: "resolved", blocker: "delivery_unverified", requires }, source, link.target_branch);
+            if (!proof.blocker && proof.delivery) delivered.push({ source, evidence: { ...proof.delivery, source_id: source.id, source_revision: source.revision, requires } });
           }
           this.store.put<ProjectGitHubSource>("github_sources", { ...source, dependencies: { revision: hash(JSON.stringify(edges)), plan_revision: plan.revision, coverage_revision: verificationScope, target_branch: targetBranch, conflicts: plan.conflicts, satisfied: !plan.conflicts.length && edges.every(edge => edge.blocker === null), source_revision: source.revision, fetched_at: source.current!.fetched_at, account_profile_id: policy.account_profile_id, policy_revision: policy.revision, complete: true, fresh: true, edges } }, id);
         }
@@ -635,7 +650,16 @@ export class ProjectGitHub {
           else if (own && previous?.fix_implementation_id && previous.pull.headRefOid !== pull.headRefOid && this.store.get<Implementation>("implementations", previous.fix_implementation_id)?.outcome === "implementation_complete" && this.opinions(pull).some((review) => review.state === "CHANGES_REQUESTED" && review.commit?.oid !== pull.headRefOid) && !pull.reviewRequests.nodes.length) await this.mutate(policy, scope, pull.number, "rerequest", proof);
         }
         for (const item of this.store.list<ProjectGitHubPull>("github_pulls", id)) if (!pulls.some((pull) => pull.id === item.pull.id)) this.store.remove("github_pulls", item.id);
-        this.store.put<SyncState>("github_sync", { id, last_sync: new Date().toISOString(), next_sync: Date.now() + policy.poll_minutes * 60_000, problem: null });
+        this.current(policy);
+        if (verificationScope !== coverageRevision(this.store, id)) throw new FactoryError("dependency_scope_changed", "The approved delivery scope changed during verification; sync GitHub again", 409);
+        this.store.db.transaction(() => {
+          for (const { source, evidence } of delivered) {
+            const idea = this.store.get<Implementation>("implementations", source.implementation_id);
+            if (!idea || idea.project_id !== id || idea.archived_at) continue;
+            this.store.put("implementations", { ...idea, stage: "done", activity: undefined, outcome: evidence.requires === "release" ? "released" : "merged", delivery_evidence: evidence });
+          }
+          this.store.put<SyncState>("github_sync", { id, last_sync: new Date().toISOString(), next_sync: Date.now() + policy.poll_minutes * 60_000, problem: null });
+        })();
         return this.overview(id);
       } catch (error) {
         if (!this.stopped) this.store.put<SyncState>("github_sync", { id, last_sync: this.store.get<SyncState>("github_sync", id)?.last_sync ?? null, next_sync: Date.now() + Math.max(policy.poll_minutes, 15) * 60_000, problem: error instanceof FactoryError ? error.message : "GitHub synchronization failed" });

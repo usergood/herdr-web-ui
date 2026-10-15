@@ -1192,6 +1192,10 @@ export const DEFAULT_PORT = 7317;
  * under retained owner intent. Missing approvals are never inferred.
  * Resting Runs/workers are ready: native capacity released, exclusive worktree ownership retained.
  * POST /api/factory/runs/:id/reconcile (empty) -> FactoryRun; observation never redispatches.
+ * A resting implementation with current frozen Project checks, both independent reviews and no
+ * owned/uncertain children or builds can finish execution. implementation_completion records that
+ * revision; owner review acceptance remains separate. Implementation.activity may be awaiting_merge,
+ * with Board stage review until intended merge coverage (and any required release) is verified.
  * POST .../stop (stop) -> FactoryRun; verified ownership released, history/work retained.
  * POST .../cleanup (empty) -> FactoryCleanup; only stopped clean owned checkouts removed.
  * POST .../verify-provider (empty) -> FactoryCapabilities; genuine loading/owner-round evidence required.
@@ -1311,7 +1315,8 @@ export type FactoryRequestBody = FactoryRequests[keyof FactoryRequests];
 /** GET /api/factory/projects/:id/github/queue -> IssueQueue, one current eligibility result
  * shared by previews, source detail and board intake badges. Each excluded issue retains reason codes
  * and dependency identities. Policy defaults to automatic_implementation:false, paused:false,
- * max_implementations:1. effective_limit also respects the current global limit.
+ * max_implementations:1. effective_limit also respects the current global limit. implementing_count
+ * includes uncertain execution and builds; available_slots reports remaining Project capacity.
  * POST .../github/queue (QueueConfiguration) -> IssueQueue; expected_revision guards replacement.
  * This version refuses automatic_implementation:true; no dispatch is connected.
  * POST .../github/preview ({}) -> IssueQueue; retains a preview revision/count, never a start approval.

@@ -1461,4 +1461,10 @@ export const ZH: Record<string, string> = {
   "This Assignment already has an implementation outcome.": "此 Assignment 已有实现结果。",
   "This Assignment already has an execution attempt. Review it before retrying.": "此 Assignment 已有执行尝试。重试前请先检查。",
   "Review the issue before implementation.": "实现前请检查议题。",
+  "Awaiting merge": "等待合并",
+  "Delivery requires verified merge coverage and any required containing release.": "交付需要验证预期变更已合并，以及必要时包含这些变更的发布版本。",
+  "Reviewed head accepted. Delivery is still pending.": "已接受审查后的提交，交付仍待完成。",
+  "Owner acceptance is still required.": "仍需所有者接受。",
+  "Project implementation slots available: {count}": "可用的项目实现名额：{count}",
+  "Implementing Assignments: {count}": "正在实现的任务：{count}",
 };

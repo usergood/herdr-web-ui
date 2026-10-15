@@ -42,6 +42,7 @@ function capture(title: string, description: string): Implementation {
 if (!details.size) capture("Explore release notes", "A fictional Inbox idea: keep release research and decisions in one place before selecting a Project.");
 
 export async function factoryDemo(url: URL, method: string, body: Record<string, unknown>, machines: Machine[] = []): Promise<Response> {
+  if (method === "POST" && /^\/api\/factory\/runs\/[^/]+\/(accept|reconcile)$/.test(url.pathname)) return failure("demo_unavailable", "Implementation completion requires checked native execution and independent reviews; the demo cannot provide that evidence");
   const path = url.pathname;
   if (method === "POST" && /^\/api\/factory\/implementations\/[^/]+\/runs$/.test(path)) return failure("demo_unavailable", "Guarded issue admission needs a real execution Machine; the demo keeps fictional records only");
   if (/^\/api\/factory-agent\/[^/]+\/sync-answers$/.test(path)) return failure("demo_unavailable", "Native answer synchronization needs a real agent conversation");
@@ -80,7 +81,7 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
       const revision = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2,"0")).join("");
       if (method === "POST" && githubRoute[2] === "preview") { queuePreviews.set(id, { revision, created_at: new Date().toISOString(), eligible_count: 0 }); save(); }
       const preview = queuePreviews.get(id) ?? null;
-      return json({ policy: currentPolicy, global_limit: settings.max_implementations, effective_limit: Math.min(currentPolicy.max_implementations, settings.max_implementations), revision, eligible_count: 0, entries, preview, preview_current: preview?.revision === revision } satisfies IssueQueue);
+      return json({ policy: currentPolicy, global_limit: settings.max_implementations, effective_limit: Math.min(currentPolicy.max_implementations, settings.max_implementations), implementing_count: 0, available_slots: Math.min(currentPolicy.max_implementations, settings.max_implementations), revision, eligible_count: 0, entries, preview, preview_current: preview?.revision === revision } satisfies IssueQueue);
     }
     if (method === "GET" && githubRoute[4] === "files") return json({ head: fictionalGitHubPull.headRefOid, base: fictionalGitHubPull.baseRefOid, files: [{ filename: "README.md", status: "modified", additions: 1, deletions: 0, patch: "@@ -1 +1,2 @@\n # Fictional Project\n+An example improvement." }] });
     if (method === "GET") return json(readinessView(view));

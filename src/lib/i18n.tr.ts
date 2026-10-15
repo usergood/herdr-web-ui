@@ -1412,4 +1412,10 @@ export const TR: Record<string, string> = {
   "This Assignment already has an implementation outcome.": "Bu Assignment için zaten bir uygulama sonucu var.",
   "This Assignment already has an execution attempt. Review it before retrying.": "Bu Assignment için zaten bir yürütme denemesi var. Yeniden denemeden önce inceleyin.",
   "Review the issue before implementation.": "Uygulamadan önce iş kaydını inceleyin.",
+  "Awaiting merge": "Birleştirme bekleniyor",
+  "Delivery requires verified merge coverage and any required containing release.": "Teslimat, amaçlanan değişikliklerin birleştirildiğinin ve gerekiyorsa bunları içeren sürümün doğrulanmasını gerektirir.",
+  "Reviewed head accepted. Delivery is still pending.": "İncelenen revizyon kabul edildi. Teslimat hâlâ bekleniyor.",
+  "Owner acceptance is still required.": "Sahibin kabulü hâlâ gerekli.",
+  "Project implementation slots available: {count}": "Kullanılabilir proje uygulama yuvası: {count}",
+  "Implementing Assignments: {count}": "Uygulanan atamalar: {count}",
 };
