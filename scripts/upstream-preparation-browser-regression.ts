@@ -14,6 +14,7 @@ try {
   await page.goto(origin + `/#factory/${f.run.implementation_id}`);
   await page.getByText("Advanced controls", { exact: true }).last().click();
   const release = page.getByRole("region", { name: "Upstream release", exact: true });
+  await release.nth(1).waitFor();
   assert.equal(await release.count(), 2, "The Specification and execution evidence both show their fixed release");
   for (const entry of await release.all()) {
     await entry.getByRole("link", { name: "fictional/upstream · v1", exact: true }).waitFor();
@@ -24,6 +25,7 @@ try {
   await page.reload();
   await page.getByText("Advanced controls", { exact: true }).last().click();
   assert.equal(await release.getByRole("link", { name: "fictional/upstream · v2", exact: true }).count(), 0);
+  await page.locator("summary").filter({ hasText: /^Review changes$/ }).click();
   await page.getByRole("combobox", { name: "Changes", exact: true }).selectOption("branch");
   const captured = page.waitForResponse(r => r.url().endsWith(f.prefix + "/snapshots") && r.request().method() === "POST");
   await page.getByRole("button", { name: "Capture review", exact: true }).click(); assert.equal((await captured).status(), 201);
