@@ -38,6 +38,7 @@ try {
       await page.goto(`${origin}/#assignments`);
       await page.getByRole("heading", { name: "Assignments", exact: true }).waitFor();
       assert.deepEqual(await page.locator(".factory-lane h2").allTextContents(), ["Inbox", "Queued", "Running", "Needs you", "Done"]);
+      assert.equal(await page.getByRole("article", { name: "Unstarted idea", exact: true }).getByText("0 waiting · 0 running · 0 completed", { exact: true }).count(), 0);
       const card = page.getByRole("article", { name: "Named child progress", exact: true });
       await card.getByText("Implementing", { exact: true }).waitFor();
       await card.getByText("Testing", { exact: true }).waitFor();

@@ -18,7 +18,7 @@ export function FactoryBoardProgress({ idea, progress, expanded, onExpandedChang
     {idea.pause && <p role="status">{idea.pause.condition === "pending" ? t("Pause pending") : idea.pause.condition === "resuming" ? t("Resume pending") : t("Paused")}</p>}
     {progress && <>
       <div className="factory-activities">{progress.activities.map(activity => <span className={`factory-activity factory-activity-${activity}`} key={activity}>{activityLabel(activity, t)}</span>)}</div>
-      <p className="factory-progress-counts" aria-live="polite">{t("{waiting} waiting · {running} running · {completed} completed", progress.counts)}</p>
+      {progress.tickets.length > 0 && <p className="factory-progress-counts" aria-live="polite">{t("{waiting} waiting · {running} running · {completed} completed", progress.counts)}</p>}
       {progress.tickets.some(ticket => ticket.state === "running") && <ul aria-label={t("Active Tickets")}>{progress.tickets.filter(ticket => ticket.state === "running").map(ticket => <li key={ticket.ticket_id}>{ticket.title}</li>)}</ul>}
       {progress.reasons.filter(reason => idea.pause?.reasons.includes(reason) || idea.deletion?.reasons.includes(reason) || !progress.tickets.some(ticket => ticket.reason === reason)).map(reason => <p key={reason}>{reason}</p>)}
       {progress.tickets.length > 0 && <details open={expanded} onToggle={event => onExpandedChange(event.currentTarget.open)}>
