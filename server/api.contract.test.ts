@@ -3823,7 +3823,7 @@ describe("workflow conversation history through the owner API", () => {
   it("nests Ticket work, independent reviewers and fresh fixes under their original workflow", async () => {
     const state = mkdtempSync(join(tmpdir(), "conversation-hierarchy-"));
     const f = seedWorkflowConversations(state);
-    const app = createServer({ port: 0, stateDir: state, token: "owned-hierarchy-token", machines: false });
+    const app = createServer({ port: 0, stateDir: state, token: "owned-hierarchy-token", machines: false, factory: { accountDiscoveryHome: state } });
     const url = `http://localhost:${app.port}/api/factory/implementations/${f.assignment.id}`;
     try {
       expect((await fetch(url)).status).toBe(401);
@@ -3856,7 +3856,7 @@ describe("workflow conversation history through the owner API", () => {
     const interview: FactoryRun = { ...store.record(), implementation_id: assignment.id, action: "grill-with-docs", provider: "codex", machine_id: "fixture-machine", condition: "completed", waiting_reason: null, idempotency_key: "interview", specification_id: null, graph_hash: null, base: null, checkout: null, worktree: "/owned/interview", branch: null, workspace_id: "owned-workspace", pane_id: "owned-pane", manifest: {} };
     store.put("runs", interview, assignment.id);
     store.close();
-    let app = createServer({ port: 0, stateDir: state, token: "owned-conversation-token", machines: false });
+    let app = createServer({ port: 0, stateDir: state, token: "owned-conversation-token", machines: false, factory: { accountDiscoveryHome: state } });
     const read = () => fetch(`http://localhost:${app.port}/api/factory/implementations/${assignment.id}`, { headers: { authorization: "Bearer owned-conversation-token" } }).then(r => r.json()) as Promise<FactoryDetail>;
     try {
       const first = await read();
@@ -3868,7 +3868,7 @@ describe("workflow conversation history through the owner API", () => {
       nextStore.put("runs", successor, assignment.id);
       nextStore.put("native_snapshots", { ...nextStore.record(), run_id: interview.id, source_id: "owned-native-interview", sequence: 0, version: "v1", cursor: null, turns: [{ role: "assistant", ts: "2026-01-01T00:00:00Z", parts: [{ kind: "text", text: "Retained interview decisions" }] }] }, interview.id);
       nextStore.close();
-      app = createServer({ port: 0, stateDir: state, token: "owned-conversation-token", machines: false });
+      app = createServer({ port: 0, stateDir: state, token: "owned-conversation-token", machines: false, factory: { accountDiscoveryHome: state } });
       const after = await read();
       const conversation = after.conversations!.find(c => c.kind === "specifications")!;
       expect(conversation.id).toBe(identity);

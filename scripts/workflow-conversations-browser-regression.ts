@@ -15,7 +15,7 @@ const native = await herdrRpc<WorkspaceCreateResult>("workspace.create", { cwd: 
 const fixtureStore = new FactoryStore(state);
 fixtureStore.put("workers", { ...f.implementation, worktree: state, workspace_id: native.workspace.workspace_id, pane_id: native.root_pane.pane_id }, f.orchestrator.id);
 fixtureStore.close();
-let app = createServer({ port: 0, stateDir: state, token: "" });
+let app = createServer({ port: 0, stateDir: state, token: "", factory: { accountDiscoveryHome: state } });
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
@@ -49,7 +49,7 @@ try {
   await fixes.nth(1).click();
   await panel.getByText("Retained human-fix-context decisions", { exact: true }).waitFor();
   const route = new URL(page.url()).hash;
-  app.stop(); app = createServer({ port: 0, stateDir: state, token: "" });
+  app.stop(); app = createServer({ port: 0, stateDir: state, token: "", factory: { accountDiscoveryHome: state } });
   await page.goto(`http://localhost:${app.port}/${route}`);
   await panel.getByText("Retained human-fix-context decisions", { exact: true }).waitFor();
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
@@ -65,5 +65,14 @@ try {
   const detail = await page.request.get(`http://localhost:${app.port}/api/factory/implementations/${f.assignment.id}`).then(r => r.json());
   assert.equal(detail.runs.length, 4); assert.equal(detail.workers.length, 5);
   assert.equal(launches, 0); assert.deepEqual(errors, []);
+  // An unreadable imported message must not take down the Assignment's history.
+  await page.route(`**/api/factory/implementations/${f.assignment.id}`, async route => {
+    const response = await route.fetch(); const body = await response.json();
+    body.native_snapshots.find((snapshot: { id: string }) => snapshot.id === "interview-context-history").turns[0].parts = [{ kind: "tool", name: "owned-unreadable-tool", summary: { unreadable: "fixture" }, input: "", output: "" }];
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(`http://localhost:${app.port}/#factory/${f.assignment.id}`);
+  await panel.getByText("This preview can't be shown.", { exact: true }).waitFor();
+  await panel.getByText("Retained specification-context decisions", { exact: true }).waitFor();
   console.log("workflow conversations: desktop/mobile hierarchy, provenance, restart and navigation passed");
 } finally { await browser.close(); app.stop(); await workspaceClose(native.workspace.workspace_id); rmSync(state, { recursive: true, force: true }); }

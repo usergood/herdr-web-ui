@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import type { FactoryConversation, FactoryConversationKind, FactoryDetail } from "../../shared/factory.ts";
 import type { Machine } from "../../shared/machines.ts";
 import { useT } from "../lib/i18n.ts";
-import { Markdown } from "./Markdown.tsx";
+import { RetainedNativeTurn } from "./RetainedNativeTurn.tsx";
 import "./WorkflowConversations.css";
 
 function conversationLabel(kind: FactoryConversationKind, title: string | null, t: ReturnType<typeof useT>): string {
@@ -50,7 +50,7 @@ export function WorkflowConversations({ detail, machines, selectedId, onSelect, 
           {context.snapshot_ids.map(id => {
             const snapshot = snapshots.get(id);
             return snapshot && <details key={id} open><summary>{snapshot.source_id} · {snapshot.sequence} · {new Date(snapshot.created_at).toLocaleString()}</summary>
-              {snapshot.turns.map((turn, index) => <article key={index}><small>{turn.role} · {turn.ts}</small>{turn.parts.map((part, index) => part.kind === "text" ? <Markdown key={index}>{part.text}</Markdown> : part.kind === "skill" ? <small key={index}>{part.skill.name} · {part.skill.status}</small> : part.kind === "tool" ? <details key={index}><summary>{part.name} · {part.summary}</summary><pre>{part.output}</pre></details> : null)}</article>)}
+              {snapshot.turns.map((turn, index) => <RetainedNativeTurn key={index} turn={turn} />)}
             </details>;
           })}
         </article>;
