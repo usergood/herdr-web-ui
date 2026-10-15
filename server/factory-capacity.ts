@@ -23,7 +23,7 @@ export function factoryCapacity(store: FactoryStore, settings: FactorySettings):
     contexts.push({ ...reservation(worker.id, run, worker.id, ticket?.title ?? worker.role, worker.condition, worker.waiting_reason), run_id: worker.run_id, pool: "normal" });
   }
   const builds = store.list<FactoryCheck>("checks").filter(check => ["working", "interrupted"].includes(check.condition)).map(check => ({ ...reservation(check.id, parents.get(check.run_id), check.worker_id, "check", check.condition, null), run_id: check.run_id }));
-  const waiting = store.list<FactoryCapacityWait & { request: unknown; origin: string; contract_hash: string }>("capacity_waits").map(({ request: _request, origin: _origin, contract_hash: _contract, ...wait }) => wait);
+  const waiting = store.list<FactoryCapacityWait>("capacity_waits").map(wait => ({ id: wait.id, created_at: wait.created_at, updated_at: wait.updated_at, implementation_id: wait.implementation_id, assignment_title: wait.assignment_title, action: wait.action, machine_id: wait.machine_id, provider: wait.provider, idempotency_key: wait.idempotency_key, reason: wait.reason, purpose: wait.purpose, condition: wait.condition, run_id: wait.run_id })).sort((a, b) => a.created_at.localeCompare(b.created_at));
   return { normal: { limit: settings.max_agents, used: contexts.filter(context => context.pool === "normal").length }, planning: { limit: 1, used: contexts.filter(context => context.pool === "planning").length }, builds: { limit: settings.max_builds, used: builds.length }, contexts, build_reservations: builds, waiting };
 }
 

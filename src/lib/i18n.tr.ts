@@ -7,6 +7,7 @@
  * keep their English names.
  */
 export const TR: Record<string, string> = {
+  "Queued work starts automatically when capacity is available.": "Kapasite açıldığında kuyruktaki çalışma otomatik olarak başlar.",
   "Continue workflow": "İş akışına devam et",
   "Native verification will run before implementation.": "Uygulamadan önce yerel doğrulama çalıştırılacak.",
   "Review and continue from this chat. Finished steps keep their history.": "Bu sohbetten inceleyip devam edin. Tamamlanan adımların geçmişi korunur.",

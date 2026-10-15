@@ -104,7 +104,7 @@ export class FactoryService {
     const runs = this.store.list<FactoryRun>("runs", id); const runIds = new Set(runs.map((run) => run.id));
     const active = [...runs].reverse().find(run => !["completed", "cancelled", "failed"].includes(run.condition));
     const questionRunId = active?.action === "verify-provider" ? active.id : undefined;
-    return { implementation, question_context: { run_id: questionRunId ?? null, revision: this.workflow.questionRevision(id, questionRunId), questions: this.workflow.questions(id, questionRunId) }, graph_hash: this.workflow.graphHash(id), question_revision: this.workflow.questionRevision(id), chats: this.store.list("chats", id), messages: this.store.list("messages", id), specifications: this.store.list("specifications", id), tickets: this.workflow.tickets(id), approvals: this.store.list("approvals", id), questions: this.store.list("questions", id), artifacts: this.store.list("artifacts", id), runs, snapshots: this.store.list("snapshots", id), comments: this.store.list("comments", id), events: this.store.list("events", id), native_snapshots: this.store.list<import("../shared/protocol.ts").NativeConversationSnapshot>("native_snapshots").filter((record) => runIds.has(record.run_id)), workers: this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers").filter((worker) => runIds.has(worker.run_id)), checks: this.store.list<import("../shared/protocol.ts").FactoryCheck>("checks").filter((check) => runIds.has(check.run_id)), review_evidence: this.store.list<import("../shared/protocol.ts").FactoryReviewEvidence>("review_evidence").filter((report) => runIds.has(report.run_id)), retrospectives: implementation.project_id ? this.store.list("retrospectives", implementation.project_id) : [], frontier: runs.at(-1)?.action === "implement-spec" ? this.pipeline.frontier(runs.at(-1)!) : [] };
+    return { implementation, capacity_waiting: factoryCapacity(this.store, this.settings()).waiting.filter(wait => wait.implementation_id === id), question_context: { run_id: questionRunId ?? null, revision: this.workflow.questionRevision(id, questionRunId), questions: this.workflow.questions(id, questionRunId) }, graph_hash: this.workflow.graphHash(id), question_revision: this.workflow.questionRevision(id), chats: this.store.list("chats", id), messages: this.store.list("messages", id), specifications: this.store.list("specifications", id), tickets: this.workflow.tickets(id), approvals: this.store.list("approvals", id), questions: this.store.list("questions", id), artifacts: this.store.list("artifacts", id), runs, snapshots: this.store.list("snapshots", id), comments: this.store.list("comments", id), events: this.store.list("events", id), native_snapshots: this.store.list<import("../shared/protocol.ts").NativeConversationSnapshot>("native_snapshots").filter((record) => runIds.has(record.run_id)), workers: this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers").filter((worker) => runIds.has(worker.run_id)), checks: this.store.list<import("../shared/protocol.ts").FactoryCheck>("checks").filter((check) => runIds.has(check.run_id)), review_evidence: this.store.list<import("../shared/protocol.ts").FactoryReviewEvidence>("review_evidence").filter((report) => runIds.has(report.run_id)), retrospectives: implementation.project_id ? this.store.list("retrospectives", implementation.project_id) : [], frontier: runs.at(-1)?.action === "implement-spec" ? this.pipeline.frontier(runs.at(-1)!) : [] };
   }
   agentAuthenticated(request: Request, url: URL): boolean {
     const route = /^\/api\/factory-agent\/([a-zA-Z0-9-]+)\//.exec(url.pathname);
@@ -152,7 +152,7 @@ export class FactoryService {
         void this.continuation.verified(run.id);
         return jsonResponse({ receipt, questions });
       }
-      if (action === "worker") return jsonResponse(await this.pipeline.startWorker(run.id, body));
+      if (action === "worker") { const result = await this.pipeline.requestWorker(run.id, body); return jsonResponse(result, result.condition === "queued" ? 202 : 200); }
       if (action === "checks") return jsonResponse(await this.pipeline.check(run.id));
       if (action === "artifact") return jsonResponse(this.artifacts.create(run.implementation_id, { ...body, chat_id: this.store.list<FactoryChat>("chats", run.implementation_id)[0]!.id, origin: `run-${run.id}` }, this.settings()), 201);
       const worker = /^worker\/([a-zA-Z0-9-]+)\/(refresh|reconcile|check|integrate|stop|review-evidence)$/.exec(action);
@@ -389,7 +389,8 @@ export class FactoryService {
       const pipelineRoute = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/(workers|checks|accept)$/.exec(url.pathname);
       if (pipelineRoute && request.method === "POST") {
         const body = await this.body(request);
-        return jsonResponse(pipelineRoute[2] === "workers" ? await this.pipeline.startWorker(pipelineRoute[1]!, body) : pipelineRoute[2] === "checks" ? await this.pipeline.check(pipelineRoute[1]!) : await this.pipeline.accept(pipelineRoute[1]!, body));
+        const result = pipelineRoute[2] === "workers" ? await this.pipeline.requestWorker(pipelineRoute[1]!, body) : pipelineRoute[2] === "checks" ? await this.pipeline.check(pipelineRoute[1]!) : await this.pipeline.accept(pipelineRoute[1]!, body);
+        return jsonResponse(result, result.condition === "queued" ? 202 : 200);
       }
       const workerRoute = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/workers\/([a-zA-Z0-9-]+)\/(refresh|reconcile|check|integrate|stop|review-evidence)$/.exec(url.pathname);
       const checkReconcile = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/checks\/([a-zA-Z0-9-]+)\/reconcile$/.exec(url.pathname);
@@ -507,7 +508,7 @@ export class FactoryService {
       if (continueRoute && request.method === "POST") return jsonResponse(await this.continuation.start(continueRoute[1]!, await this.body(request), url.origin), 202);
       if (startRoute && request.method === "POST") {
         const body = await this.body(request);
-        return jsonResponse(await this.runtime.start(startRoute[1]!, body, url.origin), 202);
+        return jsonResponse(await this.runtime.requestStart(startRoute[1]!, body, url.origin), 202);
       }
       const reconcileRoute = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/reconcile$/.exec(url.pathname);
       if (reconcileRoute && request.method === "POST") return jsonResponse(await this.runtime.reconcile(reconcileRoute[1]!));

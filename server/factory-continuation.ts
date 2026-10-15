@@ -1,4 +1,4 @@
-import type { FactoryProject, FactoryRun, Implementation, ProjectCheckout } from "../shared/protocol.ts";
+import type { FactoryCapacityWait, FactoryProject, FactoryRun, Implementation, ProjectCheckout } from "../shared/protocol.ts";
 import { FactoryError, hash } from "./factory-host.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { FactoryWorkflow } from "./factory-workflow.ts";
@@ -7,19 +7,27 @@ import { FactoryRuntime } from "./factory-runtime.ts";
 interface Continuation {
   id: string; implementation_id: string; key: string; signature: string;
   body: Record<string, unknown>; origin: string; scope_hash: string; run_id: string | null;
-  condition: "starting" | "verifying" | "started" | "failed";
+  condition: "starting" | "queued" | "verifying" | "started" | "failed";
+  queued_request?: Record<string, unknown>;
   problem: string | null;
   verification_deadline?: number;
 }
 
 /** One explicit owner Continue retains the handoff and advances an approved scope. */
 export class FactoryContinuation {
-  private readonly pending = new Map<string, Promise<FactoryRun>>();
+  private readonly pending = new Map<string, Promise<FactoryRun | FactoryCapacityWait>>();
   private readonly verifying = new Set<string>();
   private readonly retries = new Map<string, ReturnType<typeof setTimeout>>();
   private stopped = false;
   stop(): void { this.stopped = true; for (const timer of this.retries.values()) clearTimeout(timer); this.retries.clear(); }
   constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly runtime: FactoryRuntime, private readonly retain: (id: string, allowPartial: boolean) => Promise<void>) {
+    runtime.queue.onRun = run => {
+      const record = this.store.list<Continuation>("workflow_continuations", run.implementation_id).find(entry => entry.key === run.idempotency_key);
+      if (!record || this.stopped) return;
+      const verifying = run.action === "verify-provider" && record.body.action === "implement-spec";
+      this.store.put("workflow_continuations", { ...record, run_id: run.id, condition: verifying ? "verifying" : "started", problem: null }, run.implementation_id);
+      if (verifying) this.retry(run.id);
+    };
     for (const record of this.store.list<Continuation>("workflow_continuations")) if (record.condition === "verifying" && record.run_id) this.retry(record.run_id);
   }
 
@@ -40,7 +48,7 @@ export class FactoryContinuation {
     timer.unref(); this.retries.set(runId, timer);
   }
 
-  start(id: string, body: Record<string, unknown>, origin: string): Promise<FactoryRun> {
+  start(id: string, body: Record<string, unknown>, origin: string): Promise<FactoryRun | FactoryCapacityWait> {
     if (this.stopped) return Promise.reject(new FactoryError("stopping", "The bridge is stopping; retain the current workflow", 409));
     if (this.pending.has(id)) return Promise.reject(new FactoryError("continuation_busy", "This Assignment is already continuing; refresh its current step", 409));
     const operation = this.advance(id, body, origin);
@@ -76,13 +84,14 @@ export class FactoryContinuation {
     if (expected !== this.scopeHash(id)) throw new FactoryError("scope_changed", "Project settings or the approved scope changed; inspect them before continuing", 409);
     this.validate(id, body);
   }
-  private async advance(id: string, body: Record<string, unknown>, origin: string): Promise<FactoryRun> {
+  private async advance(id: string, body: Record<string, unknown>, origin: string): Promise<FactoryRun | FactoryCapacityWait> {
     const signature = hash(JSON.stringify(body));
     const previous = this.store.list<Continuation>("workflow_continuations", id).find(record => record.key === body.idempotency_key);
     if (previous) {
       if (previous.signature !== signature) throw new FactoryError("continuation_conflict", "This Continue key belongs to another scope", 409);
       const run = previous.run_id ? this.store.get<FactoryRun>("runs", previous.run_id) : null;
       if (run) return run;
+      if (previous.condition === "queued" && previous.queued_request) return this.runtime.requestStart(id, previous.queued_request, previous.origin);
       throw new FactoryError("continuation_uncertain", previous.problem ?? "The previous Continue needs reconciliation; it was not replayed", 409);
     }
     this.validate(id, body);
@@ -115,6 +124,10 @@ export class FactoryContinuation {
       return run;
     } catch (error) {
       if (this.stopped) throw error;
+      if (error instanceof FactoryError && error.code === "capacity_exhausted") {
+        this.store.put("workflow_continuations", { ...record, condition: "queued", queued_request: { ...body, action }, problem: null }, id);
+        return this.runtime.requestStart(id, { ...body, action }, origin);
+      }
       this.store.put("workflow_continuations", { ...record, condition: "failed", problem: error instanceof FactoryError ? error.message : "Continue could not be confirmed; inspect retained ownership" }, id);
       throw error;
     }

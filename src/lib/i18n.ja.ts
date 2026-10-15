@@ -8,6 +8,7 @@
  * in English. Placeholders in braces keep their English names.
  */
 export const JA: Record<string, string> = {
+  "Queued work starts automatically when capacity is available.": "待機中の作業は実行枠が空くと自動的に開始されます。",
   "Continue workflow": "ワークフローを続行",
   "Native verification will run before implementation.": "実装の前にネイティブ検証を実行します。",
   "Review and continue from this chat. Finished steps keep their history.": "このチャットで確認して続行してください。完了したステップの履歴は保持されます。",
