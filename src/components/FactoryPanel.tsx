@@ -16,6 +16,7 @@ import { FactoryExecutionPanel } from "./FactoryExecutionPanel.tsx";
 import { FactoryRetrospectivePanel } from "./FactoryRetrospectivePanel.tsx";
 import { AssignmentActions } from "./AssignmentActions.tsx";
 import { useFactoryCapabilities } from "../lib/useFactoryCapabilities.ts";
+import { WorkflowConversations } from "./WorkflowConversations.tsx";
 import "./FactoryPanel.css";
 
 const stages: FactoryStage[] = ["inbox", "specifying", "ready", "running", "review", "done"];
@@ -25,7 +26,7 @@ function stageLabel(stage: FactoryStage, t: ReturnType<typeof useT>): string {
 function selectedFromUrl(): string | null { const match = /^#factory\/([a-zA-Z0-9-]+)$/.exec(location.hash); return match?.[1] ?? null; }
 type PlannedTicket = { key: string; title: string; acceptance: string; dependencies: string[] };
 
-export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = null, allAssignments = false, onChoose }: { machines: Machine[]; onOpenPane: (machineId: string, paneId: string) => void; selectedId?: string | null; projectId?: string | null; allAssignments?: boolean; onChoose?: (id: string | null) => void }) {
+export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = null, allAssignments = false, onChoose, conversationId, onConversation }: { machines: Machine[]; onOpenPane: (machineId: string, paneId: string) => void; selectedId?: string | null; projectId?: string | null; allAssignments?: boolean; onChoose?: (id: string | null) => void; conversationId?: string; onConversation?: (id: string) => void }) {
   const t = useT();
   const [overview, setOverview] = useState<FactoryOverview | null>(null);
   const [selected, setSelected] = useState<string | null>(() => selectedId === undefined ? selectedFromUrl() : selectedId);
@@ -141,6 +142,7 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
         </div><p className="factory-context">{effectiveProvider} · {machines.find((machine) => machine.id === effectiveMachine)?.name ?? effectiveMachine} · {checkout?.path ?? t("No verified checkout")}</p>
       </section>
       <AssignmentActions preset={preset} onPresetChange={setPreset} key={detail.implementation.id} detail={detail} project={selectedProject} machineId={effectiveMachine} machineName={machines.find(m=>m.id===effectiveMachine)?.name??effectiveMachine} provider={effectiveProvider??"codex"} busy={busy} perform={perform} onOpenPane={onOpenPane} capabilities={execution.capabilities} problem={execution.problem} onCapabilities={execution.apply} />
+      <WorkflowConversations detail={detail} machines={machines} selectedId={conversationId} onSelect={id => onConversation?.(id)} onOpenPane={onOpenPane} />
       <details className="factory-section"><summary>{t("Advanced controls")}</summary>
         <div className="factory-filters">
           <label>{t("Provider")}<select className="select factory-input" value={detail.implementation.provider ?? ""} disabled={busy} onChange={(event) => void perform(async () => { await factoryRequest(`${prefix}/configure`, { provider: (event.target.value || null) as FactoryProvider | null }); })}><option value="">{t("Project default")}</option><option>codex</option><option>claude</option><option>opencode</option></select></label>

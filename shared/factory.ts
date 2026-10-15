@@ -30,6 +30,18 @@ export interface ProjectCheckout extends FactoryRecord {
   branch: string; instructions: { path: string; hash: string; content: string }[];
 }
 export interface FactoryChat extends FactoryRecord { implementation_id: string; title: string }
+/** Logical workflow identity outlives any native context. Display groups allocate no agents. */
+export type FactoryConversationKind = "specifications" | "orchestrator" | "human_review" | "implementation" | "reviewer" | "standards" | "spec" | "review_fixes";
+export interface FactoryConversationContext {
+  run_id: string; worker_id: string | null; action: FactoryAction;
+  machine_id: string; provider: FactoryProvider; condition: RunCondition;
+  pane_id: string | null; workspace_id: string | null; worktree: string | null;
+  snapshot_ids: string[];
+}
+export interface FactoryConversation {
+  id: string; implementation_id: string; parent_id: string | null;
+  kind: FactoryConversationKind; title: string | null; contexts: FactoryConversationContext[];
+}
 export interface FactoryMessage extends FactoryRecord {
   implementation_id: string; chat_id: string; role: "owner" | "agent" | "system";
   content: string; source_id: string | null; sequence: number | null;
@@ -56,6 +68,8 @@ export interface ProjectReferenceLibrary { project_id: string; revision: string;
 export interface CodexReferenceContext { project_id: string; machine_id: string; revision: string; index_path: string; prompt: string }
 export interface ProjectReferencePayload { library: ProjectReferenceLibrary; files: { id: string; content_base64: string }[] }
 export interface FactoryRun extends FactoryRecord {
+  /** Set by the owned workflow when creating an assistant-backed Human Review context. */
+  conversation_kind?: "human_review";
   implementation_id: string; action: FactoryAction; provider: FactoryProvider; machine_id: string;
   condition: RunCondition; waiting_reason: string | null; idempotency_key: string;
   specification_id: string | null; graph_hash: string | null; base: string | null;
@@ -79,6 +93,7 @@ export interface FactorySettings {
   max_artifact_bytes: number; max_storage_bytes: number; skills_path: string | null;
 }
 export interface FactoryDetail {
+  conversations?: FactoryConversation[];
   graph_hash: string; question_revision: string;
   /** Current decision scope; full historical questions remain in questions below. */
   question_context?: { revision: string; questions: FactoryQuestion[]; run_id: string | null };
@@ -100,11 +115,13 @@ export interface FactoryPaneLink {
   title: string; condition: RunCondition;
 }
 export interface FactoryPaneArchive extends FactoryRecord { machine_id: string; pane_id: string; terminal_id?: string; session_ref?: string | null; title?: string; archived_at: string | null }
-export interface FactoryOverview { pane_links?: FactoryPaneLink[]; pane_archives?: FactoryPaneArchive[] }
+export interface FactoryOverview { pane_links?: FactoryPaneLink[]; pane_archives?: FactoryPaneArchive[]; conversations?: FactoryConversation[] }
 export interface FactoryProviderCapability { provider: FactoryProvider; version: string | null; installed: boolean; skills_verified: boolean; factory_ready: boolean; reasons: string[] }
 export interface FactoryCapabilities { providers: FactoryProviderCapability[]; skill_manifest: { commit: string; hash: string; file_count: number } | null; factory_host_protocol: 1; project_reference_protocol?: 1; account_profile_protocol?: 1 }
 export interface FactoryOutput { name: string; media_type: string; hash: string; size: number }
 export interface FactoryWorker extends FactoryRecord {
+  /** Frozen when repair work is accepted; never inferred from the latest review stage. */
+  review_origin?: "automatic" | "human";
   run_id: string; ticket_id: string; role: "implementer" | "standards" | "spec";
   condition: RunCondition; base: string; head: string | null; integration_tip: string;
   worktree: string | null; branch: string | null; workspace_id: string | null; pane_id: string | null;
@@ -125,6 +142,8 @@ export interface FactoryRetrospective extends FactoryRecord {
   proposal: string; approved: boolean; applied_run_id: string | null;
 }
 export interface NativeConversationSnapshot extends FactoryRecord {
+  /** Absent/null on historical coordinator captures. */
+  worker_id?: string | null;
   run_id: string; source_id: string; sequence: number; version: string;
   turns: ConversationTurn[]; cursor: string | null;
 }

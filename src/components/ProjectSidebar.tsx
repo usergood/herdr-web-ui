@@ -10,6 +10,7 @@ import { useT } from "../lib/i18n.ts";
 import { AgentMark } from "./AgentMark.tsx";
 import { displayPaneTitle, StatusBadge } from "./Sidebar.tsx";
 import { paneStatus, rollupStatus } from "../lib/status.ts";
+import { WorkflowConversationTree } from "./WorkflowConversations.tsx";
 import "./ProjectSidebar.css";
 
 export function ProjectSidebar({ overview, machines, error, onNavigate, onOpenPane, selectedMachineId, selectedPaneId }: { overview: FactoryOverview | null; machines: Machine[]; error: string | null; onNavigate: (view: ProjectView) => void; onOpenPane: (machineId: string, paneId: string) => void; selectedMachineId: string; selectedPaneId: string | null }) {
@@ -26,7 +27,7 @@ export function ProjectSidebar({ overview, machines, error, onNavigate, onOpenPa
       <span className="project-navigation-label">{t("Assignments")}</span>
       {overview.implementations.filter((i) => (i.project_id === project.id || rows.some((row) => row.projectId === project.id && row.link?.implementation_id === i.id)) && !i.archived_at).map((idea) => <div className="project-assignment" key={idea.id}>
         <button className="project-navigation-row" onClick={() => onNavigate({ kind: "assignment", id: idea.id })}><AgentMark agent={idea.provider ?? project.provider} /><span>{idea.title}</span><small>{idea.stage}</small></button>
-        <div className="project-navigation-children">{rows.filter((r) => r.projectId === project.id && r.link?.implementation_id === idea.id && !r.archived).map((row) => <ProjectPaneRow key={`${row.machine.id}:${row.pane.pane_id}`} row={row} onOpenPane={onOpenPane} selected={selectedMachineId === row.machine.id && selectedPaneId === row.pane.pane_id} />)}</div>
+        <div className="project-navigation-children"><WorkflowConversationTree conversations={(overview.conversations ?? []).filter(c => c.implementation_id === idea.id)} onSelect={conversationId => onNavigate({ kind: "assignment", id: idea.id, conversationId })} renderContext={conversation => rows.filter(row => row.projectId === project.id && row.link?.implementation_id === idea.id && !row.archived && conversation.contexts.some(context => context.run_id === row.link?.run_id && context.worker_id === row.link?.worker_id)).map(row => <div className="project-navigation-children" key={`${row.machine.id}:${row.pane.pane_id}`}><ProjectPaneRow row={row} onOpenPane={onOpenPane} selected={selectedMachineId === row.machine.id && selectedPaneId === row.pane.pane_id} /></div>)} />{rows.filter((r) => r.projectId === project.id && r.link?.implementation_id === idea.id && !r.archived && !(overview.conversations ?? []).some(c => c.contexts.some(context => context.run_id === r.link?.run_id && context.worker_id === r.link?.worker_id))).map((row) => <ProjectPaneRow key={`${row.machine.id}:${row.pane.pane_id}`} row={row} onOpenPane={onOpenPane} selected={selectedMachineId === row.machine.id && selectedPaneId === row.pane.pane_id} />)}</div>
       </div>)}
       {rows.filter((r) => r.projectId === project.id && !r.link && !r.archived).map((row) => <ProjectPaneRow key={`${row.machine.id}:${row.pane.pane_id}`} row={row} onOpenPane={onOpenPane} selected={selectedMachineId === row.machine.id && selectedPaneId === row.pane.pane_id} />)}
       </div></details>)}

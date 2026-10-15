@@ -1,3 +1,6 @@
+import { FactoryStore } from "./factory-store.ts";
+import { seedWorkflowConversations } from "../scripts/fixtures/workflow-conversations.ts";
+import type { FactoryDetail, FactoryRun } from "../shared/factory.ts";
 import { nativeSessionRef } from "../shared/native-pane.ts";
 import { describe, expect, it, beforeAll, afterAll } from "bun:test";
 import { Database } from "bun:sqlite";
@@ -3814,4 +3817,65 @@ it("refuses cross-origin changes while allowing same-origin and CLI requests", a
       expect(response.status).toBe(200);
     }
   } finally { instance.stop(); await workspaceClose(created.workspace.workspace_id); rmSync(root, { recursive: true, force: true }); }
+});
+
+describe("workflow conversation history through the owner API", () => {
+  it("nests Ticket work, independent reviewers and fresh fixes under their original workflow", async () => {
+    const state = mkdtempSync(join(tmpdir(), "conversation-hierarchy-"));
+    const f = seedWorkflowConversations(state);
+    const app = createServer({ port: 0, stateDir: state, token: "owned-hierarchy-token", machines: false });
+    const url = `http://localhost:${app.port}/api/factory/implementations/${f.assignment.id}`;
+    try {
+      expect((await fetch(url)).status).toBe(401);
+      const detail: FactoryDetail = await fetch(url, { headers: { authorization: "Bearer owned-hierarchy-token" } }).then(r => r.json());
+      const tree = detail.conversations!;
+      const root = (kind: string) => tree.find(c => c.kind === kind)!;
+      const parentKind = (workerId: string) => {
+        const conversation = tree.find(c => c.contexts.some(context => context.worker_id === workerId))!;
+        return [conversation.kind, tree.find(c => c.id === conversation.parent_id)!.kind];
+      };
+      expect(parentKind(f.implementation.id)).toEqual(["implementation", "orchestrator"]);
+      expect(tree.find(c => c.kind === "implementation")!.title).toBe("Keep the approved Ticket name");
+      expect(parentKind(f.standards.id)).toEqual(["standards", "reviewer"]);
+      expect(parentKind(f.spec.id)).toEqual(["spec", "reviewer"]);
+      expect(root("reviewer").contexts).toEqual([]);
+      expect(root("reviewer").parent_id).toBe(root("orchestrator").id);
+      expect(parentKind(f.automaticFix.id)).toEqual(["review_fixes", "orchestrator"]);
+      expect(parentKind(f.humanFix.id)).toEqual(["review_fixes", "human_review"]);
+      expect(root("human_review").contexts.map(c => c.run_id)).toEqual([f.human.id]);
+      expect(root("orchestrator").contexts[0]!.snapshot_ids).toEqual(["orchestrator-context-history"]);
+      expect(tree.find(c => c.kind === "standards")!.contexts[0]!.snapshot_ids).toEqual(["standards-context-history"]);
+      expect(detail.workers).toHaveLength(5);
+    } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+  it("keeps Specifications identity and both native contexts after a handoff and restart", async () => {
+    const state = mkdtempSync(join(tmpdir(), "conversation-contract-"));
+    const store = new FactoryStore(state);
+    const assignment = { ...store.record(), title: "Owned conversation fixture", description: "", project_id: null, provider: null, machine_id: null, stage: "inbox", position: 0, outcome: "none" };
+    store.put("implementations", assignment);
+    const interview: FactoryRun = { ...store.record(), implementation_id: assignment.id, action: "grill-with-docs", provider: "codex", machine_id: "fixture-machine", condition: "completed", waiting_reason: null, idempotency_key: "interview", specification_id: null, graph_hash: null, base: null, checkout: null, worktree: "/owned/interview", branch: null, workspace_id: "owned-workspace", pane_id: "owned-pane", manifest: {} };
+    store.put("runs", interview, assignment.id);
+    store.close();
+    let app = createServer({ port: 0, stateDir: state, token: "owned-conversation-token", machines: false });
+    const read = () => fetch(`http://localhost:${app.port}/api/factory/implementations/${assignment.id}`, { headers: { authorization: "Bearer owned-conversation-token" } }).then(r => r.json()) as Promise<FactoryDetail>;
+    try {
+      const first = await read();
+      expect(first.conversations?.find(c => c.kind === "specifications")?.contexts.map(c => c.run_id)).toEqual([interview.id]);
+      const identity = first.conversations!.find(c => c.kind === "specifications")!.id;
+      app.stop();
+      const nextStore = new FactoryStore(state);
+      const successor = { ...interview, ...nextStore.record(), action: "to-spec", condition: "ready", pane_id: "successor-pane", worktree: "/owned/successor" };
+      nextStore.put("runs", successor, assignment.id);
+      nextStore.put("native_snapshots", { ...nextStore.record(), run_id: interview.id, source_id: "owned-native-interview", sequence: 0, version: "v1", cursor: null, turns: [{ role: "assistant", ts: "2026-01-01T00:00:00Z", parts: [{ kind: "text", text: "Retained interview decisions" }] }] }, interview.id);
+      nextStore.close();
+      app = createServer({ port: 0, stateDir: state, token: "owned-conversation-token", machines: false });
+      const after = await read();
+      const conversation = after.conversations!.find(c => c.kind === "specifications")!;
+      expect(conversation.id).toBe(identity);
+      expect(conversation.contexts.map(c => [c.run_id, c.pane_id, c.worktree])).toEqual([[interview.id, "owned-pane", "/owned/interview"], [successor.id, "successor-pane", "/owned/successor"]]);
+      expect(conversation.contexts[0]!.snapshot_ids).toEqual([after.native_snapshots[0]!.id]);
+      expect(after.runs).toHaveLength(2);
+      expect(after.workers).toHaveLength(0);
+    } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
 });

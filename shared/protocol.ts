@@ -1358,3 +1358,7 @@ export interface FactoryHostRequests {
   send: { text: string };
   operation: { worker_id?: string | null; check_id?: string; tip?: string; before?: string; worker?: import("./factory.ts").FactoryWorker; check?: import("./factory.ts").FactoryCheck; context?: unknown };
 }
+
+/** GET /api/factory/implementations/:id -> FactoryDetail, including stable workflow
+ * conversations and their Run/worker/native-history provenance. Reads never start agents. */
+export type { FactoryConversation, FactoryConversationContext, FactoryConversationKind } from "./factory.ts";

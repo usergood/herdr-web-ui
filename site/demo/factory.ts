@@ -1,3 +1,4 @@
+import { workflowConversations } from "../../shared/factory-conversations.ts";
 import { nativeSessionRef } from "../../shared/native-pane.ts";
 import { AGENT_PERMISSION_MODES, permissionDescription } from "../../shared/agent-permissions.ts";
 import { MATT_PROJECT_WORKFLOW } from "../../shared/project-setup.ts";
@@ -108,7 +109,7 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
     }
     return failure("unsupported", "This reference action is unavailable in the demo.");
   }
-  if (path === "/api/factory" && method === "GET") return json({ implementations: [...details.values()].map((detail) => detail.implementation).sort((a, b) => a.position - b.position), projects, checkouts, settings, activity: [], pane_links: [...details.values()].flatMap((d) => d.runs.flatMap((run) => [...(run.pane_id ? [{ project_id: d.implementation.project_id, implementation_id: d.implementation.id, run_id: run.id, worker_id: null, worktree: run.worktree, workspace_id: run.workspace_id, machine_id: run.machine_id, pane_id: run.pane_id, provider: run.provider, title: run.action, condition: run.condition }] : []), ...d.workers.filter((w) => w.run_id === run.id && w.pane_id).map((w) => ({ project_id: d.implementation.project_id, implementation_id: d.implementation.id, run_id: run.id, worker_id: w.id, worktree: w.worktree, workspace_id: w.workspace_id, machine_id: run.machine_id, pane_id: w.pane_id!, provider: run.provider, title: w.role, condition: w.condition }))])), pane_archives: paneArchives } satisfies FactoryOverview);
+  if (path === "/api/factory" && method === "GET") return json({ implementations: [...details.values()].map((detail) => detail.implementation).sort((a, b) => a.position - b.position), projects, checkouts, settings, activity: [], conversations: [...details.values()].flatMap(detail => workflowConversations(detail)), pane_links: [...details.values()].flatMap((d) => d.runs.flatMap((run) => [...(run.pane_id ? [{ project_id: d.implementation.project_id, implementation_id: d.implementation.id, run_id: run.id, worker_id: null, worktree: run.worktree, workspace_id: run.workspace_id, machine_id: run.machine_id, pane_id: run.pane_id, provider: run.provider, title: run.action, condition: run.condition }] : []), ...d.workers.filter((w) => w.run_id === run.id && w.pane_id).map((w) => ({ project_id: d.implementation.project_id, implementation_id: d.implementation.id, run_id: run.id, worker_id: w.id, worktree: w.worktree, workspace_id: w.workspace_id, machine_id: run.machine_id, pane_id: w.pane_id!, provider: run.provider, title: w.role, condition: w.condition }))])), pane_archives: paneArchives } satisfies FactoryOverview);
   if (path === "/api/factory/settings" && method === "POST") { settings = { ...settings, ...body } as typeof settings; save(); return json(settings); }
   if ((path === "/api/factory/model-catalog" || path === "/api/factory-host/model-catalog") && method === "POST") return json({ protocol: 1, provider: body.provider, models: [{ id: "fictional-demo-model", name: "Fictional demo model", reasoning: [{ id: "medium", name: "Medium" }, { id: "xhigh", name: "Extra high" }], default_reasoning: "medium" }], problem: null });
   if (path === "/api/factory/providers" || /\/machines\/[^/]+\/prepare$/.test(path)) return json({ factory_host_protocol: 1, skill_manifest: null, providers: ["codex", "claude", "opencode"].map((provider) => ({ provider, version: "demo", installed: false, skills_verified: false, factory_ready: false, reasons: ["Native agents and SSH preparation require a real execution Machine. The demo retains fictional records only."] })) });
@@ -147,7 +148,7 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
   if (match) {
     const detail = details.get(match[1]!); if (!detail) return failure("not_found", "Implementation not found", 404);
     const action = match[2];
-    if (!action && method === "GET") return json(detail);
+    if (!action && method === "GET") return json({ ...detail, conversations: workflowConversations(detail) });
     if (method === "POST") {
       let result: unknown;
       if (action === "configure") { detail.implementation = { ...detail.implementation, ...body } as Implementation; result = detail.implementation; }
