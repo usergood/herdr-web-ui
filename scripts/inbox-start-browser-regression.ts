@@ -43,7 +43,7 @@ try {
   await page.goto(`http://localhost:${app.port}/#projects/${project.id}/inbox`);await page.getByRole("textbox",{name:"Idea title",exact:true}).fill("Plan the new checkout");await page.getByRole("button",{name:"Capture idea",exact:true}).click();
   await page.getByRole("heading",{name:"Plan the new checkout",exact:true}).waitFor();
   const planningId=new URL(page.url()).hash.slice("#factory/".length);
-  const planning=page.waitForResponse(r=>r.url().endsWith("/continue")&&r.request().method()==="POST");await page.getByRole("button",{name:"Plan implementation",exact:true}).click();const planned=await planning;assert.equal(planned.status(),202);const plan=await planned.json();assert.equal(plan.action,"grill-with-docs");assert.equal(plan.condition,"working",JSON.stringify(fixtureFailures));
+  const planning=page.waitForResponse(r=>r.url().endsWith("/continue")&&r.request().method()==="POST");await page.getByRole("button",{name:"Plan implementation",exact:true}).click();const planned=await planning;assert.equal(planned.status(),202);const plan=await planned.json();assert.equal(plan.action,"grill-with-docs");assert.equal(plan.condition,"needs_you",JSON.stringify(fixtureFailures));
   await page.locator(".factory-panel").waitFor({state:"hidden"});
   const workflow=page.getByRole("dialog",{name:"Workflow",exact:true});
   const openWorkflow=async()=>{await page.getByRole("button",{name:"Workflow",exact:true}).click();await workflow.waitFor();};
@@ -80,18 +80,20 @@ try {
   await workflow.getByRole("button",{name:"Confirm shared understanding",exact:true}).click();
   const confirmed=await page.request.get(`http://localhost:${app.port}/api/factory/implementations/${planningId}`).then(r=>r.json());
   assert.equal(confirmed.questions.find((q:any)=>q.id===confirmation.id).answer,"Confirmed");
-  await workflow.getByRole("button",{name:"Accept specification",exact:true}).click();await workflow.getByRole("button",{name:"Confirm testing seams",exact:true}).click();
-  const ticketRun=await continueStep();assert.equal(ticketRun.action,"to-tickets");
-  await openWorkflow();await workflow.getByText("Add the receipt preview",{exact:true}).waitFor();
-  await workflow.getByRole("button",{name:"Approve Ticket graph",exact:true}).click();
-  const verifyRun=await continueStep();assert.equal(verifyRun.action,"verify-provider");
-  await openWorkflow();await workflow.getByRole("textbox",{name:"Your answer",exact:true}).fill("Confirmed for this owned read-only fixture.");await workflow.getByRole("button",{name:"Save answer",exact:true}).click();
-  await workflow.getByText("Native verification will run before implementation.",{exact:true}).waitFor();
-  assert.equal(await workflow.getByRole("button",{name:"Finish this step",exact:true}).count(),0);
+  await workflow.getByRole("button",{name:"Accept specification",exact:true}).click();
+  await workflow.getByText("Internal planning continues automatically after Specification approval.",{exact:true}).waitFor();
+  assert.equal(await workflow.getByRole("button",{name:"Confirm testing seams",exact:true}).count(),0);
+  assert.equal(await workflow.getByRole("button",{name:"Approve Ticket graph",exact:true}).count(),0);
+  assert.equal(await workflow.getByRole("button",{name:"Continue workflow",exact:true}).count(),0);
+  // This native stand-in cannot certify factory readiness or a complete native handoff.
+  // The automatic request exposes that concrete blocker rather than inventing receipts.
+  await page.waitForFunction(async id=>{const d=await fetch(`/api/factory/implementations/${id}`).then(r=>r.json());return d.automatic_planning?.some((r:{condition:string})=>r.condition==="blocked");},planningId);
+  const automatic=await page.request.get(`http://localhost:${app.port}/api/factory/implementations/${planningId}`).then(r=>r.json());
+  assert.equal(automatic.approvals.filter((a:any)=>a.kind==="testing_seams"||a.kind==="ticket_graph").length,0);
+  const verifyRun=specRun; // Retained identity for the independent reviewed-head UI fixture below.
   assert.equal(await workflow.getByRole("button",{name:"Stop Run",exact:true}).count(),0);
-  assert.equal(await page.locator(".factory-panel").isVisible(),false);
   const snapshot=await page.request.get(`http://localhost:${app.port}/api/session`).then(r=>r.json()).then(result=>result.snapshot);
-  for(const run of [plan,specRun,ticketRun])assert(snapshot.panes.some((pane:any)=>pane.pane_id===run.pane_id),"Finished planning chats must remain available");
+  for(const run of [plan,specRun])assert(snapshot.panes.some((pane:any)=>pane.pane_id===run.pane_id),"Finished planning chats must remain available");
   await shot("inbox-workflow-desktop.png");await page.setViewportSize({width:390,height:844});
   assert(await workflow.evaluate(el=>el.scrollWidth<=el.clientWidth),"Workflow must fit a phone");
   await shot("inbox-workflow-mobile.png");await page.setViewportSize({width:1440,height:1000});
@@ -104,5 +106,6 @@ try {
   await page.route(`**/api/factory/runs/${reviewId}/accept`,async route=>{acceptedHead=route.request().postDataJSON().head;await route.fulfill({status:409,json:{error:{code:"fixture_review_gate",message:"Owned UI response fixture: acceptance remains gated by the server."}}});});
   page.on("request",r=>{if(r.url().endsWith(`/runs/${reviewId}/stop`))stoppedReview=true;});
   await page.reload();await steps.getByRole("button",{name:"Accept reviewed head",exact:true}).click();await page.getByRole("alert").filter({hasText:"Owned UI response fixture"}).waitFor();assert.equal(acceptedHead,head);assert.equal(stoppedReview,false);assert.equal(await steps.getByRole("button",{name:"Finish this step",exact:true}).count(),0);
+  await page.unrouteAll({behavior:"wait"});
   assert.deepEqual(errors,[]);console.log("Inbox browser: chat-side approvals and continuation retain planning chats on desktop/mobile; fixture cannot certify native readiness");
 } finally {await browser.close();app.stop();for(const id of owned)await workspaceClose(id).catch(()=>{});rmSync(root,{recursive:true,force:true});}

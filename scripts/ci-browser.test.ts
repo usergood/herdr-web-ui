@@ -52,6 +52,7 @@ describe("browser lane", () => {
       { script: "scripts/factory-capacity-browser-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/factory-parking-browser-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/factory-pause-browser-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/factory-automatic-planning-browser-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/project-setup-browser-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/inbox-start-browser-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/account-profiles-browser-regression.ts", seconds: expect.any(Number), code: 0 },

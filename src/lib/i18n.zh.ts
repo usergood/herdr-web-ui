@@ -15,6 +15,9 @@ export const ZH: Record<string, string> = {
   "Paused": "已暂停",
   "Resume Assignment": "恢复 Assignment",
   "Pause Assignment": "暂停 Assignment",
+  "Internal planning continues automatically after Specification approval.": "规格获批后，内部规划会自动继续。",
+  "Execution plan": "执行计划",
+  "Testing plan": "测试计划",
 
   "Specification accepted": "规格已批准",
   "Specification reply": "规格回复",

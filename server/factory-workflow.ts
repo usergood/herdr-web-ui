@@ -3,6 +3,7 @@ import { isSpecificationAcceptance } from "../shared/specification-acceptance.ts
 import { isJsonObject } from "./http.ts";
 import { FactoryError, hash } from "./factory-host.ts";
 import { FactoryStore } from "./factory-store.ts";
+import type { FactoryExecutionPlan, FactoryPlanningRequest, FactoryProject } from "../shared/factory.ts";
 
 /** Revision-scoped decisions. A new proposal never changes the contract of an existing Run. */
 export class FactoryWorkflow {
@@ -23,6 +24,44 @@ export class FactoryWorkflow {
   questionRevision(id: string, runId?: string): string { return hash(JSON.stringify(this.questions(id, runId))); }
   approved(id: string, kind: FactoryApproval["kind"], revision: string): boolean {
     return this.store.list<FactoryApproval>("approvals", id).some((record) => record.kind === kind && record.revision === revision);
+  }
+  executionTickets(run: FactoryRun): FactoryTicket[] {
+    const plan = this.store.get<FactoryExecutionPlan>("execution_plans", run.id);
+    const manifest = run.manifest as { planning_authority?: FactoryApproval; tickets: FactoryTicket[] };
+    return plan?.tickets ?? (manifest.planning_authority ? [] : manifest.tickets);
+  }
+  planningScope(id: string): string {
+    const idea = this.store.get<Implementation>("implementations", id)!;
+    const project = idea.project_id ? this.store.get<FactoryProject>("projects", idea.project_id) : null;
+    const { updated_at: _updated, ...configuration } = project ?? {};
+    return hash(JSON.stringify({ assignment: { title: idea.title, description: idea.description, project_id: idea.project_id, machine_id: idea.machine_id, provider: idea.provider }, project: configuration, checkouts: project ? this.store.list("checkouts", project.id) : [], specification: this.specification(id) }));
+  }
+  planningRequest(id: string, key: unknown): FactoryPlanningRequest | null {
+    return this.store.list<FactoryPlanningRequest>("automatic_planning", id).find(request => key === `specification-${request.specification_id}`) ?? null;
+  }
+  private authorizePlanning(approval: FactoryApproval): void {
+    this.store.put("automatic_planning", { ...this.store.record(), id: approval.id, implementation_id: approval.implementation_id, specification_id: approval.revision, approval_id: approval.id, scope_hash: this.planningScope(approval.implementation_id), condition: "pending", reason: null, run_id: null } satisfies FactoryPlanningRequest, approval.implementation_id);
+  }
+  plan(run: FactoryRun, body: Record<string, unknown>): FactoryExecutionPlan {
+    return this.store.db.transaction(() => {
+      const frozen = run.manifest as { planning_authority?: FactoryApproval; specification: SpecificationVersion; contract_hash: string };
+      if (run.action !== "implement-spec" || !frozen.planning_authority?.automatic_execution || body.specification_id !== run.specification_id || frozen.specification.id !== run.specification_id) throw new FactoryError("scope_unaccepted", "Plan only this Run's accepted Specification", 409);
+      const questions = this.questions(run.implementation_id, run.id);
+      if (questions.some(q => q.answer === null) || questions.length && !this.store.list<{ revision: string; worker_id: string | null }>("answer_consumption", run.id).some(r => r.worker_id === null && r.revision === this.questionRevision(run.implementation_id, run.id))) throw new FactoryError("answers_unconsumed", "Consume the exact answered owner context before planning", 409);
+      const signature = hash(JSON.stringify(body));
+      const previous = this.store.get<FactoryExecutionPlan & { signature: string }>("execution_plans", run.id);
+      if (previous) {
+        if (previous.signature !== signature) throw new FactoryError("plan_frozen", "This Run already has a frozen execution plan; ask the owner about new scope", 409);
+        return previous;
+      }
+      if (typeof body.testing_plan !== "string" || !body.testing_plan.trim() || body.testing_plan.length > 20_000) throw new FactoryError("invalid_testing_plan", "Retain a bounded testing plan within the accepted Specification");
+      if (this.specification(run.implementation_id)?.id !== run.specification_id) throw new FactoryError("stale_specification", "The current Specification changed; retain the executing scope and ask the owner", 409);
+      const graph = this.mutate(run.implementation_id, "tickets", body) as { hash: string; tickets: FactoryTicket[] };
+      const plan = { ...this.store.record(), id: run.id, run_id: run.id, specification_id: frozen.specification.id, ...graph, testing_plan: body.testing_plan.trim(), authority: { kind: "specification" as const, approval_id: frozen.planning_authority.id, specification_id: frozen.specification.id, specification_hash: frozen.specification.hash, run_id: run.id, contract_hash: frozen.contract_hash }, signature };
+      this.store.put("execution_plans", plan, run.implementation_id);
+      this.store.event(run.implementation_id, "execution_plan_retained", { run_id: run.id, hash: plan.hash, authority: plan.authority });
+      return plan;
+    }).immediate();
   }
   /** Only a verified native page may supply an answer; ambiguous replies stay pending. */
   retainNativeAnswers(run: FactoryRun, snapshot: NativeConversationSnapshot, latestPage: boolean): void {
@@ -66,8 +105,8 @@ export class FactoryWorkflow {
       const presentedAt = previous.end_ts ?? previous.ts;
       if (shown !== presentation || !isSpecificationAcceptance(answer) || !presentedAt || !reply.ts || !Number.isFinite(Date.parse(presentedAt)) || !Number.isFinite(Date.parse(reply.ts)) || Date.parse(presentedAt) < Date.parse(spec.created_at) || Date.parse(reply.ts) <= Date.parse(presentedAt)) continue;
       if (this.questions(run.implementation_id).some(q => q.answer === null && Date.parse(q.created_at) >= Date.parse(presentedAt) && Date.parse(q.created_at) <= Date.parse(reply.ts!))) continue;
-      const approval: FactoryApproval = { ...this.store.record(), implementation_id: run.implementation_id, kind: "specification", revision: spec.id, scope: `Specification ${spec.id}, SHA-256 ${spec.hash}`, provenance: { kind: "native_chat", specification_hash: spec.hash, run_id: run.id, snapshot_id: snapshot.id, source_id: snapshot.source_id, turn_ts: reply.ts } };
-      this.store.put("approvals", approval, run.implementation_id); this.store.event(run.implementation_id, "owner_approved", approval);
+      const approval: FactoryApproval = { ...this.store.record(), implementation_id: run.implementation_id, kind: "specification", automatic_execution: true, revision: spec.id, scope: `Specification ${spec.id}, SHA-256 ${spec.hash}`, provenance: { kind: "native_chat", specification_hash: spec.hash, run_id: run.id, snapshot_id: snapshot.id, source_id: snapshot.source_id, turn_ts: reply.ts } };
+      this.store.put("approvals", approval, run.implementation_id); this.authorizePlanning(approval); this.store.event(run.implementation_id, "owner_approved", approval);
       return;
     }
   }
@@ -165,15 +204,15 @@ export class FactoryWorkflow {
           }
           let approval = this.store.list<FactoryApproval>("approvals", id).find(a => a.kind === "specification" && a.revision === specification.id) ?? null;
           if (!approval && isSpecificationAcceptance(message.content)) {
-            approval = { ...this.store.record(), implementation_id: id, kind: "specification", revision: specification.id, scope: `Specification ${specification.id}, SHA-256 ${specification.hash}`, provenance: { kind: "owner_chat", specification_hash: specification.hash, message_id: message.id } };
-            this.store.put("approvals", approval, id); this.store.event(id, "owner_approved", approval);
+            approval = { ...this.store.record(), implementation_id: id, kind: "specification", automatic_execution: true, revision: specification.id, scope: `Specification ${specification.id}, SHA-256 ${specification.hash}`, provenance: { kind: "owner_chat", specification_hash: specification.hash, message_id: message.id } };
+            this.store.put("approvals", approval, id); this.authorizePlanning(approval); this.store.event(id, "owner_approved", approval);
           }
           return { message, approval };
         }
         const previous = this.store.list<FactoryApproval>("approvals", id).find(a => a.kind === "specification" && a.revision === specification.id);
         if (previous) return previous;
-        const approval: FactoryApproval = { ...this.store.record(), implementation_id: id, kind: "specification", revision: specification.id, scope: `Specification ${specification.id}, SHA-256 ${specification.hash}`, provenance: { kind: "button", specification_hash: specification.hash } };
-        this.store.put("approvals", approval, id); this.store.event(id, "owner_approved", approval);
+        const approval: FactoryApproval = { ...this.store.record(), implementation_id: id, kind: "specification", automatic_execution: true, revision: specification.id, scope: `Specification ${specification.id}, SHA-256 ${specification.hash}`, provenance: { kind: "button", specification_hash: specification.hash } };
+        this.store.put("approvals", approval, id); this.authorizePlanning(approval); this.store.event(id, "owner_approved", approval);
         return approval;
       }
       if (action === "approvals") {

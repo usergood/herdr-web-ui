@@ -19,6 +19,17 @@ not accept an implementation or integrate a Ticket; those still require the owne
 
 ## Accepted automatic workflow design
 
+New explicit Specification acceptances now retain a durable automatic planning request.
+Once the presenting conversation is safely ready, Orchestrator starts through normal
+capacity, including a cap of one. It uses the accepted Specification to produce a bounded
+Ticket graph and testing plan without separate Ticket/testing/Continue approvals. The
+Assignment exposes the request's waiting or blocked reason and the generated plan,
+dependencies and Specification-derived authority. Native readiness, Project checks and
+permissions remain required. A new scope decision stops dependent work for an actual
+owner question and exact answer consumption. Existing Runs keep their frozen contracts;
+this change does not retroactively approve historical planning or implement automatic
+frontier execution, review or publication, which remain separate implementation Tickets.
+
 The [Q1–Q20 automatic workflow design](automatic-dispatch-pause-delete-design.md) records the accepted Specification for global Agent-context scheduling, one-operation Specification approval, automatic execution, Pause/Delete, named conversations and integrated Human Review with conditional merge authority. It supersedes conflicting earlier proposals, including repeated planning approvals and retained-history Discard. These are implementation targets; the operational descriptions in this guide and runtime.md remain current until the corresponding behavior ships.
 
 ## Interface cleanup design

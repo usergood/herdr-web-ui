@@ -12,6 +12,9 @@ export const TR: Record<string, string> = {
   "Paused": "Duraklatıldı",
   "Resume Assignment": "Assignment devam ettir",
   "Pause Assignment": "Assignment duraklat",
+  "Internal planning continues automatically after Specification approval.": "Belirtim onayından sonra iç planlama otomatik olarak devam eder.",
+  "Execution plan": "Yürütme planı",
+  "Testing plan": "Test planı",
 
   "Specification accepted": "Şartname kabul edildi",
   "Specification reply": "Şartname yanıtı",

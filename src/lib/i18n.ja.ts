@@ -13,6 +13,9 @@ export const JA: Record<string, string> = {
   "Paused": "一時停止中",
   "Resume Assignment": "Assignment を再開",
   "Pause Assignment": "Assignment を一時停止",
+  "Internal planning continues automatically after Specification approval.": "仕様の承認後、内部計画は自動で進みます。",
+  "Execution plan": "実行計画",
+  "Testing plan": "テスト計画",
 
   "Specification accepted": "仕様を承認しました",
   "Specification reply": "仕様への返信",

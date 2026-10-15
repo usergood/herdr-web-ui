@@ -25,7 +25,8 @@ export class FactoryPipeline {
     return run;
   }
   frontier(run: FactoryRun): FactoryTicket[] {
-    const tickets = (run.manifest as { tickets: FactoryTicket[] }).tickets;
+    if (this.workflow.questions(run.implementation_id, run.id).some(question => question.answer === null)) return [];
+    const tickets = this.workflow.executionTickets(run);
     const workers = this.store.list<FactoryWorker>("workers", run.id);
     const done = new Set(workers.filter((worker) => worker.role === "implementer" && worker.condition === "completed").map((worker) => worker.ticket_id));
     return tickets.filter((ticket) => !done.has(ticket.id) && !workers.some((worker) => worker.ticket_id === ticket.id && owns(worker.condition)) && ticket.dependencies.every((dependency) => done.has(dependency)));
@@ -45,7 +46,7 @@ export class FactoryPipeline {
       this.run(id, role === "implementer");
       const ticket = role === "implementer" ? this.frontier(run).find((entry) => entry.id === body.ticket_id) : null;
       const batch = typeof body.review_batch_id === "string" ? this.store.get<{ id: string; run_id: string; status: string }>("review_batches", body.review_batch_id) : null;
-      const rework = role === "implementer" && batch?.run_id === id && batch.status === "sent" ? (run.manifest as { tickets: FactoryTicket[] }).tickets.find((entry) => entry.id === body.ticket_id) : null;
+      const rework = role === "implementer" && batch?.run_id === id && batch.status === "sent" ? this.workflow.executionTickets(run).find((entry) => entry.id === body.ticket_id) : null;
       if (role === "implementer" && !ticket && !rework) throw new FactoryError("ticket_not_ready", "Select a ready Ticket or an explicitly delivered rework batch", 409);
       if (rework && this.store.list<FactoryWorker>("workers", id).some((worker) => worker.ticket_id === rework.id && owns(worker.condition))) throw new FactoryError("ticket_owned", "This Ticket already has an active or uncertain writer", 409);
       if (role !== "implementer" && this.store.list<FactoryWorker>("workers", id).some((worker) => worker.role === "implementer" && owns(worker.condition))) throw new FactoryError("writers_active", "Quiesce repository writers before independent final reviews", 409);
@@ -59,7 +60,7 @@ export class FactoryPipeline {
     }).immediate();
     if (!claimed.fresh) return claimed.worker;
     let worker: FactoryWorker;
-    try { worker = await this.runtime.operation(run, "worker", { worker: claimed.worker, context: { manifest: run.manifest, ticket: (run.manifest as { tickets: FactoryTicket[] }).tickets.find((ticket) => ticket.id === claimed.worker.ticket_id), questions: this.workflow.questions(run.implementation_id), findings: this.store.list<import("../shared/protocol.ts").ReviewComment>("comments", run.implementation_id).filter((comment) => comment.batch_id === claimed.worker.rework_batch_id && claimed.worker.rework_batch_id !== null) } }); }
+    try { worker = await this.runtime.operation(run, "worker", { worker: claimed.worker, context: { manifest: { ...(run.manifest as object), tickets: this.workflow.executionTickets(run) }, execution_plan: this.store.get("execution_plans", run.id), ticket: this.workflow.executionTickets(run).find((ticket) => ticket.id === claimed.worker.ticket_id), questions: this.workflow.questions(run.implementation_id), findings: this.store.list<import("../shared/protocol.ts").ReviewComment>("comments", run.implementation_id).filter((comment) => comment.batch_id === claimed.worker.rework_batch_id && claimed.worker.rework_batch_id !== null) } }); }
     catch { worker = { ...claimed.worker, condition: "disconnected", waiting_reason: "Worker dispatch is uncertain; preserve its reservation and reconcile" }; }
     if (worker.id !== claimed.worker.id || worker.run_id !== run.id || worker.ticket_id !== claimed.worker.ticket_id || worker.role !== role || worker.base !== tip.head) throw new FactoryError("worker_identity_changed", "The Machine returned a different worker identity; preserve the accepted reservation", 409);
     const parent = this.store.get<FactoryRun>("runs", id)!;
@@ -137,9 +138,9 @@ export class FactoryPipeline {
     await this.runtime.operation(run, "stop-worker", { worker_id: workerId });
     this.store.put("workers", next, id);
     const graph = this.store.get<{ id: string; hash: string; tickets: FactoryTicket[] }>("graphs", run.implementation_id);
-    if (graph && this.workflow.graphHash(run.implementation_id) === run.graph_hash) this.store.put("graphs", { ...graph, tickets: graph.tickets.map((ticket) => ticket.id === worker.ticket_id ? { ...ticket, status: "done" } : ticket) }, run.implementation_id);
+    if (graph && this.workflow.graphHash(run.implementation_id) === (this.store.get<{ hash: string }>("execution_plans", run.id)?.hash ?? run.graph_hash)) this.store.put("graphs", { ...graph, tickets: graph.tickets.map((ticket) => ticket.id === worker.ticket_id ? { ...ticket, status: "done" } : ticket) }, run.implementation_id);
     const completed = new Set(this.store.list<FactoryWorker>("workers", id).filter((entry) => entry.role === "implementer" && entry.condition === "completed").map((entry) => entry.ticket_id));
-    if ((run.manifest as { tickets: FactoryTicket[] }).tickets.every((ticket) => completed.has(ticket.id))) {
+    if (this.workflow.executionTickets(run).every((ticket) => completed.has(ticket.id))) {
       const implementation = this.store.get<Implementation>("implementations", run.implementation_id)!;
       this.store.put("implementations", { ...implementation, stage: "review" });
     }
@@ -154,7 +155,7 @@ export class FactoryPipeline {
     const check = this.store.list<FactoryCheck>("checks", id).filter((entry) => entry.worker_id === null).at(-1);
     const reviews = this.store.list<FactoryReviewEvidence>("review_evidence", id);
     if (!check || check.condition !== "passed" || check.head !== current.head || check.workspace_hash !== current.workspace_hash || !["standards", "spec"].every((axis) => reviews.filter((entry) => entry.axis === axis).at(-1)?.outcome === "passed" && reviews.filter((entry) => entry.axis === axis).at(-1)?.head === current.head)) throw new FactoryError("fresh_evidence_required", "Retain fresh checks and separate passing Standards and Spec reports at this head", 409);
-    const tickets = (run.manifest as { tickets: FactoryTicket[] }).tickets;
+    const tickets = this.workflow.executionTickets(run);
     const done = this.store.list<FactoryWorker>("workers", id).filter((entry) => entry.role === "implementer" && entry.condition === "completed");
     if (run.action === "implement-spec" && tickets.some((ticket) => !done.some((entry) => entry.ticket_id === ticket.id))) throw new FactoryError("tickets_incomplete", "Integrate every accepted Ticket before completion", 409);
     if (this.store.list<{ run_id: string | null; status: string }>("comments", run.implementation_id).some((entry) => entry.run_id === id && entry.status !== "resolved")) throw new FactoryError("findings_open", "Resolve this Run's retained findings with fresh evidence before acceptance", 409);
