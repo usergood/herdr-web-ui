@@ -25,6 +25,7 @@ import type { MachineAccounts } from "./accounts.ts";
 import { withAccountEnvironment } from "./account-execution.ts";
 import { stagePlanningDocuments } from "./factory-planning-docs.ts";
 import { prepareFactoryPrompt } from "./factory-prompt.ts";
+import { deleteHostFiles } from "./factory-delete-host.ts";
 
 function providerProofId(provider: string, snapshot?: AccountBindingSnapshot | null): string {
   const profile = snapshot?.profiles.find((entry) => entry.service === provider);
@@ -33,6 +34,7 @@ function providerProofId(provider: string, snapshot?: AccountBindingSnapshot | n
 
 /** Machine-owned execution leases, not a second writable tracker or conversation history. */
 export class FactoryExecutionHost {
+  private readonly deletions = new Map<string, Promise<import("../shared/factory.ts").FactoryDeleteAttemptResult>>();
   private readonly operations = new Map<string, Set<Promise<unknown>>>();
   private readonly launches = new Map<string, Promise<FactoryRun>>();
   private readonly sends = new Set<string>();
@@ -77,6 +79,12 @@ export class FactoryExecutionHost {
     return { pane_id: decorated.pane_id, terminal_id: decorated.terminal_id, session_ref: nativeSessionRef(decorated), title: decorated.label?.trim() || decorated.terminal_title_stripped?.trim() || decorated.title?.trim() || decorated.pane_id, agent_status: decorated.agent_status, background_tasks: decorated.background_tasks, background_wait: decorated.background_wait };
   }
   async operation(id: string, action: string, body: Record<string, unknown>): Promise<unknown> {
+    if (action === "delete") {
+      const prior = this.deletions.get(id); if (prior) return prior;
+      const operation = this.deleteRun(id, body); this.deletions.set(id, operation);
+      try { return await operation; } finally { this.deletions.delete(id); }
+    }
+    this.assertNotDeleting(id);
     if (action === "pause") return this.pauseRun(id, String(body.pause_id));
     const run = this.store.get<{ run: FactoryRun }>("host_leases", id)?.run;
     const controlOnly = ["cleanup", "resume-status", "check-reconcile", "reconcile-worker", "stop-worker", "head", "transcript"].includes(action);
@@ -86,7 +94,34 @@ export class FactoryExecutionHost {
     pending.add(operation); this.operations.set(id, pending);
     try { return await operation; } finally { pending.delete(operation); if (!pending.size) this.operations.delete(id); }
   }
-  private async pauseRun(id: string, pauseId: string): Promise<import("../shared/factory.ts").FactoryPauseResult> {
+  private assertNotDeleting(id: string): void {
+    if (this.store.get("host_delete_requests", id) || this.store.get("host_deleted_runs", id)) throw new FactoryError("assignment_deleting", "Permanent Delete owns this native attempt; execution cannot resume", 409);
+  }
+  private async deleteRun(id: string, body: Record<string, unknown>): Promise<import("../shared/factory.ts").FactoryDeleteAttemptResult> {
+    if (typeof body.deletion_id !== "string" || !/^[a-f0-9-]{36}$/.test(body.deletion_id)) throw new FactoryError("invalid_delete", "Select a durable deletion identity");
+    const prior = this.store.get<import("../shared/factory.ts").FactoryDeleteAttemptResult>("host_deleted_runs", id);
+    if (prior) {
+      if (prior.deletion_id !== body.deletion_id) throw new FactoryError("delete_conflict", "Another deletion owns this attempt", 409);
+      return prior;
+    }
+    const lease = this.store.get<{ id: string; run: FactoryRun }>("host_leases", id);
+    if (!lease || lease.run.implementation_id !== body.implementation_id) throw new FactoryError("delete_identity_changed", "No matching owned attempt is available for Delete", 409);
+    const request = this.store.get<{ deletion_id: string }>("host_delete_requests", id);
+    if (request && request.deletion_id !== body.deletion_id) throw new FactoryError("delete_conflict", "Another deletion owns this native attempt", 409);
+    this.store.put("host_delete_requests", { id, implementation_id: body.implementation_id, deletion_id: body.deletion_id });
+    await this.pauseRun(id, body.deletion_id, true);
+    const stopped = this.store.get<{ run: FactoryRun }>("host_leases", id)!.run;
+    const result = await deleteHostFiles(this.store, this.native, stopped, body.deletion_id);
+    this.store.db.transaction(() => {
+      this.store.put("host_deleted_runs", { id, ...result });
+      for (const kind of ["host_leases", "host_access", "host_pause_intents", "host_deletions", "host_delete_requests", "host_scaffolding", "host_native_identity"]) this.store.remove(kind, id);
+      for (const kind of ["host_workers", "host_checks", "host_pause_results", "host_resumptions"]) for (const entry of this.store.list<{ id: string }>(kind, id)) {
+        this.store.remove(kind, entry.id); this.store.remove("host_scaffolding", entry.id); this.store.remove("host_native_identity", entry.id);
+      }
+    }).immediate();
+    return result;
+  }
+  private async pauseRun(id: string, pauseId: string, deleting = false): Promise<import("../shared/factory.ts").FactoryPauseResult> {
     if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Native control is disabled on a restored copy", 409);
     if (!/^[a-f0-9-]{36}$/.test(pauseId)) throw new FactoryError("invalid_pause", "Select a durable Assignment Pause identity");
     const confirmed = this.store.get<{ id: string; result: import("../shared/factory.ts").FactoryPauseResult }>("host_pause_results", `${id}:${pauseId}`);
@@ -107,7 +142,7 @@ export class FactoryExecutionHost {
     }
     let childFailure: unknown;
     try { await this.worktrees.stopWorkers(id); } catch (error) { childFailure = error; }
-    await this.stopRun(id, true);
+    await this.stopRun(id, true, deleting);
     if (childFailure) throw childFailure;
     if (buildFailure) throw buildFailure;
     const suspension = (condition: FactoryRun["condition"]) => ({ pause_id: pauseId, condition: "stopped" as const, previous_condition: condition });
@@ -128,6 +163,7 @@ export class FactoryExecutionHost {
     return result;
   }
   private async performOperation(id: string, action: string, body: Record<string, unknown>): Promise<unknown> {
+    this.assertNotDeleting(id);
     if (action === "resume-status") {
       const prior = this.store.get<{ context: FactoryRun | FactoryWorker }>("host_resumptions", `${body.pause_id}:${body.worker_id ?? id}`);
       const target = typeof body.worker_id === "string" ? this.store.get<FactoryWorker>("host_workers", body.worker_id) : this.store.get<{ run: FactoryRun }>("host_leases", id)?.run;
@@ -248,6 +284,7 @@ export class FactoryExecutionHost {
     return { providers, skill_manifest: skills ? { commit: skills.commit, hash: skills.hash, file_count: skills.files.length } : null, factory_host_protocol: 1, project_reference_protocol: 1, account_profile_protocol: 1 };
   }
   async launch(record: FactoryRun, access?: { token: string; url: string }, attachments: { id: string; name: string; hash: string; size: number; content_base64: string }[] = [], references?: ProjectReferencePayload): Promise<FactoryRun> {
+    this.assertNotDeleting(record.id);
     if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Native execution is disabled on a restored copy", 409);
     if (!/^[a-f0-9-]{36}$/.test(record.id) || !/^[a-f0-9-]{36}$/.test(record.implementation_id) || !["codex", "claude", "opencode"].includes(record.provider) || !["work", "setup", "grill-me", "grill-with-docs", "to-spec", "to-tickets", "implement-spec", "retro", "apply-retro", "verify-provider"].includes(record.action)) throw new FactoryError("invalid_launch", "Invalid owned execution identity");
     const signature = hash(JSON.stringify(record));
@@ -414,11 +451,11 @@ export class FactoryExecutionHost {
     if (current && JSON.stringify(current) !== JSON.stringify(lease)) return current.run;
     run.updated_at = new Date().toISOString(); this.store.put("host_leases", { ...lease, run }); return run;
   }
-  async stopRun(id: string, childrenAttempted = false): Promise<FactoryRun> {
+  async stopRun(id: string, childrenAttempted = false, deleting = false): Promise<FactoryRun> {
     if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Native control is disabled on a restored copy", 409);
     const lease = this.store.get<{ id: string; signature: string; run: FactoryRun }>("host_leases", id);
     if (!lease) throw new FactoryError("native_identity_uncertain", "This host has no owned lease to stop", 409);
-    if (["cancelled", "completed", "failed"].includes(lease.run.condition)) return lease.run;
+    if (!deleting && ["cancelled", "completed", "failed"].includes(lease.run.condition)) return lease.run;
     const run = lease.run;
     this.store.put("host_leases", { ...lease, closing: true });
     const snapshot = await this.native.snapshot();
@@ -426,6 +463,7 @@ export class FactoryExecutionHost {
     const pane = snapshot.panes.find((entry) => entry.pane_id === run.pane_id);
     let unchangedWorktree = false;
     try { unchangedWorktree = !!run.worktree && realpathSync(run.worktree) === run.worktree; } catch { /* Changed or unavailable worktrees retain ownership. */ }
+    if (deleting && run.worktree && !existsSync(run.worktree) && this.store.get<{ path: string }>("cleaned_checkouts", id)?.path === run.worktree) unchangedWorktree = true;
     const couldOwnDirectory = (cwd: string | null | undefined): boolean => {
       if (!cwd || !run.worktree) return false;
       const lexical = resolve(cwd);
@@ -438,9 +476,10 @@ export class FactoryExecutionHost {
     const alreadyClosed = unchangedWorktree && !!run.workspace_id && !!run.pane_id && !workspace && !pane
       && !snapshot.workspaces.some(entry => entry.label === `saurons-eye-run-${id}`)
       && !snapshot.panes.some(entry => !entry.cwd && !entry.foreground_cwd || couldOwnDirectory(entry.cwd) || couldOwnDirectory(entry.foreground_cwd));
-    if (!alreadyClosed && (!workspace || workspace.label !== `saurons-eye-run-${id}` || !pane?.cwd || realpathSync(pane.cwd) !== run.worktree)) throw new FactoryError("native_identity_uncertain", "Verify the recorded native identity before stopping it; ownership is retained", 409);
+    const neverAllocated = deleting && (lease as { native_attempted?: boolean }).native_attempted === false && !run.workspace_id && !run.pane_id && !snapshot.workspaces.some(entry => entry.label === `saurons-eye-run-${id}`);
+    if (!alreadyClosed && !neverAllocated && (!workspace || workspace.label !== `saurons-eye-run-${id}` || !pane?.cwd || realpathSync(pane.cwd) !== run.worktree)) throw new FactoryError("native_identity_uncertain", "Verify the recorded native identity before stopping it; ownership is retained", 409);
     if (!childrenAttempted) await this.worktrees.stopWorkers(id);
-    if (!alreadyClosed) await this.native.closeWorkspace(workspace!.workspace_id);
+    if (!alreadyClosed && !neverAllocated) await this.native.closeWorkspace(workspace!.workspace_id);
     await this.worktrees.stopChecks(id);
     const stopped: FactoryRun = { ...run, condition: "cancelled", waiting_reason: null, updated_at: new Date().toISOString() };
     this.store.put("host_leases", { ...lease, closing: true, run: stopped }); return stopped;

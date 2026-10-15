@@ -7,6 +7,14 @@
  * keep their English names.
  */
 export const TR: Record<string, string> = {
+  "Assignment deletion": "Assignment silme",
+  "Delete pending": "Silme bekleniyor",
+  "Local cleanup is complete. Required external cleanup is still pending.": "Yerel temizlik tamamlandı. Gerekli harici temizlik hâlâ bekleniyor.",
+  "Permanently delete this Assignment and all its owned work?": "Bu Assignment ve ona ait tüm çalışmalar kalıcı olarak silinsin mi?",
+  "This stops execution and removes owned history, dirty worktrees, local branches, linked issues and app-managed recovery data. Shared resources, primary checkouts, pushed branches and PRs are preserved.": "Yürütmeyi durdurur ve sahip olunan geçmişi, değişiklik içeren çalışma ağaçlarını, yerel dalları, bağlantılı sorunları ve uygulamanın yönettiği kurtarma verilerini siler. Paylaşılan kaynaklar, ana çalışma kopyaları, gönderilmiş dallar ve PR’lar korunur.",
+  "Exported copies and external provider history are excluded from Delete.": "Dışa aktarılan kopyalar ve harici sağlayıcı geçmişi silme kapsamı dışındadır.",
+  "Delete all owned work": "Sahip olunan tüm çalışmaları sil",
+  "Delete Assignment": "Assignment sil",
   "Assignment execution": "Assignment yürütmesi",
   "Pause pending": "Duraklatma bekleniyor",
   "Paused": "Duraklatıldı",

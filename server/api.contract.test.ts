@@ -34,6 +34,27 @@ import { forgetTranscriptState } from "./conversation.ts";
  */
 let server: { port: number; stop: () => void };
 
+it("authenticates permanent Delete, enforces origin/Machine headers and returns a repeat-safe deletion receipt", async () => {
+  const f = await capacityFixture();
+  try {
+    const id = await f.assignment("Authenticated permanent Delete");
+    const origin = `http://localhost:${f.app.port}`;
+    const request = (path: string, headers: Record<string, string>) => fetch(`${origin}${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1", ...headers }, body: "{}" });
+    const path = `/api/factory/implementations/${id}/delete`;
+    expect((await request(path, {})).status).toBe(401);
+    expect((await request(path, { authorization: `Bearer ${f.token}`, origin: "https://foreign.invalid" })).status).toBe(403);
+    const hostPath = `/api/factory-host/runs/${id}/operations/delete`;
+    const denied = await request(hostPath, { authorization: `Bearer ${f.token}` });
+    expect(denied.status).toBe(403);
+    expect((await denied.json()).error).toMatchObject({ code: "invalid_origin", message: expect.any(String) });
+    expect((await request(hostPath, { authorization: `Bearer ${f.token}`, "x-herdr-machine": "1", origin: "https://foreign.invalid" })).status).toBe(403);
+    expect((await f.api(`/implementations/${id}`)).status).toBe(200);
+    expect(await f.api(`/implementations/${id}/delete`, {}).then(r => r.json())).toEqual({ id, condition: "deleted" });
+    expect(await f.api(`/implementations/${id}/delete`, {}).then(r => r.json())).toEqual({ id, condition: "deleted" });
+    expect((await f.api(`/implementations/${id}`)).status).toBe(404);
+  } finally { f.close(); }
+});
+
 it("keeps restored pending Delete authority above authenticated Assignment Resume", async () => {
   const f = await capacityFixture();
   try {

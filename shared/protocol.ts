@@ -1233,6 +1233,11 @@ export const DEFAULT_PORT = 7317;
  * POST /api/factory/retrospectives/:id/approve (approve_retrospective) -> FactoryRetrospective; exact scope.
  * GET /api/factory/backups -> FactoryBackupManifest[]; POST (empty) -> FactoryBackupManifest, 201.
  * POST /api/factory/backups/:id/restore (empty) -> FactoryRestore, 201; separate disabled copy only.
+ * POST /api/factory/implementations/:id/delete (empty) -> FactoryDeleteResult,
+ * 200 deleted or 202 pending with concrete reasons. Same-origin owner control, no agent slot.
+ * Delete fences dispatch/writes, confirms every attempt's Machine cleanup, then purges
+ * owned data. Linked issues or app-managed recovery obligations require separate cleanup
+ * confirmation; pending is never a final deletion or delivery receipt. Repeats reconcile.
  * Machine bridge routes require bridge authentication; operational leases are not a second tracker.
  * GET /api/factory-host/capabilities -> FactoryCapabilities;
  * POST /api/factory-host/capabilities ({account_snapshot}) -> profile-scoped FactoryCapabilities.
@@ -1249,6 +1254,8 @@ export const DEFAULT_PORT = 7317;
  * POST .../runs/:id/send (send) -> {ok:true}; GET .../runs/:id/artifacts -> FactoryOutput[];
  * GET .../runs/:id/artifacts/content?name=&hash= -> {content_base64:string}; owned notes only.
  * POST .../runs/:id/operations/:action (operation) -> FactoryWorker (worker/refresh/integrate/reconcile-worker),
+ * FactoryDeleteAttemptResult (delete; deletion_id and implementation_id required;
+ * authenticated same-origin Machine header, durable shutdown/cleanup checkpoints),
  * FactoryPauseResult (pause; pause_id required), FactoryRun|FactoryWorker (resume-context;
  * pause_id, bounded history and optional worker_id; repeat-safe retained worktree continuation),
  * FactoryRun|FactoryWorker (resume-status; pause_id and optional worker_id; observation only,
@@ -1271,7 +1278,7 @@ export const DEFAULT_PORT = 7317;
  * POST .../worker/:id/:action (empty) has the corresponding owner worker response above.
  */
 export type { FactoryOverview, FactoryDetail, Implementation, FactoryProject, ProjectCheckout, FactoryChat, FactoryMessage, FactoryEvent, SpecificationVersion, FactoryTicket, FactoryApproval, FactoryQuestion, FactoryArtifact, FactoryRun, ReviewSnapshot, ReviewComment, FactorySettings, FactoryProvider, FactoryStage, FactoryAction, RunCondition, FactoryCapabilities, FactoryProviderCapability, FactoryOutput } from "./factory.ts";
-export type { FactoryWorker, FactoryCheck, FactoryReviewEvidence, FactoryRetrospective, FactoryPauseResult, FactorySuspension } from "./factory.ts";
+export type { FactoryWorker, FactoryCheck, FactoryReviewEvidence, FactoryRetrospective, FactoryPauseResult, FactorySuspension, FactoryDeleteResult, FactoryDeleteAttemptResult } from "./factory.ts";
 export type { NativeConversationSnapshot } from "./factory.ts";
 export type { FactoryCapacity, FactoryCapacityReservation, FactoryCapacityWait, FactoryPaneLink, FactoryPaneArchive } from "./factory.ts";
 export type { ProjectReference, ProjectReferenceLibrary, CodexReferenceContext, ProjectReferencePayload } from "./factory.ts";
@@ -1391,7 +1398,7 @@ export interface FactoryHostRequests {
   review: { path: string; base: string; mode: "branch" | "workspace" };
   launch: { run: import("./factory.ts").FactoryRun; access?: { token: string; url: string }; attachments?: (Pick<import("./factory.ts").FactoryArtifact, "id" | "name" | "hash" | "size"> & { content_base64: string })[]; references?: import("./factory.ts").ProjectReferencePayload };
   send: { text: string };
-  operation: { pause_id?: string; history?: string; text?: string; worker_id?: string | null; check_id?: string; tip?: string; before?: string; worker?: import("./factory.ts").FactoryWorker; check?: import("./factory.ts").FactoryCheck; context?: unknown };
+  operation: { deletion_id?: string; implementation_id?: string; pause_id?: string; history?: string; text?: string; worker_id?: string | null; check_id?: string; tip?: string; before?: string; worker?: import("./factory.ts").FactoryWorker; check?: import("./factory.ts").FactoryCheck; context?: unknown };
 }
 
 /** GET /api/factory/implementations/:id -> FactoryDetail, including stable workflow

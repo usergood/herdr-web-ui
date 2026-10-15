@@ -8,6 +8,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 ## [Unreleased]
 
 ### Fixed
+- Add permanent Assignment Delete with owned-resource cleanup, durable pending reasons and automatic Machine reconciliation; linked issues and app-managed recovery copies remain pending until their cleanup is confirmed.
 - Pause and resume whole Assignments, preserving unfinished work and history across restart, with visible pending Machine shutdown and automatic queued continuation.
 - Start internal Ticket and test planning automatically after Specification approval,
   retaining an inspectable plan without repeated planning approvals.

@@ -23,6 +23,7 @@ type HostCapabilities = Awaited<ReturnType<FactoryExecutionHost["capabilities"]>
 const activeConditions = new Set(["accepted", "working", "ready", "needs_you", "blocked", "disconnected", "interrupted"]);
 const actions: FactoryAction[] = ["work", "setup", "grill-me", "grill-with-docs", "to-spec", "to-tickets", "implement-spec", "retro", "apply-retro", "verify-provider"];
 export class FactoryRuntime {
+  reconcileDeletion: ((id: string) => Promise<unknown>) | null = null;
   retainBeforePause: ((id: string, workerId?: string) => Promise<void>) | null = null;
   private readonly pausing = new Map<string, Promise<void>>();
   readonly queue: FactoryDispatch;
@@ -32,6 +33,7 @@ export class FactoryRuntime {
   constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly host: FactoryExecutionHost, private readonly endpoint: MachineEndpoint, private readonly readArtifact: (record: FactoryArtifact) => Buffer, private readonly publicUrl: string | null, private readonly references: FactoryReferences, private readonly accounts: MachineAccounts) {
     this.queue = new FactoryDispatch(store, () => this.reconcileCapacity(), (id, body, origin) => this.start(id, body, origin, undefined, true));
     this.queue.maintenance = async () => {
+      for (const idea of store.list<Implementation>("implementations")) if (idea.deletion) await this.reconcileDeletion?.(idea.id);
       for (const idea of store.list<Implementation>("implementations")) if (idea.pause?.condition === "pending") await this.reconcilePause(idea.id);
       for (const run of store.list<FactoryRun>("runs")) {
         const idea = store.get<Implementation>("implementations", run.implementation_id);
@@ -63,7 +65,7 @@ export class FactoryRuntime {
   }
   assertExecuting(id: string): void {
     const idea = this.store.get<Implementation>("implementations", id);
-    if (idea?.deletion) throw new FactoryError("assignment_deleting", "This Assignment has a pending permanent Delete; execution cannot resume", 409);
+    if (idea?.deletion || this.store.get("deleted_assignments", id)) throw new FactoryError("assignment_deleting", "This Assignment has a permanent Delete; execution cannot resume", 409);
     if (idea?.pause) throw new FactoryError("assignment_paused", "Resume this Assignment before starting execution", 409);
   }
   async pauseAssignment(id: string, resume = false): Promise<Implementation> {
@@ -273,7 +275,7 @@ export class FactoryRuntime {
     return run.machine_id === "local" ? this.host.verifyProvider(run.id) : this.remote(run.machine_id, `/runs/${run.id}/verify-provider`, {});
   }
   async operation<T>(run: FactoryRun, action: string, body: Record<string, unknown> = {}): Promise<T> {
-    if (!["pause", "resume-context", "resume-status", "transcript", "head", "check-reconcile", "reconcile-worker", "stop-worker"].includes(action)) this.assertExecuting(run.implementation_id);
+    if (!["delete", "pause", "resume-context", "resume-status", "transcript", "head", "check-reconcile", "reconcile-worker", "stop-worker"].includes(action)) this.assertExecuting(run.implementation_id);
     if (this.stopped) throw new FactoryError("stopping", "The bridge is stopping", 409);
     if (existsSync(join(this.store.root, "recovery-copy.json")) && !["transcript", "head", "review-evidence"].includes(action)) throw new FactoryError("recovery_copy", "Native control is disabled on a restored copy", 409);
     const result = (run.machine_id === "local" ? await this.host.operation(run.id, action, body) : await this.remote(run.machine_id, `/runs/${run.id}/operations/${action}`, body)) as T;
@@ -282,6 +284,11 @@ export class FactoryRuntime {
   }
   async inspect(machineId: string, path: string): Promise<Awaited<ReturnType<typeof inspectCheckout>>> {
     return machineId === "local" ? inspectCheckout(path) : this.remote(machineId, "/inspect", { path });
+  }
+  async deleteAttempt(run: FactoryRun, deletionId: string): Promise<void> {
+    if (this.dispatches.has(run.id)) throw new FactoryError("allocation_pending", "Waiting for accepted allocation to settle", 409);
+    const result = await this.operation<import("../shared/factory.ts").FactoryDeleteAttemptResult>(run, "delete", { deletion_id: deletionId, implementation_id: run.implementation_id });
+    if (result.run_id !== run.id || result.deletion_id !== deletionId || result.condition !== "deleted") throw new FactoryError("delete_uncertain", "Machine deletion acknowledgment does not match the owned attempt", 409);
   }
   async paneState(machineId: string, paneId: string): Promise<Awaited<ReturnType<FactoryExecutionHost["paneState"]>>> {
     return machineId === "local" ? this.host.paneState(paneId) : this.remote(machineId, "/pane-state", { pane_id: paneId });

@@ -155,6 +155,9 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
     return new Response(bytes, { headers: { "content-type": artifact[2] === "source" ? "text/plain" : metadata.media_type, "content-security-policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'", "x-content-type-options": "nosniff" } });
   }
   const archived = /^\/api\/factory\/implementations\/([^/]+)\/(archive|restore)$/.exec(path);
+  const deleted = /^\/api\/factory\/implementations\/([^/]+)\/delete$/.exec(path);
+  if (deleted && method === "POST") { details.delete(deleted[1]!); save(); return json({ id: deleted[1]!, condition: "deleted" }); }
+  if (method === "POST" && /^\/api\/factory-host\/runs\/[^/]+\/operations\/delete$/.test(path)) return failure("demo_unavailable", "Native cleanup needs an owned execution Machine");
   if (archived && method === "POST") { const d = details.get(archived[1]!); if (!d) return failure("not_found", "Assignment not found", 404); if (archived[2] === "archive" && d.implementation.stage !== "done") return failure("assignment_unfinished", "Complete the Assignment before archiving"); d.implementation.archived_at = archived[2] === "archive" ? new Date().toISOString() : null; save(); return json(d.implementation); }
   const match = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)(?:\/([a-z-]+))?$/.exec(path);
   if (match) {
