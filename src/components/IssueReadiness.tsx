@@ -1,9 +1,7 @@
 import type { IssueReadiness as Readiness, ReadinessBlocker } from "../../shared/github-readiness.ts";
 import { useT } from "../lib/i18n.ts";
 
-export function IssueReadiness({ readiness }: { readiness?: Readiness }) {
-  const t = useT();
-  function reason(code: ReadinessBlocker): string {
+export function readinessReason(code: ReadinessBlocker, t: ReturnType<typeof useT>): string {
     switch (code) {
       case "identity_required": return t("Select your readiness account in Project GitHub settings.");
       case "mapping_conflict": return t("Give every triage role and the blocked signal a different label.");
@@ -18,10 +16,13 @@ export function IssueReadiness({ readiness }: { readiness?: Readiness }) {
       case "sync_required": return t("Sync GitHub before using readiness for this scope.");
       case "policy_changed": return t("The Project scope changed. Save readiness settings and sync again.");
     }
-  }
+}
+
+export function IssueReadiness({ readiness }: { readiness?: Readiness }) {
+  const t = useT();
   return <div role="status">
     <p>{readiness?.eligible ? t("Current issue scope has trusted readiness.") : t("Issue readiness is blocked.")}</p>
-    {readiness && <ul>{readiness.blockers.map(code => <li key={code}>{reason(code)}</li>)}</ul>}
+    {readiness && <ul>{readiness.blockers.map(code => <li key={code}>{readinessReason(code, t)}</li>)}</ul>}
     {readiness?.approval && <p>{t("Approved by {login}", { login: readiness.approval.actor.login })} · {readiness.approval.provenance === "app_owner" ? t("Owner approval in app") : t("Trusted GitHub label")} · {new Date(readiness.approval.approved_at).toLocaleString()}</p>}
   </div>;
 }

@@ -1263,6 +1263,7 @@ export interface FactoryRequests {
   github_plan_preparation: import("./issue-planning.ts").PrepareIssuePlan;
   github_delivery_link: import("./github-project.ts").LinkIssueDelivery;
   github_readiness_approval: { source_revision: string; policy_revision: string };
+  github_queue_configuration: import("./issue-queue.ts").QueueConfiguration;
   github_configuration: import("./github-project.ts").ProjectGitHubConfiguration;
   github_action: { head: string; base: string; policy_revision: string };
   implementation: { title: string; description: string; project_id?: string | null };
@@ -1304,7 +1305,16 @@ export interface FactoryRequests {
   empty: Record<string, never>;
 }
 export type FactoryRequestBody = FactoryRequests[keyof FactoryRequests];
-/** GET /api/factory/projects/:id/github -> ProjectGitHubOverview.
+/** GET /api/factory/projects/:id/github/queue -> IssueQueue, one current eligibility result
+ * shared by previews, source detail and board intake badges. Each excluded issue retains reason codes
+ * and dependency identities. Policy defaults to automatic_implementation:false, paused:false,
+ * max_implementations:1. effective_limit also respects the current global limit.
+ * POST .../github/queue (QueueConfiguration) -> IssueQueue; expected_revision guards replacement.
+ * This version refuses automatic_implementation:true; no dispatch is connected.
+ * POST .../github/preview ({}) -> IssueQueue; retains a preview revision/count, never a start approval.
+ * preview_current is false after relevant policy, account, scope, plan, evidence, freshness or priority
+ * changes. Both POSTs require same origin and x-herdr-machine:1 plus x-herdr-factory:1.
+ * GET /api/factory/projects/:id/github -> ProjectGitHubOverview.
  * POST .../github/settings ({account_profile_id}) -> ProjectGitHubSettings;
  * detected repository, collaborators and branch checks, without enabling automation.
  * POST .../github/readiness (ReadinessConfiguration) -> ProjectReadinessPolicy;
@@ -1388,3 +1398,5 @@ export interface FactoryHostRequests {
   send: { text: string };
   operation: { worker_id?: string | null; check_id?: string; tip?: string; before?: string; worker?: import("./factory.ts").FactoryWorker; check?: import("./factory.ts").FactoryCheck; context?: unknown };
 }
+
+export type { IssueQueue, IssueQueueEntry, ProjectQueuePolicy, QueueConfiguration } from "./issue-queue.ts";

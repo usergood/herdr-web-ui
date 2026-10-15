@@ -1,3 +1,4 @@
+import { issueQueueEntry } from "./issue-queue.ts";
 import { FactoryWorkflow } from "./factory-workflow.ts";
 import { prepareIssuePlan, reconcileIssuePlan } from "./issue-planning.ts";
 import { combinedDependencies, dependencyPlan } from "./issue-dependencies.ts";
@@ -54,6 +55,44 @@ export class ProjectGitHub {
       return { ...source, delivery, delivery_history: deliveryHistory, dependencies: { ...source.dependencies, fresh, satisfied: fresh && source.dependencies.satisfied === true } };
     });
   }
+  queue(id: string): import("../shared/issue-queue.ts").IssueQueue {
+    this.project(id);
+    const policy = this.store.get<import("../shared/issue-queue.ts").ProjectQueuePolicy & { id: string }>("github_queue_policies", id) ?? { project_id: id, revision: null, automatic_implementation: false, paused: false, max_implementations: 1 };
+    const globalLimit = this.store.get<{ value: { max_implementations: number } }>("settings", "default")?.value.max_implementations ?? 6;
+    const githubPolicy = this.store.get<ProjectGitHubPolicy>("github_policies", id);
+    const readinessPolicy = this.store.get<ProjectReadinessPolicy>("github_readiness_policies", id);
+    const profiles = this.accounts.overview().profiles.filter(profile => profile.id === githubPolicy?.account_profile_id || profile.id === readinessPolicy?.account_profile_id);
+    const accountReady = !!githubPolicy && !!readinessPolicy && [githubPolicy.account_profile_id, readinessPolicy.account_profile_id].every(id => profiles.some(profile => profile.id === id && profile.service === "github" && profile.state === "ready" && profile.verified_identity)) && profiles.some(profile => profile.id === readinessPolicy.account_profile_id && profile.verified_identity?.account_id === readinessPolicy.owner.account_id && profile.verified_identity?.login.toLowerCase() === readinessPolicy.owner.login.toLowerCase());
+    const sources = this.sources(id).filter(source => source.kind === "issue").map(source => this.describeSource(source));
+    const entries = sources.map(source => issueQueueEntry(this.store, source, policy, accountReady)).sort((a, b) => a.position - b.position || a.source_id.localeCompare(b.source_id));
+    const revision = hash(JSON.stringify({ policy, global_limit: globalLimit, github_policy: githubPolicy, readiness_policy: readinessPolicy, profiles: profiles.map(profile => [profile.id, profile.revision, profile.state, profile.verified_identity]), scope: this.projectScope(id), sources, entries, contracts: entries.map(entry => [this.workflowScope(entry.implementation_id)]) }));
+    const preview = this.store.get<{ id: string; revision: string; created_at: string; eligible_count: number }>("github_queue_previews", id);
+    return { policy, global_limit: globalLimit, effective_limit: Math.min(policy.max_implementations, globalLimit), revision, eligible_count: entries.filter(entry => entry.eligible).length, entries, preview: preview ? { revision: preview.revision, created_at: preview.created_at, eligible_count: preview.eligible_count } : null, preview_current: preview?.revision === revision };
+  }
+  private workflowScope(id: string): unknown {
+    const workflow = new FactoryWorkflow(this.store);
+    return [workflow.specification(id), workflow.graphHash(id), workflow.questionRevision(id), this.store.list("approvals", id), this.store.list("runs", id)];
+  }
+  async previewQueue(id: string): Promise<import("../shared/issue-queue.ts").IssueQueue> {
+    return this.locked(id, async () => {
+      const queue = this.queue(id);
+      this.store.put("github_queue_previews", { id, revision: queue.revision, created_at: new Date().toISOString(), eligible_count: queue.eligible_count }, id);
+      return this.queue(id);
+    });
+  }
+
+  async configureQueue(id: string, body: Record<string, unknown>): Promise<import("../shared/issue-queue.ts").IssueQueue> {
+    return this.locked(id, async () => {
+      const current = this.queue(id);
+      if (body.expected_revision !== current.policy.revision) throw new FactoryError("queue_policy_changed", "Refresh the Project queue settings", 409);
+      if (body.automatic_implementation === true) throw new FactoryError("automatic_implementation_unavailable", "Automatic implementation is not available yet", 409);
+      if (Object.keys(body).some(key => !["expected_revision", "automatic_implementation", "paused", "max_implementations"].includes(key)) || body.automatic_implementation !== false || typeof body.paused !== "boolean" || !Number.isInteger(body.max_implementations) || (body.max_implementations as number) < 1 || (body.max_implementations as number) > current.global_limit) throw new FactoryError("invalid_queue_policy", "Select pause and an implementing Assignment limit within the global limit");
+      const policy = { id, project_id: id, revision: randomUUID(), automatic_implementation: false, paused: body.paused, max_implementations: body.max_implementations as number };
+      this.store.put("github_queue_policies", policy, id);
+      this.store.event(null, "github_queue_configured", { project_id: id, revision: policy.revision });
+      return this.queue(id);
+    });
+  }
   async linkDelivery(id: string, number: number, body: Record<string, unknown>): Promise<ProjectGitHubOverview> {
     return this.locked(id, async () => {
       this.project(id);
@@ -80,6 +119,10 @@ export class ProjectGitHub {
     const workflow = new FactoryWorkflow(this.store);
     const current = planning && readiness.eligible && planning.source_revision === source.revision && planning.authorization.approval.id === readiness.approval?.id && (planning.condition !== "prepared" || planning.specification_id === workflow.specification(source.implementation_id)?.id && planning.graph_hash === workflow.graphHash(source.implementation_id) && (!workflow.questions(source.implementation_id).length || planning.consumed_question_revision === workflow.questionRevision(source.implementation_id)));
     return { ...source, readiness, planning: planning ? { ...planning, condition: planning.condition === "needs_you" && workflow.questions(source.implementation_id).some(question => question.answer === null) ? "needs_you" : current ? planning.condition : "stale" } : undefined };
+  }
+  intake(source: ProjectGitHubSource): import("../shared/issue-queue.ts").IssueQueueEntry | undefined {
+    if (source.kind !== "issue" || this.store.get<FactoryProject>("projects", source.project_id)?.removed_at) return undefined;
+    return this.queue(source.project_id).entries.find(entry => entry.source_id === source.id);
   }
   private project(id: string): FactoryProject {
     const project = this.store.get<FactoryProject>("projects", id);

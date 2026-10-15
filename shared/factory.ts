@@ -7,6 +7,7 @@ export type RunCondition = "accepted" | "working" | "ready" | "needs_you" | "blo
 export type FactoryAction = "work" | "setup" | "grill-me" | "grill-with-docs" | "to-spec" | "to-tickets" | "implement-spec" | "retro" | "apply-retro" | "verify-provider";
 export interface FactoryRecord { id: string; created_at: string; updated_at: string }
 export interface Implementation extends FactoryRecord {
+  intake?: import("./issue-queue.ts").IssueQueueEntry;
   title: string; description: string; project_id: string | null; provider: FactoryProvider | null;
   machine_id: string | null; stage: FactoryStage; position: number;
   outcome: "none" | "implementation_complete" | "pr_open" | "merged" | "released";

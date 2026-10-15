@@ -6,6 +6,7 @@ import type { AccountOverview } from "../../shared/accounts.ts";
 import { useT } from "../lib/i18n.ts";
 import { accountRequest } from "../lib/accountsApi.ts";
 import { factoryRequest } from "../lib/factoryApi.ts";
+import { ProjectIssueQueue } from "./ProjectIssueQueue.tsx";
 import { ProjectReadinessSettings } from "./ProjectReadinessSettings.tsx";
 import { NativeAccountImport } from "./NativeAccountImport.tsx";
 import "./FactoryProjectGitHub.css";
@@ -74,6 +75,7 @@ export function FactoryProjectGitHub({ project, busy, perform, checkoutPath, che
       <button className="btn" disabled={busy || !ready || !form.repository}>{t("Save Project settings")}</button>
     </form>
     {view?.policy && <ProjectReadinessSettings key={view.readiness_policy?.revision ?? "unset"} projectId={project.id} policy={view.readiness_policy ?? null} accounts={accounts} busy={busy} perform={perform} refresh={refresh} />}
+    {view?.policy && <ProjectIssueQueue key={project.id} projectId={project.id} busy={busy} perform={perform} />}
     <NativeAccountImport machineId="local" path={checkoutPath} busy={busy} perform={perform} onImported={profile => { const id = epoch.current; setForm(current => ({ ...current, account_profile_id: profile.id })); void reloadAccounts().catch(error => { if (id === epoch.current) setProblem(error.message); }); }} />
     <button type="button" className="btn" disabled={busy || !view?.policy} onClick={() => void perform(async () => { setView(await accountRequest<ProjectGitHubOverview>(route + "/sync", {})); })}>{t("Sync GitHub")}</button>
     {view?.problem && <p role="alert">{view.problem}</p>}

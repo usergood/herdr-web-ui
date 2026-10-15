@@ -1,0 +1,20 @@
+/** Intake eligibility and queue controls never authorize an execution attempt. */
+export interface ProjectQueuePolicy {
+  project_id: string; revision: string | null; automatic_implementation: boolean;
+  paused: boolean; max_implementations: number;
+}
+export interface QueueConfiguration {
+  expected_revision: string | null; automatic_implementation: false;
+  paused: boolean; max_implementations: number;
+}
+export interface IssueQueueEntry {
+  source_id: string; implementation_id: string; number: number; title: string; position: number;
+  eligible: boolean; lane: "inbox" | "queued" | "needs_you";
+  reasons: { code: string; detail: string }[];
+}
+export interface IssueQueue {
+  policy: ProjectQueuePolicy; global_limit: number; effective_limit: number; revision: string;
+  eligible_count: number; entries: IssueQueueEntry[];
+  preview: { revision: string; created_at: string; eligible_count: number } | null;
+  preview_current: boolean;
+}

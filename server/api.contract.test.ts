@@ -3847,3 +3847,19 @@ it("refuses cross-origin changes while allowing same-origin and CLI requests", a
     }
   } finally { instance.stop(); await workspaceClose(created.workspace.workspace_id); rmSync(root, { recursive: true, force: true }); }
 });
+
+it("Project issue queue endpoints expose revision-bound previews without creating Runs", async () => {
+  const { githubQueueFixture } = await import("../scripts/fixtures/github-queue.ts");
+  const fixture = githubQueueFixture();
+  try {
+    const { route, project } = await fixture.setup();
+    const response = await fixture.post(route + "/preview", {});
+    expect(response.status).toBe(200);
+    const preview = await response.json() as import("../shared/issue-queue.ts").IssueQueue;
+    expect(preview).toMatchObject({ policy: { project_id: project.id, automatic_implementation: false, max_implementations: 1 }, global_limit: 6, effective_limit: 1, eligible_count: 0, entries: [], preview_current: true, preview: { revision: preview.revision, eligible_count: 0 } });
+    const stale = await fixture.post(route + "/queue", { expected_revision: "stale", automatic_implementation: false, paused: true, max_implementations: 1 });
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toEqual({ error: { code: "queue_policy_changed", message: "Refresh the Project queue settings" } });
+    expect((await fixture.json("")).activity).toEqual([]);
+  } finally { fixture.close(); }
+});

@@ -60,6 +60,7 @@ run_script scripts/ui-regression.ts
 run_script scripts/factory-browser-regression.ts
 run_script scripts/github-source-browser-regression.ts
 run_script scripts/issue-planning-browser-regression.ts
+run_script scripts/issue-queue-browser-regression.ts
 run_script scripts/project-setup-browser-regression.ts
 run_script scripts/inbox-start-browser-regression.ts
 run_script scripts/account-profiles-browser-regression.ts

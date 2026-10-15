@@ -1,0 +1,8 @@
+.project-issue-queue {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.project-issue-queue article {
+  padding-block: var(--space-3);
+  border-top: var(--hairline) solid var(--border);
+}

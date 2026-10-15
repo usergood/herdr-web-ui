@@ -1,0 +1,62 @@
+import { useEffect, useRef, useState } from "react";
+import type { IssueQueue } from "../../shared/issue-queue.ts";
+import { useT } from "../lib/i18n.ts";
+import { factoryRequest } from "../lib/factoryApi.ts";
+import { accountRequest } from "../lib/accountsApi.ts";
+import { IssueQueueStatus } from "./IssueQueueStatus.tsx";
+import "./ProjectIssueQueue.css";
+
+type QueueProps = { projectId: string; busy: boolean; perform: (action: () => Promise<void>) => Promise<void> };
+function QueueSettings({ queue, save, busy }: { queue: IssueQueue; save: (paused: boolean, limit: number) => void; busy: boolean }) {
+  const t = useT();
+  const [paused, setPaused] = useState(queue.policy.paused);
+  const [limit, setLimit] = useState(Math.min(queue.policy.max_implementations, queue.global_limit));
+  return <form className="factory-form" onSubmit={event => { event.preventDefault(); save(paused, limit); }}>
+    <label><input type="checkbox" checked={paused} onChange={event => setPaused(event.target.checked)} />{t("Pause queue")}</label>
+    <label>{t("Implementing Assignment limit")}<input className="input" type="number" required min={1} max={queue.global_limit} value={limit} onChange={event => setLimit(event.target.valueAsNumber)} /></label>
+    <p>{t("Effective limit: {limit} (global limit: {global})", { limit: queue.effective_limit, global: queue.global_limit })}</p>
+    <button className="btn" disabled={busy}>{t("Save queue settings")}</button>
+  </form>;
+}
+
+/** The Project is keyed by its parent; pending reads never change another Project. */
+export function ProjectIssueQueue({ projectId, busy, perform }: QueueProps) {
+  const t = useT(); const route = `/projects/${projectId}/github`;
+  const [queue, setQueue] = useState<IssueQueue | null>(null);
+  const [problem, setProblem] = useState("");
+  const epoch = useRef(0);
+  function accept(value: IssueQueue) { epoch.current++; setQueue(value); }
+  useEffect(() => {
+    let live = true; let pending = false;
+    async function refresh() {
+      if (pending) return; pending = true; const request = ++epoch.current;
+      try { const value = await factoryRequest<IssueQueue>(route + "/queue"); if (live && request === epoch.current) { setQueue(value); setProblem(""); } }
+      catch (error) { if (live && request === epoch.current) setProblem(error instanceof Error ? error.message : String(error)); }
+      finally { pending = false; }
+    }
+    void refresh(); const timer = setInterval(() => { if (!document.hidden) void refresh(); }, 5_000);
+    return () => { live = false; epoch.current++; clearInterval(timer); };
+  }, [route]);
+  async function refresh() { accept(await factoryRequest<IssueQueue>(route + "/queue")); }
+  return <section aria-label={t("Issue queue")} className="factory-section project-issue-queue">
+    <h4>{t("Issue queue")}</h4>
+    {problem && <p role="alert">{problem}</p>}
+    {queue && <>
+      <p role="status">{queue.policy.automatic_implementation ? t("Automatic implementation is on.") : t("Automatic implementation is off.")}</p>
+      <p>{t("Previewing and saving queue settings do not start work.")}</p>
+      <p role="status">{queue.policy.paused ? t("Queue paused. Admitted work continues.") : t("Queue is not paused.")}</p>
+      <QueueSettings key={`${queue.policy.revision}:${queue.global_limit}`} queue={queue} busy={busy} save={(paused, limit) => void perform(async () => { accept(await accountRequest<IssueQueue>(route + "/queue", { expected_revision: queue.policy.revision, automatic_implementation: false, paused, max_implementations: limit })); })} />
+      <button className="btn" disabled={busy} onClick={() => void perform(async () => { accept(await accountRequest<IssueQueue>(route + "/preview", {})); })}>{t("Preview eligible backlog")}</button>
+      <p role="status">{t("Eligible issues: {count}", { count: queue.eligible_count })}</p>
+      {queue.preview && <p role="status">{queue.preview_current ? t("Preview is current.") : t("Preview changed. Review the backlog again.")}</p>}
+      {queue.entries.map((entry, index) => <article key={entry.source_id}>
+        <a href={`#factory/${entry.implementation_id}`}>#{entry.number} · {entry.title}</a>
+        <IssueQueueStatus entry={entry} />
+        <div className="factory-actions">
+          <button className="btn" disabled={busy || index === 0} onClick={() => void perform(async () => { await factoryRequest(`/implementations/${entry.implementation_id}/order`, { before_id: queue.entries[index - 1]!.implementation_id }); await refresh(); })}>{t("Move earlier")}</button>
+          <button className="btn" disabled={busy || index === queue.entries.length - 1} onClick={() => void perform(async () => { await factoryRequest(`/implementations/${queue.entries[index + 1]!.implementation_id}/order`, { before_id: entry.implementation_id }); await refresh(); })}>{t("Move later")}</button>
+        </div>
+      </article>)}
+    </>}
+  </section>;
+}

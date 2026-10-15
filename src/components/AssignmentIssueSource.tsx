@@ -1,6 +1,7 @@
 import type { GitHubDependencyEdge, ProjectGitHubIssueRevision, ProjectGitHubSource } from "../../shared/github-project.ts";
 import type { FactoryTicket } from "../../shared/factory.ts";
 import { useT } from "../lib/i18n.ts";
+import { IssueQueueStatus } from "./IssueQueueStatus.tsx";
 import { IssueReadiness } from "./IssueReadiness.tsx";
 import { accountRequest } from "../lib/accountsApi.ts";
 import { Markdown } from "./Markdown.tsx";
@@ -96,6 +97,7 @@ export function AssignmentIssueSource({ sources, problem, busy, perform, tickets
     {issues.map(source => <div key={source.id}>
       <a href={source.url} target="_blank" rel="noreferrer">{source.current?.repository ?? "GitHub"} #{source.number}</a>
       {source.current ? <IssueRevision revision={source.current} /> : <p role="status">{t("Sync GitHub to collect source history.")}</p>}
+      {source.intake && <IssueQueueStatus entry={source.intake} showReasons={false} />}
       <IssueReadiness readiness={source.readiness} />
       {source.readiness_evidence?.problem && <p role="alert">{source.readiness_evidence.problem}</p>}
       {source.readiness && !source.readiness.eligible && source.readiness.blockers.every(reason => ["evidence_missing", "untrusted", "stale"].includes(reason)) && <>
