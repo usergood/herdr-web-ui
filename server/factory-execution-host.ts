@@ -118,7 +118,7 @@ export class FactoryExecutionHost {
     this.store.db.transaction(() => {
       this.store.put("host_deleted_runs", { id, ...result });
       for (const kind of ["host_leases", "host_access", "host_pause_intents", "host_deletions", "host_delete_requests", "host_scaffolding", "host_native_identity"]) this.store.remove(kind, id);
-      for (const kind of ["host_workers", "host_checks", "host_pause_results", "host_resumptions"]) for (const entry of this.store.list<{ id: string }>(kind, id)) {
+      for (const kind of ["host_workers", "host_checks", "host_pause_results", "host_resumptions", "host_review_evidence", "host_publications"]) for (const entry of this.store.list<{ id: string }>(kind, id)) {
         this.store.remove(kind, entry.id); this.store.remove("host_scaffolding", entry.id); this.store.remove("host_native_identity", entry.id);
       }
     }).immediate();
