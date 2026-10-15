@@ -106,5 +106,6 @@ try {
   await page.route(`**/api/factory/runs/${reviewId}/accept`,async route=>{acceptedHead=route.request().postDataJSON().head;await route.fulfill({status:409,json:{error:{code:"fixture_review_gate",message:"Owned UI response fixture: acceptance remains gated by the server."}}});});
   page.on("request",r=>{if(r.url().endsWith(`/runs/${reviewId}/stop`))stoppedReview=true;});
   await page.reload();await steps.getByRole("button",{name:"Accept reviewed head",exact:true}).click();await page.getByRole("alert").filter({hasText:"Owned UI response fixture"}).waitFor();assert.equal(acceptedHead,head);assert.equal(stoppedReview,false);assert.equal(await steps.getByRole("button",{name:"Finish this step",exact:true}).count(),0);
+  await page.unrouteAll({behavior:"wait"});
   assert.deepEqual(errors,[]);console.log("Inbox browser: chat-side approvals and continuation retain planning chats on desktop/mobile; fixture cannot certify native readiness");
 } finally {await browser.close();app.stop();for(const id of owned)await workspaceClose(id).catch(()=>{});rmSync(root,{recursive:true,force:true});}
