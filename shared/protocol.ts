@@ -1184,6 +1184,9 @@ export const DEFAULT_PORT = 7317;
  * POST /api/factory/projects/:id/accounts/verify -> credential-free AccountBindingSnapshot.
  * POST /api/factory/machines/:id/prepare (empty) -> FactoryCapabilities; pinned private source only.
  * POST /api/factory/implementations/:id/runs (start) -> FactoryRun, 202; scoped idempotent admission.
+ * Optional issue_scope: IssueStartScope reuses a prepared trusted plan after fresh eligibility
+ * revalidation; manifest.issue_admission freezes its source, plan, provenance and policies.
+ * Known active changes retain issue_pause and Needs you; outage alone preserves admitted work.
  * POST .../continue (continue_workflow) -> FactoryRun, 202; retain a resting step's chat/handoff
  * and start its approved successor. Implementation may first run genuine native verification
  * under retained owner intent. Missing approvals are never inferred.
@@ -1289,7 +1292,7 @@ export interface FactoryRequests {
   question: { question: string; run_id?: string; answer_kind?: "text" | "confirmation" };
   answer: { revision: string; answer: string };
   order: { direction: -1 | 1 } | { before_id: string };
-  start: { action: import("./factory.ts").FactoryAction; idempotency_key: string; execution_preset?: import("./agent-models.ts").AgentModelSelection; retrospective_id?: string; expected?: { provider: import("./factory.ts").FactoryProvider; machine_id: string; project_id: string | null; specification_id: string | null; graph_hash: string } };
+  start: { action: import("./factory.ts").FactoryAction; idempotency_key: string; issue_scope?: import("./issue-admission.ts").IssueStartScope; execution_preset?: import("./agent-models.ts").AgentModelSelection; retrospective_id?: string; expected?: { provider: import("./factory.ts").FactoryProvider; machine_id: string; project_id: string | null; specification_id: string | null; graph_hash: string } };
   continue_workflow: FactoryRequests["start"] & { run_id: string | null; allow_partial_handoff?: boolean };
   stop: { summary?: string };
   import_conversation: { before?: string };

@@ -8,6 +8,14 @@
  * in English. Placeholders in braces keep their English names.
  */
 export const JA: Record<string, string> = {
+  "Start prepared issue": "準備済みイシューを開始",
+  "Admitted issue contract": "受理済みイシューの実行契約",
+  "The admitted scope stays fixed. Required checks and independent reviews still apply.": "受理済みの範囲は固定されます。必須チェックと独立したレビューは引き続き適用されます。",
+  "Controlled pause requested. Issue closed.": "制御された一時停止が要求されました。イシューが閉じられました。",
+  "Controlled pause requested. Issue readiness was revoked.": "制御された一時停止が要求されました。イシューの準備承認が取り消されました。",
+  "Controlled pause requested. Issue scope changed.": "制御された一時停止が要求されました。イシューの範囲が変更されました。",
+  "Produced work is retained. Reconcile active or unreachable workers before another attempt.": "作成済みの作業は保持されます。次の試行前に、実行中または接続できないワーカーを照合してください。",
+
   "Issue planning": "Issue の計画",
   "Planning prepared": "計画を準備しました",
   "Planning changed. Review the current scope and readiness.": "計画が変更されました。現在の範囲と準備状況を確認してください。",

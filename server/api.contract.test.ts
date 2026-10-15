@@ -3863,3 +3863,20 @@ it("Project issue queue endpoints expose revision-bound previews without creatin
     expect((await fixture.json("")).activity).toEqual([]);
   } finally { fixture.close(); }
 });
+
+it("issue Start scope uses the existing guarded Run endpoint and standard error contract", async () => {
+  const { githubQueueFixture } = await import("../scripts/fixtures/github-queue.ts");
+  const fixture = githubQueueFixture();
+  try {
+    const { route } = await fixture.setup();
+    const source = (await fixture.json(route + "/sync", {})).sources[0];
+    const path = `/implementations/${source.implementation_id}/runs`;
+    const body: import("../shared/protocol.ts").FactoryRequests["start"] = { action: "implement-spec", idempotency_key: "contract-issue-start", issue_scope: { source_id: source.id, source_revision: source.revision, graph_hash: "unprepared" } };
+    expect((await fixture.post(path, body, { ...fixture.headers, "x-herdr-factory": "" })).status).toBe(403);
+    expect((await fixture.post(path, body, { ...fixture.headers, origin: "https://fictional.invalid" })).status).toBe(403);
+    const response = await fixture.post(path, body);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: { code: "issue_changed", message: "Refresh the prepared issue scope before starting" } });
+    expect((await fixture.json(`/implementations/${source.implementation_id}`)).runs).toEqual([]);
+  } finally { fixture.close(); }
+});

@@ -10,7 +10,7 @@ export function FactoryExecutionPanel({ detail, project, busy, perform, onOpenPa
   const [reworkTicket, setReworkTicket] = useState(detail.tickets[0]?.id ?? "");
   if (!run?.checkout) return null;
   const prefix = `/runs/${run.id}`;
-  const active = ["working", "ready", "needs_you", "blocked"].includes(run.condition);
+  const active = !run.issue_pause && ["working", "ready", "needs_you", "blocked"].includes(run.condition);
   const command = (path: string, body: FactoryRequestBody = {}) => perform(async () => { await factoryRequest(`${prefix}${path}`, body); });
   const workerCommand = (workerId: string, runId: string, action: string) => perform(async () => { await factoryRequest(`/runs/${runId}/workers/${workerId}/${action}`, {}); });
   const check = detail.checks.filter((entry) => entry.worker_id === null && entry.run_id === run.id).at(-1);
@@ -27,7 +27,7 @@ export function FactoryExecutionPanel({ detail, project, busy, perform, onOpenPa
       <label>{t("Tickets")}<select className="select factory-input" value={reworkTicket} onChange={(event) => setReworkTicket(event.target.value)}>{detail.tickets.map((ticket) => <option key={ticket.id} value={ticket.id}>{ticket.title}</option>)}</select></label>
       {[...new Set(detail.comments.filter((comment) => comment.run_id === run.id && comment.batch_id && comment.status !== "resolved").map((comment) => comment.batch_id!))].map((batch) => <button className="btn factory-button" key={batch} disabled={busy || !active || !reworkTicket} onClick={() => void command("/workers", { role: "implementer", ticket_id: reworkTicket, review_batch_id: batch, shared_paths: shared, idempotency_key: crypto.randomUUID() })}>{t("Start rework worker")} · {batch}</button>)}
     </>}
-    {detail.workers.map((worker) => { const owner = detail.runs.find((entry) => entry.id === worker.run_id); const workerActive = !!owner && ["working", "ready", "needs_you", "blocked"].includes(owner.condition); return <article className="factory-message" key={worker.id}>
+    {detail.workers.map((worker) => { const owner = detail.runs.find((entry) => entry.id === worker.run_id); const workerActive = !!owner && !owner.issue_pause && ["working", "ready", "needs_you", "blocked"].includes(owner.condition); return <article className="factory-message" key={worker.id}>
       <strong>{worker.role}</strong><p>{worker.condition} · {worker.branch}</p>
       {worker.waiting_reason && <p role="status">{worker.waiting_reason}</p>}
       <div className="factory-actions">

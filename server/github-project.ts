@@ -81,6 +81,54 @@ export class ProjectGitHub {
     });
   }
 
+  /** Synchronous read used again inside runtime's atomic admission transaction. */
+  admission(implementationId: string, scope: unknown): import("../shared/issue-admission.ts").IssueAdmission {
+    if (!scope || typeof scope !== "object" || Array.isArray(scope)) throw new FactoryError("invalid_issue_scope", "Select the displayed prepared issue scope");
+    const selected = scope as Record<string, unknown>;
+    const idea = this.store.get<Implementation>("implementations", implementationId);
+    if (!idea?.project_id) throw new FactoryError("issue_changed", "Select this issue in its Project", 409);
+    if (this.busy.has(idea.project_id)) throw new FactoryError("github_busy", "Wait for complete Project GitHub evidence before starting", 409);
+    const source = this.sources(idea.project_id).map(source => this.describeSource(source)).find(source => source.id === selected.source_id && source.implementation_id === implementationId && source.kind === "issue");
+    if (!source || source.revision !== selected.source_revision || source.planning?.graph_hash !== selected.graph_hash) throw new FactoryError("issue_changed", "Refresh the prepared issue scope before starting", 409);
+    const queue = this.queue(idea.project_id);
+    if (queue.policy.paused) throw new FactoryError("queue_paused", "Queue paused. Admitted work continues.", 409);
+    const entry = queue.entries.find(entry => entry.source_id === source.id);
+    if (!entry?.eligible || source.planning?.condition !== "prepared") throw new FactoryError("issue_not_eligible", "Resolve current issue eligibility before starting", 409);
+    if (queue.entries.find(entry => entry.eligible)?.source_id !== source.id) throw new FactoryError("queue_priority_changed", "Start the first eligible issue in board order", 409);
+    const runs = this.store.list<import("../shared/factory.ts").FactoryRun>("runs").filter(run => run.action === "implement-spec" && (run.manifest as { project?: FactoryProject }).project?.id === idea.project_id);
+    const owners = new Set(runs.filter(run => !["completed", "failed", "cancelled"].includes(run.condition)).map(run => run.implementation_id));
+    const parents = new Map(runs.map(run => [run.id, run.implementation_id]));
+    for (const worker of this.store.list<import("../shared/factory.ts").FactoryWorker>("workers")) if (parents.has(worker.run_id) && !["completed", "failed", "cancelled"].includes(worker.condition)) owners.add(parents.get(worker.run_id)!);
+    for (const check of this.store.list<import("../shared/factory.ts").FactoryCheck>("checks")) if (parents.has(check.run_id) && ["working", "interrupted"].includes(check.condition)) owners.add(parents.get(check.run_id)!);
+    if (owners.size >= queue.effective_limit) throw new FactoryError("project_capacity_exhausted", "Project implementation capacity is reserved; reconcile active and uncertain work", 409);
+    return { source, planning: source.planning, github_policy: this.store.get<ProjectGitHubPolicy>("github_policies", idea.project_id)!, readiness_policy: this.store.get<ProjectReadinessPolicy>("github_readiness_policies", idea.project_id)!, queue_policy: queue.policy, queue_revision: queue.revision };
+  }
+
+  /** Known changes request a pause. Missing metadata alone never cancels frozen work. */
+  private reconcileAdmissions(id: string): void {
+    const workflow = new FactoryWorkflow(this.store);
+    const policy = this.store.get<ProjectReadinessPolicy>("github_readiness_policies", id);
+    for (const run of this.store.list<import("../shared/factory.ts").FactoryRun>("runs")) {
+      const frozen = (run.manifest as { issue_admission?: import("../shared/issue-admission.ts").IssueAdmission }).issue_admission;
+      if (!frozen || frozen.source.project_id !== id || run.issue_pause || ["completed", "failed", "cancelled"].includes(run.condition)) continue;
+      const source = this.store.get<ProjectGitHubSource>("github_sources", frozen.source.id);
+      if (!source?.current) continue;
+      const readiness = issueReadiness(policy, source);
+      const before = frozen.source.current!; const current = source.current;
+      const reason: import("../shared/issue-admission.ts").IssuePause["reason"] | null = current.state === "closed" ? "issue_closed"
+        : current.title !== before.title || current.body !== before.body || JSON.stringify(current.native_dependencies) !== JSON.stringify(before.native_dependencies) || workflow.specification(run.implementation_id)?.id !== run.specification_id || workflow.graphHash(run.implementation_id) !== run.graph_hash ? "scope_changed"
+        : policy?.revision !== frozen.readiness_policy.revision || policy.project_scope !== this.projectScope(id) || readiness.blockers.some(blocker => ["closed", "blocked", "triage_conflict", "role_not_ready", "mapping_conflict"].includes(blocker)) || source.readiness_evidence?.complete && !readiness.approval ? "readiness_revoked" : null;
+      if (!reason) continue;
+      const pause = { source_id: source.id, source_revision: source.revision, reason, requested_at: new Date().toISOString() };
+      const question = "Controlled pause requested: " + reason + ". Preserve produced work and reconcile active or unreachable workers. Review the changed issue scope and readiness before authorizing another attempt. Answering does not resume this Run.";
+      this.store.db.transaction(() => {
+        workflow.mutate(run.implementation_id, "questions", { run_id: run.id, question });
+        this.store.put("runs", { ...run, condition: "needs_you", waiting_reason: question, issue_pause: pause, updated_at: pause.requested_at }, run.implementation_id);
+        this.store.event(run.implementation_id, "issue_pause_requested", { run_id: run.id, ...pause });
+      })();
+    }
+  }
+
   async configureQueue(id: string, body: Record<string, unknown>): Promise<import("../shared/issue-queue.ts").IssueQueue> {
     return this.locked(id, async () => {
       const current = this.queue(id);
@@ -228,6 +276,7 @@ export class ProjectGitHub {
       this.current(policy);
       const readiness: ProjectReadinessPolicy = { ...(prior ?? this.store.record()), id, project_id: id, revision: randomUUID(), repository: policy.repository, project_scope: policy.project_scope, account_profile_id: value.account_profile_id, owner: frozen.profiles[0]!.identity, triage_labels: labels, blocked_label: value.blocked_label, updated_at: new Date().toISOString() };
       this.store.put("github_readiness_policies", readiness, id);
+      this.reconcileAdmissions(id);
       this.store.event(null, "github_readiness_configured", { project_id: id, revision: readiness.revision, owner: readiness.owner });
       return readiness;
     });
@@ -591,7 +640,7 @@ export class ProjectGitHub {
       } catch (error) {
         if (!this.stopped) this.store.put<SyncState>("github_sync", { id, last_sync: this.store.get<SyncState>("github_sync", id)?.last_sync ?? null, next_sync: Date.now() + Math.max(policy.poll_minutes, 15) * 60_000, problem: error instanceof FactoryError ? error.message : "GitHub synchronization failed" });
         throw error;
-      }
+      } finally { this.reconcileAdmissions(id); }
     });
   }
   private async poll(): Promise<void> {

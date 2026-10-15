@@ -11,10 +11,12 @@ export class FactoryPipeline {
   constructor(private readonly store: FactoryStore, private readonly runtime: FactoryRuntime, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly retainBeforeStop: (id: string) => Promise<void>) {}
   private run(id: string, factoryRequired = true): FactoryRun {
     const run = this.store.get<FactoryRun>("runs", id);
+    if (run?.issue_pause) throw new FactoryError("issue_pause_required", "Controlled pause requested; preserve work and reconcile owned workers before a new attempt", 409);
     if (!run || factoryRequired && run.action !== "implement-spec" || !run.checkout || !["working", "ready", "needs_you", "blocked"].includes(run.condition)) throw new FactoryError("factory_run_required", "Reconcile an admitted repository Run first", 409);
     return run;
   }
   frontier(run: FactoryRun): FactoryTicket[] {
+    if (run.issue_pause) return [];
     const tickets = (run.manifest as { tickets: FactoryTicket[] }).tickets;
     const workers = this.store.list<FactoryWorker>("workers", run.id);
     const done = new Set(workers.filter((worker) => worker.role === "implementer" && worker.condition === "completed").map((worker) => worker.ticket_id));

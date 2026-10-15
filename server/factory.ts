@@ -51,7 +51,7 @@ export class FactoryService {
     this.accounts.usage((id) => [...this.store.list<FactoryRun>("runs"), ...this.store.list<{ run: FactoryRun; closing?: boolean }>("host_leases").map((lease) => lease.run)].some((run) => ["accepted", "working", "ready", "needs_you", "blocked", "disconnected", "interrupted"].includes(run.condition) && (run.manifest as { account_snapshot?: import("../shared/accounts.ts").AccountBindingSnapshot })?.account_snapshot?.profiles.some((profile) => profile.id === id)));
     this.references = new FactoryReferences(this.store, this.artifacts);
     this.executionHost = new FactoryExecutionHost(this.store, () => this.settings().skills_path, native, this.accounts);
-    this.runtime = new FactoryRuntime(this.store, this.workflow, () => this.settings(), this.executionHost, endpoint, (record) => this.artifacts.read(record), publicUrl, this.references, this.accounts); this.review = new FactoryReview(this.store, (machine, path, base, mode) => this.runtime.capture(machine, path, base, mode), (machine, path) => this.runtime.inspect(machine, path));
+    this.runtime = new FactoryRuntime(this.store, this.workflow, () => this.settings(), this.executionHost, endpoint, (record) => this.artifacts.read(record), publicUrl, this.references, this.accounts, (id, scope) => this.github.admission(id, scope)); this.review = new FactoryReview(this.store, (machine, path, base, mode) => this.runtime.capture(machine, path, base, mode), (machine, path) => this.runtime.inspect(machine, path));
     this.pipeline = new FactoryPipeline(this.store, this.runtime, this.workflow, () => this.settings(), id => this.retainHandoff(id));
     this.continuation = new FactoryContinuation(this.store, this.workflow, this.runtime, async (id, allowPartial) => {
       await this.retainHandoff(id);
@@ -213,6 +213,7 @@ export class FactoryService {
     const nextCondition = ended ? "interrupted" : status === "blocked" ? "needs_you" : ["idle", "done"].includes(status) && !backgroundWorking ? "ready" : "working";
     const reason = ended ? "The native pane ended without an accepted outcome; retained work needs reconciliation" : status === "blocked" ? "The native agent is waiting for an owner answer" : null;
     for (const run of this.store.list<FactoryRun>("runs")) if (run.machine_id === "local" && run.pane_id === paneId && ["working", "ready", "needs_you", "blocked"].includes(run.condition)) {
+      if (run.issue_pause) continue;
       if (!ended && agent !== run.provider) continue;
       const pending = this.store.list<import("../shared/protocol.ts").FactoryQuestion>("questions", run.implementation_id).find((question) => question.run_id === run.id && question.answer === null);
       const condition = pending && !ended ? "needs_you" : nextCondition;
@@ -527,6 +528,7 @@ export class FactoryService {
       const answerDelivery = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/send-answers$/.exec(url.pathname);
       if (answerDelivery && request.method === "POST") {
         const run = this.store.get<FactoryRun>("runs", answerDelivery[1]!); if (!run) throw new FactoryError("not_found", "Run not found", 404);
+        if (run.issue_pause) throw new FactoryError("issue_pause_required", "Controlled pause requested; answering does not resume this Run", 409);
         const body = await this.body(request); const revision = this.workflow.questionRevision(run.implementation_id, run.id);
         if (typeof body.idempotency_key !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.idempotency_key)) throw new FactoryError("invalid_delivery", "Send answered context with an explicit receipt key");
         if (body.revision !== revision || this.workflow.questions(run.implementation_id, run.id).some((question) => question.answer === null)) throw new FactoryError("answers_unready", "Send the current answered question revision explicitly", 409);

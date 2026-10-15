@@ -7,6 +7,14 @@
  * keep their English names.
  */
 export const TR: Record<string, string> = {
+  "Start prepared issue": "Hazırlanan konuyu başlat",
+  "Admitted issue contract": "Kabul edilen konu sözleşmesi",
+  "The admitted scope stays fixed. Required checks and independent reviews still apply.": "Kabul edilen kapsam sabit kalır. Gerekli kontroller ve bağımsız incelemeler geçerliliğini korur.",
+  "Controlled pause requested. Issue closed.": "Kontrollü duraklatma istendi. Konu kapatıldı.",
+  "Controlled pause requested. Issue readiness was revoked.": "Kontrollü duraklatma istendi. Konunun hazırlık onayı geri alındı.",
+  "Controlled pause requested. Issue scope changed.": "Kontrollü duraklatma istendi. Konunun kapsamı değişti.",
+  "Produced work is retained. Reconcile active or unreachable workers before another attempt.": "Üretilen çalışma korunur. Yeni denemeden önce etkin veya ulaşılamayan çalışanları uzlaştırın.",
+
   "Issue planning": "Konu planlaması",
   "Planning prepared": "Plan hazırlandı",
   "Planning changed. Review the current scope and readiness.": "Plan değişti. Geçerli kapsamı ve hazırlık durumunu inceleyin.",

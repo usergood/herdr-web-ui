@@ -10,6 +10,14 @@
  * Placeholders in braces keep their English names.
  */
 export const ZH: Record<string, string> = {
+  "Start prepared issue": "启动已准备的议题",
+  "Admitted issue contract": "已接纳的议题执行约定",
+  "The admitted scope stays fixed. Required checks and independent reviews still apply.": "已接纳的范围保持固定。必需检查和独立审查仍然适用。",
+  "Controlled pause requested. Issue closed.": "已请求受控暂停。议题已关闭。",
+  "Controlled pause requested. Issue readiness was revoked.": "已请求受控暂停。议题的就绪授权已撤销。",
+  "Controlled pause requested. Issue scope changed.": "已请求受控暂停。议题范围已更改。",
+  "Produced work is retained. Reconcile active or unreachable workers before another attempt.": "已产出的工作将保留。再次尝试前，请核对活跃或无法连接的工作进程。",
+
   "Issue planning": "议题规划",
   "Planning prepared": "规划已准备",
   "Planning changed. Review the current scope and readiness.": "规划已更改。请检查当前范围和就绪状态。",

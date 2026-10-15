@@ -20,10 +20,16 @@ export type MachineEndpoint = (machineId: string) => { url: string; token: strin
 type HostCapabilities = Awaited<ReturnType<FactoryExecutionHost["capabilities"]>>;
 const activeConditions = new Set(["accepted", "working", "ready", "needs_you", "blocked", "disconnected", "interrupted"]);
 const actions: FactoryAction[] = ["work", "setup", "grill-me", "grill-with-docs", "to-spec", "to-tickets", "implement-spec", "retro", "apply-retro", "verify-provider"];
+function issueScopeIdentity(scope: unknown): unknown {
+  if (!scope || typeof scope !== "object" || Array.isArray(scope)) return scope ?? null;
+  const selected = scope as Record<string, unknown>;
+  return [selected.source_id, selected.source_revision, selected.graph_hash];
+}
 export class FactoryRuntime {
   private readonly dispatches = new Map<string, Promise<FactoryRun>>();
+  private readonly starts = new Map<string, { scope: string; pending: Promise<FactoryRun> }>();
   private stopped = false;
-  constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly host: FactoryExecutionHost, private readonly endpoint: MachineEndpoint, private readonly readArtifact: (record: FactoryArtifact) => Buffer, private readonly publicUrl: string | null, private readonly references: FactoryReferences, private readonly accounts: MachineAccounts) {}
+  constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly host: FactoryExecutionHost, private readonly endpoint: MachineEndpoint, private readonly readArtifact: (record: FactoryArtifact) => Buffer, private readonly publicUrl: string | null, private readonly references: FactoryReferences, private readonly accounts: MachineAccounts, private readonly issueAdmission: (id: string, scope: unknown) => import("../shared/issue-admission.ts").IssueAdmission) {}
   async discover(machineId: string, path: string): Promise<import("../shared/project-setup.ts").ProjectDiscovery> { return machineId === "local" ? this.host.discover(path) : this.remote(machineId, "/project-discovery", { path }); }
   async modelCatalog(machineId: string, provider: FactoryProvider, path: string, repository: string, snapshot?: AccountBindingSnapshot | null): Promise<import("../shared/agent-models.ts").AgentModelCatalog> {
     const result = machineId === "local" ? await this.host.modelCatalog(provider, path, repository, snapshot) : await this.remote<import("../shared/agent-models.ts").AgentModelCatalog>(machineId, "/model-catalog", { provider, path, repository, account_snapshot: snapshot } satisfies FactoryHostRequests["model_catalog"]);
@@ -99,6 +105,7 @@ export class FactoryRuntime {
     return run.machine_id === "local" ? this.host.verifyProvider(run.id) : this.remote(run.machine_id, `/runs/${run.id}/verify-provider`, {});
   }
   async operation<T>(run: FactoryRun, action: string, body: Record<string, unknown> = {}): Promise<T> {
+    if (this.store.get<FactoryRun>("runs", run.id)?.issue_pause && !["head", "transcript", "review-evidence", "reconcile-worker", "stop-worker", "check-reconcile", "cleanup"].includes(action)) throw new FactoryError("issue_pause_required", "Controlled pause requested; reconcile retained work before continuing", 409);
     if (existsSync(join(this.store.root, "recovery-copy.json")) && !["transcript", "head", "review-evidence"].includes(action)) throw new FactoryError("recovery_copy", "Native control is disabled on a restored copy", 409);
     return (run.machine_id === "local" ? await this.host.operation(run.id, action, body) : await this.remote(run.machine_id, `/runs/${run.id}/operations/${action}`, body)) as T;
   }
@@ -112,6 +119,18 @@ export class FactoryRuntime {
     return this.remote(machineId, "/review", { path, base, mode });
   }
   async start(id: string, body: Record<string, unknown>, origin: string, continuation?: { runId?: string; finish?: () => Promise<void>; validateScope?: () => void }): Promise<FactoryRun> {
+    const key = JSON.stringify([id, body.idempotency_key]);
+    const scope = hash(JSON.stringify([body.action, issueScopeIdentity(body.issue_scope)]));
+    const existing = this.starts.get(key);
+    if (existing) {
+      if (existing.scope !== scope) throw new FactoryError("idempotency_conflict", "This Start key belongs to another scope", 409);
+      return existing.pending;
+    }
+    const pending = this.startOwned(id, body, origin, continuation);
+    this.starts.set(key, { scope, pending });
+    try { return await pending; } finally { this.starts.delete(key); }
+  }
+  private async startOwned(id: string, body: Record<string, unknown>, origin: string, continuation?: { runId?: string; finish?: () => Promise<void>; validateScope?: () => void }): Promise<FactoryRun> {
     continuation?.validateScope?.();
     if (!actions.includes(body.action as FactoryAction) || typeof body.idempotency_key !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.idempotency_key)) throw new FactoryError("invalid_start", "Select an explicit action with an idempotency key");
     let implementation = this.store.get<Implementation>("implementations", id);
@@ -119,12 +138,20 @@ export class FactoryRuntime {
     const previous = this.store.list<FactoryRun>("runs", id).find((run) => run.idempotency_key === body.idempotency_key);
     if (previous) {
       if (previous.action !== body.action) throw new FactoryError("idempotency_conflict", "This Start key already belongs to another action", 409);
+      const admitted = (previous.manifest as { issue_admission?: import("../shared/issue-admission.ts").IssueAdmission }).issue_admission;
+      const scope = admitted ? { source_id: admitted.source.id, source_revision: admitted.source.revision, graph_hash: admitted.planning.graph_hash } : null;
+      if (hash(JSON.stringify(issueScopeIdentity(scope))) !== hash(JSON.stringify(issueScopeIdentity(body.issue_scope)))) throw new FactoryError("idempotency_conflict", "This Start key belongs to another issue scope", 409);
       return this.dispatches.get(previous.id) ?? previous;
     }
     if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Execution is disabled on a restored copy until separately scoped promotion", 409);
     const project = implementation.project_id ? this.store.get<FactoryProject>("projects", implementation.project_id) : null;
     if (implementation.archived_at || project?.removed_at) throw new FactoryError("inactive_assignment", "Restore this Assignment and Project before starting work", 409);
     const action = body.action as FactoryAction;
+    if (body.issue_scope !== undefined && action !== "implement-spec") throw new FactoryError("invalid_issue_scope", "Prepared issue scope authorizes implementation only");
+    const issueAdmission = body.issue_scope === undefined ? null : this.issueAdmission(id, body.issue_scope);
+    const validateIssue = () => {
+      if (issueAdmission && hash(JSON.stringify(this.issueAdmission(id, body.issue_scope))) !== hash(JSON.stringify(issueAdmission))) throw new FactoryError("issue_changed", "The issue admission evidence changed; review it before starting", 409);
+    };
     if (["work", "implement-spec", "grill-with-docs", "to-tickets", "retro", "apply-retro"].includes(action) && !project) throw new FactoryError("project_required", "Select a Project before starting this action", 409);
     const retrospective = ["retro", "apply-retro"].includes(action) ? this.store.get<import("../shared/protocol.ts").FactoryRetrospective>("retrospectives", String(body.retrospective_id)) : null;
     if (["retro", "apply-retro"].includes(action) && (!retrospective || retrospective.project_id !== project?.id || action === "apply-retro" && !retrospective.approved)) throw new FactoryError("retrospective_scope_required", "Select retained Project evidence and separately approve improvements before applying them", 409);
@@ -161,11 +188,12 @@ export class FactoryRuntime {
     const executionPreset = selection.model && inspected ? resolveModelSelection(selection, await this.modelCatalog(machineId, provider, inspected.path, inspected.repository, accountSnapshot)) : selection;
     if (selection.model && !inspected) throw new FactoryError("checkout_required", "Select a Project checkout before choosing a model", 409);
     const specification = this.workflow.specification(id); const graphHash = this.workflow.graphHash(id);
+    validateIssue();
     if (action === "to-tickets" || action === "implement-spec") {
-      if (!specification || !this.workflow.approved(id, "specification", specification.id) || !this.workflow.approved(id, "testing_seams", specification.id)) throw new FactoryError("scope_unaccepted", "Accept the current specification and testing seams", 409);
+      if (!specification || !issueAdmission && (!this.workflow.approved(id, "specification", specification.id) || !this.workflow.approved(id, "testing_seams", specification.id))) throw new FactoryError("scope_unaccepted", "Accept the current specification and testing seams", 409);
     }
     if (action === "implement-spec") {
-      if (!this.workflow.tickets(id).length || !this.workflow.approved(id, "ticket_graph", graphHash)) throw new FactoryError("scope_unaccepted", "Accept the current Ticket graph", 409);
+      if (!this.workflow.tickets(id).length || !issueAdmission && !this.workflow.approved(id, "ticket_graph", graphHash)) throw new FactoryError("scope_unaccepted", "Accept the current Ticket graph", 409);
       if (!project?.checks?.length || !project.permissions?.trim()) throw new FactoryError("project_setup_required", "Configure known Project checks and execution permissions before factory admission", 409);
     }
     // Validate the next action before releasing the resting predecessor. Retained context
@@ -196,7 +224,7 @@ export class FactoryRuntime {
     if (projectReferences?.entries.length && provider !== "codex") throw new FactoryError("reference_provider_unavailable", "Project references currently require Codex; keep the selected provider or explicitly choose Codex", 409);
     if (artifacts.reduce((size, artifact) => size + artifact.size, 0) + (projectReferences?.entries.reduce((size, entry) => size + entry.size, 0) ?? 0) > 64 * 1024 * 1024) throw new FactoryError("context_too_large", "Retained inputs exceed this Run's 64 MiB materialization budget", 413);
     if (action === "implement-spec") {
-      if (!specification || !this.workflow.approved(id, "specification", specification.id) || !this.workflow.approved(id, "testing_seams", specification.id) || !this.workflow.tickets(id).length || !this.workflow.approved(id, "ticket_graph", graphHash)) throw new FactoryError("scope_unaccepted", "Accept the current specification, testing seams and Ticket graph", 409);
+      if (!specification || !this.workflow.tickets(id).length || !issueAdmission && (!this.workflow.approved(id, "specification", specification.id) || !this.workflow.approved(id, "testing_seams", specification.id) || !this.workflow.approved(id, "ticket_graph", graphHash))) throw new FactoryError("scope_unaccepted", "Accept the current specification, testing seams and Ticket graph", 409);
       if (!project?.checks?.length || !project.permissions?.trim()) throw new FactoryError("project_setup_required", "Configure known Project checks and execution permissions before factory admission", 409);
     }
     const api = new URL(this.publicUrl ?? origin);
@@ -207,6 +235,7 @@ export class FactoryRuntime {
       continuation?.validateScope?.();
       const raced = this.store.list<FactoryRun>("runs", id).find((entry) => entry.idempotency_key === body.idempotency_key);
       if (raced) return { run: raced, accepted: false };
+      validateIssue();
       if (this.stopped) throw new FactoryError("stopping", "The bridge is stopping; reconcile before retrying", 409);
       const currentHash = hash(JSON.stringify({ implementation: this.store.get("implementations", id), project: project ? this.store.get("projects", project.id) : null, checkout: checkout ? this.store.get("checkouts", checkout.id) : null, specification: this.workflow.specification(id), graphHash: this.workflow.graphHash(id), settings: this.settings(), skills: skills.hash, artifacts: selectedArtifacts(), messages: this.store.list<FactoryMessage>("messages", id), projectReferences: project ? this.references.current(project.id) : null }));
       if (currentHash !== contractHash) throw new FactoryError("scope_changed", "The selected execution scope changed during admission", 409);
@@ -215,7 +244,7 @@ export class FactoryRuntime {
       const capacity = factoryCapacity(this.store);
       if (capacity.implementations.size >= this.settings().max_implementations || capacity.agents >= this.settings().max_agents) throw new FactoryError("capacity_exhausted", "Global execution capacity is in use; start manually after capacity is released", 409);
       const record: FactoryRun = { ...this.store.record(), implementation_id: id, action, provider, machine_id: machineId, condition: "accepted", waiting_reason: null, idempotency_key: body.idempotency_key as string, specification_id: specification?.id ?? null, graph_hash: graphHash, base: inspected?.head ?? null, checkout: inspected?.path ?? null, worktree: null, branch: null, workspace_id: null, pane_id: null, manifest: { skills, artifacts, context_message_ids: messages.map(message => message.id), retrospective, retrospective_evidence: retrospective ? this.store.get("retro_evidence", retrospective.id) : null, implementation, project, checkout: inspected, specification, tickets: this.workflow.tickets(id), approvals: this.store.list<FactoryApproval>("approvals", id), effective_settings: this.settings(), provider_version: capability.version, permissions: "Retain native controls; publication, merge, deployment and destructive cleanup are separate owner actions", contract_hash: contractHash } };
-      record.manifest = { ...(record.manifest as object), execution_preset: executionPreset, project_references: projectReferences, account_snapshot: accountSnapshot };
+      record.manifest = { ...(record.manifest as object), execution_preset: executionPreset, project_references: projectReferences, account_snapshot: accountSnapshot, ...(issueAdmission ? { issue_admission: issueAdmission } : {}) };
       if (projectReferences) this.references.freeze(projectReferences.project_id);
       this.store.put("runs", record, id); this.store.event(id, "dispatch_accepted", { run_id: record.id, action }); return { run: record, accepted: true };
     }).immediate();
@@ -244,6 +273,7 @@ export class FactoryRuntime {
     if (!this.stopped) this.store.db.transaction(() => {
       const current = this.store.get<FactoryRun>("runs", run.id);
       if (current && ["cancelled", "completed", "failed"].includes(current.condition)) { run = current; return; }
+      if (current?.issue_pause) run = { ...run, issue_pause: current.issue_pause, condition: "needs_you", waiting_reason: current.waiting_reason };
       this.store.put("runs", run, run.implementation_id);
       this.store.event(run.implementation_id, run.condition === "working" ? "native_launch_confirmed" : "dispatch_uncertain", { run_id: run.id, machine_id: run.machine_id, pane_id: run.pane_id, reason: run.waiting_reason });
       if (run.condition === "working") { const idea = this.store.get<Implementation>("implementations", run.implementation_id)!; this.store.put("implementations", { ...idea, stage: ["work", "implement-spec"].includes(run.action) ? "running" : "specifying" }); }
@@ -280,6 +310,7 @@ export class FactoryRuntime {
     catch (error) { run = { ...run, condition: "disconnected", waiting_reason: error instanceof FactoryError ? error.message : "The Machine cannot currently be observed; ownership is retained", updated_at: new Date().toISOString() }; }
     const current = this.store.get<FactoryRun>("runs", runId);
     if (current && hash(JSON.stringify(current)) !== revision) return current;
+    if (current?.issue_pause) run = { ...run, issue_pause: current.issue_pause, condition: "needs_you", waiting_reason: current.waiting_reason };
     const question = this.store.list<import("../shared/protocol.ts").FactoryQuestion>("questions", run.implementation_id).find((entry) => entry.run_id === run!.id && entry.answer === null);
     if (question && ["working", "ready"].includes(run.condition)) run = { ...run, condition: "needs_you", waiting_reason: question.question };
     this.store.put("runs", run, run.implementation_id); this.store.event(run.implementation_id, "run_reconciled", { run_id: run.id, condition: run.condition }); return run;

@@ -6,6 +6,14 @@
  * braces keep their English names.
  */
 export const KO: Record<string, string> = {
+  "Start prepared issue": "준비된 이슈 시작",
+  "Admitted issue contract": "승인된 이슈 실행 계약",
+  "The admitted scope stays fixed. Required checks and independent reviews still apply.": "승인된 실행 범위는 고정됩니다. 필수 검사와 독립 검토는 계속 적용됩니다.",
+  "Controlled pause requested. Issue closed.": "제어된 일시 중지가 요청되었습니다. 이슈가 닫혔습니다.",
+  "Controlled pause requested. Issue readiness was revoked.": "제어된 일시 중지가 요청되었습니다. 이슈 준비 승인이 철회되었습니다.",
+  "Controlled pause requested. Issue scope changed.": "제어된 일시 중지가 요청되었습니다. 이슈 범위가 변경되었습니다.",
+  "Produced work is retained. Reconcile active or unreachable workers before another attempt.": "생성된 작업은 유지됩니다. 다음 시도 전에 활성 상태이거나 연결할 수 없는 작업자를 확인하세요.",
+
   "Issue planning": "이슈 계획",
   "Planning prepared": "계획 준비 완료",
   "Planning changed. Review the current scope and readiness.": "계획이 변경되었습니다. 현재 범위와 준비 상태를 검토하세요.",

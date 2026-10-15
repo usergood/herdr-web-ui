@@ -79,4 +79,47 @@ try {
   }
   assert.deepEqual(errors, []);
   console.log("PASS: desktop/mobile backlog count/reasons, stale preview, priority, pause, limits, Needs you and outage; no starts");
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    const admitted = githubQueueFixture(true);
+    const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });
+    page.setDefaultTimeout(10_000); page.on("pageerror", error => errors.push(error.message));
+    try {
+      const { route, readiness } = await admitted.setup();
+      const source = (await admitted.json(route + "/sync", {})).sources[0];
+      await admitted.json(route + "/issues/1/approve", { source_revision: source.revision, policy_revision: readiness.revision });
+      await admitted.json(route + "/issues/1/prepare", { source_revision: source.revision });
+      await admitted.json(route + "/sync", {});
+      const path = `/implementations/${source.implementation_id}`;
+      await page.goto(admitted.origin + `/#factory/${source.implementation_id}`);
+      const planning = page.getByRole("region", { name: "Issue planning", exact: true });
+      await planning.getByRole("button", { name: "Start prepared issue", exact: true }).click();
+      const contract = page.getByRole("region", { name: "Admitted issue contract", exact: true });
+      await contract.getByText("The admitted scope stays fixed. Required checks and independent reviews still apply.", { exact: true }).waitFor();
+      await contract.getByText(source.revision, { exact: true }).waitFor();
+      await contract.getByText("Approved by fictional-owner", { exact: true }).waitFor();
+      const run = (await admitted.json(path)).runs[0];
+      assert.equal(run.condition, "working");
+      await contract.getByText("Reused planning", { exact: true }).click();
+      await contract.getByText(run.graph_hash, { exact: true }).waitFor();
+      await contract.getByText("Public HTTP and real browser journeys.", { exact: true }).first().waitFor();
+      assert.equal((await admitted.json(path)).approvals.length, 0);
+      admitted.save([admitted.issue], true);
+      assert.equal((await admitted.post(route + "/sync", {})).status, 409);
+      await page.reload();
+      await contract.getByText(source.revision, { exact: true }).waitFor();
+      assert.equal((await admitted.json(path)).runs[0].condition, "working");
+      admitted.issue.body += "\nNew scope requiring owner review.";
+      admitted.issue.updated_at = "2026-10-03T12:00:00Z";
+      admitted.save(); await admitted.json(route + "/sync", {});
+      await page.reload();
+      await contract.getByText("Controlled pause requested. Issue scope changed.", { exact: true }).waitFor();
+      await contract.getByText("Produced work is retained. Reconcile active or unreachable workers before another attempt.", { exact: true }).waitFor();
+      assert.equal((await admitted.json(path)).runs[0].condition, "needs_you");
+      assert.deepEqual((await admitted.json(path)).runs[0].manifest, run.manifest);
+      assert(await contract.evaluate(element => element.scrollWidth <= element.clientWidth));
+      if (evidence) await page.screenshot({ path: join(evidence, `issue-admission-${viewport.width}.png`), fullPage: true });
+    } finally { await page.close(); admitted.close(); }
+  }
+  assert.deepEqual(errors, []);
+  console.log("PASS: desktop/mobile explicit trusted Start, admitted contract, outage continuation and controlled pause");
 } finally { await browser.close(); fixture.close(); }
