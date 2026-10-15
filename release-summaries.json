@@ -1,4 +1,36 @@
 {
+  "0.5.1": {
+    "en": {
+      "improved": [
+        "Open Workflow and boards with much smaller updates.",
+        "Load history and review evidence only when you open them."
+      ]
+    },
+    "ko": {
+      "improved": [
+        "더 작은 데이터로 워크플로와 보드를 불러옵니다.",
+        "기록과 검토 증거는 열 때만 불러옵니다."
+      ]
+    },
+    "ja": {
+      "improved": [
+        "ワークフローとボードを、より少ない更新データで表示します。",
+        "履歴とレビューの証拠は、開いたときだけ読み込みます。"
+      ]
+    },
+    "zh": {
+      "improved": [
+        "工作流和看板更新所需的数据量大幅减少。",
+        "仅在打开时加载历史记录和审查证据。"
+      ]
+    },
+    "tr": {
+      "improved": [
+        "İş akışını ve panoları çok daha küçük güncellemelerle açın.",
+        "Geçmişi ve inceleme kanıtlarını yalnızca açtığınızda yükleyin."
+      ]
+    }
+  },
   "0.5.0": {
     "en": {
       "new": [
