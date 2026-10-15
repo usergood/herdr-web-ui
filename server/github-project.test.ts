@@ -117,7 +117,7 @@ test("selected issue planning reuses its retained approved app plan and blocking
   const data = JSON.parse(readFileSync(f.state, "utf8")); data.issues[0].labels = [{ name: "ready-for-agent" }]; data.events = [readinessEvent()];
   writeFileSync(f.state, JSON.stringify(data));
   const source = (await f.post(route + "/sync", {})).body.sources[0]; const prefix = `/implementations/${source.implementation_id}`;
-  const retainedContent = externalPlan + "\n\n## Tickets\nThe approved API ticket blocks the browser ticket.";
+  const retainedContent = "## Problem Statement\nVisitors need a greeting.\n\n## Solution\nAdd a fictional greeting endpoint.\n\n## User Stories\n1. As a visitor, I want to see hello.\n\n## Implementation Decisions\nThe API Ticket blocks the browser Ticket.\n\n## Testing Decisions\nPublic HTTP and real browser journeys.\n\n## Out of Scope\nOther greetings.\n\n## Further Notes\nKeep the approved graph.";
   const specification = (await f.post(prefix + "/specifications", { content: retainedContent })).body;
   for (const kind of ["specification", "testing_seams"]) await f.post(prefix + "/approvals", { kind, revision: specification.id, scope: "Owner reviewed retained app planning" });
   const graph = (await f.post(prefix + "/tickets", { specification_id: specification.id, tickets: [{ key: "api", title: "Add greeting API", acceptance: "GET /hello returns hello", dependencies: [] }, { key: "browser", title: "Show greeting", acceptance: "Greeting is visible in the browser", dependencies: ["api"] }] })).body;
@@ -125,10 +125,13 @@ test("selected issue planning reuses its retained approved app plan and blocking
   const before = await f.get(prefix);
   const prepared = await f.post(route + "/issues/12/prepare", { source_revision: source.revision });
   expect(prepared.status).toBe(200);
-  expect(prepared.body.sources[0].planning).toMatchObject({ origin: "app_plan", content: retainedContent, specification_id: specification.id, graph_hash: graph.hash, dependencies: "None." });
+  expect(prepared.body.sources[0].planning).toMatchObject({ origin: "app_plan", content: retainedContent, specification_id: specification.id, condition: "prepared", graph_hash: graph.hash, dependencies: "", testing_seams: "Public HTTP and real browser journeys." });
   const after = await f.get(prefix);
   expect(after.specifications).toEqual(before.specifications); expect(after.tickets).toEqual(before.tickets);
   expect(after.approvals).toEqual(before.approvals); expect(after.runs).toEqual([]);
+  await f.post(route + "/sync", {});
+  const queue = (await f.post(route + "/preview", {})).body;
+  expect(queue).toMatchObject({ eligible_count: 1, entries: [expect.objectContaining({ eligible: true, reasons: [] })] });
 });
 
 test("trusted issue planning prepares a bounded graph with exact provenance without starting work or inventing approvals", async () => {
@@ -515,6 +518,26 @@ test("only current-scope trusted label evidence authorizes readiness and retains
   data.events.push(readinessEvent(2, "fictional-owner", "2026-10-02T12:00:00Z")); writeFileSync(f.state, JSON.stringify(data));
   const renewed = (await f.post(route + "/sync", {})).body.sources[0];
   expect(renewed.readiness.eligible).toBe(true); expect(renewed.readiness.approval.source_revision).toBe(changed.revision);
+});
+
+test("metadata timestamps preserve trusted scope approval and prepared app planning", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy);
+  await f.post(route + "/readiness", { expected_revision: null, account_profile_id: f.policy.account_profile_id, triage_labels: {}, blocked_label: "blocked" });
+  const data = JSON.parse(readFileSync(f.state, "utf8"));
+  Object.assign(data.issues[0], { body: externalPlan, labels: [{ name: "ready-for-agent" }] }); data.events = [readinessEvent()];
+  writeFileSync(f.state, JSON.stringify(data));
+  const source = (await f.post(route + "/sync", {})).body.sources[0];
+  await f.post(route + "/issues/12/prepare", { source_revision: source.revision });
+  const before = await f.get(`/implementations/${source.implementation_id}`);
+  data.issues[0].updated_at = "2026-10-03T12:00:00Z";
+  writeFileSync(f.state, JSON.stringify(data));
+  const updated = (await f.post(route + "/sync", {})).body.sources[0];
+  expect(updated.current.source_updated_at).toBe("2026-10-03T12:00:00Z");
+  expect(updated.revision).toBe(source.revision);
+  expect(updated.readiness).toEqual(source.readiness);
+  expect(updated.planning).toEqual(before.github_sources[0].planning);
+  expect((await f.get(`/implementations/${source.implementation_id}`)).questions).toEqual([]);
 });
 
 test("owner approval is explicit, revision-scoped and cannot bypass triage or stale evidence", async () => {

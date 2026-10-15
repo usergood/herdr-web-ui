@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { join } from "node:path";
 import { githubReviewFixture } from "../scripts/fixtures/github-review.ts";
 
 test("accepting a checked and independently reviewed issue implementation awaits merge without establishing Done", async () => {
@@ -206,5 +208,36 @@ test("reconciled implementation with current checks and both reviews frees capac
     const check = detail.checks.filter((check: any) => check.worker_id === null).at(-1);
     expect((await fixture.post(`/runs/${run.id}/accept`, { head: check.head })).status).toBe(200);
     expect((await fixture.json(path)).implementation.stage).toBe("review");
+  } finally { fixture.close(); }
+}, 20_000);
+
+
+test("historically accepted implementations with cleaned workspaces retain released capacity after upgrade", async () => {
+  const fixture = githubReviewFixture();
+  try {
+    fixture.save([fixture.issue, { ...fixture.issue, number: 2, node_id: "fictional-2", title: "Next issue" }]);
+    const { run, path, route, readiness } = await fixture.prepare();
+    const second = await fixture.second(route, readiness);
+    await fixture.integrate(run); const check = await fixture.json(`/runs/${run.id}/checks`, {});
+    await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    await fixture.json(`/runs/${run.id}/accept`, { head: check.head });
+    const accepted = await fixture.json(path);
+    // Persist the pre-upgrade input format while the disposable server is stopped.
+    // Assertions below use only HTTP, never database reads.
+    const historical = { ...accepted.runs[0] };
+    delete historical.implementation_completion; delete historical.manifest.issue_admission;
+    fixture.setHeadUnavailable();
+    fixture.restart(() => {
+      const db = new Database(join(fixture.root, "factory", "records.sqlite"));
+      try {
+        db.query("UPDATE records SET data=? WHERE kind='runs' AND id=?").run(JSON.stringify(historical), run.id);
+        db.query("UPDATE records SET data=? WHERE kind='implementations' AND id=?").run(JSON.stringify({ ...accepted.implementation, stage: "done" }), run.implementation_id);
+      } finally { db.close(); }
+    });
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 0, available_slots: 1 });
+    await fixture.json("/settings", { max_implementations: 1 });
+    expect((await fixture.post(second.path + "/runs", second.start)).status).toBe(202);
+    expect((await fixture.json(path)).implementation).toMatchObject({ stage: "done", outcome: "implementation_complete" });
+    expect((await fixture.json(path)).runs[0]).toMatchObject({ condition: "completed" });
   } finally { fixture.close(); }
 }, 20_000);

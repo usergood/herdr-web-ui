@@ -85,7 +85,7 @@ console.log(JSON.stringify(endpoint === "user" ? {login:"fictional-owner",id:104
     const readiness = await json(route + "/readiness", { expected_revision: null, account_profile_id: account.id, triage_labels: {}, blocked_label: "blocked" });
     return { account, project, route, readiness, configuration };
   }
-  function restart() { app.stop(); app = createServer({ port: 0, stateDir: root, machines: false, token: "fixture-owner", factory: options }); origin = `http://localhost:${app.port}`; }
+  function restart(beforeStart?: () => void) { app.stop(); beforeStart?.(); app = createServer({ port: 0, stateDir: root, machines: false, token: "fixture-owner", factory: options }); origin = `http://localhost:${app.port}`; }
   function holdCapabilities() {
     let entered!: () => void; let release!: () => void;
     const waiting = new Promise<void>(resolve => entered = resolve);

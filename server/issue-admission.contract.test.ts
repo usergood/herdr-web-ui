@@ -404,3 +404,30 @@ test.each(["pause", "priority", "scope", "outage", "readiness"])("Retry revalida
     expect(fixture.launches).toEqual([failed.id]);
   } finally { fixture.close(); }
 }, 20_000);
+
+
+test("completed planning Runs allow approved issue preparation and one guarded implementation attempt", async () => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { route, readiness } = await fixture.setup();
+    const source = (await fixture.json(route + "/sync", {})).sources[0];
+    const path = `/implementations/${source.implementation_id}`;
+    const planning = await fixture.json(path + "/runs", { action: "to-spec", idempotency_key: "owned-manual-planning" });
+    await fixture.json(route + "/issues/1/approve", { source_revision: source.revision, policy_revision: readiness.revision });
+    expect((await fixture.json(route + "/preview", {})).entries[0].reasons).toContainEqual({ code: "attempt_exists", detail: "" });
+    fixture.setExecutionHandler(async request => new URL(request.url).pathname.endsWith(`/runs/${planning.id}/reconcile`) ? Response.json({ ...planning, condition: "completed" }) : null);
+    await fixture.json(`/runs/${planning.id}/reconcile`, {});
+    const specification = await fixture.json(path + "/specifications", { content: fixture.issue.body });
+    for (const kind of ["specification", "testing_seams"]) await fixture.json(path + "/approvals", { kind, revision: specification.id, scope: "Public HTTP and real browser journeys." });
+    const graph = await fixture.json(path + "/tickets", { specification_id: specification.id, tickets: [{ key: "greeting", title: "Greeting", acceptance: "Show hello.", dependencies: [] }] });
+    await fixture.json(path + "/approvals", { kind: "ticket_graph", revision: graph.hash, scope: "Approved bounded greeting" });
+    const preview = await fixture.json(route + "/preview", {});
+    expect(preview).toMatchObject({ eligible_count: 1, entries: [expect.objectContaining({ eligible: true, reasons: [] })] });
+    const prepared = (await fixture.json(route)).sources[0].planning;
+    expect(prepared).toMatchObject({ condition: "prepared", origin: "app_plan", specification_id: specification.id, graph_hash: graph.hash });
+    const start = { action: "implement-spec", idempotency_key: "after-manual-planning", issue_scope: { source_id: source.id, source_revision: source.revision, graph_hash: graph.hash } };
+    expect((await fixture.post(path + "/runs", start)).status).toBe(202);
+    expect((await fixture.post(path + "/runs", { ...start, idempotency_key: "no-duplicate-after-planning" })).status).toBe(409);
+    expect((await fixture.json(path)).runs.map((run: any) => run.action)).toEqual(["to-spec", "implement-spec"]);
+  } finally { fixture.close(); }
+}, 20_000);

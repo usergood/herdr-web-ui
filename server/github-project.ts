@@ -1,4 +1,4 @@
-import { issueQueueEntry } from "./issue-queue.ts";
+import { issueExecutionAttempts, issueQueueEntry } from "./issue-queue.ts";
 import { implementingAssignments } from "./factory-capacity.ts";
 import { FactoryWorkflow } from "./factory-workflow.ts";
 import { prepareIssuePlan, reconcileIssuePlan } from "./issue-planning.ts";
@@ -426,9 +426,9 @@ export class ProjectGitHub {
       evidence.revision = hash(JSON.stringify({ source: source.revision, policy: readiness.revision, event, edited: proof.lastEditedAt, scope_events: scopeEvents.sort(), observation: source.history?.length ?? 0 }));
       const reviewedAfterEdit = !!event && Date.parse(event.created_at) > scopeChangedAt && (proof.lastEditedAt === null ? Date.parse(event.created_at) >= Date.parse(proof.createdAt) : Date.parse(event.created_at) > Date.parse(proof.lastEditedAt));
       const previousScope = source.history?.at(-2);
-      const relationshipsChanged = previousScope && JSON.stringify(previousScope.native_dependencies ?? []) !== JSON.stringify(source.current.native_dependencies ?? []);
-      const labelAttestsRelationships = !relationshipsChanged || source.readiness_evidence && event?.id !== source.readiness_evidence.label_event?.id;
-      if (labelAttestsRelationships && reviewedAfterEdit && event?.event === "labeled" && event.login?.toLowerCase() === readiness.owner.login.toLowerCase() && event.account_id && event.account_id === readiness.owner.account_id && Date.parse(event.created_at) >= Date.parse(source.current.source_updated_at) && source.current.labels.some(label => label.toLowerCase() === readiness.triage_labels["ready-for-agent"].toLowerCase())) {
+      const scopeChanged = previousScope && (previousScope.title !== source.current.title || previousScope.body !== source.current.body || JSON.stringify(previousScope.native_dependencies ?? []) !== JSON.stringify(source.current.native_dependencies ?? []));
+      const labelAttestsScope = !scopeChanged || source.readiness_evidence && event?.id !== source.readiness_evidence.label_event?.id;
+      if (labelAttestsScope && reviewedAfterEdit && event?.event === "labeled" && event.login?.toLowerCase() === readiness.owner.login.toLowerCase() && event.account_id && event.account_id === readiness.owner.account_id && source.current.labels.some(label => label.toLowerCase() === readiness.triage_labels["ready-for-agent"].toLowerCase())) {
         if (!source.readiness_approvals?.some(approval => approval.evidence_revision === evidence.revision && approval.source_revision === source.revision && approval.policy_revision === readiness.revision && approval.event_id === event.id)) {
           source.readiness_approvals = [...source.readiness_approvals ?? [], { id: randomUUID(), evidence_revision: evidence.revision, source_revision: source.revision, policy_revision: readiness.revision, approved_at: event.created_at, actor: readiness.owner, provenance: "github_label", event_id: event.id }];
         }
@@ -470,6 +470,11 @@ export class ProjectGitHub {
   private import(id: string, externalId: string, number: number, revision: string, title: string, description: string, url: string, state: string, kind: "issue" | "fix", observed?: ProjectGitHubIssueRevision): ProjectGitHubSource {
     return this.store.db.transaction(() => {
       const prior = this.store.list<ProjectGitHubSource>("github_sources", id).find((source) => source.external_id === externalId && source.kind === kind && (kind === "issue" || source.revision === revision));
+      // Preserve existing revision/approval receipts across timestamp-only observations,
+      // including receipts created before timestamps were excluded from the scope hash.
+      if (observed && prior?.current && (["title", "body", "labels", "state", "repository", "url", "native_dependencies"] as const).every(key => JSON.stringify(prior.current![key]) === JSON.stringify(observed![key]))) {
+        revision = prior.revision; observed = { ...observed, revision };
+      }
       if (prior) { const next = { ...prior, revision, state, ...(observed ? { current: observed, history: prior.current?.revision === revision ? prior.history ?? [observed] : [...prior.history ?? [], observed] } : {}), updated_at: new Date().toISOString() }; this.store.put("github_sources", next, id); return next; }
       const project = this.project(id);
       const idea: Implementation = { ...this.store.record(), title: title.slice(0, 200), description: description.slice(0, 100_000), project_id: id, provider: project.provider, machine_id: project.machine_id, stage: "inbox", position: this.store.list("implementations").length, outcome: "none" };
@@ -628,7 +633,8 @@ export class ProjectGitHub {
         for (const issue of issues) {
           if (issue.state !== "open" && !this.store.list<ProjectGitHubSource>("github_sources", id).some((source) => source.external_id === issue.node_id && source.kind === "issue")) continue;
           const content = { title: issue.title, body: issue.body ?? "", labels: issue.labels.map((label) => label.name).sort(), state: issue.state, source_updated_at: issue.updated_at, repository: policy.repository, url: issue.html_url, native_dependencies: dependencies.get(issue.node_id)!.map(({ external_id, repository, number, url }) => ({ external_id, repository, number, url })) };
-          const revision = hash(JSON.stringify(content));
+          const { source_updated_at, ...scopeContent } = content;
+          const revision = hash(JSON.stringify(scopeContent));
           const observed: ProjectGitHubIssueRevision = { ...content, revision, fetched_at: new Date().toISOString(), account_profile_id: policy.account_profile_id, policy_revision: policy.revision };
           const source = this.import(id, issue.node_id, issue.number, revision, issue.title, `GitHub issue: ${issue.html_url}\n\n${issue.body ?? ""}\n\nProject review context:\n${policy.review_context}`, issue.html_url, issue.state, "issue", observed);
           await this.collectReadiness(policy, scope, source);
@@ -639,7 +645,7 @@ export class ProjectGitHub {
           const questions = workflow.questions(source.implementation_id);
           const plan = this.store.get<import("../shared/issue-planning.ts").IssuePlanning>("github_plans", source.id);
           const answersNeedConsumption = questions.length && questions.every(question => question.answer !== null) && plan?.consumed_question_revision !== workflow.questionRevision(source.implementation_id);
-          if ((prepare || this.store.get<import("../shared/issue-queue.ts").ProjectQueuePolicy>("github_queue_policies", id)?.automatic_implementation) && readiness.eligible && !answersNeedConsumption && !this.store.list("runs", source.implementation_id).length) {
+          if ((prepare || this.store.get<import("../shared/issue-queue.ts").ProjectQueuePolicy>("github_queue_policies", id)?.automatic_implementation) && readiness.eligible && !answersNeedConsumption && !issueExecutionAttempts(this.store, source.implementation_id).length) {
             prepareIssuePlan(this.store, { ...collected, readiness });
           }
         }

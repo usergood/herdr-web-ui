@@ -4,6 +4,11 @@ import type { IssueQueueEntry, ProjectQueuePolicy } from "../shared/issue-queue.
 import type { FactoryStore } from "./factory-store.ts";
 import { FactoryWorkflow } from "./factory-workflow.ts";
 
+/** Completed planning is reusable history; implementation attempts still require explicit Retry. */
+export function issueExecutionAttempts(store: FactoryStore, id: string): FactoryRun[] {
+  return store.list<FactoryRun>("runs", id).filter(run => run.action === "implement-spec" || !["completed", "failed", "cancelled"].includes(run.condition));
+}
+
 /** One eligibility result is shared by previews, source detail and the board. */
 export function issueQueueEntry(store: FactoryStore, source: ProjectGitHubSource, policy: ProjectQueuePolicy, accountReady: boolean, retryRunId?: string): IssueQueueEntry {
   const idea = store.get<Implementation>("implementations", source.implementation_id);
@@ -13,7 +18,7 @@ export function issueQueueEntry(store: FactoryStore, source: ProjectGitHubSource
   if (!idea || idea.project_id !== source.project_id) reason("assignment_moved");
   if (idea?.archived_at) reason("assignment_archived");
   if (idea?.outcome !== "none" || idea?.stage === "done") reason("assignment_finished");
-  const attempts = store.list<FactoryRun>("runs", source.implementation_id);
+  const attempts = issueExecutionAttempts(store, source.implementation_id);
   const latest = attempts.at(-1);
   if (attempts.length && !(latest?.id === retryRunId && latest?.condition === "failed")) reason("attempt_exists");
   if (!accountReady) reason("account_unavailable");

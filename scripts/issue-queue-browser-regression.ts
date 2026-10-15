@@ -85,7 +85,7 @@ try {
     const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });
     page.setDefaultTimeout(10_000); page.on("pageerror", error => errors.push(error.message));
     try {
-      const { route, readiness } = await admitted.setup();
+      const { project, route, readiness } = await admitted.setup();
       const source = (await admitted.json(route + "/sync", {})).sources[0];
       await admitted.json(route + "/issues/1/approve", { source_revision: source.revision, policy_revision: readiness.revision });
       await admitted.json(route + "/issues/1/prepare", { source_revision: source.revision });
@@ -119,6 +119,13 @@ try {
       assert.deepEqual((await admitted.json(path)).runs[0].manifest, run.manifest);
       assert(await contract.evaluate(element => element.scrollWidth <= element.clientWidth));
       if (evidence) await page.screenshot({ path: join(evidence, `issue-admission-${viewport.width}.png`), fullPage: true });
+      await page.goto(admitted.origin + `/#projects/${project.id}`);
+      const needsYou = page.getByRole("region", { name: "Needs you", exact: true });
+      await needsYou.getByRole("button", { name: source.current.title, exact: true }).waitFor();
+      await page.reload();
+      await needsYou.getByRole("button", { name: source.current.title, exact: true }).waitFor();
+      await needsYou.getByRole("button", { name: source.current.title, exact: true }).click();
+      await contract.getByText("Controlled pause requested. Issue scope changed.", { exact: true }).waitFor();
     } finally { await page.close(); admitted.close(); }
   }
   assert.deepEqual(errors, []);

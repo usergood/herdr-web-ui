@@ -22,7 +22,7 @@ import { useFactoryCapabilities } from "../lib/useFactoryCapabilities.ts";
 import "./FactoryPanel.css";
 
 type BoardStage = FactoryStage | "queued" | "needs_you";
-function boardStage(item: Implementation): BoardStage { return ["inbox", "ready", "specifying"].includes(item.stage) && item.intake ? item.intake.lane : item.stage; }
+function boardStage(item: Implementation): BoardStage { return item.stage !== "done" && item.intake ? item.intake.lane : item.stage; }
 const stages: BoardStage[] = ["inbox", "queued", "needs_you", "specifying", "ready", "running", "review", "done"];
 function stageLabel(stage: BoardStage, t: ReturnType<typeof useT>): string {
   switch (stage) { case "queued": return t("Queued"); case "needs_you": return t("Needs you"); case "inbox": return t("Inbox"); case "specifying": return t("Specifying"); case "ready": return t("Ready"); case "running": return t("Running"); case "review": return t("Review"); case "done": return t("Done"); }

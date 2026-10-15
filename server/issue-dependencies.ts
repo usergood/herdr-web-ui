@@ -16,6 +16,8 @@ export function dependencyPlan(store: FactoryStore, source: ProjectGitHubSource)
   const declarations: { repository: string; number: number; requires: "merge" | "release" }[] = [];
   if (!approved) return { revision, declarations, conflicts: [] as string[], specification_id: null };
   const sections = [...specification.content.matchAll(/^#{1,6}\s+Dependencies\s*\r?\n([\s\S]*?)(?=^#{1,6}\s|$(?![\s\S]))/gim)];
+  // Approved app Specifications need no Dependencies heading when they declare no edges.
+  if (!sections.length) return { revision, declarations, conflicts: [] as string[], specification_id: specification.id };
   const section = sections[0]?.[1]?.trim();
   if (sections.length === 1 && /^none\.?$/i.test(section ?? "")) return { revision, declarations, conflicts: [] as string[], specification_id: specification.id };
   let parsed: unknown;

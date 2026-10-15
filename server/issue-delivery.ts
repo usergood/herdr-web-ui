@@ -7,6 +7,13 @@ import { dependencyPlan } from "./issue-dependencies.ts";
 const sha = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
 const ref = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 200 && !/[\s~^:?*\[\\\x00-\x1f]/.test(value) && !value.includes("..") && !value.includes("@{") && !value.startsWith("/") && !value.endsWith("/") && !value.endsWith(".") && !value.split("/").some(part => !part || part.startsWith(".") || part.endsWith(".lock"));
 
+/** Both branch and release evidence must prove ancestry of the exact merge commit. */
+function containsMerge(comparison: unknown, mergeCommit: string): boolean {
+  return isJsonObject(comparison) && ["ahead", "identical"].includes(String(comparison.status))
+    && isJsonObject(comparison.base_commit) && comparison.base_commit.sha === mergeCommit
+    && isJsonObject(comparison.merge_base_commit) && comparison.merge_base_commit.sha === mergeCommit;
+}
+
 export function coverageRevision(store: FactoryStore, projectId: string): string {
   return hash(JSON.stringify(store.list<ProjectGitHubSource>("github_sources", projectId).filter(source => source.kind === "issue").map(source => [source.id, source.revision, dependencyPlan(store, source).revision, store.get<IssueDeliveryLink>("github_delivery_links", source.id)?.revision ?? null])));
 }
@@ -36,7 +43,7 @@ export async function verifyIssueDelivery(store: FactoryStore, edge: GitHubDepen
     if (!isJsonObject(pull) || pull.number !== intended.number || pull.html_url !== `https://github.com/${edge.repository}/pull/${intended.number}` || pull.merged !== true || typeof pull.merged_at !== "string" || !Number.isFinite(Date.parse(pull.merged_at)) || !sha(pull.merge_commit_sha) || !isJsonObject(pull.head) || pull.head.sha !== intended.head || !isJsonObject(pull.base) || !isJsonObject(pull.base.repo) || typeof pull.base.repo.full_name !== "string" || pull.base.repo.full_name.toLowerCase() !== edge.repository.toLowerCase()) return edge;
     if (pull.base.ref !== branch || link.target_branch !== branch) return { ...edge, blocker: "wrong_target" };
     const comparison = await api(`repos/${edge.repository}/compare/${pull.merge_commit_sha}...${branchProof.commit.sha}`);
-    if (!isJsonObject(comparison) || !["ahead", "identical"].includes(String(comparison.status)) || !isJsonObject(comparison.base_commit) || comparison.base_commit.sha !== pull.merge_commit_sha || !isJsonObject(comparison.merge_base_commit) || comparison.merge_base_commit.sha !== pull.merge_commit_sha) return edge;
+    if (!containsMerge(comparison, pull.merge_commit_sha)) return edge;
     merges.push({ number: intended.number, url: pull.html_url, head: intended.head, merge_commit: pull.merge_commit_sha, target_branch: branch });
   }
   const delivered = { coverage_revision: link.revision, merges };
@@ -58,7 +65,7 @@ export async function verifyIssueDelivery(store: FactoryStore, edge: GitHubDepen
     const releaseCommit = object.sha;
     for (const merge of merges) {
       const comparison = await api(`repos/${edge.repository}/compare/${merge.merge_commit}...${releaseCommit}`);
-      if (!isJsonObject(comparison) || !["ahead", "identical"].includes(String(comparison.status)) || !isJsonObject(comparison.base_commit) || comparison.base_commit.sha !== merge.merge_commit || !isJsonObject(comparison.merge_base_commit) || comparison.merge_base_commit.sha !== merge.merge_commit) return blocked;
+      if (!containsMerge(comparison, merge.merge_commit)) return blocked;
     }
     return { ...edge, blocker: null, delivery: { ...delivered, release: { tag: link.release_tag, commit: releaseCommit, url: release.html_url, published_at: release.published_at } } };
   }

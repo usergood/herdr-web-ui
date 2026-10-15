@@ -200,7 +200,7 @@ test("the existing polling loop starts unrelated queued work after review releas
     let next;
     while (Date.now() < deadline) {
       next = (await fixture.json(secondPath)).runs[0];
-      if (next) break;
+      if (next?.condition === "working") break;
       await new Promise(resolve => setTimeout(resolve, 25));
     }
     expect(next).toMatchObject({ condition: "working", manifest: { issue_admission: { source: { id: source.id } } } });
