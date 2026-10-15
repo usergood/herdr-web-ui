@@ -1301,4 +1301,13 @@ export const TR: Record<string, string> = {
   "Continue with available context": "Mevcut bağlamla devam et",
   "Stop this attempt": "Bu denemeyi durdur",
   "Stopping keeps the worktree. You can start a new attempt afterwards.": "Durdurmak çalışma ağacını korur. Daha sonra yeni bir deneme başlatabilirsiniz.",
+  "GitHub issue source": "GitHub sorun kaynağı",
+  "Source history": "Kaynak geçmişi",
+  "Issue is open": "Sorun açık",
+  "Issue is closed": "Sorun kapalı",
+  "Source revision {revision}": "Kaynak revizyonu {revision}",
+  "Source updated {time}": "Kaynak güncellemesi: {time}",
+  "Fetched {time}": "Alınma zamanı: {time}",
+  "Sync GitHub to collect source history.": "Kaynak geçmişini almak için GitHub’ı eşitleyin.",
+
 };

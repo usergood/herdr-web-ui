@@ -6,7 +6,7 @@ import type { FactoryDetail, FactoryOverview, FactoryProject, FactoryRecord, Imp
 import { projectReferenceTemplate } from "../../shared/project-references.ts";
 import type { Machine } from "../../shared/machines.ts";
 import type { AccountProfile, AccountService } from "../../shared/accounts.ts";
-import type { ProjectGitHubOverview, ProjectGitHubPolicy } from "../../shared/github-project.ts";
+import type { ProjectGitHubIssueRevision, ProjectGitHubOverview, ProjectGitHubPolicy } from "../../shared/github-project.ts";
 import { fictionalGitHubPull } from "./github-fixtures.ts";
 
 const storageKey = "saurons-eye:demo-factory";
@@ -21,10 +21,10 @@ const githubViews = new Map<string, ProjectGitHubOverview>();
 function record(): FactoryRecord { const now = new Date().toISOString(); return { id: crypto.randomUUID(), created_at: now, updated_at: now }; }
 function json(body: unknown, status = 200): Response { return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } }); }
 function failure(code: string, message: string, status = 409): Response { return json({ error: { code, message } }, status); }
-function save(): void { try { localStorage.setItem(storageKey, JSON.stringify({ details: [...details], projects, checkouts, settings, blobs: [...blobs], referenceVersions, referenceHeads, paneArchives })); } catch { /* demo storage can be blocked or full; records remain in this page */ } }
+function save(): void { try { localStorage.setItem(storageKey, JSON.stringify({ details: [...details], githubViews: [...githubViews], projects, checkouts, settings, blobs: [...blobs], referenceVersions, referenceHeads, paneArchives })); } catch { /* demo storage can be blocked or full; records remain in this page */ } }
 try {
   const raw = localStorage.getItem(storageKey);
-  if (raw) { const saved = JSON.parse(raw); if (Array.isArray(saved.details)) for (const [id, detail] of saved.details) details.set(id, { workers: [], checks: [], review_evidence: [], frontier: [], retrospectives: [], native_snapshots: [], ...detail }); referenceVersions = saved.referenceVersions ?? []; referenceHeads = saved.referenceHeads ?? []; paneArchives = saved.paneArchives ?? []; projects = saved.projects ?? []; checkouts = saved.checkouts ?? []; settings = saved.settings ?? settings; if (Array.isArray(saved.blobs)) for (const [id, content] of saved.blobs) blobs.set(id, content); }
+  if (raw) { const saved = JSON.parse(raw); if (Array.isArray(saved.githubViews)) for (const [id, view] of saved.githubViews) githubViews.set(id, view); if (Array.isArray(saved.details)) for (const [id, detail] of saved.details) details.set(id, { workers: [], checks: [], review_evidence: [], frontier: [], retrospectives: [], native_snapshots: [], ...detail }); referenceVersions = saved.referenceVersions ?? []; referenceHeads = saved.referenceHeads ?? []; paneArchives = saved.paneArchives ?? []; projects = saved.projects ?? []; checkouts = saved.checkouts ?? []; settings = saved.settings ?? settings; if (Array.isArray(saved.blobs)) for (const [id, content] of saved.blobs) blobs.set(id, content); }
 } catch { /* fictional fixtures do not depend on persistent storage */ }
 function capture(title: string, description: string): Implementation {
   const implementation: Implementation = { ...record(), title, description, project_id: null, provider: null, machine_id: null, stage: "inbox", position: details.size, outcome: "none" };
@@ -61,10 +61,20 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
     if (method === "GET") return json(view);
     if (githubRoute[2] === "configure") {
       if (body.expected_revision !== (view.policy?.revision ?? null)) return failure("github_policy_changed", "Refresh the fictional Project policy");
-      view.policy = { ...record(), ...body, id, project_id: id, revision: crypto.randomUUID() } as ProjectGitHubPolicy; githubViews.set(id, view); return json(view.policy);
+      view.policy = { ...record(), ...body, id, project_id: id, revision: crypto.randomUUID() } as ProjectGitHubPolicy; githubViews.set(id, view); save(); return json(view.policy);
     }
     if (!view.policy) return failure("github_not_configured", "Configure the fictional GitHub policy");
-    if (githubRoute[2] === "sync") { view.last_sync = new Date().toISOString(); view.pulls = [{ ...record(), project_id: id, pull: structuredClone(fictionalGitHubPull), blockers: ["Requested reviews are still pending"], observed_at: view.last_sync, fix_implementation_id: null }]; githubViews.set(id, view); return json(view); }
+    if (githubRoute[2] === "sync") {
+      if (view.policy.import_issues) {
+        const prior = view.sources.find(source => source.kind === "issue");
+        const revision: ProjectGitHubIssueRevision = { title: "Fictional issue acceptance", body: "Keep the owner's notes while showing the current issue source.", labels: ["needs-plan"], state: "open", source_updated_at: "2026-10-01T12:00:00Z", repository: view.policy.repository, url: `https://github.com/${view.policy.repository}/issues/12`, revision: "fictional-issue-revision-1", fetched_at: new Date().toISOString(), account_profile_id: view.policy.account_profile_id, policy_revision: view.policy.revision };
+        if (prior) prior.current = revision;
+        else {
+          const idea = capture(revision.title, revision.body); idea.project_id = id;
+          view.sources.push({ ...record(), project_id: id, external_id: "fictional-issue-12", number: 12, kind: "issue", implementation_id: idea.id, revision: revision.revision, url: revision.url, state: revision.state, current: revision, history: [revision] });
+        }
+      }
+      view.last_sync = new Date().toISOString(); view.pulls = [{ ...record(), project_id: id, pull: structuredClone(fictionalGitHubPull), blockers: ["Requested reviews are still pending"], observed_at: view.last_sync, fix_implementation_id: null }]; githubViews.set(id, view); save(); return json(view); }
     return failure("github_fixture_only", "The demo never changes a real GitHub PR");
   }
   const accountCollection = /^\/api\/factory\/machines\/[^/]+\/accounts$/.test(path) || path === "/api/factory-host/accounts";
@@ -147,7 +157,11 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
   if (match) {
     const detail = details.get(match[1]!); if (!detail) return failure("not_found", "Implementation not found", 404);
     const action = match[2];
-    if (!action && method === "GET") return json(detail);
+    if (!action && method === "GET") {
+      const sources = [...githubViews.values()].flatMap(view => view.sources).filter(source => source.implementation_id === detail.implementation.id);
+      const sync = sources[0] ? githubViews.get(sources[0].project_id) : null;
+      return json({ ...detail, github_sources: sources, github_sync: sync ? { last_sync: sync.last_sync, problem: sync.problem } : null });
+    }
     if (method === "POST") {
       let result: unknown;
       if (action === "configure") { detail.implementation = { ...detail.implementation, ...body } as Implementation; result = detail.implementation; }

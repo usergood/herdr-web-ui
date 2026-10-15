@@ -79,6 +79,9 @@ export interface FactorySettings {
   max_artifact_bytes: number; max_storage_bytes: number; skills_path: string | null;
 }
 export interface FactoryDetail {
+  /** Absent on older servers. Source observations are separate from notes and frozen Runs. */
+  github_sources?: import("./github-project.ts").ProjectGitHubSource[];
+  github_sync?: { last_sync: string | null; problem: string | null } | null;
   graph_hash: string; question_revision: string;
   /** Current decision scope; full historical questions remain in questions below. */
   question_context?: { revision: string; questions: FactoryQuestion[]; run_id: string | null };

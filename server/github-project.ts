@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { githubDirectory } from "./project-discovery.ts";
 import type { AccountBindingSnapshot } from "../shared/accounts.ts";
 import type { FactoryChat, FactoryMessage, FactoryProject, Implementation, ProjectCheckout } from "../shared/factory.ts";
-import type { ProjectGitHubConfiguration, ProjectGitHubFiles, ProjectGitHubMutation, ProjectGitHubOverview, ProjectGitHubPolicy, ProjectGitHubPull, ProjectGitHubSource, ProjectPullRequest } from "../shared/github-project.ts";
+import type { ProjectGitHubIssueRevision, ProjectGitHubConfiguration, ProjectGitHubFiles, ProjectGitHubMutation, ProjectGitHubOverview, ProjectGitHubPolicy, ProjectGitHubPull, ProjectGitHubSource, ProjectPullRequest } from "../shared/github-project.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { FactoryError, hash } from "./factory-host.ts";
 import { MachineAccounts } from "./accounts.ts";
@@ -16,7 +16,7 @@ reviewThreads(first:100) { nodes { id isResolved isOutdated comments(first:100) 
 commits(last:1) { nodes { commit { statusCheckRollup { contexts(first:100) { nodes { ... on CheckRun { name conclusion status } ... on StatusContext { context state } } pageInfo { hasNextPage endCursor } } } } } }
 baseRef { branchProtectionRule { isAdminEnforced requiresApprovingReviews requiredApprovingReviewCount requiresStatusChecks requiresStrictStatusChecks requiresConversationResolution requiredStatusCheckContexts } }`;
 interface SyncState { id: string; last_sync: string | null; next_sync: number; problem: string | null }
-interface Issue { number: number; node_id: string; title: string; body: string | null; html_url: string; state: string; pull_request?: unknown }
+interface Issue { number: number; node_id: string; title: string; body: string | null; html_url: string; state: "open" | "closed"; labels: { name: string }[]; updated_at: string; pull_request?: unknown }
 
 /** Project-scoped metadata and guarded mutation. Never executes foreign PR code. */
 export class ProjectGitHub {
@@ -128,7 +128,12 @@ export class ProjectGitHub {
     for (let page = 1; page <= 100; page++) {
       const items = await this.api(policy, scope, `repos/${policy.repository}/issues?state=all&per_page=30&page=${page}&sort=updated&direction=desc`);
       if (!Array.isArray(items)) throw new FactoryError("github_invalid_response", "GitHub did not return a complete issue list", 409);
-      all.push(...items.filter((item) => !item.pull_request));
+      for (const item of items) {
+        if (!item || typeof item !== "object") throw new FactoryError("github_invalid_response", "GitHub returned an invalid issue", 409);
+        if (item.pull_request) continue;
+        if (!Number.isSafeInteger(item.number) || item.number < 1 || typeof item.node_id !== "string" || !item.node_id || typeof item.title !== "string" || typeof item.html_url !== "string" || item.body !== null && typeof item.body !== "string" || !["open", "closed"].includes(item.state) || typeof item.updated_at !== "string" || !Number.isFinite(Date.parse(item.updated_at)) || !Array.isArray(item.labels) || item.labels.some((label: unknown) => !label || typeof label !== "object" || !("name" in label) || typeof label.name !== "string") || all.some((prior) => prior.node_id === item.node_id || prior.number === item.number)) throw new FactoryError("github_invalid_response", "GitHub did not return a complete valid issue inventory", 409);
+        all.push(item);
+      }
       if (items.length < 30) return all;
     }
     throw new FactoryError("github_inventory_limit", "Issue inventory exceeds the bounded synchronization budget", 409);
@@ -147,19 +152,21 @@ export class ProjectGitHub {
     }
     throw new FactoryError("github_inventory_limit", "PR inventory exceeds the bounded synchronization budget", 409);
   }
-  private import(id: string, externalId: string, number: number, revision: string, title: string, description: string, url: string, state: string, kind: "issue" | "fix"): ProjectGitHubSource {
-    const prior = this.store.list<ProjectGitHubSource>("github_sources", id).find((source) => source.external_id === externalId && source.kind === kind && (kind === "issue" || source.revision === revision));
-    if (prior) { const next = { ...prior, revision, state, updated_at: new Date().toISOString() }; this.store.put("github_sources", next, id); return next; }
-    const project = this.project(id);
-    const idea: Implementation = { ...this.store.record(), title: title.slice(0, 200), description: description.slice(0, 100_000), project_id: id, provider: project.provider, machine_id: project.machine_id, stage: "inbox", position: this.store.list("implementations").length, outcome: "none" };
-    const chat: FactoryChat = { ...this.store.record(), implementation_id: idea.id, title: "Notes" };
-    const source: ProjectGitHubSource = { ...this.store.record(), project_id: id, external_id: externalId, number, kind, implementation_id: idea.id, revision, url, state };
-    mkdirSync(join(this.store.root, "inbox", idea.id), { mode: 0o700 });
-    this.store.db.transaction(() => {
-      this.store.put("implementations", idea); this.store.put("chats", chat, idea.id);
-      this.store.put<FactoryMessage>("messages", { ...this.store.record(), implementation_id: idea.id, chat_id: chat.id, role: "system", content: idea.description, source_id: null, sequence: null }, idea.id);
-      this.store.put("github_sources", source, id); this.store.event(idea.id, "github_imported", { source_id: source.id, project_id: id, kind, url });
-    })(); return source;
+  private import(id: string, externalId: string, number: number, revision: string, title: string, description: string, url: string, state: string, kind: "issue" | "fix", observed?: ProjectGitHubIssueRevision): ProjectGitHubSource {
+    return this.store.db.transaction(() => {
+      const prior = this.store.list<ProjectGitHubSource>("github_sources", id).find((source) => source.external_id === externalId && source.kind === kind && (kind === "issue" || source.revision === revision));
+      if (prior) { const next = { ...prior, revision, state, ...(observed ? { current: observed, history: prior.current?.revision === revision ? prior.history ?? [observed] : [...prior.history ?? [], observed] } : {}), updated_at: new Date().toISOString() }; this.store.put("github_sources", next, id); return next; }
+      const project = this.project(id);
+      const idea: Implementation = { ...this.store.record(), title: title.slice(0, 200), description: description.slice(0, 100_000), project_id: id, provider: project.provider, machine_id: project.machine_id, stage: "inbox", position: this.store.list("implementations").length, outcome: "none" };
+      const chat: FactoryChat = { ...this.store.record(), implementation_id: idea.id, title: "Notes" };
+      const source: ProjectGitHubSource = { ...this.store.record(), project_id: id, external_id: externalId, number, kind, implementation_id: idea.id, revision, url, state, ...(observed ? { current: observed, history: [observed] } : {}) };
+      mkdirSync(join(this.store.root, "inbox", idea.id), { mode: 0o700 });
+      this.store.db.transaction(() => {
+        this.store.put("implementations", idea); this.store.put("chats", chat, idea.id);
+        this.store.put<FactoryMessage>("messages", { ...this.store.record(), implementation_id: idea.id, chat_id: chat.id, role: "system", content: idea.description, source_id: null, sequence: null }, idea.id);
+        this.store.put("github_sources", source, id); this.store.event(idea.id, "github_imported", { source_id: source.id, project_id: id, kind, url });
+      })(); return source;
+    }).immediate();
   }
   private complete(pull: ProjectPullRequest): boolean {
     const contexts = pull.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts;
@@ -287,11 +294,15 @@ export class ProjectGitHub {
       try {
         const scope = await this.scope(policy);
         const issues = policy.import_issues ? await this.issues(policy, scope) : [];
-        const pulls = await this.pulls(policy, scope); this.current(policy);
+        const pulls = await this.pulls(policy, scope);
+        if ((await this.repository(id))?.toLowerCase() !== policy.repository.toLowerCase()) throw new FactoryError("github_repository_mismatch", "The Project GitHub repository changed; verify its settings again", 409);
+        this.current(policy);
         for (const issue of issues) {
-          if (!Number.isSafeInteger(issue.number) || typeof issue.node_id !== "string" || typeof issue.title !== "string" || typeof issue.html_url !== "string") throw new FactoryError("github_invalid_response", "GitHub returned an invalid issue", 409);
           if (issue.state !== "open" && !this.store.list<ProjectGitHubSource>("github_sources", id).some((source) => source.external_id === issue.node_id && source.kind === "issue")) continue;
-          this.import(id, issue.node_id, issue.number, hash(JSON.stringify(issue)), issue.title, `GitHub issue: ${issue.html_url}\n\n${issue.body ?? ""}\n\nProject review context:\n${policy.review_context}`, issue.html_url, issue.state, "issue");
+          const content = { title: issue.title, body: issue.body ?? "", labels: issue.labels.map((label) => label.name).sort(), state: issue.state, source_updated_at: issue.updated_at, repository: policy.repository, url: issue.html_url };
+          const revision = hash(JSON.stringify(content));
+          const observed: ProjectGitHubIssueRevision = { ...content, revision, fetched_at: new Date().toISOString(), account_profile_id: policy.account_profile_id, policy_revision: policy.revision };
+          this.import(id, issue.node_id, issue.number, revision, issue.title, `GitHub issue: ${issue.html_url}\n\n${issue.body ?? ""}\n\nProject review context:\n${policy.review_context}`, issue.html_url, issue.state, "issue", observed);
         }
         for (const pull of pulls) {
           const previous = this.store.list<ProjectGitHubPull>("github_pulls", id).find((item) => item.pull.id === pull.id);

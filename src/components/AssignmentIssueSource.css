@@ -1,0 +1,10 @@
+.assignment-issue-source {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.assignment-issue-revision {
+  min-width: 0;
+  padding-block: var(--space-2);
+  border-bottom: var(--hairline) solid var(--border);
+}

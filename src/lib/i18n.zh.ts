@@ -1350,4 +1350,13 @@ export const ZH: Record<string, string> = {
   "Continue with available context": "使用现有上下文继续",
   "Stop this attempt": "停止此次尝试",
   "Stopping keeps the worktree. You can start a new attempt afterwards.": "停止后会保留工作树。之后可以开始新的尝试。",
+  "GitHub issue source": "GitHub 议题来源",
+  "Source history": "来源历史",
+  "Issue is open": "议题未关闭",
+  "Issue is closed": "议题已关闭",
+  "Source revision {revision}": "来源修订 {revision}",
+  "Source updated {time}": "来源更新于 {time}",
+  "Fetched {time}": "获取于 {time}",
+  "Sync GitHub to collect source history.": "同步 GitHub 以收集来源历史。",
+
 };

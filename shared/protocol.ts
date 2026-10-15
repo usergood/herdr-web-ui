@@ -1126,6 +1126,8 @@ export const DEFAULT_PORT = 7317;
  * keys below; all JSON errors are ApiError. Mutations require same-origin and
  * x-herdr-factory: 1; reads and writes require owner access.
  * GET /api/factory -> FactoryOverview; GET /api/factory/implementations/:id -> FactoryDetail.
+ * FactoryDetail includes github_sources (current issue observations and revision history) and
+ * github_sync (last complete sync and current problem), separate from notes and frozen Runs.
  * GET /api/factory?navigation=1 -> FactoryOverview without checkout instruction contents;
  * sidebar/page polling uses metadata; full instructions remain in frozen Run context.
  * POST /api/factory/implementations (implementation) -> Implementation, 201, initial Chat retained.
@@ -1302,7 +1304,9 @@ export type FactoryRequestBody = FactoryRequests[keyof FactoryRequests];
  * POST .../github/settings ({account_profile_id}) -> ProjectGitHubSettings;
  * detected repository, collaborators and branch checks, without enabling automation.
  * POST .../github/configure -> ProjectGitHubPolicy, uses ProjectGitHubConfiguration.
- * POST .../github/sync -> ProjectGitHubOverview; imports owned issue/fix records and applies opted-in policies.
+ * POST .../github/sync -> ProjectGitHubOverview; imports issue/fix records and applies opted-in PR policies.
+ * Sources retain current issue scope, revision history and fetch evidence; incomplete inventories
+ * preserve the last complete source state and last_sync, with a visible problem.
  * GET .../github/pulls/:number/files?head=:sha -> ProjectGitHubFiles, bounded read-only patch inventory.
  * POST .../github/pulls/:number/(merge|update|rerequest|import) -> ProjectGitHubOverview;
  * mutations require the displayed head, base and policy_revision, same origin and x-herdr-machine: 1.

@@ -1348,4 +1348,13 @@ export const JA: Record<string, string> = {
   "Continue with available context": "利用可能な文脈で続行",
   "Stop this attempt": "この試行を停止",
   "Stopping keeps the worktree. You can start a new attempt afterwards.": "停止しても作業ツリーは保持されます。その後、新しい試行を開始できます。",
+  "GitHub issue source": "GitHub イシューの原文",
+  "Source history": "原文の履歴",
+  "Issue is open": "未解決のイシュー",
+  "Issue is closed": "クローズ済みのイシュー",
+  "Source revision {revision}": "原文のリビジョン {revision}",
+  "Source updated {time}": "原文の更新: {time}",
+  "Fetched {time}": "取得日時: {time}",
+  "Sync GitHub to collect source history.": "GitHub を同期して原文の履歴を取得してください。",
+
 };

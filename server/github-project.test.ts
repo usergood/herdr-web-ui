@@ -7,7 +7,7 @@ import { createServer } from "./index.ts";
 
 const roots: string[] = []; const apps: ReturnType<typeof createServer>[] = [];
 afterEach(() => { for (const app of apps.splice(0)) app.stop(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
-async function fixture() {
+async function fixture(remoteOnly = false) {
   const root = mkdtempSync(join(tmpdir(), "saurons-github-http-")); roots.push(root);
   const repo = join(root, "repo"); execFileSync("git", ["init", "-b", "main", repo], { stdio: "ignore" });
   writeFileSync(join(repo, "README.md"), "# Fictional Project\n");
@@ -15,7 +15,7 @@ async function fixture() {
   execFileSync("git", ["-C", repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "fixture"], { stdio: "ignore" });
   execFileSync("git", ["-C", repo, "remote", "add", "origin", "https://github.com/fictional/project.git"]);
   const state = join(root, "responses.json"); const log = join(root, "calls.jsonl");
-  writeFileSync(state, JSON.stringify({ issues: [{ number: 12, node_id: "fictional-issue-12", title: "Import this ticket", body: "Acceptance: keep my notes", html_url: "https://github.com/fictional/project/issues/12", state: "open" }], pulls: [] }));
+  writeFileSync(state, JSON.stringify({ issues: [{ number: 12, node_id: "fictional-issue-12", title: "Import this ticket", body: "Acceptance: keep my notes", html_url: "https://github.com/fictional/project/issues/12", state: "open", labels: [{ name: "needs-plan" }], updated_at: "2026-10-01T12:00:00Z" }], pulls: [] }));
   const tool = join(root, "gh.mjs");
   writeFileSync(tool, `import { readFileSync, appendFileSync, existsSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2); const data = JSON.parse(readFileSync(${JSON.stringify(state)}, "utf8"));
@@ -28,7 +28,8 @@ if (endpoint === "graphql" && data.pause || endpoint === "user" && data.pause_us
   while (!existsSync(${JSON.stringify(join(root, "continue"))}) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
 }
 if (endpoint === "user") result = { login: "fictional-owner", id: 1042 };
-else if (endpoint?.includes("/issues?")) result = endpoint.includes("page=1&") ? data.issues : [];
+else if (endpoint?.includes("/issues?")) result = data.pages ? data.pages[Number(new URL("https://api.github.invalid/" + endpoint).searchParams.get("page")) - 1] : endpoint.includes("page=1&") ? data.issues : [];
+else if (endpoint === "repos/fictional/project") result = { full_name: "fictional/project" };
 else if (endpoint === "graphql") result = { data: { repository: { viewerPermission: "ADMIN", pullRequests: { nodes: data.pulls, pageInfo: { hasNextPage: false, endCursor: null } }, pullRequest: data.pull ?? data.pulls[0] } } };
 else if (endpoint?.endsWith("/merge")) result = { merged: !data.fail_merge, sha: "fictional-merged" };
 else if (endpoint?.endsWith("/update-branch")) result = { message: "Updating pull request branch", url: "https://api.github.com/fictional/update" };
@@ -37,16 +38,19 @@ else if (endpoint?.includes("/files?")) result = [{ filename: "src/example.ts", 
 else result = {};
 process.stdout.write(JSON.stringify(result));
 `);
-  const app = createServer({ port: 0, stateDir: root, token: "github-test-owner", machines: false, factory: { accountTools: { github: { executable: process.execPath, args: [tool] } } } }); apps.push(app);
+  const remote = remoteOnly ? createServer({ port: 0, stateDir: join(root, "remote-state"), machines: false, token: "fixture-remote", factory: { accountDiscoveryHome: root } }) : null;
+  if (remote) apps.push(remote);
+  const options: Parameters<typeof createServer>[0] = { port: 0, stateDir: root, token: "github-test-owner", machines: false, factory: { accountDiscoveryHome: root, machineEndpoint: (id) => id === "fixture-remote" && remote ? { url: `http://localhost:${remote.port}`, token: "fixture-remote" } : undefined, accountTools: { github: { executable: process.execPath, args: [tool] } } } };
+  let app = createServer(options); apps.push(app);
   const headers = { authorization: "Bearer github-test-owner", "content-type": "application/json", "x-herdr-factory": "1", "x-herdr-machine": "1" };
-  const origin = `http://localhost:${app.port}`;
+  let origin = `http://localhost:${app.port}`;
   const post = async (path: string, body: unknown) => { const response = await fetch(origin + "/api/factory" + path, { method: "POST", headers, body: JSON.stringify(body) }); return { status: response.status, body: await response.json() }; };
   const get = async (path: string) => (await fetch(origin + "/api/factory" + path, { headers })).json();
   const profile = (await post("/machines/local/accounts", { name: "Fixture", service: "github", expected_login: "fictional-owner" })).body;
   expect((await post(`/machines/local/accounts/${profile.id}/verify`, { expected_revision: profile.revision })).status).toBe(200);
-  const project = (await post("/projects", { name: "Fixture", path: repo, machine_id: "local", provider: "codex", tracker: "app" })).body;
+  const project = (await post("/projects", { name: "Fixture", path: repo, machine_id: remoteOnly ? "fixture-remote" : "local", provider: "codex", tracker: "app" })).body;
   const policy = { expected_revision: null, repository: "fictional/project", account_profile_id: profile.id, sync_enabled: false, import_issues: true, import_fixes: true, auto_update: false, auto_merge: false, trusted_reviewers: ["fictional-reviewer"], required_checks: ["Fast checks"], review_context: "Follow Project standards and testing seams.", poll_minutes: 5 };
-  return { app, root, state, log, project, policy, post, get, origin, headers };
+  return { app, root, repo, state, log, project, policy, post, get, origin, headers, restart() { app.stop(); apps.splice(apps.indexOf(app), 1); app = createServer(options); apps.push(app); origin = `http://localhost:${app.port}`; } };
 }
 
 test("scoped GitHub tickets arrive once in Inbox while owner notes survive later synchronization", async () => {
@@ -193,4 +197,90 @@ test("GitHub settings work behind the owner's HTTPS proxy and reject a foreign o
   const proxy = { ...f.headers, origin: f.origin.replace("http:", "https:"), "x-forwarded-proto": "https" };
   const accepted = await fetch(url, { method: "POST", headers: proxy, body: JSON.stringify(f.policy) }); expect(accepted.status).toBe(200);
   const refused = await fetch(url, { method: "POST", headers: { ...proxy, origin: "https://unrelated.invalid" }, body: JSON.stringify(f.policy) }); expect(refused.status).toBe(403);
+});
+
+
+test("Assignment source history retains edited issue scope separately from owner notes", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  expect((await f.post(route + "/configure", f.policy)).status).toBe(200);
+  expect((await f.post(route + "/sync", {})).status).toBe(200);
+  const first = (await f.get(route)).sources[0];
+  const detail = await f.get(`/implementations/${first.implementation_id}`);
+  await f.post(`/implementations/${first.implementation_id}/messages`, { chat_id: detail.chats[0].id, role: "owner", content: "Keep my personal decision" });
+  const data = JSON.parse(readFileSync(f.state, "utf8"));
+  Object.assign(data.issues[0], { title: "Revised source title", body: "Acceptance: revised scope", labels: [{ name: "ready-for-agent" }], updated_at: "2026-10-02T12:00:00Z" });
+  writeFileSync(f.state, JSON.stringify(data));
+  expect((await f.post(route + "/sync", {})).status).toBe(200);
+  expect((await f.post(route + "/sync", {})).status).toBe(200);
+  const current = (await f.get(`/implementations/${first.implementation_id}`)).github_sources[0];
+  expect(current.id).toBe(first.id);
+  expect(current.current).toMatchObject({ title: "Revised source title", body: "Acceptance: revised scope", labels: ["ready-for-agent"], state: "open", source_updated_at: "2026-10-02T12:00:00Z", repository: "fictional/project", account_profile_id: f.policy.account_profile_id });
+  expect(current.history.map((entry: { title: string }) => entry.title)).toEqual(["Import this ticket", "Revised source title"]);
+  expect(current.history[0].revision).not.toBe(current.current.revision);
+  expect(Number.isFinite(Date.parse(current.current.fetched_at))).toBe(true);
+  const after = await f.get(`/implementations/${first.implementation_id}`);
+  expect(after.implementation.description).toBe(detail.implementation.description);
+  expect(after.messages.some((message: { content: string }) => message.content === "Keep my personal decision")).toBe(true);
+  expect(after.runs).toEqual([]);
+});
+
+
+test("an incomplete or malformed issue inventory preserves the last complete source state", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
+  const before = await f.get(route); const original = JSON.parse(readFileSync(f.state, "utf8")).issues[0];
+  for (const pages of [
+    [Array.from({ length: 30 }, (_, index) => ({ ...original, number: index + 100, node_id: `fictional-${index}` })), { error: "Incomplete page" }],
+    [[{ ...original, title: "Uncommitted source change" }, { ...original, number: 900, node_id: "fictional-broken", labels: null }]],
+  ]) {
+    writeFileSync(f.state, JSON.stringify({ issues: [], pulls: [], pages }));
+    expect((await f.post(route + "/sync", {})).status).toBe(409);
+    const after = await f.get(route);
+    expect(after.sources).toEqual(before.sources);
+    expect(after.last_sync).toBe(before.last_sync);
+    expect(after.problem).toBeTruthy();
+    expect((await f.get("")).implementations).toHaveLength(1);
+  }
+  writeFileSync(f.state, JSON.stringify({ issues: [original], pulls: [] }));
+  expect((await f.post(route + "/sync", {})).status).toBe(200);
+  expect((await f.get(route)).problem).toBeNull();
+});
+
+
+test("concurrent sync and restart retain one Assignment through closure and reopening", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy);
+  const data = JSON.parse(readFileSync(f.state, "utf8")); data.pause = true; writeFileSync(f.state, JSON.stringify(data));
+  const pending = f.post(route + "/sync", {}); const deadline = Date.now() + 5000;
+  while (!existsSync(join(f.root, "reading")) && Date.now() < deadline) await Bun.sleep(10);
+  expect(existsSync(join(f.root, "reading"))).toBe(true);
+  expect((await f.post(route + "/sync", {})).status).toBe(409);
+  writeFileSync(join(f.root, "continue"), "continue"); expect((await pending).status).toBe(200);
+  const source = (await f.get(route)).sources[0];
+  f.restart();
+  data.pause = false; data.issues[0].state = "closed"; writeFileSync(f.state, JSON.stringify(data));
+  expect((await f.post(route + "/sync", {})).status).toBe(200);
+  const closed = (await f.get(`/implementations/${source.implementation_id}`));
+  expect(closed.implementation.stage).toBe("inbox"); expect(closed.implementation.outcome).toBe("none");
+  expect(closed.github_sources[0].history.map((entry: { state: string }) => entry.state)).toEqual(["open", "closed"]);
+  data.issues[0].state = "open"; writeFileSync(f.state, JSON.stringify(data));
+  expect((await f.post(route + "/sync", {})).status).toBe(200);
+  const reopened = (await f.get(route)).sources[0];
+  expect(reopened.id).toBe(source.id); expect(reopened.implementation_id).toBe(source.implementation_id);
+  expect(reopened.history.map((entry: { state: string }) => entry.state)).toEqual(["open", "closed", "open"]);
+  expect((await f.get("")).implementations).toHaveLength(1);
+});
+
+
+test("remote-only Projects retain issue sources and refuse checkout drift", async () => {
+  const f = await fixture(true); const route = `/projects/${f.project.id}/github`;
+  expect((await f.post(route + "/configure", f.policy)).status).toBe(200);
+  expect((await f.post(route + "/sync", {})).status).toBe(200);
+  const before = await f.get(route);
+  expect(before.sources[0].current.repository).toBe("fictional/project");
+  execFileSync("git", ["-C", f.repo, "remote", "set-url", "origin", "https://github.com/fictional/different.git"]);
+  expect((await f.post(route + "/sync", {})).status).toBe(409);
+  const after = await f.get(route);
+  expect(after.sources).toEqual(before.sources);
+  expect(after.last_sync).toBe(before.last_sync); expect(after.problem).toBeTruthy();
 });

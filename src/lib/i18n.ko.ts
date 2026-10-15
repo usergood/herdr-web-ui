@@ -1346,4 +1346,13 @@ export const KO: Record<string, string> = {
   "Continue with available context": "사용 가능한 맥락으로 계속",
   "Stop this attempt": "이 시도 중지",
   "Stopping keeps the worktree. You can start a new attempt afterwards.": "중지해도 작업 트리는 보존됩니다. 이후 새 시도를 시작할 수 있습니다.",
+  "GitHub issue source": "GitHub 이슈 원본",
+  "Source history": "원본 이력",
+  "Issue is open": "열린 이슈",
+  "Issue is closed": "닫힌 이슈",
+  "Source revision {revision}": "원본 리비전 {revision}",
+  "Source updated {time}": "원본 수정: {time}",
+  "Fetched {time}": "가져온 시각: {time}",
+  "Sync GitHub to collect source history.": "GitHub를 동기화하여 원본 이력을 가져오세요.",
+
 };

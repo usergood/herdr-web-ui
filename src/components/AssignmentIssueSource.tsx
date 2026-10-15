@@ -1,0 +1,35 @@
+import type { ProjectGitHubIssueRevision, ProjectGitHubSource } from "../../shared/github-project.ts";
+import { useT } from "../lib/i18n.ts";
+import { Markdown } from "./Markdown.tsx";
+import "./AssignmentIssueSource.css";
+
+function IssueRevision({ revision }: { revision: ProjectGitHubIssueRevision }) {
+  const t = useT();
+  return <article className="assignment-issue-revision">
+    <h4>{revision.title}</h4>
+    <p>{revision.state === "open" ? t("Issue is open") : t("Issue is closed")}</p>
+    {revision.labels.length > 0 && <p>{revision.labels.join(" · ")}</p>}
+    <Markdown>{revision.body}</Markdown>
+    <details><summary>{t("Source revision {revision}", { revision: revision.revision.slice(0, 12) })}</summary>
+      <p>{revision.revision}</p>
+      <p>{t("Source updated {time}", { time: new Date(revision.source_updated_at).toLocaleString() })}</p>
+      <p>{t("Fetched {time}", { time: new Date(revision.fetched_at).toLocaleString() })}</p>
+    </details>
+  </article>;
+}
+
+export function AssignmentIssueSource({ sources, problem }: { sources: ProjectGitHubSource[]; problem: string | null }) {
+  const t = useT(); const issues = sources.filter(source => source.kind === "issue");
+  if (!issues.length) return null;
+  return <section className="factory-section assignment-issue-source" aria-label={t("GitHub issue source")}>
+    <h3>{t("GitHub issue source")}</h3>
+    {problem && <p role="alert">{problem}</p>}
+    {issues.map(source => <div key={source.id}>
+      <a href={source.url} target="_blank" rel="noreferrer">{source.current?.repository ?? "GitHub"} #{source.number}</a>
+      {source.current ? <IssueRevision revision={source.current} /> : <p role="status">{t("Sync GitHub to collect source history.")}</p>}
+      {!!source.history?.length && <details><summary>{t("Source history")}</summary>
+        {source.history.map((revision, index) => <IssueRevision key={`${revision.revision}:${index}`} revision={revision} />)}
+      </details>}
+    </div>)}
+  </section>;
+}

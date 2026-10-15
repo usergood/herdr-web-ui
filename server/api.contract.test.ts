@@ -139,6 +139,33 @@ describe("HTML file previews", () => {
 });
 
 describe("factory records", () => {
+  it("exposes issue revision and fetch evidence on both Project and Assignment responses", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-issue-contract-")); const repo = join(state, "repo"); mkdirSync(repo);
+    writeFileSync(join(repo, "README.md"), "Owned issue contract fixture\n");
+    for (const args of [["init", "-b", "main"], ["add", "."], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "initial"], ["remote", "add", "origin", "https://github.com/fictional/project.git"]]) expect(Bun.spawnSync(["git", ...args], { cwd: repo }).exitCode).toBe(0);
+    const cli = join(state, "gh.mjs");
+    writeFileSync(cli, `const path = process.argv[3]; console.log(JSON.stringify(path === "user" ? {login:"fictional-owner",id:1042} : path?.includes("/issues?") ? [{number:12,node_id:"fictional-issue",title:"Contract source",body:"Independent acceptance",labels:[{name:"needs-plan"}],state:"open",updated_at:"2026-10-01T12:00:00Z",html_url:"https://github.com/fictional/project/issues/12"}] : path === "graphql" ? {data:{repository:{pullRequests:{nodes:[],pageInfo:{hasNextPage:false,endCursor:null}}}}} : {}));`);
+    const app = createServer({ port: 0, stateDir: state, machines: false, factory: { accountDiscoveryHome: state, accountTools: { github: { executable: process.execPath, args: [cli] } } } });
+    const request = async (path: string, body?: unknown) => {
+      const response = await fetch(`http://localhost:${app.port}/api/factory${path}`, body === undefined ? {} : { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1", "x-herdr-machine": "1" }, body: JSON.stringify(body) });
+      expect(response.ok).toBe(true); return response.json();
+    };
+    try {
+      const profile = await request("/machines/local/accounts", { name: "Fixture", service: "github", expected_login: "fictional-owner" });
+      await request(`/machines/local/accounts/${profile.id}/verify`, { expected_revision: profile.revision });
+      const project = await request("/projects", { name: "Fixture", path: repo, machine_id: "local", provider: "codex", tracker: "app" });
+      const route = `/projects/${project.id}/github`;
+      const policy = await request(route + "/configure", { expected_revision: null, repository: "fictional/project", account_profile_id: profile.id, sync_enabled: false, import_issues: true, import_fixes: false, auto_update: false, auto_merge: false, trusted_reviewers: [], required_checks: [], review_context: "Owned fixture", poll_minutes: 5 });
+      const synced = await request(route + "/sync", {}); const source = synced.sources[0];
+      expect(source.current).toMatchObject({ title: "Contract source", body: "Independent acceptance", labels: ["needs-plan"], state: "open", repository: "fictional/project", account_profile_id: profile.id, policy_revision: policy.revision, source_updated_at: "2026-10-01T12:00:00Z" });
+      expect(source.current.revision).toMatch(/^[a-f0-9]{64}$/); expect(source.history).toEqual([source.current]);
+      expect(Number.isFinite(Date.parse(source.current.fetched_at))).toBe(true);
+      const detail = await request(`/implementations/${source.implementation_id}`);
+      expect(detail.github_sources).toEqual(synced.sources);
+      expect(detail.github_sync).toEqual({ last_sync: synced.last_sync, problem: null });
+    } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+
   it("persists a global six-task limit and validates its supported range", async () => {
     const state = mkdtempSync(join(tmpdir(), "saurons-capacity-settings-"));
     let app = createServer({ port: 0, stateDir: state, machines: false });
