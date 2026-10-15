@@ -1261,6 +1261,7 @@ export interface FactoryRequests {
   pane_archive: { machine_id: string; pane_id: string; archived: boolean; terminal_id?: string; session_ref?: string | null };
   github_readiness: import("./github-readiness.ts").ReadinessConfiguration;
   github_plan_preparation: import("./issue-planning.ts").PrepareIssuePlan;
+  github_delivery_link: import("./github-project.ts").LinkIssueDelivery;
   github_readiness_approval: { source_revision: string; policy_revision: string };
   github_configuration: import("./github-project.ts").ProjectGitHubConfiguration;
   github_action: { head: string; base: string; policy_revision: string };
@@ -1313,14 +1314,25 @@ export type FactoryRequestBody = FactoryRequests[keyof FactoryRequests];
  * POST .../github/issues/:number/prepare (PrepareIssuePlan) -> ProjectGitHubOverview;
  * reuses trusted planning and retains a bounded graph/provenance or targeted owner questions. Never starts work.
  * Source planning records retain exact content, dependencies, seams, graph and original authorization.
+ * POST .../github/issues/:number/delivery (LinkIssueDelivery) -> ProjectGitHubOverview;
+ * owner links the complete intended PR numbers/heads, target branch and optional release tag
+ * for the displayed source revision. expected_revision guards replacement; delivery_history
+ * exposes immutable prior links. Linking never asserts delivery, accepts implementation or starts work.
  * POST .../github/configure -> ProjectGitHubPolicy, uses ProjectGitHubConfiguration.
  * POST .../github/sync -> ProjectGitHubOverview; imports issue/fix records and applies opted-in PR policies.
  * Sources retain current issue scope, revision history and fetch evidence; incomplete inventories
  * preserve the last complete source state and last_sync, with a visible problem.
- * Issue sources include native_dependencies in their current revision and dependencies evidence:
+ * Issue sources include native_dependencies in their current revision and combined dependencies evidence:
  * revision/source_revision, account/policy, fetched_at, complete/fresh and edges with resolution
- * and blocker. Native identities may resolve only in the same Project/repository; resolved
- * identity still has delivery_unverified. Outages retain edges with fresh:false. Prose creates no edges.
+ * and blocker. An approved specification's Dependencies section declares an explicit JSON array
+ * of {repository,number,requires:"merge"|"release"}, or None. Drafts create no edges; malformed
+ * approved declarations remain conflicts. Native and plan provenance is retained; release wins.
+ * Same-Project/repository identities alone may resolve. Source delivery links expose owner coverage;
+ * dependencies retain target_branch and verified merges/release. Satisfaction requires fresh complete
+ * graph/coverage evidence, matching intended heads, actual merges into the dependent target branch,
+ * branch containment and, when required, a published containing release. Closure is insufficient.
+ * The target branch is frozen from the registered checkout on import, or explicitly linked by the
+ * owner. Outages/changed plans/links retain observations but invalidate satisfaction. Prose creates no edges.
  * GET .../github/pulls/:number/files?head=:sha -> ProjectGitHubFiles, bounded read-only patch inventory.
  * POST .../github/pulls/:number/(merge|update|rerequest|import) -> ProjectGitHubOverview;
  * mutations require the displayed head, base and policy_revision, same origin and x-herdr-machine: 1.

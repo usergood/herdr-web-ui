@@ -16,3 +16,13 @@
 .assignment-native-dependencies li {
   margin-block: var(--space-3);
 }
+
+.assignment-dependency-delivery form {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.assignment-dependency-delivery .input {
+  min-width: 0;
+  width: 100%;
+}

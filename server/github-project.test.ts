@@ -169,7 +169,7 @@ const issueNumber = Number(args.find(arg => arg.startsWith("query="))?.match(/is
 const issue = Array.isArray(data.issues) ? data.issues.find(issue => issue.number === issueNumber) ?? data.issues[0] : null;
 const issueProof = issue ? { id: issue.node_id, title: issue.title, body: issue.body ?? "", state: issue.state.toUpperCase(), createdAt: "2026-09-30T12:00:00Z", updatedAt: issue.updated_at, lastEditedAt: data.last_edited_at ?? null } : null;
 const users = readFileSync(${JSON.stringify(log)}, "utf8").trim().split("\\n").map((line) => JSON.parse(line)).filter((call) => call.args[1] === "user").length;
-if (endpoint === "graphql" && data.pause || endpoint === "user" && data.pause_user === users) {
+if (endpoint === "graphql" && data.pause || endpoint === "user" && data.pause_user === users || endpoint?.includes("/compare/") && data.pause_compare) {
   writeFileSync(${JSON.stringify(join(root, "reading"))}, "reading");
   const deadline = Date.now() + 5000;
   while (!existsSync(${JSON.stringify(join(root, "continue"))}) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
@@ -183,6 +183,12 @@ else if (endpoint?.includes("/dependencies/blocked_by")) {
   const page = Number(new URL("https://api.github.invalid/" + endpoint).searchParams.get("page"));
   result = data.dependency_pages?.[number]?.[page - 1] ?? (page === 1 ? data.dependencies?.[number] ?? [] : []);
 }
+else if (endpoint?.match(/pulls[/][0-9]+$/)) result = data.delivery_pulls?.[endpoint.split("/").at(-1)] ?? {};
+else if (endpoint?.includes("/branches/")) result = data.branches?.[decodeURIComponent(endpoint.split("/branches/")[1])] ?? { name: "main", commit: { sha: "f".repeat(40) } };
+else if (endpoint?.includes("/compare/")) result = data.comparisons?.[endpoint.split("/compare/")[1]] ?? {};
+else if (endpoint?.includes("/git/ref/tags/")) result = data.tag_ref ?? {};
+else if (endpoint?.includes("/git/tags/")) result = data.tag_object ?? {};
+else if (endpoint?.includes("/releases/tags/")) result = data.releases?.[decodeURIComponent(endpoint.split("/releases/tags/")[1])] ?? {};
 else if (endpoint === "repos/fictional/project") result = { full_name: "fictional/project" };
 else if (endpoint === "graphql") result = { data: { repository: { issue: issueProof, viewerPermission: "ADMIN", pullRequests: { nodes: data.pulls, pageInfo: { hasNextPage: false, endCursor: null } }, pullRequest: data.pull ?? data.pulls[0] } } };
 else if (endpoint?.endsWith("/merge")) result = { merged: !data.fail_merge, sha: "fictional-merged" };
@@ -390,7 +396,7 @@ test("an incomplete or malformed issue inventory preserves the last complete sou
     writeFileSync(f.state, JSON.stringify({ issues: [], pulls: [], pages }));
     expect((await f.post(route + "/sync", {})).status).toBe(409);
     const after = await f.get(route);
-    expect(after.sources).toEqual(before.sources.map((source: { dependencies: object }) => ({ ...source, dependencies: { ...source.dependencies, fresh: false } })));
+    expect(after.sources).toEqual(before.sources.map((source: { dependencies: object }) => ({ ...source, dependencies: { ...source.dependencies, fresh: false, satisfied: false } })));
     expect(after.last_sync).toBe(before.last_sync);
     expect(after.problem).toBeTruthy();
     expect((await f.get("")).implementations).toHaveLength(1);
@@ -435,7 +441,7 @@ test("remote-only Projects retain issue sources and refuse checkout drift", asyn
   execFileSync("git", ["-C", f.repo, "remote", "set-url", "origin", "https://github.com/fictional/different.git"]);
   expect((await f.post(route + "/sync", {})).status).toBe(409);
   const after = await f.get(route);
-  expect(after.sources).toEqual(before.sources.map((source: { dependencies: object }) => ({ ...source, dependencies: { ...source.dependencies, fresh: false } })));
+  expect(after.sources).toEqual(before.sources.map((source: { dependencies: object }) => ({ ...source, dependencies: { ...source.dependencies, fresh: false, satisfied: false } })));
   expect(after.last_sync).toBe(before.last_sync); expect(after.problem).toBeTruthy();
 });
 
@@ -611,7 +617,7 @@ test("native issue dependencies link same-Project Assignments without claiming d
   expect(evidence).toMatchObject({ complete: true, source_revision: source.revision, account_profile_id: f.policy.account_profile_id });
   expect(evidence.revision).toMatch(/^[a-f0-9]{64}$/);
   expect(Number.isFinite(Date.parse(evidence.fetched_at))).toBe(true);
-  expect(evidence.edges).toEqual([{ external_id: "fictional-issue-24", repository: "fictional/project", number: 24, url: "https://github.com/fictional/project/issues/24", state: "open", source_updated_at: "2026-10-01T12:00:00Z", implementation_id: target.implementation_id, resolution: "resolved", blocker: "delivery_unverified" }]);
+  expect(evidence.edges).toMatchObject([{ external_id: "fictional-issue-24", repository: "fictional/project", number: 24, url: "https://github.com/fictional/project/issues/24", state: "open", source_updated_at: "2026-10-01T12:00:00Z", implementation_id: target.implementation_id, resolution: "resolved", blocker: "delivery_unverified" }]);
   expect(target.dependencies.edges).toEqual([]);
   expect(source.current.native_dependencies).toHaveLength(1);
   const before = source.revision;
@@ -780,4 +786,196 @@ test("native relationship edits invalidate readiness and owner approval checks t
   data.events.push(readinessEvent(2, "fictional-owner", "2026-10-02T12:00:00Z")); data.issues[0].updated_at = "2026-10-02T12:00:00Z"; writeFileSync(f.state, JSON.stringify(data));
   source = (await f.post(route + "/sync", {})).body.sources.find((source: { number: number }) => source.number === 12);
   expect(source.readiness.eligible).toBe(true); expect(source.dependencies.edges).toEqual([]);
+});
+
+
+test("approved plan dependencies join native relationships and preserve stricter release provenance", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const issues = [dependencyIssue(12), dependencyIssue(24), dependencyIssue(36)];
+  writeFileSync(f.state, JSON.stringify({ issues, pulls: [], dependencies: { 12: [issues[1]] } }));
+  await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
+  const source = (await f.get(route)).sources.find((s: { number: number }) => s.number === 12);
+  const prefix = `/implementations/${source.implementation_id}`;
+  const specification = (await f.post(prefix + "/specifications", { content: externalPlan.replace("None.", JSON.stringify([{ repository: "fictional/project", number: 24, requires: "release" }, { repository: "fictional/project", number: 36, requires: "merge" }])) })).body;
+  // A draft cannot add executable dependencies.
+  await f.post(route + "/sync", {});
+  expect((await f.get(route)).sources.find((s: { number: number }) => s.number === 12).dependencies.edges).toHaveLength(1);
+  for (const kind of ["specification", "testing_seams"]) await f.post(prefix + "/approvals", { kind, revision: specification.id, scope: "Fictional owner approved this plan" });
+  await f.post(route + "/sync", {});
+  const combined = (await f.get(route)).sources.find((s: { number: number }) => s.number === 12).dependencies;
+  expect(combined.edges).toHaveLength(2);
+  expect(combined.edges[0]).toMatchObject({ number: 24, requires: "release", provenance: [{ kind: "github_native" }, { kind: "app_plan", specification_id: specification.id }], blocker: "delivery_unverified" });
+  expect(combined.edges[1]).toMatchObject({ number: 36, requires: "merge", provenance: [{ kind: "app_plan", specification_id: specification.id }] });
+  expect((await f.get(prefix)).runs).toEqual([]);
+});
+
+test("a cycle spanning native and approved plan edges blocks both Assignments", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const issues = [dependencyIssue(12), dependencyIssue(24)];
+  writeFileSync(f.state, JSON.stringify({ issues, pulls: [], dependencies: { 12: [issues[1]] } }));
+  await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
+  const source = (await f.get(route)).sources.find((s: { number: number }) => s.number === 24);
+  const prefix = `/implementations/${source.implementation_id}`;
+  const specification = (await f.post(prefix + "/specifications", { content: externalPlan.replace("None.", JSON.stringify([{ repository: "fictional/project", number: 12, requires: "merge" }])) })).body;
+  for (const kind of ["specification", "testing_seams"]) await f.post(prefix + "/approvals", { kind, revision: specification.id, scope: "Fictional approved cycle fixture" });
+  await f.post(route + "/sync", {});
+  const sources = (await f.get(route)).sources;
+  expect(sources.map((s: { dependencies: { edges: unknown[] } }) => s.dependencies.edges)).toMatchObject([[{ resolution: "cyclic", blocker: "cyclic" }], [{ resolution: "cyclic", blocker: "cyclic" }]]);
+});
+
+test("unresolved approved declarations remain visible and plan changes invalidate prior dependency evidence", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
+  const source = (await f.get(route)).sources[0]; const prefix = `/implementations/${source.implementation_id}`;
+  const specification = (await f.post(prefix + "/specifications", { content: externalPlan.replace("None.", '[{"repository":"fictional/project","number":24,"requires":"unknown"}]') })).body;
+  for (const kind of ["specification", "testing_seams"]) await f.post(prefix + "/approvals", { kind, revision: specification.id, scope: "Fictional unresolved declaration" });
+  expect((await f.get(route)).sources[0].dependencies.fresh).toBe(false);
+  await f.post(route + "/sync", {});
+  const dependencies = (await f.get(route)).sources[0].dependencies;
+  expect(dependencies).toMatchObject({ satisfied: false, conflicts: ["Approved plan dependencies need explicit repository, issue number and merge or release requirements."] });
+});
+
+
+test("linking intended PR coverage never fabricates delivery and only verified target-branch merges satisfy dependencies", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const issues = [dependencyIssue(12), dependencyIssue(24)];
+  const data = { issues, pulls: [], dependencies: { 12: [issues[1]] }, delivery_pulls: { 27: deliveryPull() }, comparisons: {} as Record<string, unknown> };
+  writeFileSync(f.state, JSON.stringify(data)); await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
+  let sources = (await f.get(route)).sources; const target = sources.find((s: { number: number }) => s.number === 24);
+  const linked = await f.post(route + "/issues/24/delivery", { source_revision: target.revision, expected_revision: null, target_branch: "main", intended_prs: [{ number: 27, head: "a".repeat(40) }], release_tag: null });
+  expect(linked.status).toBe(200);
+  expect(linked.body.sources.find((s: { number: number }) => s.number === 12).dependencies.satisfied).toBe(false);
+  // The issue is closed, but the intended PR is still open.
+  data.issues[1]!.state = "closed"; data.delivery_pulls[27].merged = false; writeFileSync(f.state, JSON.stringify(data));
+  await f.post(route + "/sync", {});
+  expect((await f.get(route)).sources.find((s: { number: number }) => s.number === 12).dependencies.satisfied).toBe(false);
+  // Renew the coverage link for the exact changed issue revision.
+  sources = (await f.get(route)).sources; const changed = sources.find((s: { number: number }) => s.number === 24);
+  await f.post(route + "/issues/24/delivery", { source_revision: changed.revision, expected_revision: changed.delivery.revision, target_branch: "main", intended_prs: [{ number: 27, head: "a".repeat(40) }], release_tag: null });
+  data.delivery_pulls[27].merged = true; data.delivery_pulls[27].base.ref = "other"; writeFileSync(f.state, JSON.stringify(data));
+  await f.post(route + "/sync", {});
+  expect((await f.get(route)).sources.find((s: { number: number }) => s.number === 12).dependencies.edges[0].blocker).toBe("wrong_target");
+  data.delivery_pulls[27].base.ref = "main"; data.comparisons["c".repeat(40) + "..." + "f".repeat(40)] = { status: "ahead", base_commit: { sha: "c".repeat(40) }, merge_base_commit: { sha: "c".repeat(40) }, commits: [], total_commits: 2 };
+  writeFileSync(f.state, JSON.stringify(data)); await f.post(route + "/sync", {});
+  const satisfied = (await f.get(route)).sources.find((s: { number: number }) => s.number === 12).dependencies;
+  expect(satisfied).toMatchObject({ satisfied: true, target_branch: "main", edges: [{ blocker: null, delivery: { merges: [{ number: 27, head: "a".repeat(40), merge_commit: "c".repeat(40), target_branch: "main" }] } }] });
+  expect((await f.get(`/implementations/${target.implementation_id}`)).implementation.outcome).toBe("none");
+  const retainedTarget = (await f.get(route)).sources.find((s: { number: number }) => s.number === 24);
+  expect(retainedTarget.delivery_history).toHaveLength(2);
+  expect(retainedTarget.delivery_history[0]).toMatchObject({ source_revision: target.revision, target_branch: "main", intended_prs: [{ number: 27, head: "a".repeat(40) }] });
+  f.restart(); expect((await f.get(route)).sources.find((s: { number: number }) => s.number === 12).dependencies.satisfied).toBe(true);
+});
+
+function deliveryPull() { return { number: 27, html_url: "https://github.com/fictional/project/pull/27", merged: true, merged_at: "2026-10-03T12:00:00Z", merge_commit_sha: "c".repeat(40), head: { sha: "a".repeat(40) }, base: { ref: "main", repo: { full_name: "fictional/project" } } }; }
+
+test("an explicit release dependency waits for a published release containing every intended merge", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const issues = [dependencyIssue(12), dependencyIssue(24)];
+  const comparison = { status: "ahead", base_commit: { sha: "c".repeat(40) }, merge_base_commit: { sha: "c".repeat(40) } };
+  const data = { issues, pulls: [], dependencies: {}, delivery_pulls: { 27: deliveryPull() }, comparisons: { ["c".repeat(40) + "..." + "f".repeat(40)]: comparison, ["c".repeat(40) + "..." + "d".repeat(40)]: { ...comparison, status: "behind" } }, tag_ref: { ref: "refs/tags/v1", object: { type: "commit", sha: "d".repeat(40) } }, releases: { v1: { tag_name: "v1", html_url: "https://github.com/fictional/project/releases/tag/v1", draft: true, published_at: null as string | null } } };
+  writeFileSync(f.state, JSON.stringify(data)); await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
+  const sources = (await f.get(route)).sources; const target = sources.find((s: { number: number }) => s.number === 24); const dependent = sources.find((s: { number: number }) => s.number === 12);
+  const prefix = `/implementations/${dependent.implementation_id}`;
+  const specification = (await f.post(prefix + "/specifications", { content: externalPlan.replace("None.", JSON.stringify([{ repository: "fictional/project", number: 24, requires: "release" }])) })).body;
+  for (const kind of ["specification", "testing_seams"]) await f.post(prefix + "/approvals", { kind, revision: specification.id, scope: "Fictional released artifact requirement" });
+  await f.post(route + "/issues/24/delivery", { source_revision: target.revision, expected_revision: null, target_branch: "main", intended_prs: [{ number: 27, head: "a".repeat(40) }], release_tag: "v1" });
+  await f.post(route + "/sync", {});
+  expect((await f.get(route)).sources.find((s: { number: number }) => s.number === 12).dependencies).toMatchObject({ satisfied: false, edges: [{ blocker: "release_unverified" }] });
+  data.releases.v1.draft = false; data.releases.v1.published_at = "2026-10-04T12:00:00Z"; writeFileSync(f.state, JSON.stringify(data));
+  await f.post(route + "/sync", {});
+  expect((await f.get(route)).sources.find((s: { number: number }) => s.number === 12).dependencies.satisfied).toBe(false);
+  data.comparisons["c".repeat(40) + "..." + "d".repeat(40)]!.status = "ahead"; writeFileSync(f.state, JSON.stringify(data));
+  await f.post(route + "/sync", {});
+  expect((await f.get(route)).sources.find((s: { number: number }) => s.number === 12).dependencies).toMatchObject({ satisfied: true, edges: [{ blocker: null, requires: "release", delivery: { release: { tag: "v1", url: data.releases.v1.html_url } } }] });
+  // A same-named branch is not the release tag; peel the annotated tag and verify its commit.
+  Object.assign(data, { tag_ref: { ref: "refs/tags/v1", object: { type: "tag", sha: "e".repeat(40) } }, tag_object: { sha: "e".repeat(40), object: { type: "commit", sha: "d".repeat(40) } } });
+  Object.assign(data.comparisons, { ["c".repeat(40) + "..." + "d".repeat(40)]: { ...comparison, status: "behind" } });
+  writeFileSync(f.state, JSON.stringify(data)); await f.post(route + "/sync", {});
+  expect((await f.get(route)).sources.find((s: { number: number }) => s.number === 12).dependencies.satisfied).toBe(false);
+  data.comparisons["c".repeat(40) + "..." + "d".repeat(40)]!.status = "ahead"; writeFileSync(f.state, JSON.stringify(data)); await f.post(route + "/sync", {});
+  expect((await f.get(route)).sources.find((s: { number: number }) => s.number === 12).dependencies).toMatchObject({ satisfied: true, edges: [{ delivery: { release: { commit: "d".repeat(40) } } }] });
+});
+
+test("every intended PR head must be merged before coverage is satisfied", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const issues = [dependencyIssue(12), dependencyIssue(24)];
+  const second = { ...deliveryPull(), number: 28, html_url: "https://github.com/fictional/project/pull/28", merged: false, head: { sha: "b".repeat(40) } };
+  const data = { issues, pulls: [], dependencies: { 12: [issues[1]] }, delivery_pulls: { 27: deliveryPull(), 28: second }, comparisons: { ["c".repeat(40) + "..." + "f".repeat(40)]: { status: "identical", base_commit: { sha: "c".repeat(40) }, merge_base_commit: { sha: "c".repeat(40) } } } };
+  writeFileSync(f.state, JSON.stringify(data)); await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
+  const target = (await f.get(route)).sources.find((s: { number: number }) => s.number === 24);
+  await f.post(route + "/issues/24/delivery", { source_revision: target.revision, expected_revision: null, target_branch: "main", intended_prs: [{ number: 27, head: "a".repeat(40) }, { number: 28, head: "b".repeat(40) }], release_tag: null });
+  await f.post(route + "/sync", {});
+  expect((await f.get(route)).sources.find((s: { number: number }) => s.number === 12).dependencies.satisfied).toBe(false);
+  second.merged = true; second.head.sha = "e".repeat(40); writeFileSync(f.state, JSON.stringify(data)); await f.post(route + "/sync", {});
+  expect((await f.get(route)).sources.find((s: { number: number }) => s.number === 12).dependencies.satisfied).toBe(false);
+  second.head.sha = "b".repeat(40); writeFileSync(f.state, JSON.stringify(data)); await f.post(route + "/sync", {});
+  expect((await f.get(route)).sources.find((s: { number: number }) => s.number === 12).dependencies).toMatchObject({ satisfied: true, edges: [{ delivery: { merges: [{ number: 27 }, { number: 28 }] } }] });
+  const dependent = (await f.get(route)).sources.find((s: { number: number }) => s.number === 12);
+  const prefix = `/implementations/${dependent.implementation_id}`;
+  const spec = (await f.post(prefix + "/specifications", { content: externalPlan })).body;
+  for (const kind of ["specification", "testing_seams"]) await f.post(prefix + "/approvals", { kind, revision: spec.id, scope: "Fictional changed plan" });
+  expect((await f.get(route)).sources.find((s: { number: number }) => s.number === 12).dependencies).toMatchObject({ fresh: false, satisfied: false });
+});
+
+test("a changed prerequisite plan invalidates the combined graph before another sync", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const issues = [dependencyIssue(12), dependencyIssue(24)];
+  writeFileSync(f.state, JSON.stringify({ issues, pulls: [], dependencies: { 12: [issues[1]] } }));
+  await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
+  const target = (await f.get(route)).sources.find((s: { number: number }) => s.number === 24);
+  const prefix = `/implementations/${target.implementation_id}`;
+  const spec = (await f.post(prefix + "/specifications", { content: externalPlan.replace("None.", JSON.stringify([{ repository: "fictional/project", number: 12, requires: "merge" }])) })).body;
+  for (const kind of ["specification", "testing_seams"]) await f.post(prefix + "/approvals", { kind, revision: spec.id, scope: "Changed combined graph" });
+  expect((await f.get(route)).sources.find((s: { number: number }) => s.number === 12).dependencies.fresh).toBe(false);
+});
+
+
+test("merge containment uses the target branch commit rather than an ambiguous branch or tag name", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const issues = [dependencyIssue(12), dependencyIssue(24)];
+  const comparison = { status: "ahead", base_commit: { sha: "c".repeat(40) }, merge_base_commit: { sha: "c".repeat(40) } };
+  const data = { issues, pulls: [], dependencies: { 12: [issues[1]] }, delivery_pulls: { 27: deliveryPull() }, comparisons: { ["c".repeat(40) + "...main"]: comparison, ["c".repeat(40) + "..." + "f".repeat(40)]: { ...comparison, status: "behind" } } };
+  writeFileSync(f.state, JSON.stringify(data)); await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
+  const target = (await f.get(route)).sources.find((s: { number: number }) => s.number === 24);
+  await f.post(route + "/issues/24/delivery", { source_revision: target.revision, expected_revision: null, target_branch: "main", intended_prs: [{ number: 27, head: "a".repeat(40) }], release_tag: null });
+  await f.post(route + "/sync", {});
+  expect((await f.get(route)).sources.find((s: { number: number }) => s.number === 12).dependencies.satisfied).toBe(false);
+  data.comparisons["c".repeat(40) + "..." + "f".repeat(40)]!.status = "ahead"; writeFileSync(f.state, JSON.stringify(data)); await f.post(route + "/sync", {});
+  expect((await f.get(route)).sources.find((s: { number: number }) => s.number === 12).dependencies.satisfied).toBe(true);
+});
+
+test("prepared trusted issue plans retain explicit dependency requirements without synthetic owner approvals", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const issues = [{ ...dependencyIssue(12), labels: [{ name: "ready-for-agent" }] }, dependencyIssue(24)];
+  issues[0]!.body = externalPlan.replace("None.", JSON.stringify([{ repository: "fictional/project", number: 24, requires: "release" }]));
+  writeFileSync(f.state, JSON.stringify({ issues, pulls: [], dependencies: {}, events: [readinessEvent()] }));
+  await f.post(route + "/configure", f.policy);
+  await f.post(route + "/readiness", { expected_revision: null, account_profile_id: f.policy.account_profile_id, triage_labels: {}, blocked_label: "blocked" });
+  const source = (await f.post(route + "/sync", {})).body.sources.find((s: { number: number }) => s.number === 12);
+  const prepared = await f.post(route + "/issues/12/prepare", { source_revision: source.revision });
+  expect(prepared.body.sources.find((s: { number: number }) => s.number === 12).planning.condition).toBe("prepared");
+  await f.post(route + "/sync", {});
+  expect((await f.get(route)).sources.find((s: { number: number }) => s.number === 12).dependencies.edges).toMatchObject([{ number: 24, requires: "release", provenance: [{ kind: "app_plan" }] }]);
+  expect((await f.get(`/implementations/${source.implementation_id}`)).approvals).toEqual([]);
+});
+
+
+test("approved scope changed during delivery verification cannot publish satisfied dependency evidence", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const issues = [dependencyIssue(12), dependencyIssue(24)];
+  const data = { issues, pulls: [], dependencies: { 12: [issues[1]] }, delivery_pulls: { 27: deliveryPull() }, comparisons: { ["c".repeat(40) + "..." + "f".repeat(40)]: { status: "ahead", base_commit: { sha: "c".repeat(40) }, merge_base_commit: { sha: "c".repeat(40) } } }, pause_compare: false };
+  writeFileSync(f.state, JSON.stringify(data)); await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
+  const sources = (await f.get(route)).sources; const target = sources.find((s: { number: number }) => s.number === 24); const dependent = sources.find((s: { number: number }) => s.number === 12);
+  await f.post(route + "/issues/24/delivery", { source_revision: target.revision, expected_revision: null, target_branch: "main", intended_prs: [{ number: 27, head: "a".repeat(40) }], release_tag: null });
+  data.pause_compare = true; writeFileSync(f.state, JSON.stringify(data));
+  const pending = f.post(route + "/sync", {});
+  const deadline = Date.now() + 3000;
+  while (!existsSync(join(f.root, "reading")) && Date.now() < deadline) await Bun.sleep(10);
+  expect(existsSync(join(f.root, "reading"))).toBe(true);
+  const prefix = `/implementations/${dependent.implementation_id}`;
+  const spec = (await f.post(prefix + "/specifications", { content: externalPlan.replace("None.", JSON.stringify([{ repository: "fictional/project", number: 36, requires: "release" }])) })).body;
+  for (const kind of ["specification", "testing_seams"]) await f.post(prefix + "/approvals", { kind, revision: spec.id, scope: "Changed while GitHub was reading" });
+  writeFileSync(join(f.root, "continue"), "continue");
+  expect((await pending).body).toMatchObject({ error: { code: "dependency_scope_changed" } });
+  expect((await f.get(route)).sources.find((s: { number: number }) => s.number === 12).dependencies).toMatchObject({ fresh: false, satisfied: false });
 });

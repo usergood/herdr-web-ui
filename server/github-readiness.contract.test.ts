@@ -26,7 +26,7 @@ test("readiness endpoints retain their public contract and require explicit owne
     const route = `/projects/${project.id}/github`;
     await post(route + "/configure", { expected_revision: null, repository: "fictional/project", account_profile_id: account.id, sync_enabled: false, import_issues: true, import_fixes: false, auto_update: false, auto_merge: false, trusted_reviewers: ["fictional-reviewer"], required_checks: [], review_context: "Fictional standards", poll_minutes: 5 });
     const config = { expected_revision: null, account_profile_id: account.id, triage_labels: {}, blocked_label: "blocked" };
-    for (const path of ["/readiness", "/issues/1/approve", "/issues/1/prepare"]) {
+    for (const path of ["/readiness", "/issues/1/approve", "/issues/1/prepare", "/issues/1/delivery"]) {
       const refused = await post(route + path, config, { ...headers, "x-herdr-machine": "" });
       expect(refused.status).toBe(403); expect(await refused.json()).toEqual({ error: { code: "invalid_origin", message: "Use GitHub controls from this app" } });
       expect((await post(route + path, config, { ...headers, origin: "https://fictional.invalid" })).status).toBe(403);
@@ -35,6 +35,13 @@ test("readiness endpoints retain their public contract and require explicit owne
     const policy = await response.json() as ProjectReadinessPolicy;
     expect(policy).toMatchObject({ project_id: project.id, repository: "fictional/project", owner: { login: "fictional-owner", account_id: "1042" }, triage_labels: { "ready-for-agent": "ready-for-agent" }, blocked_label: "blocked" });
     const synced = await (await post(route + "/sync", {})).json() as ProjectGitHubOverview;
+    const coverage = { source_revision: synced.sources[0]!.revision, expected_revision: null, target_branch: "main", intended_prs: [{ number: 27, head: "a".repeat(40) }], release_tag: null };
+    const linked = await post(route + "/issues/1/delivery", coverage);
+    expect(linked.status).toBe(200);
+    expect((await linked.json() as ProjectGitHubOverview).sources[0]!.delivery).toMatchObject({ source_revision: coverage.source_revision, target_branch: "main", intended_prs: coverage.intended_prs });
+    const staleCoverage = await post(route + "/issues/1/delivery", coverage);
+    expect(staleCoverage.status).toBe(409);
+    expect(await staleCoverage.json()).toEqual({ error: { code: "delivery_changed", message: "Refresh the issue and its intended coverage before linking delivery" } });
     expect(synced.sources[0]!.readiness).toMatchObject({ eligible: false, blockers: ["evidence_missing"], approval: null });
     const approved = await post(route + "/issues/1/approve", { source_revision: synced.sources[0]!.revision, policy_revision: policy.revision }); expect(approved.status).toBe(200);
     expect((await approved.json() as ProjectGitHubOverview).sources[0]!.readiness).toMatchObject({ eligible: true, blockers: [], approval: { provenance: "app_owner", source_revision: synced.sources[0]!.revision, policy_revision: policy.revision } });

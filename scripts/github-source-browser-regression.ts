@@ -16,7 +16,9 @@ for (const args of [["add", "."], ["-c", "user.name=Fixture", "-c", "user.email=
 const responses = join(root, "issues.json");
 const issue = { repository_url: "https://api.github.com/repos/fictional/project", number: 12, node_id: "fictional-issue", title: "Fictional source title", body: "Original source acceptance", labels: [{ name: "needs-plan" }], state: "open", updated_at: "2026-10-01T12:00:00Z", html_url: "https://github.com/fictional/project/issues/12" };
 const prerequisite = { ...issue, number: 24, node_id: "fictional-issue-24", title: "Prerequisite source", html_url: "https://github.com/fictional/project/issues/24" };
-function saveIssues(dependencies: Record<string, unknown[]> = { 12: [prerequisite] }) { writeFileSync(responses, JSON.stringify({ issues: [issue, prerequisite], dependencies })); }
+let merged = false;
+let mergeBranch = "main";
+function saveIssues(dependencies: Record<string, unknown[]> = { 12: [prerequisite] }) { writeFileSync(responses, JSON.stringify({ issues: [issue, prerequisite], dependencies, delivery_pull: { number: 27, html_url: "https://github.com/fictional/project/pull/27", merged, merged_at: "2026-10-03T12:00:00Z", merge_commit_sha: "c".repeat(40), head: { sha: "a".repeat(40) }, base: { ref: mergeBranch, repo: { full_name: "fictional/project" } } } })); }
 saveIssues();
 const cli = join(root, "gh.mjs");
 writeFileSync(cli, `import { readFileSync } from "node:fs";
@@ -24,7 +26,7 @@ const endpoint = process.argv[3];
 const data = JSON.parse(readFileSync(${JSON.stringify(responses)}, "utf8"));
 const issueNumber = Number(process.argv.find(arg => arg.startsWith("query="))?.match(/issue[(]number:([0-9]+)/)?.[1]);
 const issue = data.issues?.find(issue => issue.number === issueNumber || endpoint?.endsWith("/" + issue.number)) ?? data.issues?.[0];
-const result = endpoint === "user" ? { login: "fictional-owner", id: 1042 } : endpoint?.includes("/events?") ? [] : endpoint?.includes("/dependencies/blocked_by") ? data.dependencies?.[endpoint.split("/issues/")[1].split("/")[0]] ?? [] : endpoint?.match(/issues[/][0-9]+$/) ? issue : endpoint?.includes("/issues?") ? data.issues ?? { error: "Incomplete inventory" } : endpoint === "graphql" ? { data: { repository: { issue: issue ? { id: issue.node_id, title: issue.title, body: issue.body, state: issue.state.toUpperCase(), updatedAt: issue.updated_at, createdAt: "2026-09-30T12:00:00Z", lastEditedAt: null } : null, pullRequests: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } : {};
+const result = endpoint === "user" ? { login: "fictional-owner", id: 1042 } : endpoint?.includes("/branches/") ? { name: "main", commit: { sha: "f".repeat(40) } } : endpoint?.includes("/compare/") ? { status: "ahead", base_commit: { sha: "c".repeat(40) }, merge_base_commit: { sha: "c".repeat(40) } } : endpoint?.includes("/pulls/") ? data.delivery_pull : endpoint?.includes("/events?") ? [] : endpoint?.includes("/dependencies/blocked_by") ? data.dependencies?.[endpoint.split("/issues/")[1].split("/")[0]] ?? [] : endpoint?.match(/issues[/][0-9]+$/) ? issue : endpoint?.includes("/issues?") ? data.issues ?? { error: "Incomplete inventory" } : endpoint === "graphql" ? { data: { repository: { issue: issue ? { id: issue.node_id, title: issue.title, body: issue.body, state: issue.state.toUpperCase(), updatedAt: issue.updated_at, createdAt: "2026-09-30T12:00:00Z", lastEditedAt: null } : null, pullRequests: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } : {};
 console.log(JSON.stringify(result));\n`);
 const app = createServer({ port: 0, stateDir: root, machines: false, factory: { accountDiscoveryHome: root, accountTools: { github: { executable: process.execPath, args: [cli] } } } });
 const origin = `http://localhost:${app.port}`;
@@ -49,6 +51,7 @@ try {
   const evidence = process.env["UI_EVIDENCE_DIR"];
   if (evidence) mkdirSync(evidence, { recursive: true });
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    merged = false; mergeBranch = "main"; saveIssues(); await post(route + "/sync", {});
     const page = await browser.newPage({ viewport }); page.setDefaultTimeout(10_000);
     page.on("pageerror", error => errors.push(error.message));
     await page.goto(origin + `/#projects/${project.id}/settings`);
@@ -77,14 +80,30 @@ try {
     await source.getByRole("button", { name: "Approve this issue revision", exact: true }).click();
     await source.getByText("Current issue scope has trusted readiness.", { exact: true }).waitFor();
     await source.getByText("Approved by fictional-owner", { exact: false }).waitFor();
-    const dependencies = source.getByRole("region", { name: "Native GitHub dependencies", exact: true });
+    const dependencies = source.getByRole("region", { name: "Issue dependencies", exact: true });
     await dependencies.getByRole("link", { name: "fictional/project #24", exact: true }).waitFor();
     await dependencies.getByText("Delivery has not been verified.", { exact: true }).waitFor();
     const assignmentLink = dependencies.getByRole("link", { name: "Open prerequisite Assignment", exact: true });
     assert.equal(await assignmentLink.getAttribute("href"), `#factory/${view.sources.find((source: { number: number }) => source.number === 24).implementation_id}`);
+    const targetId = view.sources.find((entry: { number: number }) => entry.number === 24).implementation_id;
+    await page.goto(origin + `/#factory/${targetId}`);
+    const coverage = page.getByRole("region", { name: "Dependency delivery", exact: true });
+    await coverage.getByLabel("Target branch", { exact: true }).fill("main");
+    await coverage.getByLabel("Intended PRs", { exact: true }).fill("27 " + "a".repeat(40));
+    await coverage.getByRole("button", { name: "Save intended coverage", exact: true }).click();
+    await coverage.getByText("Coverage linked. Sync GitHub to verify delivery.", { exact: true }).waitFor();
+    await post(route + "/sync", {}); await page.goto(origin + `/#factory/${id}`);
+    await dependencies.getByText("Dependencies are blocked.", { exact: true }).waitFor();
+    merged = true; mergeBranch = "other"; saveIssues(); await post(route + "/sync", {}); await page.reload();
+    await dependencies.getByText("Intended PRs must merge into the target branch.", { exact: true }).waitFor();
+    mergeBranch = "main"; saveIssues(); await post(route + "/sync", {}); await page.reload();
+    await dependencies.getByText("Dependencies are satisfied.", { exact: true }).waitFor();
+    await dependencies.getByRole("link", { name: "PR #27", exact: true }).waitFor();
+    assert.equal(await dependencies.getByText("Delivery has not been verified.", { exact: true }).count(), 0);
+    if (evidence) { await dependencies.scrollIntoViewIfNeeded(); await page.screenshot({ path: join(evidence, `verified-dependency-${viewport.width}.png`) }); }
     saveIssues({ 12: [prerequisite], 24: [issue] }); await post(route + "/sync", {});
     await page.reload();
-    await dependencies.getByText("Dependency cycle. Correct the native relationships on GitHub.", { exact: true }).waitFor();
+    await dependencies.getByText("Dependency cycle. Correct the declared relationships.", { exact: true }).waitFor();
     assert.equal(await assignmentLink.count(), 0);
     saveIssues(); await post(route + "/sync", {}); await page.reload();
     await source.getByText("Source history", { exact: true }).click();

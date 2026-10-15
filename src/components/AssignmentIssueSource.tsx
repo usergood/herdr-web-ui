@@ -5,6 +5,7 @@ import { IssueReadiness } from "./IssueReadiness.tsx";
 import { accountRequest } from "../lib/accountsApi.ts";
 import { Markdown } from "./Markdown.tsx";
 import "./AssignmentIssueSource.css";
+import { useState } from "react";
 
 function IssueRevision({ revision }: { revision: ProjectGitHubIssueRevision }) {
   const t = useT();
@@ -25,28 +26,64 @@ function DependencyReason({ edge }: { edge: GitHubDependencyEdge }) {
   const t = useT();
   switch (edge.blocker) {
     case "delivery_unverified": return <p>{t("Delivery has not been verified.")}</p>;
+    case "wrong_target": return <p>{t("Intended PRs must merge into the target branch.")}</p>;
+    case "release_unverified": return <p>{t("A containing release has not been verified.")}</p>;
+    case null: return <p>{t("Verified dependency delivery.")}</p>;
     case "cross_boundary": return <p>{t("Dependency crosses a Project or repository boundary. Resolve it before starting work.")}</p>;
-    case "cyclic": return <p>{t("Dependency cycle. Correct the native relationships on GitHub.")}</p>;
-    case "ambiguous": return <p>{t("Dependency identity is ambiguous. Inspect the native relationship on GitHub.")}</p>;
+    case "cyclic": return <p>{t("Dependency cycle. Correct the declared relationships.")}</p>;
+    case "ambiguous": return <p>{t("Dependency identity is ambiguous. Inspect the declared relationships.")}</p>;
     case "missing": return <p>{t("Dependency is missing or inaccessible in this Project. Check access and sync GitHub.")}</p>;
   }
 }
 
 function NativeDependencies({ source }: { source: ProjectGitHubSource }) {
   const t = useT(); const evidence = source.dependencies;
-  return <section aria-label={t("Native GitHub dependencies")} className="assignment-native-dependencies">
-    <h4>{t("Native GitHub dependencies")}</h4>
-    {!evidence ? <p role="status">{t("Sync GitHub to collect native dependency evidence.")}</p> : <>
+  return <section aria-label={t("Issue dependencies")} className="assignment-native-dependencies">
+    <h4>{t("Issue dependencies")}</h4>
+    {!evidence ? <p role="status">{t("Sync GitHub to collect dependency evidence.")}</p> : <>
       {(!evidence.complete || !evidence.fresh) && <p role="status">{t("Dependency evidence is stale or incomplete. Sync GitHub before starting work.")}</p>}
+      <p role="status">{evidence.satisfied ? t("Dependencies are satisfied.") : t("Dependencies are blocked.")}</p>
+      {evidence.target_branch && <p>{t("Target branch")}: {evidence.target_branch}</p>}
+      {!!evidence.conflicts?.length && <p role="alert">{t("Approved plan dependencies are unresolved. Declare a JSON array with repository, issue number and merge or release requirements, or None.")}</p>}
       <p>{t("These are explicit relationships. Closing an issue does not verify delivery.")}</p>
-      {evidence.edges.length === 0 ? <p>{t("No native GitHub dependencies.")}</p> : <ul>
-        {evidence.edges.map(edge => <li key={`${edge.repository}:${edge.external_id}`}>
+      {evidence.edges.length === 0 ? <p>{t("No issue dependencies.")}</p> : <ul>
+        {evidence.edges.map(edge => <li key={`${edge.repository}:${edge.number}:${edge.external_id}`}>
           <a href={edge.url} target="_blank" rel="noreferrer">{edge.repository} #{edge.number}</a>
-          <DependencyReason edge={edge} />
+          {edge.blocker === null && !evidence.fresh ? <p>{t("Delivery evidence needs refresh.")}</p> : <DependencyReason edge={edge} />}
+          <p>{edge.requires === "release" ? t("Requires merge and containing release") : t("Requires verified merge")}</p>
+          {edge.provenance?.map((origin, index) => <p key={index}>{origin.kind === "github_native" ? t("Native GitHub relationship") : t("Approved app plan")}</p>)}
+          {edge.delivery?.merges.map(merge => <p key={merge.number}><a href={merge.url} target="_blank" rel="noreferrer">{t("PR #{number}", { number: merge.number })}</a> · {merge.target_branch} · <code>{merge.merge_commit}</code></p>)}
+          {edge.delivery?.release && <p><a href={edge.delivery.release.url} target="_blank" rel="noreferrer">{edge.delivery.release.tag}</a></p>}
           {edge.resolution === "resolved" && edge.implementation_id && <a href={`#factory/${edge.implementation_id}`}>{t("Open prerequisite Assignment")}</a>}
         </li>)}
       </ul>}
     </>}
+  </section>;
+}
+
+function DependencyDelivery({ source, busy, perform }: { source: ProjectGitHubSource; busy: boolean; perform: (action: () => Promise<void>) => Promise<void> }) {
+  const t = useT();
+  const [branch, setBranch] = useState(source.delivery?.target_branch ?? source.dependencies?.target_branch ?? "");
+  const [pulls, setPulls] = useState(source.delivery?.intended_prs.map(pull => `${pull.number} ${pull.head}`).join("\n") ?? "");
+  const [release, setRelease] = useState(source.delivery?.release_tag ?? "");
+  return <section className="assignment-dependency-delivery" aria-label={t("Dependency delivery")}>
+    <h4>{t("Dependency delivery")}</h4>
+    <p>{t("Link all intended PRs for this issue. Linking coverage does not verify delivery.")}</p>
+    <form onSubmit={event => { event.preventDefault(); void perform(async () => {
+      const intended = pulls.trim() ? pulls.trim().split(/\n/).map(line => {
+        const match = /^\s*(\d+)\s+([a-f0-9]{40})\s*$/.exec(line);
+        if (!match) throw new Error(t("Enter one PR number and exact head per line."));
+        return { number: Number(match[1]), head: match[2]! };
+      }) : [];
+      await accountRequest(`/projects/${source.project_id}/github/issues/${source.number}/delivery`, { source_revision: source.revision, expected_revision: source.delivery?.revision ?? null, target_branch: branch.trim(), intended_prs: intended, release_tag: release.trim() || null });
+    }); }}>
+      <label className="field">{t("Target branch")}<input className="input" required value={branch} onChange={event => setBranch(event.target.value)} /></label>
+      <label className="field">{t("Intended PRs")}<textarea className="input" rows={3} value={pulls} onChange={event => setPulls(event.target.value)} /></label>
+      <p>{t("Enter one PR number and exact head per line.")}</p>
+      <label className="field">{t("Release tag")}<input className="input" value={release} onChange={event => setRelease(event.target.value)} /></label>
+      <button className="btn" disabled={busy}>{t("Save intended coverage")}</button>
+    </form>
+    {source.delivery && <p role="status">{source.delivery.source_revision === source.revision ? t("Coverage linked. Sync GitHub to verify delivery.") : t("Issue changed. Review and relink intended coverage.")}</p>}
   </section>;
 }
 
@@ -66,6 +103,7 @@ export function AssignmentIssueSource({ sources, problem, busy, perform, tickets
         <button className="btn" disabled={busy} onClick={() => void perform(async () => { await accountRequest(`/projects/${source.project_id}/github/issues/${source.number}/approve`, { source_revision: source.revision, policy_revision: source.readiness_evidence!.policy_revision }); })}>{t("Approve this issue revision")}</button>
       </>}
       <NativeDependencies source={source} />
+      <DependencyDelivery key={`${source.id}:${source.delivery?.revision ?? ""}:${source.revision}`} source={source} busy={busy} perform={perform} />
       {(source.readiness?.eligible || source.planning) && <section aria-label={t("Issue planning")} className="assignment-issue-planning">
         <h4>{t("Issue planning")}</h4>
         {source.planning && <>

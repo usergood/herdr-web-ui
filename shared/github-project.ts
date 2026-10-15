@@ -22,11 +22,25 @@ export interface GitHubIssueDependency {
   state: "open" | "closed"; source_updated_at: string;
 }
 export interface GitHubDependencyEdge extends GitHubIssueDependency {
+  requires?: "merge" | "release";
+  provenance?: ({ kind: "github_native"; source_revision: string } | { kind: "app_plan"; specification_id: string })[];
   implementation_id: string | null; resolution: "resolved" | "missing" | "cyclic" | "cross_boundary" | "ambiguous";
-  blocker: "delivery_unverified" | "missing" | "cyclic" | "cross_boundary" | "ambiguous";
+  blocker: "delivery_unverified" | "missing" | "cyclic" | "cross_boundary" | "ambiguous" | "wrong_target" | "release_unverified" | null;
+  delivery?: { coverage_revision: string; merges: { number: number; url: string; head: string; merge_commit: string; target_branch: string }[]; release?: { tag: string; commit: string; url: string; published_at: string } };
 }
-/** A complete native relationship snapshot. Sync problems invalidate it for new admission. */
+/** Owner-selected intended coverage; linking does not assert that GitHub delivered it. */
+export interface IssueDeliveryLink extends FactoryRecord {
+  source_id: string; source_revision: string; revision: string; target_branch: string;
+  intended_prs: { number: number; head: string }[]; release_tag: string | null;
+}
+export interface LinkIssueDelivery {
+  source_revision: string; expected_revision: string | null; target_branch: string;
+  intended_prs: { number: number; head: string }[]; release_tag: string | null;
+}
+/** A combined graph and delivery snapshot. Sync problems invalidate it for new admission. */
 export interface GitHubDependencyEvidence {
+  plan_revision?: string; conflicts?: string[]; satisfied?: boolean;
+  target_branch?: string | null; coverage_revision?: string;
   revision: string; source_revision: string; fetched_at: string;
   account_profile_id: string; policy_revision: string; complete: boolean; fresh: boolean;
   edges: GitHubDependencyEdge[];
@@ -38,7 +52,7 @@ export interface ProjectGitHubIssueRevision {
   account_profile_id: string; policy_revision: string;
   native_dependencies?: Pick<GitHubIssueDependency, "external_id" | "repository" | "number" | "url">[];
 }
-export interface ProjectGitHubSource extends FactoryRecord { project_id: string; external_id: string; number: number; kind: "issue" | "fix"; implementation_id: string; revision: string; url: string; state: string; planning?: import("./issue-planning.ts").IssuePlanning; readiness_evidence?: import("./github-readiness.ts").IssueReadinessEvidence; readiness_approvals?: import("./github-readiness.ts").IssueReadinessApproval[]; readiness?: import("./github-readiness.ts").IssueReadiness; current?: ProjectGitHubIssueRevision; history?: ProjectGitHubIssueRevision[]; dependencies?: GitHubDependencyEvidence }
+export interface ProjectGitHubSource extends FactoryRecord { project_id: string; external_id: string; number: number; kind: "issue" | "fix"; implementation_id: string; revision: string; url: string; state: string; dependency_target_branch?: string | null; delivery?: IssueDeliveryLink; delivery_history?: IssueDeliveryLink[]; planning?: import("./issue-planning.ts").IssuePlanning; readiness_evidence?: import("./github-readiness.ts").IssueReadinessEvidence; readiness_approvals?: import("./github-readiness.ts").IssueReadinessApproval[]; readiness?: import("./github-readiness.ts").IssueReadiness; current?: ProjectGitHubIssueRevision; history?: ProjectGitHubIssueRevision[]; dependencies?: GitHubDependencyEvidence }
 export interface ProjectGitHubPull extends FactoryRecord { project_id: string; pull: ProjectPullRequest; blockers: string[]; observed_at: string; fix_implementation_id: string | null }
 export interface ProjectGitHubMutation extends FactoryRecord { project_id: string; repository: string; pull_id: string; number: number; action: "merge" | "update" | "rerequest"; head: string; base: string; policy_revision: string; condition: "sending" | "confirmed" | "uncertain"; problem: string | null }
 export interface ProjectGitHubOverview { policy: ProjectGitHubPolicy | null; readiness_policy?: import("./github-readiness.ts").ProjectReadinessPolicy | null; pulls: ProjectGitHubPull[]; sources: ProjectGitHubSource[]; mutations: ProjectGitHubMutation[]; last_sync: string | null; problem: string | null }

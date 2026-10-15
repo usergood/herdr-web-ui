@@ -248,12 +248,12 @@ export class FactoryService {
         const record = { ...(previous ?? this.store.record()), id, machine_id: body.machine_id, pane_id: body.pane_id, ...identity, archived_at: body.archived ? new Date().toISOString() : null, updated_at: new Date().toISOString() };
         this.store.put("pane_archives", record); return jsonResponse(record);
       }
-      const github = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/github(?:\/(configure|sync|settings|readiness)|\/pulls\/(\d+)\/(merge|update|rerequest|import|files)|\/issues\/(\d+)\/(approve|prepare))?$/.exec(url.pathname);
+      const github = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/github(?:\/(configure|sync|settings|readiness)|\/pulls\/(\d+)\/(merge|update|rerequest|import|files)|\/issues\/(\d+)\/(approve|prepare|delivery))?$/.exec(url.pathname);
       if (github) {
         if (request.method === "GET" && github[4] === "files") return jsonResponse(await this.github.files(github[1]!, Number(github[3]), url.searchParams.get("head")));
         if (request.method === "GET" && !github[2] && !github[3] && !github[5]) return jsonResponse(this.github.overview(github[1]!));
         if (request.method !== "POST" || !sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1" || request.headers.get("x-herdr-factory") !== "1") return httpError(403, "invalid_origin", "Use GitHub controls from this app");
-        if (github[5]) return jsonResponse(await (github[6] === "prepare" ? this.github.prepareIssue(github[1]!, Number(github[5]), await this.body(request)) : this.github.approveIssue(github[1]!, Number(github[5]), await this.body(request))));
+        if (github[5]) return jsonResponse(await (github[6] === "delivery" ? this.github.linkDelivery(github[1]!, Number(github[5]), await this.body(request)) : github[6] === "prepare" ? this.github.prepareIssue(github[1]!, Number(github[5]), await this.body(request)) : this.github.approveIssue(github[1]!, Number(github[5]), await this.body(request))));
         if (github[2] === "readiness") return jsonResponse(await this.github.configureReadiness(github[1]!, await this.body(request) as unknown as import("../shared/github-readiness.ts").ReadinessConfiguration));
         if (github[2] === "configure") return jsonResponse(await this.github.configure(github[1]!, await this.body(request) as unknown as import("../shared/github-project.ts").ProjectGitHubConfiguration));
         if (github[2] === "settings") { const body = await this.body(request); return jsonResponse(await this.github.settings(github[1]!, body.account_profile_id)); }
