@@ -54,6 +54,26 @@ it("accepts an authenticated durable factory queue request without exposing its 
     expect((await f.api("").then(r => r.json())).capacity.waiting).toEqual([wait]);
   } finally { f.close(); }
 });
+it("exposes waiting-conversation capacity through authenticated factory routes with standard errors", async () => {
+  const f = await capacityFixture();
+  try {
+    const id = await f.assignment("Waiting wire contract");
+    const run = await f.api(`/implementations/${id}/runs`, { action: "work", idempotency_key: "waiting-wire" }).then(r => r.json());
+    const question = await f.agent(run.id, "question", { question: "Which owned result?" }).then(r => r.json());
+    f.runs.get(run.id)!.condition = "ready";
+    const denied = await fetch(`http://localhost:${f.app.port}/api/factory/runs/${run.id}/reconcile`, { method: "POST", headers: { "x-herdr-factory": "1" }, body: "{}" });
+    expect(denied.status).toBe(401);
+    const response = await f.api(`/runs/${run.id}/reconcile`, {});
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect((await response.json()).continuation).toMatchObject({ kind: "owner", condition: "parked", question_revision: null });
+    const capacity = (await f.api("").then(r => r.json())).capacity;
+    expect(capacity.normal.used).toBe(0);
+    expect(capacity.continuations).toEqual([expect.objectContaining({ run_id: run.id, worker_id: null, implementation_id: id, condition: "parked", uncertain: false })]);
+    const stale = await f.api(`/implementations/${id}/questions/${question.id}/answer`, { revision: "stale", answer: "An obsolete answer" });
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toEqual({ error: { code: "stale_question", message: "This asking was changed or already answered" } });
+  } finally { f.close(); }
+});
 const stateDir = mkdtempSync(join(tmpdir(), "herdr-web-ui-contract-"));
 
 beforeAll(() => {

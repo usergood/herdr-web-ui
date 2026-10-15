@@ -41,6 +41,21 @@ try {
       assert.equal(f.prompts.length, 1);
       assert.equal(f.prompts[0]!.run_id, run.id);
       assert.equal(f.launches.length, 2);
+      await f.agent(run.id, "question", { question: "Which next owned scope?" });
+      f.runs.get(run.id)!.condition = "ready";
+      await conversations.getByText("Execution capacity released", { exact: true }).waitFor();
+      f.loseNextSend();
+      await page.getByRole("textbox", { name: "Your answer", exact: true }).fill("Preserve uncertain delivery");
+      const uncertain = page.waitForResponse(r => r.url().endsWith(`/runs/${run.id}/send-answers`));
+      await page.getByRole("button", { name: "Save answer", exact: true }).click();
+      assert.equal((await (await uncertain).json()).condition, "uncertain");
+      await conversations.getByText("Execution uncertain; reservation retained", { exact: true }).waitFor();
+      await page.reload();
+      await conversations.getByText("Execution uncertain; reservation retained", { exact: true }).waitFor();
+      await conversations.getByText(/inspect the native conversation/).waitFor();
+      await capacity.getByText("Agent contexts: 1/1", { exact: true }).waitFor();
+      assert.equal(f.prompts.length, 2);
+      assert.equal(f.launches.length, 2);
       assert.deepEqual(errors, []);
     } finally { await context.close(); f.close(); }
   }
