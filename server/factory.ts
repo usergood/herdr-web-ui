@@ -78,7 +78,7 @@ export class FactoryService {
     this.execution = new FactoryExecution(this.store, this.workflow, this.runtime, this.pipeline);
     this.retrospectives = new FactoryRetrospectives(this.store);
     this.github = new ProjectGitHub(this.store, this.accounts, (machineId, path) => this.runtime.discover(machineId, path));
-    this.deletion = new FactoryDeletion(this.store, (run, deletionId) => this.runtime.deleteAttempt(run, deletionId));
+    this.deletion = new FactoryDeletion(this.store, (run, deletionId) => this.runtime.deleteAttempt(run, deletionId), id => this.backup.purge(id));
     this.runtime.reconcileDeletion = id => this.deletion.reconcile(id);
   }
   settings(): FactorySettings {

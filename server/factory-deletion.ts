@@ -1,15 +1,15 @@
-import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, rmdirSync, unlinkSync } from "node:fs";
-import { Database } from "bun:sqlite";
+import { existsSync, lstatSync, realpathSync, rmdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import type { FactoryDeleteResult, FactoryRun, Implementation } from "../shared/factory.ts";
 import { FactoryError } from "./factory-host.ts";
 import { FactoryStore } from "./factory-store.ts";
+import { purgeAssignmentReferences } from "./factory-purge-records.ts";
 
 /** Durable ownership fence and cleanup journal. External obligations finish separately. */
 export class FactoryDeletion {
   private stopped = false;
   private readonly pending = new Map<string, Promise<FactoryDeleteResult>>();
-  constructor(private readonly store: FactoryStore, private readonly cleanup: (run: FactoryRun, deletionId: string) => Promise<void>) {}
+  constructor(private readonly store: FactoryStore, private readonly cleanup: (run: FactoryRun, deletionId: string) => Promise<void>, private readonly purgeBackups: (id: string) => void) {}
   async request(id: string): Promise<FactoryDeleteResult> {
     if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Delete is disabled on a restored copy", 409);
     const idea = this.store.get<Implementation>("implementations", id);
@@ -41,7 +41,7 @@ export class FactoryDeletion {
     const reasons: string[] = [];
     let journal = this.store.get<{ id: string; backups: boolean; github: boolean; local_done: boolean; blobs: string[] }>("assignment_deletions", id);
     if (!journal) {
-      journal = { id, backups: this.backupObligation(id), github: this.store.list<{ implementation_id: string }>("github_sources").some(source => source.implementation_id === id), local_done: false, blobs: [] };
+      journal = { id, backups: true, github: this.store.list<{ implementation_id: string }>("github_sources").some(source => source.implementation_id === id), local_done: false, blobs: [] };
       this.store.put("assignment_deletions", journal);
     }
     for (const run of this.store.list<FactoryRun>("runs", id)) {
@@ -61,7 +61,8 @@ export class FactoryDeletion {
       this.store.put("implementations", { ...idea, deletion: { ...idea.deletion, reasons } });
       return { id, condition: "pending", reasons };
     }
-    journal.backups ||= this.backupObligation(id);
+    try { this.purgeBackups(id); journal.backups = false; }
+    catch (error) { journal.backups = true; reasons.push(error instanceof FactoryError ? error.message : "App-managed backup and recovery cleanup failed; deletion remains pending"); }
     const inbox = join(this.store.root, "inbox", id);
     const inboxInfo = lstatSync(inbox, { throwIfNoEntry: false });
     if (inboxInfo) {
@@ -88,7 +89,8 @@ export class FactoryDeletion {
           this.store.remove(row.kind, row.id); ids.add(row.id); changed = true;
         }
       }
-      this.store.put("deleted_assignments", { id, context_ids: [...new Set([...(this.store.get<{ context_ids: string[] }>("deleted_assignments", id)?.context_ids ?? []), ...contextIds])] });
+      purgeAssignmentReferences(this.store.db, ids);
+      this.store.put("deleted_assignments", { id, context_ids: [...new Set([...(this.store.get<{ context_ids: string[] }>("deleted_assignments", id)?.context_ids ?? []), ...contextIds, ...ids].filter(contextId => contextId !== id))] });
       this.store.put("implementations", { ...idea, title: "Delete pending", description: "", outcome: "none", pause: undefined, deletion: { ...idea.deletion!, reasons: [], local_cleanup: undefined } });
       this.store.put("assignment_deletions", { ...journal!, local_done: true });
     }).immediate();
@@ -103,7 +105,7 @@ export class FactoryDeletion {
       unlinkSync(path);
     }
     const localCleanup = reasons.length ? undefined : "complete" as const;
-    if (journal.backups) reasons.push("App-managed backup and recovery cleanup has not been confirmed");
+    if (journal.backups && !reasons.length) reasons.push("App-managed backup and recovery cleanup has not been confirmed");
     if (journal.github) reasons.push("Linked GitHub issue deletion and source suppression have not been confirmed");
     if (reasons.length) {
       this.store.put("implementations", { ...idea, title: "Delete pending", description: "", outcome: "none", pause: undefined, deletion: { ...idea.deletion, reasons, local_cleanup: localCleanup } });
@@ -113,17 +115,4 @@ export class FactoryDeletion {
     return { id, condition: "deleted" };
   }
   stop(): void { this.stopped = true; }
-  private backupObligation(id: string): boolean {
-    for (const name of readdirSync(join(this.store.root, "backups"))) {
-      const directory = join(this.store.root, "backups", name);
-      const database = join(directory, name.startsWith("restore-") ? "factory/records.sqlite" : "records.sqlite");
-      try {
-        if (lstatSync(directory).isSymbolicLink() || realpathSync(directory) !== directory || lstatSync(database).isSymbolicLink() || realpathSync(database) !== database) return true;
-        const copy = Database.deserialize(readFileSync(database), { readonly: true });
-        try { if (copy.query("SELECT 1 FROM records WHERE kind='implementations' AND id=?").get(id)) return true; }
-        finally { copy.close(); }
-      } catch { return true; /* An unreadable/in-flight recovery copy is an unconfirmed obligation. */ }
-    }
-    return false;
-  }
 }

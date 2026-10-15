@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { capacityFixture } from "../scripts/factory-capacity-fixture.ts";
 import { join } from "node:path";
+import { mkdirSync } from "node:fs";
 
 describe("permanent Assignment Delete through authenticated HTTP", () => {
   it("reconciles a lost Machine cleanup acknowledgment across restart without relaunching deleted work", async () => {
@@ -79,11 +80,12 @@ describe("permanent Assignment Delete through authenticated HTTP", () => {
       expect((await f.api(`/implementations/${sibling}`).then(r => r.json())).artifacts).toHaveLength(1);
     } finally { f.close(); }
   });
-  it("does not claim final deletion while app-managed backup cleanup remains unconfirmed", async () => {
+  it("does not claim final deletion while app-managed backup rewrite remains unconfirmed", async () => {
     const f = await capacityFixture();
     try {
       const id = await f.assignment("Backup obligation");
-      await f.api("/backups", {});
+      const backup = await f.api("/backups", {}).then(r => r.json());
+      mkdirSync(join(f.state, "factory", "backups", backup.id, "manifest.json.tmp"));
       const response = await f.api(`/implementations/${id}/delete`, {});
       expect(response.status).toBe(202);
       expect(await response.json()).toMatchObject({ id, condition: "pending" });
