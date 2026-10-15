@@ -1,4 +1,4 @@
-import type { FactoryApproval, FactoryQuestion, FactoryRun, FactoryTicket, Implementation, NativeConversationSnapshot, SpecificationVersion } from "../shared/protocol.ts";
+import type { FactoryApproval, FactoryQuestion, FactoryRun, FactoryTicket, FactoryWorker, Implementation, NativeConversationSnapshot, SpecificationVersion } from "../shared/protocol.ts";
 import { isJsonObject } from "./http.ts";
 import { FactoryError, hash } from "./factory-host.ts";
 import { FactoryStore } from "./factory-store.ts";
@@ -26,7 +26,7 @@ export class FactoryWorkflow {
   /** Only a verified native page may supply an answer; ambiguous replies stay pending. */
   retainNativeAnswers(run: FactoryRun, snapshot: NativeConversationSnapshot, latestPage: boolean): void {
     const questions = this.store.list<FactoryQuestion>("questions", run.implementation_id)
-      .filter(question => question.run_id === run.id).sort((a, b) => a.created_at.localeCompare(b.created_at));
+      .filter(question => question.run_id === run.id && (question.worker_id ?? null) === (snapshot.worker_id ?? null)).sort((a, b) => a.created_at.localeCompare(b.created_at));
     // A chronological interval does not identify which overlapping question the
     // owner is answering. Keep every such reply pending for an explicit decision.
     if (questions.filter(question => question.answer === null).length !== 1) return;
@@ -75,9 +75,12 @@ export class FactoryWorkflow {
         if (body.answer_kind !== undefined && body.answer_kind !== "text" && body.answer_kind !== "confirmation") throw new FactoryError("invalid_question", "Choose a text answer or shared-understanding confirmation");
         const run = typeof body.run_id === "string" ? this.store.get<FactoryRun>("runs", body.run_id) : null;
         if (body.run_id !== undefined && (!run || run.implementation_id !== id)) throw new FactoryError("invalid_run", "Select this Implementation's Run");
-        const question: FactoryQuestion = { ...this.store.record(), implementation_id: id, run_id: run?.id ?? null, question: body.question.trim(), ...(body.answer_kind === undefined ? {} : { answer_kind: body.answer_kind }), answer: null, revision: this.store.record().id };
+        const worker = typeof body.worker_id === "string" ? this.store.get<FactoryWorker>("workers", body.worker_id) : null;
+        if (body.worker_id !== undefined && (!worker || worker.run_id !== run?.id || ["completed", "cancelled", "failed"].includes(worker.condition))) throw new FactoryError("invalid_worker", "Select an owned active worker for this question", 409);
+        const question: FactoryQuestion = { ...this.store.record(), implementation_id: id, run_id: run?.id ?? null, ...(worker ? { worker_id: worker.id } : {}), question: body.question.trim(), ...(body.answer_kind === undefined ? {} : { answer_kind: body.answer_kind }), answer: null, revision: this.store.record().id };
         this.store.put("questions", question, id); this.store.event(id, "question_asked", question);
-        if (run) this.store.put("runs", { ...run, condition: "needs_you", waiting_reason: question.question }, id);
+        if (worker) this.store.put("workers", { ...worker, condition: "needs_you", continuation: { ...this.store.record(), kind: "owner", condition: "parking", reason: "Waiting for verified native rest before releasing capacity", question_revision: null } }, run!.id);
+        else if (run) this.store.put("runs", { ...run, condition: "needs_you", waiting_reason: question.question, continuation: { ...this.store.record(), kind: "owner", condition: "parking", reason: "Waiting for verified native rest before releasing capacity", question_revision: null } }, id);
         return question;
       }
       if (action === "answer") {

@@ -13,6 +13,7 @@ interface Request extends FactoryCapacityWait {
  * identity before launch; an uncertain launch is observed, never replayed. */
 export class FactoryDispatch {
   worker: ((id: string, body: Record<string, unknown>) => Promise<FactoryWorker>) | null = null;
+  resume: ((id: string, body: Record<string, unknown>) => Promise<void>) | null = null;
   onRun: ((run: FactoryRun) => void) | null = null;
   private pending: Promise<void> | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -43,6 +44,10 @@ export class FactoryDispatch {
     if (run) return run;
     return this.public(this.store.get<Request>("capacity_waits", wait.id)!);
   }
+  enqueueContinuation(wait: FactoryCapacityWait, body: Record<string, unknown>): void {
+    const previous = this.store.get<Request>("capacity_waits", wait.id);
+    this.store.put("capacity_waits", { ...wait, created_at: previous?.created_at ?? wait.created_at, request: body, origin: "", scope_hash: "", attempts: previous?.attempts ?? 0, next_attempt_at: previous?.next_attempt_at ?? 0 }, wait.implementation_id);
+  }
   private public(request: Request): FactoryCapacityWait {
     const { request: _request, origin: _origin, scope_hash: _scope, attempts: _attempts, next_attempt_at: _next, ...wait } = request;
     return wait;
@@ -51,15 +56,19 @@ export class FactoryDispatch {
     if (this.pending) return this.pending.then(() => this.drain(failures));
     const operation = Promise.resolve().then(async () => {
       if (this.stopped || existsSync(join(this.store.root, "recovery-copy.json"))) return;
+      if (!this.store.list("capacity_waits").length && !this.store.list<FactoryRun>("runs").some(run => run.continuation && !["resumed", "blocked", "uncertain"].includes(run.continuation.condition)) && !this.store.list<FactoryWorker>("workers").some(worker => worker.continuation && !["resumed", "blocked", "uncertain"].includes(worker.continuation.condition))) return;
+      await this.reconcile();
       const requests = this.store.list<Request>("capacity_waits").sort((a, b) => a.created_at.localeCompare(b.created_at));
       if (!requests.length) return;
-      await this.reconcile();
       for (const request of requests) {
         if (this.stopped) return;
         if (request.condition === "blocked" || request.next_attempt_at > Date.now()) continue;
         try {
           if (!request.run_id && request.scope_hash && request.scope_hash !== this.scope(request.implementation_id)) throw new FactoryError("scope_changed", "The queued execution scope changed; inspect it and submit a new Start request", 409);
-          if (request.run_id) {
+          if (request.continuation && request.run_id) {
+            if (!this.resume) continue;
+            await this.resume(request.run_id, request.request);
+          } else if (request.run_id) {
             if (!this.worker) continue;
             await this.worker(request.run_id, request.request);
           } else {
@@ -71,7 +80,7 @@ export class FactoryDispatch {
           if (this.stopped) return;
           const code = error instanceof FactoryError ? error.code : "dispatch_unavailable";
           const capacity = code === "capacity_exhausted";
-          const ineligible = ["ticket_not_ready", "ticket_owned", "writers_active", "shared_writer_owned", "answers_unready", "implementation_owned", "inactive_assignment"].includes(code);
+          const ineligible = ["ticket_not_ready", "ticket_owned", "writers_active", "shared_writer_owned", "answers_unready", "implementation_owned", "inactive_assignment", "continuation_waiting"].includes(code);
           const retry = ["machine_offline", "machine_disconnected", "remote_factory_unavailable"].includes(code);
           const attempts = request.attempts + (retry ? 1 : 0);
           const blocked = !capacity && !ineligible && (!retry || attempts >= 6);

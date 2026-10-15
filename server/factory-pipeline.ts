@@ -96,7 +96,8 @@ export class FactoryPipeline {
     const current = this.store.get<FactoryWorker>("workers", workerId);
     if (current && JSON.stringify(current) !== JSON.stringify(worker)) return current;
     if (next.id !== worker.id || next.run_id !== id || next.ticket_id !== worker.ticket_id || next.role !== worker.role || next.base !== worker.base || worker.worktree !== null && next.worktree !== worker.worktree || worker.branch !== null && next.branch !== worker.branch) throw new FactoryError("worker_identity_changed", "The observed worker identity changed", 409);
-    this.store.put("workers", next, id); return next;
+    const observed = this.runtime.observeWorker(run, worker, next);
+    this.store.put("workers", observed, id); return observed;
   }
   async check(id: string, workerId: string | null = null): Promise<FactoryCheck> {
     const run = this.run(id, false);

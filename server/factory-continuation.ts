@@ -145,7 +145,7 @@ export class FactoryContinuation {
       const run = await this.runtime.reconcile(runId);
       if (this.stopped) return;
       if (["working", "needs_you", "blocked"].includes(run.condition)) { this.retry(runId); return; }
-      if (run.condition !== "ready") return;
+      if (run.condition !== "ready") { this.retry(runId); return; }
       this.validate(record.implementation_id, record.body);
       this.validateScope(record.implementation_id, record.scope_hash, record.body);
       await this.runtime.verifyProvider(run);

@@ -9,7 +9,9 @@ export async function capacityFixture() {
   const state = mkdtempSync(join(tmpdir(), "factory-capacity-"));
   const token = "owned-capacity-fixture";
   const runs = new Map<string, FactoryRun>(); const workers = new Map<string, FactoryWorker>();
-  let loseLaunch = false; let loseWorker = false; let loseCheck = false; let offline = false; let uncertain = false;
+  let loseSend = false; let loseLaunch = false; let loseWorker = false; let loseCheck = false; let offline = false; let uncertain = false;
+  const access = new Map<string, { url: string; token: string }>();
+  const prompts: { run_id: string; text: string; worker_id?: string }[] = [];
   const launches: string[] = [];
   const workerLaunches: string[] = [];
   let capabilities: Record<string, any> | null = null;
@@ -25,7 +27,7 @@ export async function capacityFixture() {
     }
     if (path === "/inspect") return Response.json({ path: body.path, repository: `owned-repo:${body.path}`, head: "1".repeat(40), branch: "main", instructions: [] });
     if (path === "/launch") {
-      launches.push(body.run.id);
+      launches.push(body.run.id); access.set(body.run.id, body.access);
       const run = { ...body.run, condition: "working", worktree: join(state, body.run.id), branch: `owned-${body.run.id}`, workspace_id: null, pane_id: null } as FactoryRun;
       runs.set(run.id, run);
       if (loseLaunch) { loseLaunch = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost acknowledgment" } }, { status: 503 }); }
@@ -36,7 +38,7 @@ export async function capacityFixture() {
     if (run) {
       const action = route![2];
       if (action === "reconcile") return Response.json(run);
-      if (action === "send") { run.condition = "working"; return Response.json({ ok: true }); }
+      if (action === "send") { prompts.push({ run_id: run.id, text: body.text }); run.condition = "working"; if (loseSend) { loseSend = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost continuation acknowledgment" } }, { status: 503 }); } return Response.json({ ok: true }); }
       if (action === "stop") { run.condition = "cancelled"; return Response.json(run); }
       if (action === "operations/check") {
         if (loseCheck) { loseCheck = false; return Response.json({ error: { code: "lost_ack", message: "Owned uncertain check" } }, { status: 503 }); }
@@ -50,6 +52,9 @@ export async function capacityFixture() {
         if (loseWorker) { loseWorker = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost worker acknowledgment" } }, { status: 503 }); }
         return Response.json(worker);
       }
+      if (action === "operations/send-worker") { prompts.push({ run_id: run.id, worker_id: body.worker_id, text: body.text }); workers.get(body.worker_id)!.condition = "working"; return Response.json({ ok: true }); }
+      if (action === "operations/refresh") { const worker = workers.get(body.worker_id)!; worker.head = "1".repeat(40); return Response.json(worker); }
+      if (action === "operations/integrate") { const worker = workers.get(body.worker_id)!; worker.condition = "completed"; return Response.json(worker); }
       if (action === "operations/reconcile-worker") return Response.json(workers.get(body.worker_id));
       if (action === "operations/stop-worker") { const worker = workers.get(body.worker_id)!; worker.condition = "cancelled"; return Response.json(worker); }
     }
@@ -65,9 +70,14 @@ export async function capacityFixture() {
     const idea = await api("/implementations", { title, description: "Owned capacity scenario", project_id: project.id }).then(r => r.json());
     return idea.id as string;
   }
-  return { api, assignment, runs, workers, launches, workerLaunches, state, token, get app() { return app; },
+  const agent = (id: string, path: string, body?: unknown) => {
+    const credential = access.get(id)!;
+    return fetch(`http://localhost:${app.port}${new URL(credential.url).pathname}/${path}`, { method: body === undefined ? "GET" : "POST", headers: { authorization: `Bearer ${credential.token}`, "content-type": "application/json", "x-herdr-factory": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  };
+  return { api, agent, assignment, runs, workers, launches, workerLaunches, prompts, state, token, get app() { return app; },
     offline: (value: boolean) => { offline = value; },
     uncertain: (value: boolean) => { uncertain = value; },
+    loseNextSend: () => { loseSend = true; },
     loseNextLaunch: () => { loseLaunch = true; },
     loseNextWorker: () => { loseWorker = true; },
     loseNextCheck: () => { loseCheck = true; },

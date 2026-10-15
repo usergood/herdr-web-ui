@@ -76,6 +76,28 @@ describe("continuing approved workflow steps", () => {
     } finally { await f.close(); }
   }, 60_000);
 
+  it("resumes only an authenticated resting owned child and keeps native permission prompts", async () => {
+    const prompts: string[] = [];
+    const f = await fixture("owned-child-send", { prompt: async paneId => { prompts.push(paneId); } });
+    try {
+      const run = await f.start("work", "child-send-host");
+      const child = await f.agent(run, "worker", { role: "standards", idempotency_key: "native-child-send" }).then(r => r.json());
+      expect(child.pane_id).toBeString();
+      const send = (headers: Record<string, string> = { authorization: "Bearer owned-child-send", "x-herdr-factory": "1" }) => fetch(`http://localhost:${f.app.port}/api/factory-host/runs/${run.id}/operations/send-worker`, { method: "POST", headers, body: JSON.stringify({ worker_id: child.id, text: "Retain this exact child conversation" }) });
+      expect((await send({ "x-herdr-factory": "1" })).status).toBe(401);
+      expect((await send({ authorization: "Bearer owned-child-send" })).status).toBe(403);
+      await herdrRpc("pane.report_agent", { pane_id: child.pane_id, source: "manual", agent: "codex", state: "blocked" });
+      expect((await send()).status).toBe(409);
+      expect(prompts).toHaveLength(0);
+      await herdrRpc("pane.report_agent", { pane_id: child.pane_id, source: "manual", agent: "codex", state: "idle" });
+      expect((await send()).status).toBe(200);
+      expect(prompts).toEqual([child.pane_id]);
+      await workspaceClose(child.workspace_id);
+      expect((await send()).status).toBe(409);
+      expect(prompts).toHaveLength(1);
+    } finally { await f.close(); }
+  }, 60_000);
+
   it("rejects a checkout changed during asynchronous handoff before successor admission", async () => {
     let armed = false; let reads = 0; let release!: () => void; let entered!: () => void;
     const waiting = new Promise<void>(resolve => entered = resolve);

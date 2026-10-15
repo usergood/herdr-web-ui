@@ -148,8 +148,9 @@ export class FactoryService {
       }
       if (action === "question") return jsonResponse(this.workflow.mutate(run.implementation_id, "questions", { ...body, run_id: run.id }), 201);
       if (action === "sync-answers") {
+        if (body.worker_id !== undefined && typeof body.worker_id !== "string") throw new FactoryError("invalid_worker", "Select an owned worker history");
         if (body.before !== undefined && typeof body.before !== "string") throw new FactoryError("invalid_cursor", "Use a cursor from this Run's retained native history");
-        const snapshot = await this.retainNative(run.id, body.before as string | undefined);
+        const snapshot = await this.retainNative(run.id, body.before as string | undefined, typeof body.worker_id === "string" ? body.worker_id : undefined);
         return jsonResponse({ snapshot_id: snapshot.id, cursor: snapshot.cursor, question_revision: this.workflow.questionRevision(run.implementation_id, run.id), questions: this.workflow.questions(run.implementation_id, run.id) } satisfies import("../shared/protocol.ts").FactoryNativeAnswers);
       }
       if (action === "consume") {
@@ -170,14 +171,16 @@ export class FactoryService {
       throw new FactoryError("not_found", "This operation is outside the Run's granted scope", 404);
     } catch (error) { return error instanceof FactoryError ? httpError(error.status, error.code, error.message) : errorResponse(error); }
   }
-  private async retainNative(id: string, before?: string): Promise<import("../shared/protocol.ts").NativeConversationSnapshot> {
+  private async retainNative(id: string, before?: string, workerId?: string): Promise<import("../shared/protocol.ts").NativeConversationSnapshot> {
     const run = this.store.get<FactoryRun>("runs", id);
     if (!run) throw new FactoryError("not_found", "Run not found", 404);
-    if (before && !this.store.list<import("../shared/protocol.ts").NativeConversationSnapshot>("native_snapshots", id).some((record) => record.cursor === before)) throw new FactoryError("invalid_cursor", "Use a cursor from this Run's retained native history");
-    const captured = await this.runtime.operation<Omit<import("../shared/protocol.ts").NativeConversationSnapshot, "id" | "created_at" | "updated_at" | "sequence" | "run_id">>(run, "transcript", { before });
+    if (workerId && this.store.get<import("../shared/factory.ts").FactoryWorker>("workers", workerId)?.run_id !== id) throw new FactoryError("invalid_worker", "Read a child in this Run", 409);
+    if (before && !this.store.list<import("../shared/protocol.ts").NativeConversationSnapshot>("native_snapshots", id).some((record) => record.cursor === before && (record.worker_id ?? null) === (workerId ?? null))) throw new FactoryError("invalid_cursor", "Use a cursor from this Run's retained native history");
+    const captured = await this.runtime.operation<Omit<import("../shared/protocol.ts").NativeConversationSnapshot, "id" | "created_at" | "updated_at" | "sequence" | "run_id">>(run, "transcript", { before, ...(workerId ? { worker_id: workerId } : {}) });
+    if ((captured.worker_id ?? null) !== (workerId ?? null)) throw new FactoryError("native_identity_changed", "The captured history belongs to another conversation", 409);
     return this.store.db.transaction(() => {
       const snapshots = this.store.list<import("../shared/protocol.ts").NativeConversationSnapshot>("native_snapshots", id);
-      const previous = snapshots.find((entry) => entry.source_id === captured.source_id && entry.version === captured.version && entry.cursor === captured.cursor);
+      const previous = snapshots.find((entry) => entry.source_id === captured.source_id && entry.version === captured.version && entry.cursor === captured.cursor && (entry.worker_id ?? null) === (workerId ?? null));
       if (previous) { this.workflow.retainNativeAnswers(run, previous, before === undefined); return previous; }
       const record = { ...this.store.record(), ...captured, run_id: id, sequence: snapshots.filter((entry) => entry.source_id === captured.source_id).length };
       this.store.put("native_snapshots", record, id); this.store.event(run.implementation_id, "native_snapshot_retained", { snapshot_id: record.id, source_id: record.source_id, sequence: record.sequence, version: record.version }); this.workflow.retainNativeAnswers(run, record, before === undefined); return record;
@@ -227,7 +230,7 @@ export class FactoryService {
       const pending = this.store.list<import("../shared/protocol.ts").FactoryQuestion>("questions", run.implementation_id).find((question) => question.run_id === run.id && question.answer === null);
       const condition = pending && !ended ? "needs_you" : nextCondition;
       const waiting = pending && !ended ? pending.question : reason;
-      if (run.condition !== condition || run.waiting_reason !== waiting) { this.store.put("runs", { ...run, condition, waiting_reason: waiting, updated_at: new Date().toISOString() }, run.implementation_id); this.store.event(run.implementation_id, "native_condition_changed", { run_id: run.id, condition }); }
+      if (run.condition !== condition || run.waiting_reason !== waiting || nextCondition !== "ready" && ["parked", "queued"].includes(run.continuation?.condition ?? "")) { this.store.put("runs", { ...run, condition, ...((nextCondition !== "ready" && run.continuation && !["sending", "uncertain"].includes(run.continuation.condition)) ? { continuation: { ...run.continuation, condition: "parking", reason: reason ?? "Native execution resumed; capacity remains reserved" } } : {}), waiting_reason: waiting, updated_at: new Date().toISOString() }, run.implementation_id); this.store.event(run.implementation_id, "native_condition_changed", { run_id: run.id, condition }); }
       if (condition === "ready" && run.action === "verify-provider") void this.continuation.verified(run.id);
     }
     for (const worker of this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers")) if (worker.pane_id === paneId && ["working", "ready", "needs_you", "blocked"].includes(worker.condition)) {
@@ -235,7 +238,7 @@ export class FactoryService {
       if (run?.machine_id !== "local" || !ended && agent !== run.provider) continue;
       const condition = ended ? "interrupted" : status === "blocked" ? "needs_you" : ["idle", "done"].includes(status) && !backgroundWorking ? "ready" : "working";
       const waiting = !ended && ["idle", "done"].includes(status) ? "Native worker is ready; reconcile its candidate and explicitly refresh, check and integrate it" : reason;
-      if (worker.condition !== condition || worker.waiting_reason !== waiting) { this.store.put("workers", { ...worker, condition, waiting_reason: waiting, updated_at: new Date().toISOString() }, worker.run_id); this.store.event(run.implementation_id, "worker_condition_changed", { worker_id: worker.id, condition }); }
+      if (worker.condition !== condition || worker.waiting_reason !== waiting || nextCondition !== "ready" && ["parked", "queued"].includes(worker.continuation?.condition ?? "")) { this.store.put("workers", { ...worker, condition, ...((nextCondition !== "ready" && worker.continuation && !["sending", "uncertain"].includes(worker.continuation.condition)) ? { continuation: { ...worker.continuation, condition: "parking", reason: reason ?? "Native execution resumed; capacity remains reserved" } } : {}), waiting_reason: waiting, updated_at: new Date().toISOString() }, worker.run_id); this.store.event(run.implementation_id, "worker_condition_changed", { worker_id: worker.id, condition }); }
     }
   }
   async handle(request: Request, url: URL): Promise<Response> {
@@ -536,6 +539,8 @@ export class FactoryService {
         const body = await this.body(request); const revision = this.workflow.questionRevision(run.implementation_id, run.id);
         if (typeof body.idempotency_key !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.idempotency_key)) throw new FactoryError("invalid_delivery", "Send answered context with an explicit receipt key");
         if (body.revision !== revision || this.workflow.questions(run.implementation_id, run.id).some((question) => question.answer === null)) throw new FactoryError("answers_unready", "Send the current answered question revision explicitly", 409);
+        const parkedDelivery = await this.runtime.answerDelivery(run, revision, body.idempotency_key);
+        if (parkedDelivery) return jsonResponse(parkedDelivery);
         const prior = this.store.list<{ id: string; key: string; revision: string; condition: string }>("answer_deliveries", run.id).find((entry) => entry.key === body.idempotency_key || entry.revision === revision && ["sending", "sent", "uncertain"].includes(entry.condition));
         if (prior) { if (prior.key === body.idempotency_key && prior.revision !== revision) throw new FactoryError("delivery_conflict", "This key belongs to another answered revision", 409); return jsonResponse(prior); }
         const delivery = { ...this.store.record(), run_id: run.id, revision, key: body.idempotency_key, condition: "sending" };

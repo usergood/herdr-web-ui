@@ -54,7 +54,7 @@ export interface FactoryTicket extends FactoryRecord {
   tracker_reference: string | null;
 }
 export interface FactoryApproval extends FactoryRecord { implementation_id: string; kind: "specification" | "testing_seams" | "ticket_graph" | "review" | "shared_understanding"; revision: string; scope: string }
-export interface FactoryQuestion extends FactoryRecord { implementation_id: string; run_id: string | null; question: string; answer_kind?: "text" | "confirmation"; answer: string | null; revision: string }
+export interface FactoryQuestion extends FactoryRecord { implementation_id: string; run_id: string | null; worker_id?: string | null; question: string; answer_kind?: "text" | "confirmation"; answer: string | null; revision: string }
 export interface FactoryArtifact extends FactoryRecord {
   implementation_id: string; chat_id: string; name: string; media_type: string;
   hash: string; size: number; version: number; origin: string; note: string;
@@ -67,7 +67,17 @@ export interface ProjectReference extends FactoryRecord {
 export interface ProjectReferenceLibrary { project_id: string; revision: string; entries: ProjectReference[] }
 export interface CodexReferenceContext { project_id: string; machine_id: string; revision: string; index_path: string; prompt: string }
 export interface ProjectReferencePayload { library: ProjectReferenceLibrary; files: { id: string; content_base64: string }[] }
+/** A waiting conversation retains its Run and native history, independently of execution. */
+export interface FactoryPark extends FactoryRecord {
+  kind: "owner" | "children";
+  condition: "parking" | "parked" | "queued" | "sending" | "resumed" | "uncertain" | "blocked";
+  reason: string;
+  question_revision: string | null;
+  worker_keys?: string[];
+  queued_at?: string;
+}
 export interface FactoryRun extends FactoryRecord {
+  continuation?: FactoryPark;
   /** Set by the owned workflow when creating an assistant-backed Human Review context. */
   conversation_kind?: "human_review";
   /** Missing on saved Runs from before the shared planning allowance: normal. */
@@ -101,6 +111,7 @@ export interface FactoryCapacityReservation {
   condition: string; uncertain: boolean; reason: string | null;
 }
 export interface FactoryCapacityWait extends FactoryRecord {
+  continuation?: boolean;
   implementation_id: string; assignment_title: string; action: FactoryAction;
   machine_id: string; provider: FactoryProvider; idempotency_key: string; reason: string;
   condition: "queued" | "blocked";
@@ -108,6 +119,7 @@ export interface FactoryCapacityWait extends FactoryRecord {
   run_id: string | null;
 }
 export interface FactoryCapacity {
+  continuations?: FactoryCapacityReservation[];
   normal: { limit: number; used: number };
   planning: { limit: 1; used: number };
   builds: { limit: number; used: number };
@@ -145,6 +157,7 @@ export interface FactoryProviderCapability { provider: FactoryProvider; version:
 export interface FactoryCapabilities { providers: FactoryProviderCapability[]; skill_manifest: { commit: string; hash: string; file_count: number } | null; factory_host_protocol: 1; project_reference_protocol?: 1; account_profile_protocol?: 1 }
 export interface FactoryOutput { name: string; media_type: string; hash: string; size: number }
 export interface FactoryWorker extends FactoryRecord {
+  continuation?: FactoryPark;
   /** Frozen when repair work is accepted; never inferred from the latest review stage. */
   review_origin?: "automatic" | "human";
   run_id: string; ticket_id: string; role: "implementer" | "standards" | "spec";

@@ -90,19 +90,22 @@ export class FactoryExecutionHost {
     if (action === "check-reconcile" && typeof body.check_id === "string") return this.worktrees.reconcileCheck(id, body.check_id);
     if (action === "transcript") {
       const run = this.store.get<{ run: FactoryRun }>("host_leases", id)?.run;
-      if (!run?.pane_id) throw new FactoryError("native_evidence_required", "The Run has no retained native identity", 409);
+      const worker = typeof body.worker_id === "string" ? this.store.get<FactoryWorker>("host_workers", body.worker_id) : null;
+      if (body.worker_id !== undefined && (!worker || worker.run_id !== id)) throw new FactoryError("invalid_worker", "Read a native child owned by this Run", 409);
+      const context = worker ?? run;
+      if (!run || !context?.pane_id) throw new FactoryError("native_evidence_required", "The conversation has no retained native identity", 409);
       const snapshot = await this.native.snapshot();
-      const pane = snapshot.panes.find((entry) => entry.pane_id === run.pane_id);
-      const workspace = snapshot.workspaces.find((entry) => entry.workspace_id === run.workspace_id);
-      if (!pane?.cwd || realpathSync(pane.cwd) !== run.worktree || workspace?.label !== `saurons-eye-run-${id}` || pane.agent !== run.provider) throw new FactoryError("native_identity_changed", "The native transcript identity changed", 409);
+      const pane = snapshot.panes.find((entry) => entry.pane_id === context.pane_id);
+      const workspace = snapshot.workspaces.find((entry) => entry.workspace_id === context.workspace_id);
+      if (!pane?.cwd || realpathSync(pane.cwd) !== context.worktree || workspace?.label !== (worker ? `saurons-eye-worker-${worker.id}` : `saurons-eye-run-${id}`) || pane.agent !== run.provider) throw new FactoryError("native_identity_changed", "The native transcript identity changed", 409);
       try {
-        const conversation = await paneConversation(run.pane_id, undefined, typeof body.before === "string" ? { before: body.before } : {});
+        const conversation = await paneConversation(context.pane_id, undefined, typeof body.before === "string" ? { before: body.before } : {});
         if (conversation.source !== `${run.provider}-transcript`) throw new FactoryError("native_identity_changed", "This history belongs to another provider", 409);
-        const bound = this.store.get<{ id: string; history_id: string }>("host_native_identity", id);
+        const bound = this.store.get<{ id: string; history_id: string }>("host_native_identity", worker?.id ?? id);
         if (bound && bound.history_id !== conversation.history_id) throw new FactoryError("native_identity_changed", "The pane now holds another native session; its earlier history remains retained", 409);
-        this.store.put("host_native_identity", { id, history_id: conversation.history_id });
+        this.store.put("host_native_identity", { id: worker?.id ?? id, history_id: conversation.history_id });
         if (JSON.stringify(conversation.turns).length > 4 * 1024 * 1024) throw new FactoryError("native_history_too_large", "Capture a smaller page of this native history", 413);
-        const captured = { source_id: `${run.provider}:${hash(conversation.history_id)}`, version: conversation.version, turns: conversation.turns.map((turn) => ({ ...turn, parts: turn.parts.map((part) => part.kind === "tool" && (/\.saurons-eye-access\.json/.test(part.input) || Boolean(this.accounts && part.input.includes(this.accounts.root))) ? { ...part, output: "Scoped runtime credential redacted" } : part) })), cursor: conversation.cursor };
+        const captured = { ...(worker ? { worker_id: worker.id } : {}), source_id: `${run.provider}:${hash(conversation.history_id)}`, version: conversation.version, turns: conversation.turns.map((turn) => ({ ...turn, parts: turn.parts.map((part) => part.kind === "tool" && (/\.saurons-eye-access\.json/.test(part.input) || Boolean(this.accounts && part.input.includes(this.accounts.root))) ? { ...part, output: "Scoped runtime credential redacted" } : part) })), cursor: conversation.cursor };
         const token = this.store.get<{ token: string }>("host_access", id)?.token;
         const redacted = token ? JSON.parse(JSON.stringify(captured).split(token).join("[scoped credential redacted]")) as typeof captured : captured;
         return this.accounts?.sanitize(redacted) ?? redacted;
@@ -112,6 +115,7 @@ export class FactoryExecutionHost {
     if (action === "worker" && body.worker && typeof body.worker === "object") return this.worktrees.create(id, body.worker as FactoryWorker, body.context, this.store.get("host_access", id));
     if (action === "check" && body.check && typeof body.check === "object") return this.worktrees.check(id, typeof body.worker_id === "string" ? body.worker_id : null, body.check as FactoryCheck);
     if (typeof body.worker_id !== "string") throw new FactoryError("invalid_worker", "Select a worker identity");
+    if (action === "send-worker" && typeof body.text === "string" && body.text.length <= 20_000) { await this.worktrees.send(id, body.worker_id, body.text); return { ok: true }; }
     if (action === "refresh") return this.worktrees.refresh(id, body.worker_id);
     if (action === "integrate" && typeof body.tip === "string") return this.worktrees.integrate(id, body.worker_id, body.tip);
     if (action === "reconcile-worker") return this.worktrees.reconcile(id, body.worker_id);

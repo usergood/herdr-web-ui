@@ -1370,4 +1370,10 @@ export const KO: Record<string, string> = {
   "Normal capacity": "일반 용량",
   "No occupied reservations.": "사용 중인 예약이 없습니다.",
   "Waiting for agent capacity": "에이전트 용량 대기 중",
+  "Waiting conversations": "대기 중인 대화",
+  "Execution capacity released": "실행 용량을 확보했습니다",
+  "Waiting to resume": "재개 대기 중",
+  "Resuming conversation": "대화 재개 중",
+  "Waiting for native rest": "네이티브 실행이 멈추기를 기다리는 중",
+  "Waiting conversations retain their history and worktree. Resumption uses the same capacity queue.": "대기 중인 대화는 기록과 작업 트리를 유지합니다. 재개 시 동일한 용량 대기열을 사용합니다.",
 };

@@ -27,6 +27,15 @@ export function FactoryCapacityPanel({ capacity }: { capacity: FactoryCapacity }
         <p>{wait.reason}</p>
       </li>)}
     </ul>
+    {!!capacity.continuations?.length && <section aria-label={t("Waiting conversations")}>
+      <h4>{t("Waiting conversations")}</h4>
+      <p className="field-hint">{t("Waiting conversations retain their history and worktree. Resumption uses the same capacity queue.")}</p>
+      <ul className="factory-capacity-reservations">{capacity.continuations.map(context => <li key={context.id}>
+        <a href={`#factory/${context.implementation_id}`}>{context.assignment_title}</a> · {context.machine_id} · {context.provider}
+        <p role="status">{context.condition === "parked" ? t("Execution capacity released") : context.condition === "queued" ? t("Waiting to resume") : context.condition === "sending" ? t("Resuming conversation") : context.condition === "uncertain" ? t("Execution uncertain; reservation retained") : context.condition === "blocked" ? t("Needs you") : t("Waiting for native rest")}</p>
+        {context.reason && <p>{context.reason}</p>}
+      </li>)}</ul>
+    </section>}
     {!capacity.contexts.length && !capacity.build_reservations.length && !capacity.waiting.length && <p className="field-hint">{t("No occupied reservations.")}</p>}
   </section>;
 }

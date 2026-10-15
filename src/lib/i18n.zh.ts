@@ -1374,4 +1374,10 @@ export const ZH: Record<string, string> = {
   "Normal capacity": "常规容量",
   "No occupied reservations.": "没有占用的预留容量。",
   "Waiting for agent capacity": "等待智能体容量",
+  "Waiting conversations": "等待中的对话",
+  "Execution capacity released": "已释放执行容量",
+  "Waiting to resume": "等待恢复",
+  "Resuming conversation": "正在恢复对话",
+  "Waiting for native rest": "等待原生执行停止",
+  "Waiting conversations retain their history and worktree. Resumption uses the same capacity queue.": "等待中的对话会保留历史记录和工作树。恢复时使用相同的容量队列。",
 };

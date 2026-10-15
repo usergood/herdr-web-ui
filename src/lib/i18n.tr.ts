@@ -1325,4 +1325,10 @@ export const TR: Record<string, string> = {
   "Normal capacity": "Normal kapasite",
   "No occupied reservations.": "Kullanılan kapasite yok.",
   "Waiting for agent capacity": "Ajan kapasitesi bekleniyor",
+  "Waiting conversations": "Bekleyen konuşmalar",
+  "Execution capacity released": "Çalışma kapasitesi serbest bırakıldı",
+  "Waiting to resume": "Devam etmek için bekleniyor",
+  "Resuming conversation": "Konuşma sürdürülüyor",
+  "Waiting for native rest": "Yerel çalışmanın durması bekleniyor",
+  "Waiting conversations retain their history and worktree. Resumption uses the same capacity queue.": "Bekleyen konuşmalar geçmişlerini ve çalışma ağaçlarını korur. Devam etmek için aynı kapasite kuyruğu kullanılır.",
 };

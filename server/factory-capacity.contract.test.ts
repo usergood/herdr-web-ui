@@ -275,13 +275,13 @@ describe("global factory capacity through authenticated HTTP", () => {
       const a = await f.assignment("Resting implementation"); const b = await f.assignment("Occupied implementation");
       const resting = await start(a);
       const question = await f.api(`/implementations/${a}/questions`, { run_id: resting.id, question: "Which fixture behavior?" }).then(r => r.json());
-      await f.api(`/implementations/${a}/questions/${question.id}/answer`, { revision: question.revision, answer: "Only the accepted capacity behavior" });
       f.runs.get(resting.id)!.condition = "ready";
       await f.api(`/runs/${resting.id}/reconcile`, {});
       const occupied = await start(b);
+      await f.api(`/implementations/${a}/questions/${question.id}/answer`, { revision: question.revision, answer: "Only the accepted capacity behavior" });
       const detail = await f.api(`/implementations/${a}`).then(r => r.json());
       const send = (key: string) => f.api(`/runs/${resting.id}/send-answers`, { revision: detail.question_revision, idempotency_key: key }).then(r => r.json());
-      expect((await send("at-capacity")).condition).toBe("blocked");
+      expect((await send("at-capacity")).condition).toBe("queued");
       expect((await f.api("").then(r => r.json())).capacity.normal.used).toBe(1);
       await f.api(`/runs/${occupied.id}/stop`, {});
       expect((await send("after-release")).condition).toBe("sent");

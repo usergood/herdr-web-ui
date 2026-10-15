@@ -1372,4 +1372,10 @@ export const JA: Record<string, string> = {
   "Normal capacity": "通常の容量",
   "No occupied reservations.": "使用中の予約はありません。",
   "Waiting for agent capacity": "エージェント容量を待機中",
+  "Waiting conversations": "待機中の会話",
+  "Execution capacity released": "実行枠を解放しました",
+  "Waiting to resume": "再開待ち",
+  "Resuming conversation": "会話を再開中",
+  "Waiting for native rest": "ネイティブ実行の停止を待機中",
+  "Waiting conversations retain their history and worktree. Resumption uses the same capacity queue.": "待機中の会話は履歴とワークツリーを保持します。再開には同じ実行枠のキューを使用します。",
 };

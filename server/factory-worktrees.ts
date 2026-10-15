@@ -1,3 +1,5 @@
+import { claudeInputDraft, noteSubmitted, viewportShowsLive } from "./prompt.ts";
+import { paneRead, paneScrollInfo } from "./herdr/client.ts";
 import { projectWorkflowPrompt } from "./factory-project-policy.ts";
 import { writePrivateFile } from "./factory-files.ts";
 import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
@@ -20,6 +22,7 @@ type Lease = { id: string; signature: string; run: FactoryRun; closing?: boolean
 
 /** The execution Machine owns Git/process operations; the connection server owns the task graph. */
 export class FactoryWorktrees {
+  private stopped = false;
   private readonly locks = new Set<string>();
   private readonly builds = new Map<string, { run_id: string; controller: AbortController; promise: Promise<FactoryCheck> }>();
   constructor(private readonly store: FactoryStore, private readonly native: FactoryNative, private readonly skillsPath: () => string | null, private readonly accounts?: MachineAccounts) {}
@@ -71,7 +74,7 @@ export class FactoryWorktrees {
     try {
       await git(parent, ["worktree", "add", "-b", record.branch, path, tip]);
       provisionSkills(path, run.provider, verifySkills(this.skillsPath()));
-      if (access) { writePrivateFile(join(path, ".saurons-eye-access.json"), JSON.stringify(access), { mode: 0o600, flag: "wx" }); writePrivateFile(join(path, ".saurons-eye-tracker.mjs"), factoryTrackerClient, { mode: 0o600, flag: "wx" }); }
+      if (access) { writePrivateFile(join(path, ".saurons-eye-access.json"), JSON.stringify({ ...access as object, worker_id: worker.id }), { mode: 0o600, flag: "wx" }); writePrivateFile(join(path, ".saurons-eye-tracker.mjs"), factoryTrackerClient, { mode: 0o600, flag: "wx" }); }
       const project = (run.manifest as { project: FactoryProject }).project;
       const environment = factoryEnvironment(root, id, project.environment, worker.id);
       Object.assign(environment, await this.accounts?.environment((run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot, true, path));
@@ -108,6 +111,27 @@ export class FactoryWorktrees {
     const workspace = snapshot.workspaces.find((entry) => entry.workspace_id === worker.workspace_id);
     const provider = this.store.get<Lease>("host_leases", worker.run_id)?.run.provider;
     if (!pane?.cwd || !provider || realpathSync(pane.cwd) !== worker.worktree || workspace?.label !== `saurons-eye-worker-${worker.id}` || !await factoryPaneResting(this.native, pane, provider)) throw new FactoryError("worker_busy", "Verify the worker is ready at its owned cwd before Git control", 409);
+  }
+  async send(id: string, workerId: string, text: string): Promise<void> {
+    const run = this.run(id, false);
+    const worker = this.store.get<FactoryWorker>("host_workers", workerId);
+    if (!worker || worker.run_id !== id || !["working", "ready", "needs_you", "blocked"].includes(worker.condition)) throw new FactoryError("run_unavailable", "Reconcile the owned child before resuming", 409);
+    await this.identity(run, worker);
+    await this.quiescent(worker);
+    if (run.provider === "claude") {
+      const before = (await paneRead({ paneId: worker.pane_id!, source: "detection", format: "text" })).text;
+      const scrollBefore = await paneScrollInfo(worker.pane_id!);
+      const shown = (await paneRead({ paneId: worker.pane_id!, source: "visible", format: "ansi" })).text;
+      const scrollAfter = await paneScrollInfo(worker.pane_id!);
+      const after = (await paneRead({ paneId: worker.pane_id!, source: "detection", format: "text" })).text;
+      if (before !== after || claudeInputDraft(after, viewportShowsLive(scrollBefore, scrollAfter, shown, before, after) ? shown : null)) throw new FactoryError("input_draft", "The native child input contains a draft; inspect it before resuming", 409);
+    }
+    await this.native.prompt(worker.pane_id!, text, undefined, () => {
+      const lease = this.store.get<Lease>("host_leases", id);
+      const current = this.store.get<FactoryWorker>("host_workers", workerId);
+      return !this.stopped && !!lease && !lease.closing && !!current && ["working", "ready", "needs_you", "blocked"].includes(current.condition);
+    });
+    noteSubmitted(worker.pane_id!, text);
   }
   async reconcile(id: string, workerId: string): Promise<FactoryWorker> {
     const run = this.store.get<Lease>("host_leases", id)?.run; const worker = this.store.get<FactoryWorker>("host_workers", workerId);
@@ -184,7 +208,7 @@ export class FactoryWorktrees {
     for (const build of builds) build.controller.abort();
     await Promise.allSettled(builds.map((build) => build.promise));
   }
-  shutdown(): void { for (const build of this.builds.values()) build.controller.abort(); }
+  shutdown(): void { this.stopped = true; for (const build of this.builds.values()) build.controller.abort(); }
   async stopWorkers(id: string): Promise<void> {
     for (const worker of this.store.list<FactoryWorker>("host_workers", id)) if (worker.workspace_id && worker.condition !== "cancelled") await this.stop(id, worker.id);
   }

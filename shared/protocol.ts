@@ -1194,6 +1194,9 @@ export const DEFAULT_PORT = 7317;
  * POST .../continue (continue_workflow) -> FactoryRun | FactoryCapacityWait, 202; retain a resting step's chat/handoff
  * and start its approved successor. Implementation may first run genuine native verification
  * under retained owner intent. Missing approvals are never inferred.
+ * Waiting conversations expose FactoryRun.continuation and capacity.continuations; parking
+ * releases capacity only after native rest is verified. Answers/child results queue resumption
+ * of the same identity; unknown execution and delivery retain their reservations.
  * Resting Runs/workers are ready: native capacity released, exclusive worktree ownership retained.
  * POST /api/factory/runs/:id/reconcile (empty) -> FactoryRun; observation never redispatches.
  * POST .../stop (stop) -> FactoryRun; verified ownership released, history/work retained.
@@ -1203,7 +1206,7 @@ export const DEFAULT_PORT = 7317;
  * POST .../import-conversation (import_conversation) -> NativeConversationSnapshot; immutable native page.
  * Retaining a verified page saves unambiguous user replies to that Run's text questions;
  * it preserves existing answers and never grants approval.
- * POST .../send-answers (send_answers) -> FactoryAnswerDelivery; uncertainty never replays.
+ * POST .../send-answers (send_answers) -> FactoryAnswerDelivery; queued continuations share admission with Start; uncertainty never replays.
  * POST .../workers (worker) -> FactoryWorker, or FactoryCapacityWait, 202 when queued;
  * root and child requests share ordering; frontier/rework and global reservation checked.
  * POST .../workers/:worker/refresh|reconcile|integrate (empty) -> FactoryWorker;
@@ -1232,6 +1235,7 @@ export const DEFAULT_PORT = 7317;
  * POST .../launch (launch) -> FactoryRun, 202; accepted identity preserved.
  * POST .../runs/:id/reconcile|stop|finish (empty) -> FactoryRun; finish retains a verified resting chat;
  * verify-provider (empty) -> FactoryCapabilities;
+ * POST .../runs/:id/operations/send-worker (operation with worker_id/text) -> {ok:true}; verified native rest and ownership required.
  * POST .../runs/:id/send (send) -> {ok:true}; GET .../runs/:id/artifacts -> FactoryOutput[];
  * GET .../runs/:id/artifacts/content?name=&hash= -> {content_base64:string}; owned notes only.
  * POST .../runs/:id/operations/:action (operation) -> FactoryWorker (worker/refresh/integrate/reconcile-worker),
@@ -1289,7 +1293,7 @@ export interface FactoryRequests {
   specification: { content: string };
   tickets: { specification_id: string; tickets: { key: string; title: string; acceptance: string; dependencies: string[] }[] };
   approval: { kind: Exclude<import("./factory.ts").FactoryApproval["kind"], "review">; revision: string; scope: string };
-  question: { question: string; run_id?: string; answer_kind?: "text" | "confirmation" };
+  question: { question: string; run_id?: string; worker_id?: string; answer_kind?: "text" | "confirmation" };
   answer: { revision: string; answer: string };
   order: { direction: -1 | 1 } | { before_id: string };
   start: { action: import("./factory.ts").FactoryAction; idempotency_key: string; execution_preset?: import("./agent-models.ts").AgentModelSelection; retrospective_id?: string; expected?: { provider: import("./factory.ts").FactoryProvider; machine_id: string; project_id: string | null; specification_id: string | null; graph_hash: string } };
@@ -1325,7 +1329,7 @@ export interface FactoryBatchReceipt {
 }
 export interface FactoryAnswerDelivery {
   id: string; created_at: string; updated_at: string; run_id: string; revision: string;
-  key: string; condition: "sending" | "sent" | "blocked" | "uncertain";
+  key: string; condition: "queued" | "sending" | "sent" | "blocked" | "uncertain";
 }
 export interface FactoryBackupManifest {
   id: string; created_at: string; format_version: 1; schema_version: 1;
@@ -1343,7 +1347,7 @@ export interface FactoryAgentContract {
 }
 export interface FactoryAgentRequests {
   question: FactoryRequests["question"];
-  sync_answers: { before?: string };
+  sync_answers: { before?: string; worker_id?: string };
   consume: { revision: string; worker_id?: string };
   worker: FactoryRequests["worker"];
   artifact: Omit<FactoryRequests["artifact"], "chat_id">;
@@ -1366,7 +1370,7 @@ export interface FactoryHostRequests {
   review: { path: string; base: string; mode: "branch" | "workspace" };
   launch: { run: import("./factory.ts").FactoryRun; access?: { token: string; url: string }; attachments?: (Pick<import("./factory.ts").FactoryArtifact, "id" | "name" | "hash" | "size"> & { content_base64: string })[]; references?: import("./factory.ts").ProjectReferencePayload };
   send: { text: string };
-  operation: { worker_id?: string | null; check_id?: string; tip?: string; before?: string; worker?: import("./factory.ts").FactoryWorker; check?: import("./factory.ts").FactoryCheck; context?: unknown };
+  operation: { text?: string; worker_id?: string | null; check_id?: string; tip?: string; before?: string; worker?: import("./factory.ts").FactoryWorker; check?: import("./factory.ts").FactoryCheck; context?: unknown };
 }
 
 /** GET /api/factory/implementations/:id -> FactoryDetail, including stable workflow

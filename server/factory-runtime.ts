@@ -1,4 +1,5 @@
 import { agentCapacityPool } from "./factory-capacity.ts";
+import { FactoryParking } from "./factory-parking.ts";
 import { FactoryDispatch } from "./factory-dispatch.ts";
 import { existsSync } from "node:fs";
 import { randomBytes } from "node:crypto";
@@ -23,10 +24,12 @@ const activeConditions = new Set(["accepted", "working", "ready", "needs_you", "
 const actions: FactoryAction[] = ["work", "setup", "grill-me", "grill-with-docs", "to-spec", "to-tickets", "implement-spec", "retro", "apply-retro", "verify-provider"];
 export class FactoryRuntime {
   readonly queue: FactoryDispatch;
+  private readonly parking: FactoryParking;
   private readonly dispatches = new Map<string, Promise<FactoryRun>>();
   private stopped = false;
   constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly host: FactoryExecutionHost, private readonly endpoint: MachineEndpoint, private readonly readArtifact: (record: FactoryArtifact) => Buffer, private readonly publicUrl: string | null, private readonly references: FactoryReferences, private readonly accounts: MachineAccounts) {
     this.queue = new FactoryDispatch(store, () => this.reconcileCapacity(), (id, body, origin) => this.start(id, body, origin, undefined, true));
+    this.parking = new FactoryParking(store, workflow, this.queue, planning => agentCapacityPool(store, settings(), planning), (run, text, signal, worker) => worker ? this.operation(run, "send-worker", { worker_id: worker.id, text }).then(() => {}) : this.deliver(run, text, signal));
   }
   async requestStart(id: string, body: Record<string, unknown>, origin: string): Promise<FactoryRun | import("../shared/factory.ts").FactoryCapacityWait> {
     if (!actions.includes(body.action as FactoryAction) || typeof body.idempotency_key !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.idempotency_key)) throw new FactoryError("invalid_start", "Select an explicit action with an idempotency key");
@@ -279,7 +282,7 @@ export class FactoryRuntime {
     if (hash(JSON.stringify(actual.manifest)) !== hash(JSON.stringify(expected.manifest)) || !["accepted", "working", "ready", "needs_you", "blocked", "disconnected", "interrupted", "failed", "cancelled", "completed"].includes(actual.condition)) throw new FactoryError("run_identity_changed", "The Machine changed the accepted contract; preserve ownership", 409);
     if (expected.worktree && (actual.worktree !== expected.worktree || actual.branch !== expected.branch || expected.workspace_id !== null && actual.workspace_id !== expected.workspace_id || expected.pane_id !== null && actual.pane_id !== expected.pane_id)) throw new FactoryError("run_identity_changed", "The Machine changed the owned working directory or native identity", 409);
     // Admission and reactivation own the pool centrally; the Machine observes execution.
-    return { ...actual, capacity_pool: expected.capacity_pool };
+    return { ...actual, capacity_pool: expected.capacity_pool, continuation: expected.continuation };
   }
   /** Refresh capacity from owned native identities, including remote and resting chats. */
   async reconcileCapacity(): Promise<void> {
@@ -295,8 +298,11 @@ export class FactoryRuntime {
         next = await this.operation(run, "reconcile-worker", { worker_id: worker.id });
         if (!["accepted", "working", "ready", "needs_you", "blocked", "disconnected", "interrupted", "failed", "cancelled", "completed"].includes(next.condition) || next.id !== worker.id || next.run_id !== run.id || next.ticket_id !== worker.ticket_id || next.role !== worker.role || next.base !== worker.base || (["worktree", "branch", "pane_id", "workspace_id"] as const).some(key => worker[key] !== null && next[key] !== worker[key])) throw new FactoryError("worker_identity_changed", "The observed worker identity changed", 409);
       } catch { next = { ...worker, condition: "disconnected", waiting_reason: "Worker observation is uncertain; capacity remains reserved" }; }
-      if (!this.stopped && JSON.stringify(this.store.get("workers", worker.id)) === JSON.stringify(worker)) this.store.put("workers", next, run.id);
+      if (!this.stopped && JSON.stringify(this.store.get("workers", worker.id)) === JSON.stringify(worker)) this.store.put("workers", this.observeWorker(run, worker, next), run.id);
     }));
+  }
+  observeWorker(run: FactoryRun, expected: import("../shared/factory.ts").FactoryWorker, actual: import("../shared/factory.ts").FactoryWorker): import("../shared/factory.ts").FactoryWorker {
+    return this.parking.observeWorker(run, { ...actual, continuation: expected.continuation }, actual.condition === "ready");
   }
   async reconcile(runId: string): Promise<FactoryRun> {
     let run = this.store.get<FactoryRun>("runs", runId); if (!run) throw new FactoryError("not_found", "Run not found", 404);
@@ -307,9 +313,12 @@ export class FactoryRuntime {
     if (this.stopped) return run;
     const current = this.store.get<FactoryRun>("runs", runId);
     if (current && hash(JSON.stringify(current)) !== revision) return current;
+    run = this.parking.observe(run, run.condition === "ready");
     const question = this.store.list<import("../shared/protocol.ts").FactoryQuestion>("questions", run.implementation_id).find((entry) => entry.run_id === run!.id && entry.answer === null);
     if (question && ["working", "ready"].includes(run.condition)) run = { ...run, condition: "needs_you", waiting_reason: question.question };
-    this.store.put("runs", run, run.implementation_id); this.store.event(run.implementation_id, "run_reconciled", { run_id: run.id, condition: run.condition }); return run;
+    this.store.put("runs", run, run.implementation_id);
+    if (current?.condition !== run.condition || current.waiting_reason !== run.waiting_reason || JSON.stringify(current.continuation) !== JSON.stringify(run.continuation)) this.store.event(run.implementation_id, "run_reconciled", { run_id: run.id, condition: run.condition });
+    return run;
   }
   async stopRun(id: string, body: Record<string, unknown>): Promise<FactoryRun> {
     if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Native control is disabled on a restored copy", 409);
@@ -331,32 +340,54 @@ export class FactoryRuntime {
     this.store.event(run.implementation_id, "workflow_step_finished", { run_id: id, chat_retained: true, review_accepted: false, changes_retained: true });
     return finished;
   }
+  async answerDelivery(run: FactoryRun, revision: string, key: string): Promise<import("../shared/protocol.ts").FactoryAnswerDelivery | null> {
+    const workers = this.store.list<import("../shared/factory.ts").FactoryWorker>("workers", run.id).filter(worker => worker.continuation?.kind === "owner" && (worker.continuation.question_revision === null || worker.continuation.question_revision === revision));
+    if (run.continuation?.kind !== "owner" && !workers.length) return null;
+    await this.reconcile(run.id);
+    await this.queue.flush();
+    const current = this.store.get<FactoryRun>("runs", run.id)!;
+    const receipts = workers.map(worker => this.parking.answerDelivery(current, revision, key, this.store.get<import("../shared/factory.ts").FactoryWorker>("workers", worker.id)!)).filter(receipt => receipt !== null);
+    const parent = this.parking.answerDelivery(current, revision, key);
+    if (parent) receipts.push(parent);
+    return receipts.find(receipt => receipt.condition === "uncertain" || receipt.condition === "blocked") ?? receipts.find(receipt => receipt.condition !== "sent") ?? receipts[0] ?? null;
+  }
   async outputs(run: FactoryRun): Promise<FactoryOutput[]> { return run.machine_id === "local" ? this.host.outputs(run.id) : this.remote(run.machine_id, `/runs/${run.id}/artifacts`); }
   async send(run: FactoryRun, text: string, signal: AbortSignal): Promise<void> {
     const reservation = this.store.db.transaction(() => {
       const current = this.store.get<FactoryRun>("runs", run.id);
       if (!current || !["working", "ready", "needs_you", "blocked"].includes(current.condition)) throw new FactoryError("run_unavailable", "Reconcile the Run before submitting changes", 409);
-      if (current.condition !== "ready") return null;
+      if (["sending", "uncertain"].includes(current.continuation?.condition ?? "")) throw new FactoryError("delivery_busy", "Inspect the pending continuation before sending another batch", 409);
+      if (current.condition !== "ready" && !["parked", "queued"].includes(current.continuation?.condition ?? "")) return null;
       const specification = this.workflow.specification(current.implementation_id);
       const planning = ["grill-me", "grill-with-docs"].includes(current.action) || current.action === "to-spec" && (!specification || !this.workflow.approved(current.implementation_id, "specification", specification.id));
       const pool = agentCapacityPool(this.store, this.settings(), planning);
-      const reserved: FactoryRun = { ...current, capacity_pool: pool, condition: "accepted", waiting_reason: null, updated_at: new Date().toISOString() };
+      const reserved: FactoryRun = { ...current, ...(current.continuation ? { continuation: { ...current.continuation, condition: "sending", reason: "The owner is resuming this conversation" } } : {}), capacity_pool: pool, condition: "accepted", waiting_reason: null, updated_at: new Date().toISOString() };
       this.store.put("runs", reserved, run.implementation_id); return reserved;
     }).immediate();
     const settle = (condition: FactoryRun["condition"], reason: string | null): void => {
       if (reservation && JSON.stringify(this.store.get("runs", run.id)) === JSON.stringify(reservation)) this.store.put("runs", { ...reservation, condition, waiting_reason: reason, updated_at: new Date().toISOString() }, run.implementation_id);
     };
     try {
-      if (run.machine_id === "local") await this.host.send(run.id, text, signal);
-      else await this.remote(run.machine_id, `/runs/${run.id}/send`, { text }, signal);
+      await this.deliver(run, text, signal);
       settle("working", null);
+      const current = this.store.get<FactoryRun>("runs", run.id);
+      if (current?.continuation && current.continuation.id === reservation?.continuation?.id && current.continuation.condition === "sending" && !["completed", "cancelled", "failed"].includes(current.condition)) {
+        this.store.remove("capacity_waits", `resume:${current.continuation.id}`);
+        this.store.put("runs", { ...current, continuation: { ...current.continuation, condition: "resumed", reason: "The owner explicitly resumed this conversation" } }, run.implementation_id);
+      }
     } catch (error) {
       const busy = error instanceof FactoryError && ["agent_busy", "delivery_busy"].includes(error.code);
       const unsent = error instanceof FactoryError && ["input_draft", "disconnected", "recovery_copy"].includes(error.code);
       settle(busy ? "working" : unsent ? "ready" : "disconnected", busy || unsent ? null : "Answer delivery outcome is uncertain; execution capacity remains reserved");
+      const current = this.store.get<FactoryRun>("runs", run.id);
+      if (current?.continuation && current.continuation.id === reservation?.continuation?.id && current.continuation.condition === "sending") this.store.put("runs", { ...current, continuation: { ...current.continuation, condition: busy || unsent ? "parking" : "uncertain", reason: error instanceof Error ? error.message : "Answer delivery is uncertain; inspect the conversation" } }, run.implementation_id);
       throw error;
     }
   }
+  private async deliver(run: FactoryRun, text: string, signal: AbortSignal): Promise<void> {
+    if (run.machine_id === "local") await this.host.send(run.id, text, signal);
+    else await this.remote(run.machine_id, `/runs/${run.id}/send`, { text }, signal);
+  }
   async output(run: FactoryRun, output: FactoryOutput): Promise<{ content_base64: string }> { return run.machine_id === "local" ? this.host.output(run.id, output.name, output.hash) : this.remote(run.machine_id, `/runs/${run.id}/artifacts/content?name=${encodeURIComponent(output.name)}&hash=${encodeURIComponent(output.hash)}`); }
-  stop(): void { this.stopped = true; this.queue.stop(); this.host.stop(); }
+  stop(): void { this.stopped = true; this.queue.stop(); this.parking.stop(); this.host.stop(); }
 }
