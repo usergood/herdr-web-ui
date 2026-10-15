@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { githubFixture } from "../scripts/factory-github-fixture.ts";
 
@@ -117,7 +117,10 @@ test("confirmed GitHub cleanup is not repeated while another Delete obligation r
   await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
   const idea = (await f.get("")).implementations[0];
   const stale = readFileSync(f.state, "utf8");
-  await f.post("/backups", {});
+  const detail = await f.get(`/implementations/${idea.id}`);
+  const attachment = (await f.post(`/implementations/${idea.id}/artifacts`, { chat_id: detail.chats[0].id, name: "owned.txt", media_type: "text/plain", content_base64: Buffer.from("Owned attachment").toString("base64") })).body;
+  const blob = join(f.root, "factory", "blobs", attachment.hash);
+  unlinkSync(blob); mkdirSync(blob); // Keep a separate cleanup obligation unconfirmed.
   expect((await f.post(`/implementations/${idea.id}/delete`, {})).status).toBe(202);
   writeFileSync(f.state, stale);
   f.restart();
