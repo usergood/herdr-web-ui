@@ -29,6 +29,14 @@ try {
     await fixture.json(`/implementations/${view.sources[0].implementation_id}/order`, { before_id: view.sources[1].implementation_id });
     const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });
     page.setDefaultTimeout(10_000); page.on("pageerror", error => errors.push(error.message));
+    async function reopenGitHubSettings() {
+      // Reload closes Settings; its history entry may keep the old address.
+      await page.getByRole("heading", { name: project.name, exact: true }).waitFor();
+      const drawer = page.getByRole("button", { name: "Open workspace list", exact: true });
+      if (await drawer.isVisible()) await drawer.click();
+      await page.getByRole("button", { name: `Project settings for ${project.name}`, exact: true }).click();
+      await page.getByRole("tab", { name: "GitHub", exact: true }).click();
+    }
     try {
       await page.goto(fixture.origin + `/#projects/${project.id}/settings`);
       await page.getByRole("tab", { name: "GitHub", exact: true }).click();
@@ -49,6 +57,7 @@ try {
       await region.getByRole("button", { name: "Save queue settings", exact: true }).click();
       await region.getByText("Queue paused. Admitted work continues.", { exact: true }).waitFor();
       await page.reload();
+      await reopenGitHubSettings();
       assert(await region.getByLabel("Pause queue", { exact: true }).isChecked());
       assert.equal(await region.getByLabel("Implementing Assignment limit", { exact: true }).inputValue(), "2");
       await region.getByRole("button", { name: "Preview eligible backlog", exact: true }).click();
@@ -57,6 +66,7 @@ try {
       assert(await region.evaluate(element => element.scrollWidth <= element.clientWidth));
       fixture.save(issues, true); assert.equal((await fixture.post(route + "/sync", {})).status, 409);
       await page.reload();
+      await reopenGitHubSettings();
       await region.getByText("Eligible issues: 0", { exact: true }).waitFor();
       await region.getByText("Preview changed. Review the backlog again.", { exact: true }).waitFor();
       await region.getByText("Dependency evidence is stale or incomplete. Sync GitHub before starting work.", { exact: true }).first().waitFor();
