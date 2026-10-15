@@ -129,7 +129,12 @@ describe("Automatic planning through authenticated HTTP", () => {
     const f = await capacityFixture();
     let recovery: ReturnType<typeof createServer> | undefined;
     try {
+      await f.api("/settings", { max_agents: 1 });
+      const occupied = await f.assignment("Recovery capacity holder");
+      await f.api(`/implementations/${occupied}/runs`, { action: "work", idempotency_key: "recovery-holder" });
       const id = await f.assignment("Recovery copy"); const prefix = `/implementations/${id}`;
+      const assignment = await f.api(prefix).then(r => r.json());
+      await f.api(`/projects/${assignment.implementation.project_id}/configure`, { checks: [["bun", "test"]], permissions: "Edit owned files" });
       const spec = await f.api(`${prefix}/specifications`, { content: "Preserve this approved scope" }).then(r => r.json());
       await f.api(`${prefix}/specification-acceptance`, { specification_id: spec.id, hash: spec.hash, source: "button" });
       const backup = await f.api("/backups", {}).then(r => r.json());
@@ -139,7 +144,7 @@ describe("Automatic planning through authenticated HTTP", () => {
       const deadline = Date.now() + 700;
       do {
         const detail = await fetch(`http://localhost:${recovery.port}/api/factory${prefix}`, { headers: { authorization: `Bearer ${f.token}` } }).then(r => r.json());
-        expect(detail.automatic_planning[0].condition).toBe("pending");
+        expect(["pending", "queued"]).toContain(detail.automatic_planning[0].condition);
         expect(detail.runs).toHaveLength(0);
         await Bun.sleep(20);
       } while (Date.now() < deadline);
