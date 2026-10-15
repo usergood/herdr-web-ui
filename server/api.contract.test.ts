@@ -1,4 +1,5 @@
 import { FactoryStore } from "./factory-store.ts";
+import { capacityFixture } from "../scripts/factory-capacity-fixture.ts";
 import { seedWorkflowConversations } from "../scripts/fixtures/workflow-conversations.ts";
 import type { FactoryDetail, FactoryRun } from "../shared/factory.ts";
 import { nativeSessionRef } from "../shared/native-pane.ts";
@@ -22,7 +23,6 @@ import { handleMachineRequest } from "./machine-api.ts";
 import type { MachineManager } from "./machines.ts";
 import { TailnetIdentitySource } from "./tailscale.ts";
 import { forgetTranscriptState } from "./conversation.ts";
-import { capacityFixture } from "../scripts/factory-capacity-fixture.ts";
 
 /**
  * Contract test for herdr-web-ui's HTTP + WS surface.
@@ -66,6 +66,25 @@ afterAll(() => {
 });
 
 const base = () => `http://localhost:${server.port}`;
+
+describe("Specification acceptance wire contract", () => {
+  it("returns an exact revision receipt and the standard stale error envelope", async () => {
+    const f = await capacityFixture();
+    try {
+      const id = await f.assignment("Acceptance wire contract");
+      const prefix = `/implementations/${id}`;
+      const spec = await f.api(`${prefix}/specifications`, { content: "Owned API Specification" }).then(r => r.json());
+      const body: import("../shared/protocol.ts").FactoryRequests["specification_acceptance"] = { source: "button", specification_id: spec.id, hash: spec.hash };
+      const response = await f.api(`${prefix}/specification-acceptance`, body);
+      expect(response.status).toBe(201);
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
+      expect(await response.json()).toMatchObject({ implementation_id: id, kind: "specification", revision: spec.id, provenance: { kind: "button", specification_hash: spec.hash } });
+      const stale = await f.api(`${prefix}/specification-acceptance`, { ...body, hash: "superseded" });
+      expect(stale.status).toBe(409);
+      expect(await stale.json()).toEqual({ error: { code: "stale_specification", message: "Accept the presented current Specification revision" } });
+    } finally { f.close(); }
+  });
+});
 
 describe("shared browser preferences", () => {
   it("requires owner controls and a scoped request for workflow continuation", async () => {

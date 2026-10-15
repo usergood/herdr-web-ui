@@ -11,6 +11,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 - Let waiting factory conversations release execution capacity after verified native rest
   and resume through the global queue, preserving history, exact answer revisions and
   reservations for uncertain execution. Show waiting and resuming conversations in Inbox.
+- Accept the presented Specification directly in Specifications with one button or an explicit owner reply. Retain revision and source evidence, reject stale decisions, and keep pending shared-understanding confirmations from blocking later attributable answers.
 - Queue factory Start and child requests durably at capacity and dispatch eligible work
   oldest-first automatically, with restart recovery and visible bounded Machine retries.
 - Continue approved planning from the native chat, retain finished chats, and run

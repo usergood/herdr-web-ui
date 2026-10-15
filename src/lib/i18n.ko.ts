@@ -6,6 +6,11 @@
  * braces keep their English names.
  */
 export const KO: Record<string, string> = {
+  "Specification accepted": "명세 승인됨",
+  "Specification reply": "명세 답변",
+  "Reply accepted to approve this revision, or use Accept specification.": "이 버전을 승인하려면 accepted라고 답하거나 명세 승인을 누르세요.",
+  "Send reply": "답변 보내기",
+
   "Queued work starts automatically when capacity is available.": "대기 중인 작업은 실행 용량이 확보되면 자동으로 시작됩니다.",
   "Continue workflow": "워크플로 계속",
   "Native verification will run before implementation.": "구현 전에 네이티브 검증이 실행됩니다.",

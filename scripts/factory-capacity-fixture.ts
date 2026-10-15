@@ -3,18 +3,19 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "../server/index.ts";
-import type { FactoryRun, FactoryWorker } from "../shared/factory.ts";
+import type { FactoryRun, FactoryWorker, NativeConversationSnapshot } from "../shared/factory.ts";
 
 export async function capacityFixture() {
   const state = mkdtempSync(join(tmpdir(), "factory-capacity-"));
   const token = "owned-capacity-fixture";
   const runs = new Map<string, FactoryRun>(); const workers = new Map<string, FactoryWorker>();
   let loseSend = false; let loseLaunch = false; let loseWorker = false; let loseCheck = false; let offline = false; let uncertain = false;
-  const access = new Map<string, { url: string; token: string }>();
   const prompts: { run_id: string; text: string; worker_id?: string }[] = [];
   const launches: string[] = [];
   const workerLaunches: string[] = [];
   let capabilities: Record<string, any> | null = null;
+  let transcript: Pick<NativeConversationSnapshot, "source_id" | "version" | "cursor" | "turns"> = { source_id: "owned-transcript", version: "v1", cursor: null, turns: [] };
+  const access = new Map<string, { url: string; token: string }>();
   let app: ReturnType<typeof createServer>;
   const machine = Bun.serve({ port: 0, async fetch(request) {
     if (request.headers.get("authorization") !== `Bearer ${token}`) return Response.json({ error: { code: "unauthorized", message: "Owned fixture credential required" } }, { status: 401 });
@@ -27,9 +28,9 @@ export async function capacityFixture() {
     }
     if (path === "/inspect") return Response.json({ path: body.path, repository: `owned-repo:${body.path}`, head: "1".repeat(40), branch: "main", instructions: [] });
     if (path === "/launch") {
-      launches.push(body.run.id); access.set(body.run.id, body.access);
+      launches.push(body.run.id);
       const run = { ...body.run, condition: "working", worktree: join(state, body.run.id), branch: `owned-${body.run.id}`, workspace_id: null, pane_id: null } as FactoryRun;
-      runs.set(run.id, run);
+      runs.set(run.id, run); access.set(run.id, body.access);
       if (loseLaunch) { loseLaunch = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost acknowledgment" } }, { status: 503 }); }
       return Response.json(run);
     }
@@ -37,6 +38,7 @@ export async function capacityFixture() {
     const run = route ? runs.get(route[1]!) : undefined;
     if (run) {
       const action = route![2];
+      if (action === "operations/transcript") return Response.json(transcript);
       if (action === "reconcile") return Response.json(run);
       if (action === "send") { prompts.push({ run_id: run.id, text: body.text }); run.condition = "working"; if (loseSend) { loseSend = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost continuation acknowledgment" } }, { status: 503 }); } return Response.json({ ok: true }); }
       if (action === "stop") { run.condition = "cancelled"; return Response.json(run); }
@@ -75,6 +77,7 @@ export async function capacityFixture() {
     return fetch(`http://localhost:${app.port}${new URL(credential.url).pathname}/${path}`, { method: body === undefined ? "GET" : "POST", headers: { authorization: `Bearer ${credential.token}`, "content-type": "application/json", "x-herdr-factory": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   };
   return { api, agent, assignment, runs, workers, launches, workerLaunches, prompts, state, token, get app() { return app; },
+    setTranscript: (value: typeof transcript) => { transcript = value; },
     offline: (value: boolean) => { offline = value; },
     uncertain: (value: boolean) => { uncertain = value; },
     loseNextSend: () => { loseSend = true; },

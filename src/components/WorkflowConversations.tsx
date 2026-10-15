@@ -3,6 +3,7 @@ import type { FactoryConversation, FactoryConversationKind, FactoryDetail } from
 import type { Machine } from "../../shared/machines.ts";
 import { useT } from "../lib/i18n.ts";
 import { RetainedNativeTurn } from "./RetainedNativeTurn.tsx";
+import { SpecificationConversation } from "./SpecificationConversation.tsx";
 import "./WorkflowConversations.css";
 
 function conversationLabel(kind: FactoryConversationKind, title: string | null, t: ReturnType<typeof useT>): string {
@@ -29,16 +30,18 @@ export function WorkflowConversationTree({ conversations, selectedId, onSelect, 
   return render(null);
 }
 
-export function WorkflowConversations({ detail, machines, selectedId, onSelect, onOpenPane }: { detail: FactoryDetail; machines: Machine[]; selectedId?: string | null; onSelect: (id: string) => void; onOpenPane: (machineId: string, paneId: string) => void }) {
+export function WorkflowConversations({ detail, machines, selectedId, onSelect, onOpenPane, busy, perform }: { detail: FactoryDetail; machines: Machine[]; selectedId?: string | null; onSelect: (id: string) => void; onOpenPane: (machineId: string, paneId: string) => void; busy: boolean; perform: (work: () => Promise<void>) => Promise<void> }) {
   const t = useT(); const conversations = detail.conversations ?? [];
   const selected = conversations.find(c => c.id === selectedId && c.kind !== "reviewer") ?? conversations[0];
   if (!selected) return null;
   const snapshots = new Map(detail.native_snapshots.map(s => [s.id, s]));
+  const specification = detail.specifications.at(-1);
   return <section className="factory-section workflow-conversations" aria-label={t("Workflow conversations")}>
     <h3>{t("Workflow conversations")}</h3>
     <nav aria-label={t("Workflow history")}><WorkflowConversationTree conversations={conversations} selectedId={selected.id} onSelect={onSelect} /></nav>
     <section className="workflow-conversation-history" aria-label={conversationLabel(selected.kind, selected.title, t)}>
       <h4>{conversationLabel(selected.kind, selected.title, t)}</h4>
+      {selected.kind === "specifications" && specification && <SpecificationConversation key={specification.id} detail={detail} specification={specification} busy={busy} perform={perform} />}
       {!selected.contexts.length && <p role="status">{t("No native context yet.")}</p>}
       {selected.contexts.map(context => {
         const pane = machines.find(m => m.id === context.machine_id && m.state === "connected")?.snapshot?.panes.find(p => p.pane_id === context.pane_id && p.workspace_id === context.workspace_id && p.cwd === context.worktree);

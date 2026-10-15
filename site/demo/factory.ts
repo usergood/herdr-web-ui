@@ -1,4 +1,5 @@
 import { workflowConversations } from "../../shared/factory-conversations.ts";
+import { isSpecificationAcceptance } from "../../shared/specification-acceptance.ts";
 import { nativeSessionRef } from "../../shared/native-pane.ts";
 import { AGENT_PERMISSION_MODES, permissionDescription } from "../../shared/agent-permissions.ts";
 import { MATT_PROJECT_WORKFLOW } from "../../shared/project-setup.ts";
@@ -154,6 +155,28 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
     if (method === "POST") {
       let result: unknown;
       if (action === "configure") { detail.implementation = { ...detail.implementation, ...body } as Implementation; result = detail.implementation; }
+      else if (action === "specification-acceptance") {
+        const spec = detail.specifications.at(-1);
+        if (!spec || body.specification_id !== spec.id || body.hash !== spec.hash) return failure("stale_specification", "Accept the presented current Specification revision");
+        if (body.source !== "button" && body.source !== "owner_chat" || body.role !== undefined || body.source_id !== undefined) return failure("invalid_acceptance", "Choose an explicit owner acceptance", 400);
+        let message: FactoryDetail["messages"][number] | null = null;
+        if (body.source === "owner_chat") {
+          if (typeof body.content !== "string" || !body.content.trim() || body.content.length > 20_000 || typeof body.idempotency_key !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.idempotency_key)) return failure("invalid_acceptance", "Send a bounded owner reply with a stable identity", 400);
+          const sourceId = `specification:${spec.id}:${body.idempotency_key}`;
+          message = detail.messages.find(m => m.source_id === sourceId) ?? null;
+          if (message && (message.content !== body.content.trim() || message.role !== "owner" || !detail.chats.some(c => c.id === message!.chat_id && c.title === "Specifications"))) return failure("source_conflict", "This reply identity already has different content or provenance");
+          if (!message) {
+            let chat = detail.chats.find(c => c.title === "Specifications");
+            if (!chat) { chat = { ...record(), implementation_id: detail.implementation.id, title: "Specifications" }; detail.chats.push(chat); }
+            message = { ...record(), implementation_id: detail.implementation.id, chat_id: chat.id, role: "owner", content: body.content.trim(), source_id: sourceId, sequence: 0 }; detail.messages.push(message);
+          }
+        }
+        let approval = detail.approvals.find(a => a.kind === "specification" && a.revision === spec.id) ?? null;
+        if (!approval && (!message || isSpecificationAcceptance(message.content))) {
+          approval = { ...record(), implementation_id: detail.implementation.id, kind: "specification", revision: spec.id, scope: `Specification ${spec.id}, SHA-256 ${spec.hash}`, provenance: { kind: message ? "owner_chat" : "button", specification_hash: spec.hash, ...(message ? { message_id: message.id } : {}) } }; detail.approvals.push(approval);
+        }
+        result = message ? { message, approval } : approval;
+      }
       else if (action === "messages") { const message = { ...record(), implementation_id: detail.implementation.id, chat_id: String(body.chat_id), role: body.role as "owner" | "agent" | "system", content: String(body.content), source_id: null, sequence: null }; detail.messages.push(message); result = message; }
       else if (action === "chats") { const chat = { ...record(), implementation_id: detail.implementation.id, title: String(body.title) }; detail.chats.push(chat); result = chat; }
       else if (action === "artifacts") {
