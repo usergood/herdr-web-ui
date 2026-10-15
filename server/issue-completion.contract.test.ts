@@ -16,6 +16,22 @@ test("accepting a checked and independently reviewed issue implementation awaits
   } finally { fixture.close(); }
 }, 20_000);
 
+test("owner Retry cannot bypass a failed-looking parent whose retirement is still uncertain", async () => {
+  const fixture = githubReviewFixture();
+  try {
+    const { run, path, route } = await fixture.prepare();
+    await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: false, max_implementations: 2 });
+    await fixture.integrate(run); await fixture.json(`/runs/${run.id}/checks`, {});
+    await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    fixture.setStopCondition("failed");
+    expect((await fixture.post(`/runs/${run.id}/reconcile`, {})).status).toBe(409);
+    const admitted = (run.manifest as any).issue_admission;
+    const retry = await fixture.post(`/runs/${run.id}/retry`, { idempotency_key: "no-uncertain-retirement-retry", issue_scope: { source_id: admitted.source.id, source_revision: admitted.source.revision, graph_hash: run.graph_hash } });
+    expect(retry.status).toBe(409);
+    expect((await fixture.json(path)).runs).toHaveLength(1);
+  } finally { fixture.close(); }
+}, 20_000);
+
 test("restart keeps uncertain retirement recoverable through public controls while retaining its slot", async () => {
   const fixture = githubReviewFixture();
   try {
