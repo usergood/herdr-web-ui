@@ -7,6 +7,7 @@ import { projectReferenceTemplate } from "../../shared/project-references.ts";
 import type { Machine } from "../../shared/machines.ts";
 import type { AccountProfile, AccountService } from "../../shared/accounts.ts";
 import type { ProjectGitHubIssueRevision, ProjectGitHubOverview, ProjectGitHubPolicy } from "../../shared/github-project.ts";
+import { issueReadiness, TRIAGE_ROLES, type ProjectReadinessPolicy, type TriageLabels } from "../../shared/github-readiness.ts";
 import { fictionalGitHubPull } from "./github-fixtures.ts";
 
 const storageKey = "saurons-eye:demo-factory";
@@ -18,6 +19,9 @@ let referenceVersions: ProjectReference[] = []; let referenceHeads: string[] = [
 let paneArchives: import("../../shared/factory.ts").FactoryPaneArchive[] = [];
 const accountProfiles: AccountProfile[] = [];
 const githubViews = new Map<string, ProjectGitHubOverview>();
+function readinessView(view: ProjectGitHubOverview): ProjectGitHubOverview {
+  return { ...view, readiness_policy: view.readiness_policy ?? null, sources: view.sources.map(source => source.kind === "issue" ? { ...source, readiness: issueReadiness(view.readiness_policy ?? null, source) } : source) };
+}
 function record(): FactoryRecord { const now = new Date().toISOString(); return { id: crypto.randomUUID(), created_at: now, updated_at: now }; }
 function json(body: unknown, status = 200): Response { return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } }); }
 function failure(code: string, message: string, status = 409): Response { return json({ error: { code, message } }, status); }
@@ -53,17 +57,36 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
     const next = { ...(previous ?? record()), ...(body.archived && pane ? { terminal_id: pane.terminal_id, session_ref: nativeSessionRef(pane), title: pane.label || pane.title || pane.pane_id } : {}), machine_id: String(body.machine_id), pane_id: String(body.pane_id), archived_at: body.archived ? new Date().toISOString() : null };
     paneArchives = [...paneArchives.filter((a) => a.id !== previous?.id), next]; save(); return json(next);
   }
-  const githubRoute = /^\/api\/factory\/projects\/([^/]+)\/github(?:\/(configure|sync)|\/pulls\/(\d+)\/(merge|update|rerequest|import|files))?$/.exec(path);
+  const githubRoute = /^\/api\/factory\/projects\/([^/]+)\/github(?:\/(configure|sync|readiness)|\/pulls\/(\d+)\/(merge|update|rerequest|import|files)|\/issues\/(\d+)\/approve)?$/.exec(path);
   if (githubRoute) {
     const id = githubRoute[1]!; if (!projects.some((project) => project.id === id)) return failure("not_found", "Fictional Project not found", 404);
-    const view = githubViews.get(id) ?? { policy: null, pulls: [], sources: [], mutations: [], last_sync: null, problem: null };
+    const view: ProjectGitHubOverview = githubViews.get(id) ?? { policy: null, pulls: [], sources: [], mutations: [], last_sync: null, problem: null };
     if (method === "GET" && githubRoute[4] === "files") return json({ head: fictionalGitHubPull.headRefOid, base: fictionalGitHubPull.baseRefOid, files: [{ filename: "README.md", status: "modified", additions: 1, deletions: 0, patch: "@@ -1 +1,2 @@\n # Fictional Project\n+An example improvement." }] });
-    if (method === "GET") return json(view);
+    if (method === "GET") return json(readinessView(view));
     if (githubRoute[2] === "configure") {
       if (body.expected_revision !== (view.policy?.revision ?? null)) return failure("github_policy_changed", "Refresh the fictional Project policy");
       view.policy = { ...record(), ...body, id, project_id: id, revision: crypto.randomUUID() } as ProjectGitHubPolicy; githubViews.set(id, view); save(); return json(view.policy);
     }
     if (!view.policy) return failure("github_not_configured", "Configure the fictional GitHub policy");
+    if (githubRoute[2] === "readiness") {
+      if (body.expected_revision !== (view.readiness_policy?.revision ?? null)) return failure("readiness_policy_changed", "Refresh the fictional readiness settings");
+      const account = accountProfiles.find(profile => profile.id === body.account_profile_id && profile.service === "github" && profile.state === "ready" && profile.verified_identity);
+      if (!account) return failure("account_scope_required", "Select a verified fictional readiness account");
+      const overrides = body.triage_labels as Partial<TriageLabels> | undefined;
+      if (!overrides || Object.keys(overrides).some(role => !TRIAGE_ROLES.includes(role as typeof TRIAGE_ROLES[number]))) return failure("invalid_readiness_policy", "Select fictional triage labels");
+      const labels = Object.fromEntries(TRIAGE_ROLES.map(role => [role, overrides[role] ?? role])) as TriageLabels;
+      if ([...Object.values(labels), body.blocked_label].some(label => typeof label !== "string" || !label.trim() || label.length > 100)) return failure("invalid_readiness_policy", "Enter bounded fictional labels");
+      view.readiness_policy = { ...record(), id, project_id: id, revision: crypto.randomUUID(), repository: view.policy.repository, project_scope: view.policy.project_scope, account_profile_id: account.id, owner: account.verified_identity!, triage_labels: labels, blocked_label: String(body.blocked_label) } satisfies ProjectReadinessPolicy;
+      githubViews.set(id, view); save(); return json(view.readiness_policy);
+    }
+    if (githubRoute[5]) {
+      const source = view.sources.find(source => source.kind === "issue" && source.number === Number(githubRoute[5]));
+      const policy = view.readiness_policy;
+      if (!source || !policy || body.source_revision !== source.revision || body.policy_revision !== policy.revision) return failure("readiness_changed", "Refresh the fictional issue revision");
+      if (issueReadiness(policy, source).blockers.some(reason => !["evidence_missing", "untrusted", "stale"].includes(reason))) return failure("readiness_blocked", "Resolve fictional readiness blockers");
+      source.readiness_approvals = [...source.readiness_approvals ?? [], { id: crypto.randomUUID(), evidence_revision: source.readiness_evidence!.revision, source_revision: source.revision, policy_revision: policy.revision, approved_at: new Date().toISOString(), actor: policy.owner, provenance: "app_owner", event_id: null }];
+      save(); return json(readinessView(view));
+    }
     if (githubRoute[2] === "sync") {
       if (view.policy.import_issues) {
         const prior = view.sources.find(source => source.kind === "issue");
@@ -74,7 +97,8 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
           view.sources.push({ ...record(), project_id: id, external_id: "fictional-issue-12", number: 12, kind: "issue", implementation_id: idea.id, revision: revision.revision, url: revision.url, state: revision.state, current: revision, history: [revision] });
         }
       }
-      view.last_sync = new Date().toISOString(); view.pulls = [{ ...record(), project_id: id, pull: structuredClone(fictionalGitHubPull), blockers: ["Requested reviews are still pending"], observed_at: view.last_sync, fix_implementation_id: null }]; githubViews.set(id, view); save(); return json(view); }
+      for (const source of view.sources) if (source.kind === "issue" && view.readiness_policy) source.readiness_evidence = { revision: source.revision + ":" + view.readiness_policy.revision, source_revision: source.revision, policy_revision: view.readiness_policy.revision, complete: true, problem: null, label_event: null };
+      view.last_sync = new Date().toISOString(); view.pulls = [{ ...record(), project_id: id, pull: structuredClone(fictionalGitHubPull), blockers: ["Requested reviews are still pending"], observed_at: view.last_sync, fix_implementation_id: null }]; githubViews.set(id, view); save(); return json(readinessView(view)); }
     return failure("github_fixture_only", "The demo never changes a real GitHub PR");
   }
   const accountCollection = /^\/api\/factory\/machines\/[^/]+\/accounts$/.test(path) || path === "/api/factory-host/accounts";
@@ -158,7 +182,7 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
     const detail = details.get(match[1]!); if (!detail) return failure("not_found", "Implementation not found", 404);
     const action = match[2];
     if (!action && method === "GET") {
-      const sources = [...githubViews.values()].flatMap(view => view.sources).filter(source => source.implementation_id === detail.implementation.id);
+      const sources = [...githubViews.values()].flatMap(view => readinessView(view).sources).filter(source => source.implementation_id === detail.implementation.id);
       const sync = sources[0] ? githubViews.get(sources[0].project_id) : null;
       return json({ ...detail, github_sources: sources, github_sync: sync ? { last_sync: sync.last_sync, problem: sync.problem } : null });
     }

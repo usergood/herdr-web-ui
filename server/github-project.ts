@@ -9,6 +9,8 @@ import { FactoryStore } from "./factory-store.ts";
 import { FactoryError, hash } from "./factory-host.ts";
 import { MachineAccounts } from "./accounts.ts";
 
+import { issueReadiness, TRIAGE_ROLES, type ProjectReadinessPolicy, type ReadinessConfiguration, type TriageLabels } from "../shared/github-readiness.ts";
+
 const pullFields = `number id title body url state isDraft headRefOid baseRefOid headRefName baseRefName author { login } mergeStateStatus reviewDecision headRepository { nameWithOwner } viewerCanUpdate
 reviews(first:100) { nodes { id state body submittedAt author { login } commit { oid } } pageInfo { hasNextPage endCursor } }
 reviewRequests(first:100) { nodes { requestedReviewer { ... on User { login } ... on Team { name } } } pageInfo { hasNextPage endCursor } }
@@ -30,7 +32,17 @@ export class ProjectGitHub {
   overview(id: string): ProjectGitHubOverview {
     this.project(id);
     const state = this.store.get<SyncState>("github_sync", id);
-    return { policy: this.store.get("github_policies", id), pulls: this.store.list("github_pulls", id), sources: this.store.list("github_sources", id), mutations: this.store.list("github_mutations", id), last_sync: state?.last_sync ?? null, problem: state?.problem ?? null };
+    return { readiness_policy: this.store.get("github_readiness_policies", id), policy: this.store.get("github_policies", id), pulls: this.store.list("github_pulls", id), sources: this.store.list<ProjectGitHubSource>("github_sources", id).map(source => this.describeSource(source)), mutations: this.store.list("github_mutations", id), last_sync: state?.last_sync ?? null, problem: state?.problem ?? null };
+  }
+  describeSource(source: ProjectGitHubSource): ProjectGitHubSource {
+    if (source.kind !== "issue") return source;
+    const policy = this.store.get<ProjectReadinessPolicy>("github_readiness_policies", source.project_id);
+    const readiness = issueReadiness(policy, source);
+    if (policy && (this.store.get<FactoryProject>("projects", source.project_id)?.removed_at || policy.project_scope !== this.projectScope(source.project_id) || policy.repository !== source.current?.repository)) readiness.blockers.push("policy_changed");
+    const sync = this.store.get<SyncState>("github_sync", source.project_id);
+    if ((!sync?.last_sync || sync.problem) && !readiness.blockers.includes("sync_required")) readiness.blockers.push("sync_required");
+    readiness.eligible = !readiness.blockers.length;
+    return { ...source, readiness };
   }
   private project(id: string): FactoryProject {
     const project = this.store.get<FactoryProject>("projects", id);
@@ -109,6 +121,44 @@ export class ProjectGitHub {
       this.store.event(null, "github_policy_configured", { project_id: id, revision: policy.revision }); return policy;
     });
   }
+  async configureReadiness(id: string, value: ReadinessConfiguration): Promise<ProjectReadinessPolicy> {
+    return this.locked(id, async () => {
+      const policy = this.store.get<ProjectGitHubPolicy>("github_policies", id);
+      if (!policy) throw new FactoryError("github_not_configured", "Configure Project GitHub synchronization", 409);
+      this.current(policy);
+      const prior = this.store.get<ProjectReadinessPolicy>("github_readiness_policies", id);
+      if (value.expected_revision !== (prior?.revision ?? null)) throw new FactoryError("readiness_policy_changed", "Refresh the readiness settings", 409);
+      if (typeof value.account_profile_id !== "string" || !value.triage_labels || typeof value.triage_labels !== "object" || Array.isArray(value.triage_labels) || Object.keys(value.triage_labels).some(key => !TRIAGE_ROLES.includes(key as typeof TRIAGE_ROLES[number]))) throw new FactoryError("invalid_readiness_policy", "Select a readiness account and triage labels");
+      const labels = Object.fromEntries(TRIAGE_ROLES.map(role => [role, value.triage_labels[role] ?? role])) as TriageLabels;
+      if ([...Object.values(labels), value.blocked_label].some(label => typeof label !== "string" || !label.trim() || label.length > 100 || /[\r\n\0]/.test(label))) throw new FactoryError("invalid_readiness_policy", "Enter bounded nonempty triage and blocked labels");
+      const frozen = await this.accounts.freeze({ github: value.account_profile_id });
+      this.current(policy);
+      const readiness: ProjectReadinessPolicy = { ...(prior ?? this.store.record()), id, project_id: id, revision: randomUUID(), repository: policy.repository, project_scope: policy.project_scope, account_profile_id: value.account_profile_id, owner: frozen.profiles[0]!.identity, triage_labels: labels, blocked_label: value.blocked_label, updated_at: new Date().toISOString() };
+      this.store.put("github_readiness_policies", readiness, id);
+      this.store.event(null, "github_readiness_configured", { project_id: id, revision: readiness.revision, owner: readiness.owner });
+      return readiness;
+    });
+  }
+  async approveIssue(id: string, number: number, proof: Record<string, unknown>): Promise<ProjectGitHubOverview> {
+    return this.locked(id, async () => {
+      const policy = this.store.get<ProjectGitHubPolicy>("github_policies", id);
+      const readiness = this.store.get<ProjectReadinessPolicy>("github_readiness_policies", id);
+      let source = this.store.list<ProjectGitHubSource>("github_sources", id).find(source => source.kind === "issue" && source.number === number);
+      if (!policy || !readiness || !source || proof.source_revision !== source.revision || proof.policy_revision !== readiness.revision) throw new FactoryError("readiness_changed", "Refresh the issue and readiness settings before approving", 409);
+      const scope = await this.scope(policy);
+      await this.collectReadiness(policy, scope, source);
+      source = this.store.get<ProjectGitHubSource>("github_sources", source.id)!;
+      const blockers = this.describeSource(source).readiness!.blockers.filter(reason => !["evidence_missing", "untrusted", "stale"].includes(reason));
+      if (blockers.length) throw new FactoryError("readiness_blocked", "Resolve readiness blockers and sync before approving this issue", 409);
+      const owner = (await this.accounts.freeze({ github: readiness.account_profile_id })).profiles[0]!.identity;
+      this.current(policy);
+      if (owner.login.toLowerCase() !== readiness.owner.login.toLowerCase() || owner.account_id !== readiness.owner.account_id) throw new FactoryError("readiness_changed", "Verify the selected readiness identity again", 409);
+      const approval: import("../shared/github-readiness.ts").IssueReadinessApproval = { id: randomUUID(), evidence_revision: source.readiness_evidence!.revision, source_revision: source.revision, policy_revision: readiness.revision, approved_at: new Date().toISOString(), actor: owner, provenance: "app_owner", event_id: null };
+      this.store.put("github_sources", { ...source, readiness_approvals: [...source.readiness_approvals ?? [], approval] }, id);
+      this.store.event(source.implementation_id, "github_readiness_approved", { source_id: source.id, approval });
+      return this.overview(id);
+    });
+  }
   private async scope(policy: ProjectGitHubPolicy): Promise<AccountBindingSnapshot> {
     const selected = this.project(policy.project_id).account_bindings?.local?.github;
     if (selected && selected !== policy.account_profile_id) throw new FactoryError("account_scope_changed", "The Project GitHub account changed", 409);
@@ -137,6 +187,53 @@ export class ProjectGitHub {
       if (items.length < 30) return all;
     }
     throw new FactoryError("github_inventory_limit", "Issue inventory exceeds the bounded synchronization budget", 409);
+  }
+  private async collectReadiness(policy: ProjectGitHubPolicy, scope: AccountBindingSnapshot, source: ProjectGitHubSource): Promise<void> {
+    const readiness = this.store.get<ProjectReadinessPolicy>("github_readiness_policies", policy.id);
+    if (!readiness || !source.current) return;
+    const evidence: import("../shared/github-readiness.ts").IssueReadinessEvidence = { revision: "", source_revision: source.revision, policy_revision: readiness.revision, complete: false, problem: null, label_event: null };
+    try {
+      let scopeChangedAt = -Infinity;
+      const scopeEvents: string[] = [];
+      for (let page = 1; page <= 100; page++) {
+        const events = await this.api(policy, scope, `repos/${policy.repository}/issues/${source.number}/events?per_page=100&page=${page}`);
+        if (!Array.isArray(events)) throw new FactoryError("readiness_incomplete", "Readiness history is incomplete");
+        for (const event of events) {
+          if (!event || typeof event.event !== "string" || !Number.isSafeInteger(event.id) || typeof event.created_at !== "string" || !Number.isFinite(Date.parse(event.created_at))) throw new FactoryError("readiness_incomplete", "Readiness history is incomplete");
+          if (["renamed", "closed", "reopened", "transferred"].includes(event.event)) scopeEvents.push(String(event.id));
+          if (["renamed", "closed", "reopened", "transferred"].includes(event.event)) scopeChangedAt = Math.max(scopeChangedAt, Date.parse(event.created_at));
+          if (!["labeled", "unlabeled"].includes(event.event)) continue;
+          if (typeof event.label?.name !== "string") throw new FactoryError("readiness_incomplete", "Readiness history is incomplete");
+          if (event.label.name.toLowerCase() !== readiness.triage_labels["ready-for-agent"].toLowerCase()) continue;
+          if (evidence.label_event && (Date.parse(event.created_at) < Date.parse(evidence.label_event.created_at) || Date.parse(event.created_at) === Date.parse(evidence.label_event.created_at) && event.id <= Number(evidence.label_event.id))) continue;
+          evidence.label_event = { id: String(event.id), event: event.event, login: typeof event.actor?.login === "string" ? event.actor.login : null, account_id: Number.isSafeInteger(event.actor?.id) ? String(event.actor.id) : null, created_at: event.created_at };
+        }
+        if (events.length < 100) { evidence.complete = true; break; }
+      }
+      if (!evidence.complete) throw new FactoryError("readiness_incomplete", "Readiness history exceeds the bounded synchronization budget");
+      // Fence changes while history is fetched. A label event cannot attest a later issue edit.
+      const fresh = await this.api(policy, scope, `repos/${policy.repository}/issues/${source.number}`) as Issue;
+      if (!fresh || fresh.node_id !== source.external_id || fresh.title !== source.current.title || (fresh.body ?? "") !== source.current.body || fresh.updated_at !== source.current.source_updated_at || fresh.state !== source.current.state || !Array.isArray(fresh.labels) || JSON.stringify(fresh.labels.map(label => label.name).sort()) !== JSON.stringify(source.current.labels)) throw new FactoryError("readiness_changed", "The issue changed while collecting readiness; sync again");
+      const [owner, name] = policy.repository.split("/");
+      // REST updated_at has second precision and changes for labels too. lastEditedAt
+      // fences same-second body edits; rename events fence title edits conservatively.
+      const query = `query { repository(owner:${JSON.stringify(owner)},name:${JSON.stringify(name)}) { issue(number:${source.number}) { id title body state createdAt updatedAt lastEditedAt } } }`;
+      const result = await this.api(policy, scope, "graphql", ["-f", "query=" + query]) as { errors?: unknown; data?: { repository?: { issue?: { id: string; title: string; body: string; state: string; createdAt: string; updatedAt: string; lastEditedAt: string | null } } } };
+      const proof = result.data?.repository?.issue;
+      if (result.errors || !proof || proof.id !== source.external_id || proof.title !== source.current.title || proof.body !== source.current.body || proof.state.toLowerCase() !== source.current.state || Date.parse(proof.updatedAt) !== Date.parse(source.current.source_updated_at) || !Number.isFinite(Date.parse(proof.createdAt)) || proof.lastEditedAt !== null && !Number.isFinite(Date.parse(proof.lastEditedAt))) throw new FactoryError("readiness_incomplete", "Issue edit evidence is incomplete or changed; sync again");
+      const event = evidence.label_event;
+      evidence.revision = hash(JSON.stringify({ source: source.revision, policy: readiness.revision, event, edited: proof.lastEditedAt, scope_events: scopeEvents.sort(), observation: source.history?.length ?? 0 }));
+      const reviewedAfterEdit = !!event && Date.parse(event.created_at) > scopeChangedAt && (proof.lastEditedAt === null ? Date.parse(event.created_at) >= Date.parse(proof.createdAt) : Date.parse(event.created_at) > Date.parse(proof.lastEditedAt));
+      if (reviewedAfterEdit && event?.event === "labeled" && event.login?.toLowerCase() === readiness.owner.login.toLowerCase() && event.account_id && event.account_id === readiness.owner.account_id && Date.parse(event.created_at) >= Date.parse(source.current.source_updated_at) && source.current.labels.some(label => label.toLowerCase() === readiness.triage_labels["ready-for-agent"].toLowerCase())) {
+        if (!source.readiness_approvals?.some(approval => approval.evidence_revision === evidence.revision && approval.source_revision === source.revision && approval.policy_revision === readiness.revision && approval.event_id === event.id)) {
+          source.readiness_approvals = [...source.readiness_approvals ?? [], { id: randomUUID(), evidence_revision: evidence.revision, source_revision: source.revision, policy_revision: readiness.revision, approved_at: event.created_at, actor: readiness.owner, provenance: "github_label", event_id: event.id }];
+        }
+      }
+    } catch (error) {
+      evidence.complete = false; evidence.problem = error instanceof FactoryError ? error.message : "Readiness evidence could not be collected";
+    }
+    this.current(policy);
+    this.store.put("github_sources", { ...source, readiness_evidence: evidence }, policy.id);
   }
   private async pulls(policy: ProjectGitHubPolicy, scope: AccountBindingSnapshot): Promise<ProjectPullRequest[]> {
     const [owner, name] = policy.repository.split("/"); let cursor: string | null = null; const all: ProjectPullRequest[] = [];
@@ -302,7 +399,8 @@ export class ProjectGitHub {
           const content = { title: issue.title, body: issue.body ?? "", labels: issue.labels.map((label) => label.name).sort(), state: issue.state, source_updated_at: issue.updated_at, repository: policy.repository, url: issue.html_url };
           const revision = hash(JSON.stringify(content));
           const observed: ProjectGitHubIssueRevision = { ...content, revision, fetched_at: new Date().toISOString(), account_profile_id: policy.account_profile_id, policy_revision: policy.revision };
-          this.import(id, issue.node_id, issue.number, revision, issue.title, `GitHub issue: ${issue.html_url}\n\n${issue.body ?? ""}\n\nProject review context:\n${policy.review_context}`, issue.html_url, issue.state, "issue", observed);
+          const source = this.import(id, issue.node_id, issue.number, revision, issue.title, `GitHub issue: ${issue.html_url}\n\n${issue.body ?? ""}\n\nProject review context:\n${policy.review_context}`, issue.html_url, issue.state, "issue", observed);
+          await this.collectReadiness(policy, scope, source);
         }
         for (const pull of pulls) {
           const previous = this.store.list<ProjectGitHubPull>("github_pulls", id).find((item) => item.pull.id === pull.id);

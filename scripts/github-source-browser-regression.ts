@@ -2,7 +2,7 @@
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
@@ -19,7 +19,8 @@ writeFileSync(responses, JSON.stringify([issue]));
 const cli = join(root, "gh.mjs");
 writeFileSync(cli, `import { readFileSync } from "node:fs";
 const endpoint = process.argv[3];
-const result = endpoint === "user" ? { login: "fictional-owner", id: 1042 } : endpoint?.includes("/issues?") ? JSON.parse(readFileSync(${JSON.stringify(responses)}, "utf8")) : endpoint === "graphql" ? { data: { repository: { pullRequests: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } : {};
+const issue = JSON.parse(readFileSync(${JSON.stringify(responses)}, "utf8"))[0];
+const result = endpoint === "user" ? { login: "fictional-owner", id: 1042 } : endpoint?.includes("/events?") ? [] : endpoint?.match(/issues[/][0-9]+$/) ? JSON.parse(readFileSync(${JSON.stringify(responses)}, "utf8"))[0] : endpoint?.includes("/issues?") ? JSON.parse(readFileSync(${JSON.stringify(responses)}, "utf8")) : endpoint === "graphql" ? { data: { repository: { issue: issue ? { id: issue.node_id, title: issue.title, body: issue.body, state: issue.state.toUpperCase(), updatedAt: issue.updated_at, createdAt: "2026-09-30T12:00:00Z", lastEditedAt: null } : null, pullRequests: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } : {};
 console.log(JSON.stringify(result));\n`);
 const app = createServer({ port: 0, stateDir: root, machines: false, factory: { accountDiscoveryHome: root, accountTools: { github: { executable: process.execPath, args: [cli] } } } });
 const origin = `http://localhost:${app.port}`;
@@ -41,14 +42,34 @@ try {
   Object.assign(issue, { title: "Updated source title", body: "Revised source acceptance", labels: [{ name: "ready-for-agent" }], updated_at: "2026-10-02T12:00:00Z" });
   writeFileSync(responses, JSON.stringify([issue])); await post(route + "/sync", {});
   const errors: string[] = [];
+  const evidence = process.env["UI_EVIDENCE_DIR"];
+  if (evidence) mkdirSync(evidence, { recursive: true });
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
     const page = await browser.newPage({ viewport }); page.setDefaultTimeout(10_000);
     page.on("pageerror", error => errors.push(error.message));
+    await page.goto(origin + `/#projects/${project.id}/settings`);
+    await page.getByRole("tab", { name: "GitHub", exact: true }).click();
+    const readiness = page.getByRole("region", { name: "Issue readiness", exact: true });
+    await readiness.getByText("Readiness trust is separate from PR reviewers.", { exact: true }).waitFor();
+    assert.equal(await readiness.getByLabel("Readiness account", { exact: true }).inputValue(), viewport.width === 1440 ? "" : profile.id);
+    await readiness.getByLabel("Readiness account", { exact: true }).selectOption(profile.id);
+    const saved = page.waitForResponse(response => response.url().endsWith(route + "/readiness") && response.request().method() === "POST");
+    await readiness.getByRole("button", { name: "Save readiness settings", exact: true }).click();
+    assert.equal((await saved).status(), 200);
+    await readiness.getByText("Readiness identity: fictional-owner", { exact: true }).waitFor();
+    if (evidence) await page.screenshot({ path: join(evidence, `readiness-settings-${viewport.width}.png`) });
+    assert(await readiness.evaluate(element => element.scrollWidth <= element.clientWidth));
+    await post(route + "/sync", {});
     await page.goto(origin + `/#factory/${id}`);
     const source = page.getByRole("region", { name: "GitHub issue source", exact: true });
     await source.getByRole("heading", { name: "Updated source title", exact: true }).waitFor();
     await source.getByText("Revised source acceptance", { exact: true }).first().waitFor();
     await source.getByText("ready-for-agent", { exact: true }).first().waitFor();
+    await source.getByText("Reapply the ready label after reviewing this scope, or approve this revision here.", { exact: true }).waitFor();
+    if (evidence) await page.screenshot({ path: join(evidence, `readiness-reasons-${viewport.width}.png`) });
+    await source.getByRole("button", { name: "Approve this issue revision", exact: true }).click();
+    await source.getByText("Current issue scope has trusted readiness.", { exact: true }).waitFor();
+    await source.getByText("Approved by fictional-owner", { exact: false }).waitFor();
     await source.getByText("Source history", { exact: true }).click();
     await source.getByText("Original source acceptance", { exact: true }).waitFor();
     await page.getByText("Advanced controls", { exact: true }).click();
@@ -60,12 +81,12 @@ try {
     const failed = await fetch(origin + "/api/factory" + route + "/sync", { method: "POST", headers, body: "{}" }); assert.equal(failed.status, 409);
     await page.reload(); await source.getByRole("alert").waitFor();
     await source.getByText("Revised source acceptance", { exact: true }).first().waitFor();
-    issue.state = "open"; writeFileSync(responses, JSON.stringify([issue])); await post(route + "/sync", {});
+    issue.state = "open"; issue.updated_at = "2026-10-03T12:00:00Z"; writeFileSync(responses, JSON.stringify([issue])); await post(route + "/sync", {});
     await page.reload(); await source.getByText("Issue is open", { exact: true }).first().waitFor();
     assert.equal(await source.getByRole("alert").count(), 0);
     assert(await source.evaluate(element => element.scrollWidth <= element.clientWidth));
     await page.close();
   }
   assert.deepEqual(errors, []);
-  console.log("PASS: desktop/mobile source history, notes, closure/reopen and sync failure");
+  console.log("PASS: desktop/mobile readiness identity selection, current-revision approval, readable reasons, source history, notes, closure/reopen and sync failure");
 } finally { await browser.close(); app.stop(); rmSync(root, { recursive: true, force: true }); }

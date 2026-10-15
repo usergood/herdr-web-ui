@@ -21,6 +21,8 @@ async function fixture(remoteOnly = false) {
 const args = process.argv.slice(2); const data = JSON.parse(readFileSync(${JSON.stringify(state)}, "utf8"));
 appendFileSync(${JSON.stringify(log)}, JSON.stringify({args, scoped: Boolean(process.env.GH_CONFIG_DIR), token: process.env.GITHUB_TOKEN ?? null}) + "\\n");
 let result; const endpoint = args[1];
+const issue = Array.isArray(data.issues) ? data.issues[0] : null;
+const issueProof = issue ? { id: issue.node_id, title: issue.title, body: issue.body ?? "", state: issue.state.toUpperCase(), createdAt: "2026-09-30T12:00:00Z", updatedAt: issue.updated_at, lastEditedAt: data.last_edited_at ?? null } : null;
 const users = readFileSync(${JSON.stringify(log)}, "utf8").trim().split("\\n").map((line) => JSON.parse(line)).filter((call) => call.args[1] === "user").length;
 if (endpoint === "graphql" && data.pause || endpoint === "user" && data.pause_user === users) {
   writeFileSync(${JSON.stringify(join(root, "reading"))}, "reading");
@@ -28,9 +30,11 @@ if (endpoint === "graphql" && data.pause || endpoint === "user" && data.pause_us
   while (!existsSync(${JSON.stringify(join(root, "continue"))}) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
 }
 if (endpoint === "user") result = { login: "fictional-owner", id: 1042 };
+else if (endpoint?.includes("/events?")) result = data.events ?? [];
+else if (endpoint?.match(/issues[/][0-9]+$/)) result = data.issues.find(issue => endpoint.endsWith("/" + issue.number));
 else if (endpoint?.includes("/issues?")) result = data.pages ? data.pages[Number(new URL("https://api.github.invalid/" + endpoint).searchParams.get("page")) - 1] : endpoint.includes("page=1&") ? data.issues : [];
 else if (endpoint === "repos/fictional/project") result = { full_name: "fictional/project" };
-else if (endpoint === "graphql") result = { data: { repository: { viewerPermission: "ADMIN", pullRequests: { nodes: data.pulls, pageInfo: { hasNextPage: false, endCursor: null } }, pullRequest: data.pull ?? data.pulls[0] } } };
+else if (endpoint === "graphql") result = { data: { repository: { issue: issueProof, viewerPermission: "ADMIN", pullRequests: { nodes: data.pulls, pageInfo: { hasNextPage: false, endCursor: null } }, pullRequest: data.pull ?? data.pulls[0] } } };
 else if (endpoint?.endsWith("/merge")) result = { merged: !data.fail_merge, sha: "fictional-merged" };
 else if (endpoint?.endsWith("/update-branch")) result = { message: "Updating pull request branch", url: "https://api.github.com/fictional/update" };
 else if (endpoint?.endsWith("/rerequest")) result = { requested_reviewers: [{ login: "fictional-reviewer" }] };
@@ -283,4 +287,158 @@ test("remote-only Projects retain issue sources and refuse checkout drift", asyn
   const after = await f.get(route);
   expect(after.sources).toEqual(before.sources);
   expect(after.last_sync).toBe(before.last_sync); expect(after.problem).toBeTruthy();
+});
+
+test("readiness trusts only the owner's explicitly selected account independently of PR reviewers", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy);
+  expect((await f.get(route)).readiness_policy).toBeNull();
+  const configured = await f.post(route + "/readiness", { expected_revision: null, account_profile_id: f.policy.account_profile_id, triage_labels: {}, blocked_label: "blocked" });
+  expect(configured.status).toBe(200);
+  expect(configured.body.owner).toEqual({ login: "fictional-owner", account_id: "1042", auth_method: "oauth" });
+  expect(configured.body.triage_labels).toEqual({ "needs-triage": "needs-triage", "needs-info": "needs-info", "ready-for-agent": "ready-for-agent", "ready-for-human": "ready-for-human", wontfix: "wontfix" });
+  f.restart();
+  const view = await f.get(route);
+  expect(view.readiness_policy.owner.login).toBe("fictional-owner");
+  expect(view.policy.trusted_reviewers).toEqual(["fictional-reviewer"]);
+  expect((await f.post(route + "/readiness", { expected_revision: null, account_profile_id: f.policy.account_profile_id, triage_labels: {}, blocked_label: "blocked" })).status).toBe(409);
+});
+
+test("Project triage mappings explain non-ready, conflicting and blocked issue scopes", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy);
+  const labels = { "needs-triage": "evaluate", "needs-info": "question", "ready-for-agent": "agent", "ready-for-human": "human", wontfix: "declined" };
+  const configured = await f.post(route + "/readiness", { expected_revision: null, account_profile_id: f.policy.account_profile_id, triage_labels: labels, blocked_label: "waiting" });
+  expect(configured.status).toBe(200);
+  const data = JSON.parse(readFileSync(f.state, "utf8"));
+  for (const [names, roles, reasons] of [
+    [["evaluate"], ["needs-triage"], ["role_not_ready"]],
+    [["question"], ["needs-info"], ["role_not_ready"]],
+    [["human"], ["ready-for-human"], ["role_not_ready"]],
+    [["declined"], ["wontfix"], ["role_not_ready"]],
+    [["agent", "question"], ["needs-info", "ready-for-agent"], ["triage_conflict"]],
+    [["agent", "waiting"], ["ready-for-agent"], ["blocked"]],
+  ]) {
+    data.issues[0].labels = names!.map(name => ({ name })); writeFileSync(f.state, JSON.stringify(data));
+    const result = await f.post(route + "/sync", {}); expect(result.status).toBe(200);
+    const source = result.body.sources[0];
+    expect(source.readiness.roles).toEqual(roles);
+    expect(source.readiness.eligible).toBe(false);
+    for (const reason of reasons!) expect(source.readiness.blockers).toContain(reason);
+    expect((await f.get(`/implementations/${source.implementation_id}`)).github_sources[0].readiness).toEqual(source.readiness);
+  }
+  await f.post(route + "/readiness", { expected_revision: configured.body.revision, account_profile_id: f.policy.account_profile_id, triage_labels: { ...labels, "needs-info": "agent" }, blocked_label: "waiting" });
+  expect((await f.get(route)).sources[0].readiness.blockers).toContain("mapping_conflict");
+});
+
+function readinessEvent(id = 1, login = "fictional-owner", at = "2026-10-01T12:00:00Z") {
+  return { id, event: "labeled", actor: { login, id: login === "fictional-owner" ? 1042 : 9999 }, label: { name: "ready-for-agent" }, created_at: at };
+}
+
+test("only current-scope trusted label evidence authorizes readiness and retains its provenance", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy);
+  const configured = await f.post(route + "/readiness", { expected_revision: null, account_profile_id: f.policy.account_profile_id, triage_labels: {}, blocked_label: "blocked" });
+  const data = JSON.parse(readFileSync(f.state, "utf8")); data.issues[0].labels = [{ name: "ready-for-agent" }]; data.events = [readinessEvent(1, "fictional-reviewer")];
+  writeFileSync(f.state, JSON.stringify(data));
+  let source = (await f.post(route + "/sync", {})).body.sources[0];
+  expect(source.readiness.eligible).toBe(false); expect(source.readiness.blockers).toContain("untrusted");
+  data.events = []; writeFileSync(f.state, JSON.stringify(data));
+  source = (await f.post(route + "/sync", {})).body.sources[0];
+  expect(source.readiness.blockers).toContain("evidence_missing");
+  data.events = [readinessEvent()]; writeFileSync(f.state, JSON.stringify(data));
+  source = (await f.post(route + "/sync", {})).body.sources[0];
+  expect(source.readiness).toMatchObject({ eligible: true, blockers: [], roles: ["ready-for-agent"] });
+  expect(source.readiness.approval).toMatchObject({ source_revision: source.revision, policy_revision: configured.body.revision, provenance: "github_label", actor: { login: "fictional-owner", account_id: "1042" }, event_id: "1" });
+  f.restart(); expect((await f.get(route)).sources[0].readiness.approval).toEqual(source.readiness.approval);
+  data.issues[0].body = "Scope: changed plan, acceptance, dependencies and testing seams"; data.issues[0].updated_at = "2026-10-02T12:00:00Z";
+  writeFileSync(f.state, JSON.stringify(data));
+  const changed = (await f.post(route + "/sync", {})).body.sources[0];
+  expect(changed.readiness.eligible).toBe(false); expect(changed.readiness.blockers).toContain("stale");
+  expect(changed.readiness_approvals).toContainEqual(source.readiness.approval);
+  data.events.push(readinessEvent(2, "fictional-owner", "2026-10-02T12:00:00Z")); writeFileSync(f.state, JSON.stringify(data));
+  const renewed = (await f.post(route + "/sync", {})).body.sources[0];
+  expect(renewed.readiness.eligible).toBe(true); expect(renewed.readiness.approval.source_revision).toBe(changed.revision);
+});
+
+test("owner approval is explicit, revision-scoped and cannot bypass triage or stale evidence", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy);
+  const configured = await f.post(route + "/readiness", { expected_revision: null, account_profile_id: f.policy.account_profile_id, triage_labels: {}, blocked_label: "blocked" });
+  const data = JSON.parse(readFileSync(f.state, "utf8")); data.issues[0].labels = [{ name: "ready-for-agent" }]; data.events = [];
+  writeFileSync(f.state, JSON.stringify(data));
+  const source = (await f.post(route + "/sync", {})).body.sources[0];
+  const proof = { source_revision: source.revision, policy_revision: configured.body.revision };
+  expect((await f.post(route + "/issues/12/approve", { ...proof, source_revision: "old" })).status).toBe(409);
+  expect((await f.post(route + "/issues/12/approve", proof)).status).toBe(200);
+  let view = await f.get(route);
+  expect(view.sources[0].readiness).toMatchObject({ eligible: true, approval: { provenance: "app_owner", actor: { login: "fictional-owner" }, source_revision: source.revision } });
+  // Changed on GitHub after the displayed approval form loaded, before another sync.
+  data.issues[0].body = "Different acceptance"; data.issues[0].updated_at = "2026-10-03T12:00:00Z";
+  writeFileSync(f.state, JSON.stringify(data));
+  expect((await f.post(route + "/issues/12/approve", proof)).status).toBe(409);
+  view = (await f.post(route + "/sync", {})).body;
+  expect(view.sources[0].readiness.eligible).toBe(false);
+  const next = { ...proof, source_revision: view.sources[0].revision };
+  expect((await f.post(route + "/issues/12/approve", next)).status).toBe(200);
+  data.issues[0].labels = []; writeFileSync(f.state, JSON.stringify(data));
+  view = (await f.post(route + "/sync", {})).body;
+  expect(view.sources[0].readiness.blockers).toContain("role_not_ready");
+  expect((await f.post(route + "/issues/12/approve", { ...next, source_revision: view.sources[0].revision })).status).toBe(409);
+  data.issues[0].labels = [{ name: "ready-for-agent" }]; data.issues[0].state = "closed"; writeFileSync(f.state, JSON.stringify(data));
+  view = (await f.post(route + "/sync", {})).body;
+  expect(view.sources[0].readiness.blockers).toContain("closed");
+  expect((await f.get(`/implementations/${source.implementation_id}`)).implementation.outcome).toBe("none");
+  data.issues[0].state = "open"; data.events = { partial: true }; writeFileSync(f.state, JSON.stringify(data));
+  view = (await f.post(route + "/sync", {})).body;
+  expect(view.sources[0].readiness.blockers).toContain("evidence_incomplete");
+  expect((await f.post(route + "/issues/12/approve", { ...next, source_revision: view.sources[0].revision })).status).toBe(409);
+  expect((await f.get(`/implementations/${source.implementation_id}`)).runs).toHaveLength(0);
+});
+
+test("readiness fails closed through outages, policy changes and withdrawn label evidence", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy);
+  let configured = (await f.post(route + "/readiness", { expected_revision: null, account_profile_id: f.policy.account_profile_id, triage_labels: {}, blocked_label: "blocked" })).body;
+  const data = JSON.parse(readFileSync(f.state, "utf8")); data.issues[0].labels = [{ name: "ready-for-agent" }]; data.events = [readinessEvent()]; writeFileSync(f.state, JSON.stringify(data));
+  let source = (await f.post(route + "/sync", {})).body.sources[0]; expect(source.readiness.eligible).toBe(true);
+  data.events = []; writeFileSync(f.state, JSON.stringify(data));
+  source = (await f.post(route + "/sync", {})).body.sources[0]; expect(source.readiness.eligible).toBe(false);
+  data.events = [readinessEvent()]; writeFileSync(f.state, JSON.stringify(data));
+  source = (await f.post(route + "/sync", {})).body.sources[0]; expect(source.readiness.eligible).toBe(true);
+  data.issues = { partial: true }; writeFileSync(f.state, JSON.stringify(data));
+  expect((await f.post(route + "/sync", {})).status).toBe(409);
+  source = (await f.get(route)).sources[0]; expect(source.readiness.eligible).toBe(false); expect(source.readiness.blockers).toContain("sync_required");
+  data.issues = [{ number: 12, node_id: source.external_id, title: source.current.title, body: source.current.body, labels: [{ name: "ready-for-agent" }], updated_at: source.current.source_updated_at, html_url: source.url, state: "open" }];
+  writeFileSync(f.state, JSON.stringify(data)); await f.post(route + "/sync", {});
+  configured = (await f.post(route + "/readiness", { expected_revision: configured.revision, account_profile_id: f.policy.account_profile_id, triage_labels: {}, blocked_label: "waiting" })).body;
+  source = (await f.get(route)).sources[0]; expect(source.readiness.eligible).toBe(false); expect(source.readiness.blockers).toContain("sync_required");
+  expect((await f.get(`/implementations/${source.implementation_id}`)).runs).toHaveLength(0);
+});
+
+test("an edit in the label's timestamp second cannot reuse its approval", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy);
+  await f.post(route + "/readiness", { expected_revision: null, account_profile_id: f.policy.account_profile_id, triage_labels: {}, blocked_label: "blocked" });
+  const data = JSON.parse(readFileSync(f.state, "utf8")); data.issues[0].labels = [{ name: "ready-for-agent" }]; data.events = [readinessEvent()]; writeFileSync(f.state, JSON.stringify(data));
+  expect((await f.post(route + "/sync", {})).body.sources[0].readiness.eligible).toBe(true);
+  data.issues[0].body = "A later edit in the same second"; data.last_edited_at = "2026-10-01T12:00:00Z"; writeFileSync(f.state, JSON.stringify(data));
+  const source = (await f.post(route + "/sync", {})).body.sources[0];
+  expect(source.readiness.eligible).toBe(false); expect(source.readiness.blockers).toContain("stale");
+});
+
+test("later edit evidence invalidates retained approvals even when the visible issue text was restored", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy);
+  const readiness = (await f.post(route + "/readiness", { expected_revision: null, account_profile_id: f.policy.account_profile_id, triage_labels: {}, blocked_label: "blocked" })).body;
+  const data = JSON.parse(readFileSync(f.state, "utf8")); data.issues[0].labels = [{ name: "ready-for-agent" }]; data.events = [readinessEvent()]; writeFileSync(f.state, JSON.stringify(data));
+  const approved = (await f.post(route + "/sync", {})).body.sources[0]; expect(approved.readiness.eligible).toBe(true);
+  data.last_edited_at = "2026-10-01T12:00:00Z"; writeFileSync(f.state, JSON.stringify(data));
+  const restored = (await f.post(route + "/sync", {})).body.sources[0];
+  expect(restored.readiness.eligible).toBe(false); expect(restored.readiness.blockers).toContain("stale");
+  expect((await f.post(route + "/issues/12/approve", { source_revision: restored.revision, policy_revision: readiness.revision })).status).toBe(200);
+  data.events.push({ id: 2, event: "unlabeled", actor: { login: "fictional-owner", id: 1042 }, label: { name: "ready-for-agent" }, created_at: "2026-10-01T12:00:00Z" });
+  data.events.push(readinessEvent(3, "fictional-reviewer")); writeFileSync(f.state, JSON.stringify(data));
+  const relabeled = (await f.post(route + "/sync", {})).body.sources[0];
+  expect(relabeled.readiness.eligible).toBe(false); expect(relabeled.readiness.blockers).toContain("untrusted");
 });

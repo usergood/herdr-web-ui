@@ -141,7 +141,7 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
           <label>{t("Project")}<select className="select factory-input" value={detail.implementation.project_id ?? ""} disabled={busy} onChange={(event) => void perform(async () => { await factoryRequest(`${prefix}/configure`, { project_id: event.target.value || null }); })}><option value="">{t("Unassigned")}</option>{overview.projects.filter((p) => !p.removed_at).map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
         </div><p className="factory-context">{effectiveProvider} · {machines.find((machine) => machine.id === effectiveMachine)?.name ?? effectiveMachine} · {checkout?.path ?? t("No verified checkout")}</p>
       </section>
-      <AssignmentIssueSource sources={detail.github_sources ?? []} problem={detail.github_sync?.problem ?? null} />
+      <AssignmentIssueSource busy={busy} perform={perform} sources={detail.github_sources ?? []} problem={detail.github_sync?.problem ?? null} />
       <AssignmentActions preset={preset} onPresetChange={setPreset} key={detail.implementation.id} detail={detail} project={selectedProject} machineId={effectiveMachine} machineName={machines.find(m=>m.id===effectiveMachine)?.name??effectiveMachine} provider={effectiveProvider??"codex"} busy={busy} perform={perform} onOpenPane={onOpenPane} capabilities={execution.capabilities} problem={execution.problem} onCapabilities={execution.apply} />
       <details className="factory-section"><summary>{t("Advanced controls")}</summary>
         <div className="factory-filters">

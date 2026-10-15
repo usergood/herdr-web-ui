@@ -97,7 +97,7 @@ export class FactoryService {
     const runs = this.store.list<FactoryRun>("runs", id); const runIds = new Set(runs.map((run) => run.id));
     const active = [...runs].reverse().find(run => !["completed", "cancelled", "failed"].includes(run.condition));
     const questionRunId = active?.action === "verify-provider" ? active.id : undefined;
-    const sources = this.store.list<import("../shared/github-project.ts").ProjectGitHubSource>("github_sources").filter((source) => source.implementation_id === id);
+    const sources = this.store.list<import("../shared/github-project.ts").ProjectGitHubSource>("github_sources").filter((source) => source.implementation_id === id).map(source => this.github.describeSource(source));
     const sync = sources[0] ? this.store.get<{ last_sync: string | null; problem: string | null }>("github_sync", sources[0].project_id) : null;
     return { implementation, github_sources: sources, github_sync: sync ? { last_sync: sync.last_sync, problem: sync.problem } : null, question_context: { run_id: questionRunId ?? null, revision: this.workflow.questionRevision(id, questionRunId), questions: this.workflow.questions(id, questionRunId) }, graph_hash: this.workflow.graphHash(id), question_revision: this.workflow.questionRevision(id), chats: this.store.list("chats", id), messages: this.store.list("messages", id), specifications: this.store.list("specifications", id), tickets: this.workflow.tickets(id), approvals: this.store.list("approvals", id), questions: this.store.list("questions", id), artifacts: this.store.list("artifacts", id), runs, snapshots: this.store.list("snapshots", id), comments: this.store.list("comments", id), events: this.store.list("events", id), native_snapshots: this.store.list<import("../shared/protocol.ts").NativeConversationSnapshot>("native_snapshots").filter((record) => runIds.has(record.run_id)), workers: this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers").filter((worker) => runIds.has(worker.run_id)), checks: this.store.list<import("../shared/protocol.ts").FactoryCheck>("checks").filter((check) => runIds.has(check.run_id)), review_evidence: this.store.list<import("../shared/protocol.ts").FactoryReviewEvidence>("review_evidence").filter((report) => runIds.has(report.run_id)), retrospectives: implementation.project_id ? this.store.list("retrospectives", implementation.project_id) : [], frontier: runs.at(-1)?.action === "implement-spec" ? this.pipeline.frontier(runs.at(-1)!) : [] };
   }
@@ -247,11 +247,13 @@ export class FactoryService {
         const record = { ...(previous ?? this.store.record()), id, machine_id: body.machine_id, pane_id: body.pane_id, ...identity, archived_at: body.archived ? new Date().toISOString() : null, updated_at: new Date().toISOString() };
         this.store.put("pane_archives", record); return jsonResponse(record);
       }
-      const github = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/github(?:\/(configure|sync|settings)|\/pulls\/(\d+)\/(merge|update|rerequest|import|files))?$/.exec(url.pathname);
+      const github = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/github(?:\/(configure|sync|settings|readiness)|\/pulls\/(\d+)\/(merge|update|rerequest|import|files)|\/issues\/(\d+)\/approve)?$/.exec(url.pathname);
       if (github) {
         if (request.method === "GET" && github[4] === "files") return jsonResponse(await this.github.files(github[1]!, Number(github[3]), url.searchParams.get("head")));
-        if (request.method === "GET" && !github[2] && !github[3]) return jsonResponse(this.github.overview(github[1]!));
+        if (request.method === "GET" && !github[2] && !github[3] && !github[5]) return jsonResponse(this.github.overview(github[1]!));
         if (request.method !== "POST" || !sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1" || request.headers.get("x-herdr-factory") !== "1") return httpError(403, "invalid_origin", "Use GitHub controls from this app");
+        if (github[5]) return jsonResponse(await this.github.approveIssue(github[1]!, Number(github[5]), await this.body(request)));
+        if (github[2] === "readiness") return jsonResponse(await this.github.configureReadiness(github[1]!, await this.body(request) as unknown as import("../shared/github-readiness.ts").ReadinessConfiguration));
         if (github[2] === "configure") return jsonResponse(await this.github.configure(github[1]!, await this.body(request) as unknown as import("../shared/github-project.ts").ProjectGitHubConfiguration));
         if (github[2] === "settings") { const body = await this.body(request); return jsonResponse(await this.github.settings(github[1]!, body.account_profile_id)); }
         if (github[2] === "sync") return jsonResponse(await this.github.sync(github[1]!));

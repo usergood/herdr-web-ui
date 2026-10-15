@@ -22,10 +22,10 @@ export interface ProjectGitHubIssueRevision {
   source_updated_at: string; fetched_at: string; repository: string; url: string;
   account_profile_id: string; policy_revision: string;
 }
-export interface ProjectGitHubSource extends FactoryRecord { project_id: string; external_id: string; number: number; kind: "issue" | "fix"; implementation_id: string; revision: string; url: string; state: string; current?: ProjectGitHubIssueRevision; history?: ProjectGitHubIssueRevision[] }
+export interface ProjectGitHubSource extends FactoryRecord { project_id: string; external_id: string; number: number; kind: "issue" | "fix"; implementation_id: string; revision: string; url: string; state: string; readiness_evidence?: import("./github-readiness.ts").IssueReadinessEvidence; readiness_approvals?: import("./github-readiness.ts").IssueReadinessApproval[]; readiness?: import("./github-readiness.ts").IssueReadiness; current?: ProjectGitHubIssueRevision; history?: ProjectGitHubIssueRevision[] }
 export interface ProjectGitHubPull extends FactoryRecord { project_id: string; pull: ProjectPullRequest; blockers: string[]; observed_at: string; fix_implementation_id: string | null }
 export interface ProjectGitHubMutation extends FactoryRecord { project_id: string; repository: string; pull_id: string; number: number; action: "merge" | "update" | "rerequest"; head: string; base: string; policy_revision: string; condition: "sending" | "confirmed" | "uncertain"; problem: string | null }
-export interface ProjectGitHubOverview { policy: ProjectGitHubPolicy | null; pulls: ProjectGitHubPull[]; sources: ProjectGitHubSource[]; mutations: ProjectGitHubMutation[]; last_sync: string | null; problem: string | null }
+export interface ProjectGitHubOverview { policy: ProjectGitHubPolicy | null; readiness_policy?: import("./github-readiness.ts").ProjectReadinessPolicy | null; pulls: ProjectGitHubPull[]; sources: ProjectGitHubSource[]; mutations: ProjectGitHubMutation[]; last_sync: string | null; problem: string | null }
 export interface ProjectGitHubFiles { head: string; base: string; files: { filename: string; status: string; additions: number; deletions: number; patch: string | null }[] }
 export interface ProjectGitHubSettings { repository: string; default_branch: string; reviewers: string[]; required_checks: string[]; protected: boolean }
 export type ProjectGitHubConfiguration = Omit<ProjectGitHubPolicy, keyof FactoryRecord | "project_id" | "revision" | "project_scope"> & { expected_revision: string | null };

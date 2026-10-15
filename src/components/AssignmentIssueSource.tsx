@@ -1,5 +1,7 @@
 import type { ProjectGitHubIssueRevision, ProjectGitHubSource } from "../../shared/github-project.ts";
 import { useT } from "../lib/i18n.ts";
+import { IssueReadiness } from "./IssueReadiness.tsx";
+import { accountRequest } from "../lib/accountsApi.ts";
 import { Markdown } from "./Markdown.tsx";
 import "./AssignmentIssueSource.css";
 
@@ -18,7 +20,7 @@ function IssueRevision({ revision }: { revision: ProjectGitHubIssueRevision }) {
   </article>;
 }
 
-export function AssignmentIssueSource({ sources, problem }: { sources: ProjectGitHubSource[]; problem: string | null }) {
+export function AssignmentIssueSource({ sources, problem, busy, perform }: { sources: ProjectGitHubSource[]; problem: string | null; busy: boolean; perform: (action: () => Promise<void>) => Promise<void> }) {
   const t = useT(); const issues = sources.filter(source => source.kind === "issue");
   if (!issues.length) return null;
   return <section className="factory-section assignment-issue-source" aria-label={t("GitHub issue source")}>
@@ -27,6 +29,12 @@ export function AssignmentIssueSource({ sources, problem }: { sources: ProjectGi
     {issues.map(source => <div key={source.id}>
       <a href={source.url} target="_blank" rel="noreferrer">{source.current?.repository ?? "GitHub"} #{source.number}</a>
       {source.current ? <IssueRevision revision={source.current} /> : <p role="status">{t("Sync GitHub to collect source history.")}</p>}
+      <IssueReadiness readiness={source.readiness} />
+      {source.readiness_evidence?.problem && <p role="alert">{source.readiness_evidence.problem}</p>}
+      {source.readiness && !source.readiness.eligible && source.readiness.blockers.every(reason => ["evidence_missing", "untrusted", "stale"].includes(reason)) && <>
+        <p>{t("Approval covers only the displayed source revision, including its plan, acceptance, dependencies and testing seams.")}</p>
+        <button className="btn" disabled={busy} onClick={() => void perform(async () => { await accountRequest(`/projects/${source.project_id}/github/issues/${source.number}/approve`, { source_revision: source.revision, policy_revision: source.readiness_evidence!.policy_revision }); })}>{t("Approve this issue revision")}</button>
+      </>}
       {!!source.history?.length && <details><summary>{t("Source history")}</summary>
         {source.history.map((revision, index) => <IssueRevision key={`${revision.revision}:${index}`} revision={revision} />)}
       </details>}
