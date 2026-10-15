@@ -188,7 +188,7 @@ export class FactoryExecution {
       if (!this.live(plan) || !state) return;
       const code = error instanceof FactoryError ? error.code : "execution_uncertain";
       const waiting = ["capacity_exhausted", "build_capacity_exhausted", "shared_writer_owned", "integration_busy", "publication_busy", "worker_busy", "answers_unready", "answers_unconsumed"].includes(code);
-      const retry = ["execution_uncertain", "machine_offline", "machine_disconnected", "remote_factory_unavailable", "publication_uncertain", "review_evidence_required"].includes(code);
+      const retry = ["execution_uncertain", "machine_offline", "machine_disconnected", "remote_factory_unavailable", "publication_uncertain", "review_evidence_required", "native_evidence_required"].includes(code);
       const attempts = (previous?.attempts ?? 0) + 1;
       this.store.put("automatic_review", { ...state, condition: waiting || retry && attempts < 6 ? "waiting" : "blocked", reason: `${error instanceof FactoryError ? error.message : "Automatic review could not be verified"}${retry && attempts >= 6 ? "; automatic recovery exhausted after six observations" : ""}`, attempts: waiting ? 0 : attempts, next_attempt_at: retry ? Date.now() + Math.min(30000, 1000 * 2 ** (attempts - 1)) : 0 }, run.implementation_id);
     }

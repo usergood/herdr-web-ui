@@ -29,6 +29,19 @@ async function candidate(f: Awaited<ReturnType<typeof capacityFixture>>, publish
 }
 
 describe("Automatic independent review through authenticated HTTP", () => {
+  it("names remote publication policy problems without copying remote diagnostics or retrying a missing permission", async () => {
+    const f = await capacityFixture({ advancingHeads: true });
+    try {
+      const { detail } = await candidate(f, true); f.denyPublication();
+      for (const axis of ["standards", "spec"]) {
+        const current = await until(detail, d => d.workers.some((w: any) => w.role === axis && w.condition === "working"));
+        f.workers.get(current.workers.find((w: any) => w.role === axis).id)!.condition = "ready";
+      }
+      const problem = await until(detail, d => d.automatic_review?.[0]?.reason);
+      expect(problem.automatic_review[0]).toMatchObject({ condition: "blocked", reason: "Publication requires the frozen Project destination and a verified GitHub account on the execution Machine" });
+      expect(f.publications.size).toBe(0);
+    } finally { f.close(); }
+  });
   it("retains an independent report across a lost reviewer shutdown reply and resumes without duplicate evidence", async () => {
     const f = await capacityFixture({ advancingHeads: true });
     try {
