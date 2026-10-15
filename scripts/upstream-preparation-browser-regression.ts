@@ -24,6 +24,7 @@ try {
   assert.equal((await f.request(`/projects/${f.project.id}/github/schedules/run`, { job: "upstream_sync" })).status, 200);
   await page.reload();
   await page.getByText("Advanced controls", { exact: true }).last().click();
+  await release.nth(1).waitFor();
   assert.equal(await release.getByRole("link", { name: "fictional/upstream · v2", exact: true }).count(), 0);
   await page.locator("summary").filter({ hasText: /^Review changes$/ }).click();
   await page.getByRole("combobox", { name: "Changes", exact: true }).selectOption("branch");
