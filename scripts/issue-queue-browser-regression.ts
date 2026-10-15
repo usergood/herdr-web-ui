@@ -1,7 +1,7 @@
 /** Built app, owned HTTP/CLI fixtures, desktop and mobile. Build before running. */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { githubQueueFixture } from "./fixtures/github-queue.ts";
@@ -30,6 +30,11 @@ try {
     await fixture.json(`/implementations/${view.sources[0].implementation_id}/order`, { before_id: view.sources[1].implementation_id });
     const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });
     page.setDefaultTimeout(10_000); page.on("pageerror", error => errors.push(error.message));
+    const queueResponses: unknown[] = [];
+    page.on("response", async response => {
+      if (!response.url().endsWith(route + "/queue")) return;
+      try { queueResponses.push({ status: response.status(), body: await response.json() }); if (queueResponses.length > 10) queueResponses.shift(); } catch { /* A reload can cancel an in-flight read. */ }
+    });
     async function reopenGitHubSettings() {
       // Reload closes Settings; its history entry may keep the old address.
       await page.getByRole("heading", { name: project.name, exact: true }).waitFor();
@@ -43,7 +48,9 @@ try {
       await page.getByRole("tab", { name: "GitHub", exact: true }).click();
       const region = page.getByRole("region", { name: "Issue queue", exact: true });
       await region.getByText("Automatic implementation is off.", { exact: true }).waitFor();
+      const preview = page.waitForResponse(response => response.url().endsWith(route + "/preview") && response.request().method() === "POST");
       await region.getByRole("button", { name: "Preview eligible backlog", exact: true }).click();
+      assert.equal((await preview).status(), 200);
       await region.getByText("Eligible issues: 2", { exact: true }).waitFor();
       await region.getByText("Preview is current.", { exact: true }).waitFor();
       const first = region.getByRole("article").filter({ has: page.getByRole("link", { name: "#1 · Fictional scope", exact: true }) });
@@ -61,11 +68,16 @@ try {
       await reopenGitHubSettings();
       assert(await region.getByLabel("Pause queue", { exact: true }).isChecked());
       assert.equal(await region.getByLabel("Implementing Assignment limit", { exact: true }).inputValue(), "2");
+      const refreshedPreview = page.waitForResponse(response => response.url().endsWith(route + "/preview") && response.request().method() === "POST");
       await region.getByRole("button", { name: "Preview eligible backlog", exact: true }).click();
+      assert.equal((await refreshedPreview).status(), 200);
       await region.getByText("Eligible issues: 2", { exact: true }).waitFor();
       if (evidence) { await region.scrollIntoViewIfNeeded(); await page.screenshot({ path: join(evidence, `issue-queue-${viewport.width}.png`), fullPage: true }); }
       assert(await region.evaluate(element => element.scrollWidth <= element.clientWidth));
-      fixture.save(issues, true); assert.equal((await fixture.post(route + "/sync", {})).status, 409);
+      fixture.save(issues, true);
+      const outage = await fixture.post(route + "/sync", {});
+      assert.equal(outage.status, 409);
+      assert.equal((await outage.json()).error.code, "github_invalid_response");
       await page.reload();
       await reopenGitHubSettings();
       await region.getByText("Eligible issues: 0", { exact: true }).waitFor();
@@ -76,6 +88,14 @@ try {
       const needsYou = page.getByRole("region", { name: "Needs you", exact: true });
       await needsYou.getByRole("button", { name: "Missing seams", exact: true }).waitFor();
       for (const source of view.sources) assert.deepEqual((await fixture.json(`/implementations/${source.implementation_id}`)).runs, []);
+    } catch (error) {
+      if (evidence) {
+        try {
+          writeFileSync(join(evidence, `issue-queue-failure-${viewport.width}.json`), JSON.stringify({ url: page.url(), dom: await page.locator("body").innerText(), queue: await fixture.json(route + "/queue"), queueResponses, errors }, null, 2));
+          await page.screenshot({ path: join(evidence, `issue-queue-failure-${viewport.width}.png`), fullPage: true });
+        } catch (captureError) { console.error("Could not retain browser diagnostics", captureError); }
+      }
+      throw error;
     } finally { await page.close(); }
   }
   assert.deepEqual(errors, []);

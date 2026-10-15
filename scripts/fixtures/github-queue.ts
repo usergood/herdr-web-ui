@@ -11,10 +11,14 @@ export function githubQueueFixture(execution = false) {
   writeFileSync(join(repo, "README.md"), "Fictional Project\n");
   for (const args of [["add", "."], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "fixture"], ["remote", "add", "origin", "https://github.com/fictional/project.git"]]) execFileSync("git", ["-C", repo, ...args], { stdio: "ignore" });
   const responses = join(root, "responses.json");
+  const dependencyReads = join(root, "dependency-reads.json");
   const cli = join(root, "gh.mjs");
   const syncGate = join(root, "sync-gate"); const syncEntered = join(root, "sync-entered");
   const issue = { repository_url: "https://api.github.com/repos/fictional/project", number: 1, node_id: "fictional-contract-issue", title: "Fictional scope", body: "## Scope\nShow a greeting.\n## Acceptance criteria\nShow hello.\n## Dependencies\nNone.\n## Testing seams\nPublic HTTP and real browser journeys.", labels: [{ name: "ready-for-agent" }], state: "open", updated_at: "2026-10-01T12:00:00Z", html_url: "https://github.com/fictional/project/issues/1" };
-  const save = (issues = [issue], fail = false, dependencies: Record<string, typeof issue[]> = {}, trusted = false) => writeFileSync(responses, JSON.stringify({ issues, fail, dependencies, trusted }));
+  const save = (issues = [issue], fail = false, dependencies: Record<string, typeof issue[]> = {}, trusted = false, freshIssues = issues, readiness?: { dependencies?: Record<string, typeof issue[] | null>; proof?: Record<string, unknown> | null }) => {
+    rmSync(dependencyReads, { force: true });
+    writeFileSync(responses, JSON.stringify({ issues, fail, dependencies, trusted, freshIssues, readiness }));
+  };
   save();
   writeFileSync(cli, `import { existsSync, readFileSync, writeFileSync } from "node:fs";
 const data = JSON.parse(readFileSync(${JSON.stringify(responses)}, "utf8")); const endpoint = process.argv[3];
@@ -23,7 +27,13 @@ if (endpoint.includes("/issues?") && existsSync(${JSON.stringify(syncGate)})) {
   while (existsSync(${JSON.stringify(syncGate)})) { if (Date.now() > deadline) throw new Error("Owned GitHub gate timed out"); await new Promise(resolve => setTimeout(resolve, 10)); }
 }
 const number = Number(process.argv.find(arg => arg.startsWith("query="))?.match(/issue[(]number:([0-9]+)/)?.[1] ?? endpoint.match(/issues[/]([0-9]+)/)?.[1]);
-const issue = data.issues.find(issue => issue.number === number) ?? data.issues[0];
+const issue = (endpoint.includes("/issues/") && !endpoint.includes("/events?") && !endpoint.includes("/dependencies/") ? data.freshIssues : data.issues).find(issue => issue.number === number) ?? data.issues[0];
+if (endpoint.includes("/dependencies/blocked_by") && data.readiness?.dependencies) {
+  const counts = existsSync(${JSON.stringify(dependencyReads)}) ? JSON.parse(readFileSync(${JSON.stringify(dependencyReads)}, "utf8")) : {};
+  counts[number] = (counts[number] ?? 0) + 1; writeFileSync(${JSON.stringify(dependencyReads)}, JSON.stringify(counts));
+  if (counts[number] > 1 && Object.hasOwn(data.readiness.dependencies, number)) { console.log(JSON.stringify(data.readiness.dependencies[number])); process.exit(0); }
+}
+if (endpoint === "graphql" && Number.isSafeInteger(number) && data.readiness && Object.hasOwn(data.readiness, "proof")) { console.log(JSON.stringify({ data: { repository: { issue: data.readiness.proof } } })); process.exit(0); }
 console.log(JSON.stringify(endpoint === "user" ? {login:"fictional-owner",id:1042} : endpoint.includes("/dependencies/blocked_by") ? data.dependencies[number] ?? [] : endpoint.includes("/issues?") ? data.fail ? {} : data.issues : endpoint.includes("/events?") ? data.trusted ? [{id:number,event:"labeled",label:{name:"ready-for-agent"},actor:{login:"fictional-owner",id:1042},created_at:issue.updated_at}] : [] : endpoint.includes("/issues/") ? issue : endpoint === "graphql" ? {data:{repository:{pullRequests:{nodes:[],pageInfo:{hasNextPage:false,endCursor:null}},issue:{id:issue.node_id,title:issue.title,body:issue.body,state:issue.state.toUpperCase(),createdAt:"2026-09-30T12:00:00Z",updatedAt:issue.updated_at,lastEditedAt:null}}}} : {full_name:"fictional/project"}));`);
   // Owned remote native transport: no CLI agent, worktree or live herdr is launched.
   let checkout: unknown; let capabilities: unknown;

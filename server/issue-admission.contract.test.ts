@@ -119,6 +119,115 @@ test("a known active-scope edit requests controlled pause without rewriting the 
   } finally { fixture.close(); }
 }, 20_000);
 
+test("an edit detected during readiness collection pauses frozen work before another sync", async () => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { path, start, route } = await prepared(fixture);
+    const run = await fixture.json(path + "/runs", start);
+    fixture.save([fixture.issue], false, {}, false, [{ ...fixture.issue, body: fixture.issue.body + "\nNew behavior." }]);
+    await fixture.json(route + "/sync", {});
+    const detail = await fixture.json(path);
+    expect(detail.github_sources[0].readiness_evidence.complete).toBe(false);
+    expect(detail.runs[0]).toMatchObject({ id: run.id, condition: "needs_you", issue_pause: { reason: "scope_changed" } });
+    expect(detail.runs[0].manifest).toEqual(run.manifest);
+    expect(detail.questions.filter((question: any) => question.run_id === run.id && question.answer === null)).toHaveLength(1);
+    fixture.restart();
+    expect((await fixture.json(path)).runs[0].issue_pause.reason).toBe("scope_changed");
+  } finally { fixture.close(); }
+}, 20_000);
+
+test("closure detected during readiness collection pauses the admitted Run", async () => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { path, start, route } = await prepared(fixture);
+    const run = await fixture.json(path + "/runs", start);
+    fixture.save([fixture.issue], false, {}, false, [{ ...fixture.issue, state: "closed" }]);
+    await fixture.json(route + "/sync", {});
+    const detail = await fixture.json(path);
+    expect(detail.runs[0].condition).toBe("needs_you");
+    expect(detail.runs[0].issue_pause.reason).toBe("issue_closed");
+    expect(detail.runs[0].manifest).toEqual(run.manifest);
+    expect(detail.implementation.outcome).toBe("none");
+  } finally { fixture.close(); }
+}, 20_000);
+
+test("readiness removal detected during collection pauses frozen work despite incomplete evidence", async () => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { path, start, route } = await prepared(fixture);
+    const run = await fixture.json(path + "/runs", start);
+    fixture.save([fixture.issue], false, {}, false, [{ ...fixture.issue, labels: [] }]);
+    await fixture.json(route + "/sync", {});
+    const detail = await fixture.json(path);
+    expect(detail.runs[0].condition).toBe("needs_you");
+    expect(detail.runs[0].issue_pause.reason).toBe("readiness_revoked");
+    expect(detail.runs[0].manifest).toEqual(run.manifest);
+    await fixture.json(route + "/sync", {});
+    expect((await fixture.json(path)).questions).toHaveLength(detail.questions.length);
+  } finally { fixture.close(); }
+}, 20_000);
+
+test("native dependency drift detected during readiness collection pauses frozen work", async () => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { path, start, route } = await prepared(fixture);
+    const run = await fixture.json(path + "/runs", start);
+    const dependency = { ...fixture.issue, number: 2, node_id: "new-dependency", html_url: "https://github.com/fictional/project/issues/2" };
+    fixture.save([fixture.issue], false, {}, false, [fixture.issue], { dependencies: { "1": [dependency] } });
+    await fixture.json(route + "/sync", {});
+    const detail = await fixture.json(path);
+    expect(detail.github_sources[0].readiness_evidence.complete).toBe(false);
+    expect(detail.runs[0].condition).toBe("needs_you");
+    expect(detail.runs[0].issue_pause.reason).toBe("scope_changed");
+    expect(detail.runs[0].manifest).toEqual(run.manifest);
+  } finally { fixture.close(); }
+}, 20_000);
+
+test.each(["body", "title", "closure"])("%s drift proven by GraphQL during readiness collection pauses frozen work", async change => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { path, start, route } = await prepared(fixture);
+    const run = await fixture.json(path + "/runs", start);
+    fixture.save([fixture.issue], false, {}, false, [fixture.issue], { proof: { id: fixture.issue.node_id, title: change === "title" ? "Renamed after REST" : fixture.issue.title, body: fixture.issue.body + (change === "body" ? "\nEdited after REST." : ""), state: change === "closure" ? "CLOSED" : "OPEN", createdAt: "2026-09-30T12:00:00Z", updatedAt: "2026-10-02T12:00:00Z", lastEditedAt: "2026-10-02T12:00:00Z" } });
+    await fixture.json(route + "/sync", {});
+    const detail = await fixture.json(path);
+    expect(detail.github_sources[0].readiness_evidence.complete).toBe(false);
+    expect(detail.runs[0].condition).toBe("needs_you");
+    expect(detail.runs[0].issue_pause.reason).toBe(change === "closure" ? "issue_closed" : "scope_changed");
+    expect(detail.runs[0].manifest).toEqual(run.manifest);
+  } finally { fixture.close(); }
+}, 20_000);
+
+test("a malformed fresh issue response leaves admitted frozen work running", async () => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { path, start, route } = await prepared(fixture);
+    const run = await fixture.json(path + "/runs", start);
+    fixture.save([fixture.issue], false, {}, false, [{ ...fixture.issue, body: "Malformed response with a different body", updated_at: "not-a-timestamp" }]);
+    await fixture.json(route + "/sync", {});
+    const detail = await fixture.json(path);
+    expect(detail.github_sources[0].readiness_evidence.complete).toBe(false);
+    expect(detail.runs[0]).toEqual(run);
+    expect(detail.questions).toEqual([]);
+  } finally { fixture.close(); }
+}, 20_000);
+
+test.each(["native", "graphql", "unavailable", "timestamp"])("incomplete %s readiness evidence alone preserves admitted frozen work", async failure => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { path, start, route } = await prepared(fixture);
+    const run = await fixture.json(path + "/runs", start);
+    const fresh = { ...fixture.issue, ...(failure === "timestamp" ? { updated_at: "2026-10-02T12:00:00Z" } : {}) };
+    const invalidProof = { id: fixture.issue.node_id, title: fixture.issue.title, body: "Different body in malformed evidence", state: "OPEN", createdAt: "invalid", updatedAt: fixture.issue.updated_at, lastEditedAt: null };
+    fixture.save([fixture.issue], false, {}, false, [fresh], failure === "native" ? { dependencies: { "1": null } } : failure === "graphql" ? { proof: invalidProof } : failure === "unavailable" ? { proof: null } : undefined);
+    await fixture.json(route + "/sync", {});
+    const detail = await fixture.json(path);
+    expect(detail.github_sources[0].readiness_evidence.complete).toBe(false);
+    expect(detail.runs[0]).toEqual(run);
+    expect(detail.questions).toEqual([]);
+  } finally { fixture.close(); }
+}, 20_000);
+
 test.each(["scope", "closure", "readiness", "outage", "pause", "policy"])("Start revalidates %s changed during native observation before admitting work", async change => {
   const fixture = githubQueueFixture(true); let release = () => {};
   try {
