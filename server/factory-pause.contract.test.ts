@@ -268,7 +268,7 @@ describe("Assignment Pause and Resume through authenticated HTTP", () => {
       expect(paused.capacity_waiting[0].condition).toBe("queued");
       expect(paused.runs).toHaveLength(0);
       await f.api(`/implementations/${id}/resume`, {});
-      const resumed = await eventually(() => f.api(`/implementations/${id}`).then(r => r.json()), d => d.runs.length === 1);
+      const resumed = await eventually(() => f.api(`/implementations/${id}`).then(r => r.json()), d => d.runs.length === 1 && d.runs[0].condition === "working");
       expect(resumed.runs[0].condition).toBe("working");
       expect(f.launches).toHaveLength(1);
     } finally { gate.release(); f.close(); }
