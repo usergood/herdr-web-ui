@@ -68,6 +68,7 @@ export class FactoryPipeline {
     }
     const current = this.store.get<FactoryWorker>("workers", worker.id);
     if (current && !owns(current.condition)) worker = current;
+    worker = { ...worker, continuation: current?.continuation ?? worker.continuation, ...(current?.continuation && ["working", "ready"].includes(worker.condition) ? { condition: current.condition, waiting_reason: current.waiting_reason } : {}) };
     this.store.put("workers", { ...worker, key: claimed.worker.key }, id);
     if (run.action === "implement-spec" && role === "implementer" && owns(parent.condition) && owns(worker.condition)) {
       const implementation = this.store.get<Implementation>("implementations", run.implementation_id)!;

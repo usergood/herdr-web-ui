@@ -276,6 +276,7 @@ export class FactoryRuntime {
     if (!this.stopped) this.store.db.transaction(() => {
       const current = this.store.get<FactoryRun>("runs", run.id);
       if (current && ["cancelled", "completed", "failed"].includes(current.condition)) { run = current; return; }
+      run = { ...run, capacity_pool: current?.capacity_pool ?? run.capacity_pool, continuation: current?.continuation ?? run.continuation, ...(current?.continuation && ["working", "ready"].includes(run.condition) ? { condition: current.condition, waiting_reason: current.waiting_reason } : {}) };
       this.store.put("runs", run, run.implementation_id);
       this.store.event(run.implementation_id, run.condition === "working" ? "native_launch_confirmed" : "dispatch_uncertain", { run_id: run.id, machine_id: run.machine_id, pane_id: run.pane_id, reason: run.waiting_reason });
       if (run.condition === "working") { const idea = this.store.get<Implementation>("implementations", run.implementation_id)!; this.store.put("implementations", { ...idea, stage: ["work", "implement-spec"].includes(run.action) ? "running" : "specifying" }); }

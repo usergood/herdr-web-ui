@@ -258,4 +258,31 @@ describe("waiting factory conversations through authenticated HTTP", () => {
     } finally { f.close(); }
   });
 
+  it.each([false, true])("preserves a question recorded before a late allocation acknowledgment (child: %s)", async child => {
+    const f = await capacityFixture();
+    let release = () => {};
+    try {
+      const id = await f.assignment("Late allocation question");
+      let runId = "";
+      if (child) {
+        const run = await f.api(`/implementations/${id}/runs`, { action: "work", idempotency_key: "parent" }).then(r => r.json());
+        runId = run.id; f.runs.get(run.id)!.condition = "ready";
+      }
+      const gate = f.holdNextAllocation(child); release = gate.release;
+      const request = child ? f.api(`/runs/${runId}/workers`, { role: "standards", idempotency_key: "child" }) : f.api(`/implementations/${id}/runs`, { action: "work", idempotency_key: "parent" });
+      const allocatedId = await Promise.race([gate.started, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Owned allocation did not reach its acknowledgment gate")), 5_000))]);
+      if (!child) runId = allocatedId;
+      const question = await f.agent(runId, "question", { ...(child ? { worker_id: allocatedId } : {}), question: "Retain this owner decision across launch?" }).then(r => r.json());
+      release();
+      const response = await request;
+      expect(response.ok).toBe(true);
+      expect((await response.json()).condition).toBe("needs_you");
+      (child ? f.workers.get(allocatedId)! : f.runs.get(allocatedId)!).condition = "ready";
+      const detail = await eventually(() => f.api(`/implementations/${id}`).then(r => r.json()), d => (child ? d.workers[0] : d.runs[0]).continuation?.condition === "parked");
+      expect(detail.questions[0].id).toBe(question.id);
+      expect(f.prompts).toHaveLength(0);
+      expect(f.launches).toHaveLength(1);
+    } finally { release(); f.close(); }
+  });
+
 });

@@ -9,6 +9,7 @@ export async function capacityFixture() {
   const state = mkdtempSync(join(tmpdir(), "factory-capacity-"));
   const token = "owned-capacity-fixture";
   const runs = new Map<string, FactoryRun>(); const workers = new Map<string, FactoryWorker>();
+  let allocationGate: { worker: boolean; entered: (id: string) => void; wait: Promise<void> } | null = null;
   let rejectSend = false;
   let loseSend = false; let loseLaunch = false; let loseWorker = false; let loseCheck = false; let offline = false; let uncertain = false;
   const prompts: { run_id: string; text: string; worker_id?: string }[] = [];
@@ -32,6 +33,7 @@ export async function capacityFixture() {
       launches.push(body.run.id);
       const run = { ...body.run, condition: "working", worktree: join(state, body.run.id), branch: `owned-${body.run.id}`, workspace_id: null, pane_id: null } as FactoryRun;
       runs.set(run.id, run); access.set(run.id, body.access);
+      if (allocationGate && !allocationGate.worker) { const gate = allocationGate; allocationGate = null; gate.entered(run.id); await gate.wait; }
       if (loseLaunch) { loseLaunch = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost acknowledgment" } }, { status: 503 }); }
       return Response.json(run);
     }
@@ -52,6 +54,7 @@ export async function capacityFixture() {
         workerLaunches.push(body.worker.id);
         const worker = { ...body.worker, condition: "working", worktree: join(state, body.worker.id), branch: `owned-${body.worker.id}` } as FactoryWorker;
         workers.set(worker.id, worker);
+        if (allocationGate?.worker) { const gate = allocationGate; allocationGate = null; gate.entered(worker.id); await gate.wait; }
         if (loseWorker) { loseWorker = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost worker acknowledgment" } }, { status: 503 }); }
         return Response.json(worker);
       }
@@ -78,6 +81,13 @@ export async function capacityFixture() {
     return fetch(`http://localhost:${app.port}${new URL(credential.url).pathname}/${path}`, { method: body === undefined ? "GET" : "POST", headers: { authorization: `Bearer ${credential.token}`, "content-type": "application/json", "x-herdr-factory": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   };
   return { api, agent, assignment, runs, workers, launches, workerLaunches, prompts, state, token, get app() { return app; },
+    holdNextAllocation: (worker = false) => {
+      let entered!: (id: string) => void; let release!: () => void;
+      const started = new Promise<string>(resolve => { entered = resolve; });
+      const wait = new Promise<void>(resolve => { release = resolve; });
+      allocationGate = { worker, entered, wait };
+      return { started, release };
+    },
     setTranscript: (value: typeof transcript) => { transcript = value; },
     offline: (value: boolean) => { offline = value; },
     uncertain: (value: boolean) => { uncertain = value; },
