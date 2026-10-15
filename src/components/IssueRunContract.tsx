@@ -1,15 +1,19 @@
 import type { FactoryRun } from "../../shared/factory.ts";
 import type { IssueAdmission } from "../../shared/issue-admission.ts";
+import { factoryRequest } from "../lib/factoryApi.ts";
 import { useT } from "../lib/i18n.ts";
 import { Markdown } from "./Markdown.tsx";
 
-export function IssueRunContract({ run }: { run: FactoryRun }) {
+export function IssueRunContract({ run, busy, perform }: { run: FactoryRun; busy: boolean; perform: (action: () => Promise<void>) => Promise<void> }) {
   const t = useT();
   const admitted = (run.manifest as { issue_admission?: IssueAdmission }).issue_admission;
   if (!admitted) return null;
   return <section className="factory-section assignment-issue-source" aria-label={t("Admitted issue contract")}>
     <h3>{t("Admitted issue contract")}</h3>
     <p>{t("The admitted scope stays fixed. Required checks and independent reviews still apply.")}</p>
+    {run.condition === "failed" && <p role="alert">{t("Attempt failed. Use Retry to start again.")}</p>}
+    {["accepted", "disconnected", "interrupted"].includes(run.condition) && <div role="status"><p>{t("Reconciliation required. Ownership remains reserved.")}</p><button className="btn" disabled={busy} onClick={() => void perform(async () => { await factoryRequest(`/runs/${run.id}/reconcile`, {}); })}>{t("Reconcile Run")}</button></div>}
+    {["working", "ready"].includes(run.condition) && <p role="status">{t("Execution confirmed.")}</p>}
     <p>{admitted.source.current?.title}</p>
     <p>{admitted.source.revision}</p>
     <p>{t("Approved by {login}", { login: admitted.planning.authorization.approval.actor.login })}</p>

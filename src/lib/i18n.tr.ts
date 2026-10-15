@@ -7,6 +7,10 @@
  * keep their English names.
  */
 export const TR: Record<string, string> = {
+  "Attempt failed. Use Retry to start again.": "Deneme başarısız oldu. Yeniden başlatmak için Yeniden dene seçeneğini kullanın.",
+  "Reconciliation required. Ownership remains reserved.": "Yürütme durumunun uzlaştırılması gerekiyor. Sahiplik ayrılmış olarak kalır.",
+  "Execution confirmed.": "Yürütme doğrulandı.",
+
   "Start prepared issue": "Hazırlanan konuyu başlat",
   "Admitted issue contract": "Kabul edilen konu sözleşmesi",
   "The admitted scope stays fixed. Required checks and independent reviews still apply.": "Kabul edilen kapsam sabit kalır. Gerekli kontroller ve bağımsız incelemeler geçerliliğini korur.",

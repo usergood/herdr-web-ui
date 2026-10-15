@@ -5,7 +5,7 @@ import type { FactoryStore } from "./factory-store.ts";
 import { FactoryWorkflow } from "./factory-workflow.ts";
 
 /** One eligibility result is shared by previews, source detail and the board. */
-export function issueQueueEntry(store: FactoryStore, source: ProjectGitHubSource, policy: ProjectQueuePolicy, accountReady: boolean): IssueQueueEntry {
+export function issueQueueEntry(store: FactoryStore, source: ProjectGitHubSource, policy: ProjectQueuePolicy, accountReady: boolean, retryRunId?: string): IssueQueueEntry {
   const idea = store.get<Implementation>("implementations", source.implementation_id);
   const workflow = new FactoryWorkflow(store);
   const reasons: IssueQueueEntry["reasons"] = [];
@@ -13,7 +13,9 @@ export function issueQueueEntry(store: FactoryStore, source: ProjectGitHubSource
   if (!idea || idea.project_id !== source.project_id) reason("assignment_moved");
   if (idea?.archived_at) reason("assignment_archived");
   if (idea?.outcome !== "none" || idea?.stage === "done") reason("assignment_finished");
-  if (store.list<FactoryRun>("runs", source.implementation_id).length) reason("attempt_exists");
+  const attempts = store.list<FactoryRun>("runs", source.implementation_id);
+  const latest = attempts.at(-1);
+  if (attempts.length && !(latest?.id === retryRunId && latest?.condition === "failed")) reason("attempt_exists");
   if (!accountReady) reason("account_unavailable");
   for (const blocker of source.readiness?.blockers ?? ["sync_required"]) reason("readiness_" + blocker);
   if (!source.planning) reason("planning_required");

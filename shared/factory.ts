@@ -62,6 +62,7 @@ export interface FactoryRun extends FactoryRecord {
   specification_id: string | null; graph_hash: string | null; base: string | null;
   checkout: string | null; worktree: string | null; branch: string | null;
   workspace_id: string | null; pane_id: string | null; manifest: unknown;
+  retry_of?: string;
   issue_pause?: import("./issue-admission.ts").IssuePause;
 }
 export interface ReviewSnapshot extends FactoryRecord {

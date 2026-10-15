@@ -240,3 +240,167 @@ test("global agent capacity remains effective even when the Project allows anoth
     expect((await fixture.json(second.path)).runs).toEqual([]);
   } finally { fixture.close(); }
 }, 20_000);
+
+
+test("failed issue work waits through sync and restart for explicit owner Retry", async () => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { path, start, route } = await prepared(fixture);
+    fixture.setLaunchOutcome("failed");
+    const failed = await fixture.json(path + "/runs", start);
+    expect(failed.condition).toBe("failed");
+    await fixture.json(route + "/sync", {}); fixture.restart();
+    const replay = await fixture.json(path + "/runs", start);
+    expect(replay.id).toBe(failed.id);
+    expect(fixture.launches).toEqual([failed.id]);
+    const retry = { idempotency_key: "owner-retry", issue_scope: start.issue_scope };
+    fixture.setLaunchOutcome("working");
+    const response = await fixture.post(`/runs/${failed.id}/retry`, retry);
+    expect(response.status).toBe(202);
+    const next = await response.json();
+    expect(next).toMatchObject({ condition: "working", retry_of: failed.id });
+    expect(next.id).not.toBe(failed.id);
+    expect((await fixture.json(path)).runs).toEqual([failed, next]);
+    expect(fixture.launches).toEqual([failed.id, next.id]);
+  } finally { fixture.close(); }
+}, 20_000);
+
+test("restart recovers a lost launch response by observing the admitted identity without replay", async () => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { path, start, route } = await prepared(fixture);
+    fixture.setLaunchOutcome("lost");
+    const uncertain = await fixture.json(path + "/runs", start);
+    expect(uncertain.condition).toBe("disconnected");
+    fixture.restart();
+    const detail = await fixture.json(path);
+    expect(detail.runs[0]).toMatchObject({ id: uncertain.id, condition: "working" });
+    expect(detail.runs[0].manifest).toEqual(uncertain.manifest);
+    await fixture.json(route + "/sync", {});
+    expect((await fixture.json(path + "/runs", start)).id).toBe(uncertain.id);
+    expect(fixture.launches).toEqual([uncertain.id]);
+    const retry = await fixture.post(`/runs/${uncertain.id}/retry`, { idempotency_key: "do-not-replay", issue_scope: start.issue_scope });
+    expect(retry.status).toBe(409);
+    expect((await fixture.json(path)).runs).toHaveLength(1);
+  } finally { fixture.close(); }
+}, 20_000);
+
+test("a new Start key cannot silently retry failed issue work", async () => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { path, start } = await prepared(fixture);
+    fixture.setLaunchOutcome("failed");
+    const failed = await fixture.json(path + "/runs", start);
+    for (const body of [{ ...start, idempotency_key: "renewed-eligibility" }, { action: "implement-spec", idempotency_key: "generic-start" }]) {
+      const response = await fixture.post(path + "/runs", body);
+      expect(response.status).toBe(409);
+      expect((await response.json()).error.code).toBe("retry_required");
+    }
+    expect(fixture.launches).toEqual([failed.id]);
+  } finally { fixture.close(); }
+}, 20_000);
+
+
+test("restart during native launch retains the accepted intent and recovers the same Run", async () => {
+  const fixture = githubQueueFixture(true); let release = () => {}; let pending: Promise<Response> | undefined;
+  try {
+    const { path, start } = await prepared(fixture);
+    const held = fixture.holdLaunch(); release = held.release;
+    pending = fixture.post(path + "/runs", start).catch(() => new Response(null, { status: 503 }));
+    await Promise.race([held.waiting, new Promise((_, reject) => setTimeout(() => reject(new Error("Launch fixture never accepted the Run")), 5000))]);
+    const accepted = (await fixture.json(path)).runs[0];
+    expect(accepted.condition).toBe("accepted");
+    fixture.restart();
+    const recovered = (await fixture.tracker(accepted.id)).run;
+    expect(recovered.id).toBe(accepted.id);
+    expect(recovered.condition).toBe("working");
+    expect(recovered.manifest).toEqual(accepted.manifest);
+    release(); await pending;
+    expect((await fixture.json(path + "/runs", start)).id).toBe(accepted.id);
+    expect(fixture.launches).toEqual([accepted.id]);
+  } finally { release(); await pending; fixture.close(); }
+}, 20_000);
+
+test("concurrent owner retries and a lost Retry response create one successor with retained history", async () => {
+  const fixture = githubQueueFixture(true); let release = () => {};
+  try {
+    const { path, start } = await prepared(fixture);
+    fixture.setLaunchOutcome("failed"); const failed = await fixture.json(path + "/runs", start);
+    fixture.setLaunchOutcome("lost");
+    const held = fixture.holdCapabilities(); release = held.release;
+    const retry = { idempotency_key: "same-retry", issue_scope: start.issue_scope };
+    const first = fixture.post(`/runs/${failed.id}/retry`, retry);
+    await Promise.race([held.waiting, new Promise((_, reject) => setTimeout(() => reject(new Error("Retry fixture never reached its gate")), 5000))]);
+    const same = fixture.post(`/runs/${failed.id}/retry`, retry);
+    const other = fixture.post(`/runs/${failed.id}/retry`, { ...retry, idempotency_key: "overlapping-retry" });
+    release();
+    const results = await Promise.all([first, same, other]);
+    expect(results.map(result => result.status)).toEqual([202, 202, 409]);
+    const next = await results[0]!.json();
+    expect((await results[1]!.json()).id).toBe(next.id);
+    fixture.restart();
+    expect((await fixture.json(`/runs/${failed.id}/retry`, retry)).id).toBe(next.id);
+    expect((await fixture.json(path)).runs.map((run: any) => [run.id, run.condition, run.retry_of ?? null])).toEqual([[failed.id, "failed", null], [next.id, "working", failed.id]]);
+    expect(fixture.launches).toEqual([failed.id, next.id]);
+  } finally { release(); fixture.close(); }
+}, 20_000);
+
+test("unreachable execution after restart retains Project capacity until its original identity is observed", async () => {
+  const fixture = githubQueueFixture(true);
+  try {
+    fixture.save([fixture.issue, { ...fixture.issue, number: 2, node_id: "fictional-2", title: "Next issue" }]);
+    const { path, start, route, readiness } = await prepared(fixture);
+    const second = await prepareSecond(fixture, route, readiness);
+    fixture.setLaunchOutcome("lost"); const uncertain = await fixture.json(path + "/runs", start);
+    fixture.setHostOffline(true); fixture.restart();
+    expect((await fixture.json(path)).runs[0].condition).toBe("disconnected");
+    const refused = await fixture.post(second.path + "/runs", second.start);
+    expect(refused.status).toBe(409); expect((await refused.json()).error.code).toBe("project_capacity_exhausted");
+    expect(fixture.launches).toEqual([uncertain.id]);
+    fixture.setHostOffline(false);
+    expect((await fixture.json(`/runs/${uncertain.id}/reconcile`, {})).id).toBe(uncertain.id);
+    expect((await fixture.json(path)).runs[0].condition).toBe("working");
+  } finally { fixture.close(); }
+}, 20_000);
+
+
+test("Retry cannot replace a failed parent while an uncertain build still owns the Assignment", async () => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { path, start, route } = await prepared(fixture);
+    await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: false, max_implementations: 2 });
+    const run = await fixture.json(path + "/runs", start);
+    const check = await fixture.json(`/runs/${run.id}/checks`, {});
+    expect(check.condition).toBe("interrupted");
+    fixture.failNativeRun(run.id); await fixture.json(`/runs/${run.id}/reconcile`, {});
+    fixture.restart();
+    const response = await fixture.post(`/runs/${run.id}/retry`, { idempotency_key: "owned-build-retry", issue_scope: start.issue_scope });
+    expect(response.status).toBe(409);
+    expect((await response.json()).error.code).toBe("implementation_owned");
+    const detail = await fixture.json(path);
+    expect(detail.checks).toEqual([check]);
+    expect(detail.runs).toHaveLength(1);
+    expect(fixture.launches).toEqual([run.id]);
+  } finally { fixture.close(); }
+}, 20_000);
+
+test.each(["pause", "priority", "scope", "outage", "readiness"])("Retry revalidates current %s instead of reusing failed authorization", async change => {
+  const fixture = githubQueueFixture(true);
+  try {
+    fixture.save([fixture.issue, { ...fixture.issue, number: 2, node_id: "fictional-2", title: "Next issue" }]);
+    const { path, start, route, readiness } = await prepared(fixture);
+    const second = await prepareSecond(fixture, route, readiness);
+    fixture.setLaunchOutcome("failed"); const failed = await fixture.json(path + "/runs", start);
+    if (change === "pause") await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true, max_implementations: 1 });
+    if (change === "priority") await fixture.json(second.path + "/order", { before_id: failed.implementation_id });
+    if (change === "scope") fixture.issue.body += "\nA different behavior.";
+    if (change === "readiness") fixture.issue.labels = [];
+    if (["scope", "readiness", "outage"].includes(change)) {
+      fixture.save([fixture.issue], change === "outage"); await fixture.post(route + "/sync", {});
+    }
+    const response = await fixture.post(`/runs/${failed.id}/retry`, { idempotency_key: "stale-retry", issue_scope: start.issue_scope });
+    expect(response.status).toBe(409);
+    expect((await fixture.json(path)).runs).toEqual([failed]);
+    expect(fixture.launches).toEqual([failed.id]);
+  } finally { fixture.close(); }
+}, 20_000);

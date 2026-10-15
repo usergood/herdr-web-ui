@@ -1192,6 +1192,8 @@ export const DEFAULT_PORT = 7317;
  * under retained owner intent. Missing approvals are never inferred.
  * Resting Runs/workers are ready: native capacity released, exclusive worktree ownership retained.
  * POST /api/factory/runs/:id/reconcile (empty) -> FactoryRun; observation never redispatches.
+ * POST .../retry (issue_retry) -> FactoryRun, 202; owner-only failed issue attempt successor.
+ * Revalidates current issue_scope, queue and ownership; retry_of retains the failed Run identity.
  * POST .../stop (stop) -> FactoryRun; verified ownership released, history/work retained.
  * POST .../cleanup (empty) -> FactoryCleanup; only stopped clean owned checkouts removed.
  * POST .../verify-provider (empty) -> FactoryCapabilities; genuine loading/owner-round evidence required.
@@ -1292,6 +1294,7 @@ export interface FactoryRequests {
   question: { question: string; run_id?: string; answer_kind?: "text" | "confirmation" };
   answer: { revision: string; answer: string };
   order: { direction: -1 | 1 } | { before_id: string };
+  issue_retry: { idempotency_key: string; issue_scope: import("./issue-admission.ts").IssueStartScope; execution_preset?: import("./agent-models.ts").AgentModelSelection };
   start: { action: import("./factory.ts").FactoryAction; idempotency_key: string; issue_scope?: import("./issue-admission.ts").IssueStartScope; execution_preset?: import("./agent-models.ts").AgentModelSelection; retrospective_id?: string; expected?: { provider: import("./factory.ts").FactoryProvider; machine_id: string; project_id: string | null; specification_id: string | null; graph_hash: string } };
   continue_workflow: FactoryRequests["start"] & { run_id: string | null; allow_partial_handoff?: boolean };
   stop: { summary?: string };
