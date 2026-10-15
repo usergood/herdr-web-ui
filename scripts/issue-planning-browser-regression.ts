@@ -58,10 +58,12 @@ try {
       const planning = page.getByRole("region", { name: "Issue planning", exact: true });
       await planning.getByText("Needs you", { exact: true }).waitFor();
       const actions = page.getByRole("region", { name: "Next step", exact: true });
-      await actions.getByText(/Resolve only these planning decisions:.*testing seams/).waitFor();
-      await actions.getByLabel("Your answer", { exact: true }).fill("Use public HTTP and real browser journeys. I will update the issue and renew readiness.");
-      await actions.getByRole("button", { name: "Save answer", exact: true }).click();
-      await actions.getByText("Use public HTTP and real browser journeys. I will update the issue and renew readiness.", { exact: true }).waitFor();
+      const pendingQuestion = actions.locator("article").filter({ has: page.getByLabel("Your answer", { exact: true }) });
+      await pendingQuestion.getByText(/Resolve only these planning decisions:.*testing seams/).waitFor();
+      await pendingQuestion.getByLabel("Your answer", { exact: true }).fill("Use public HTTP and real browser journeys. I will update the issue and renew readiness.");
+      await pendingQuestion.getByRole("button", { name: "Save answer", exact: true }).click();
+      await pendingQuestion.waitFor({ state: "detached" });
+      await actions.getByText("Use public HTTP and real browser journeys. I will update the issue and renew readiness.", { exact: true }).last().waitFor();
       if (evidence) await page.screenshot({ path: join(evidence, `issue-plan-needs-you-${viewport.width}.png`), fullPage: true });
       issue.body += "\n\n## Testing seams\nPublic HTTP and real browser journeys.";
       issue.updated_at = viewport.width === 1440 ? "2026-10-02T12:00:00Z" : "2026-10-04T12:00:00Z";
@@ -70,7 +72,9 @@ try {
       await page.reload();
       await page.getByRole("button", { name: "Prepare issue plan", exact: true }).click();
       await planning.getByText("Planning prepared", { exact: true }).waitFor();
-      await planning.getByText("Show hello.", { exact: false }).first().waitFor();
+      const reusedPlanning = planning.locator("details").filter({ has: page.locator("summary", { hasText: "Reused planning" }) });
+      await reusedPlanning.locator("summary").click();
+      await reusedPlanning.getByText("Show hello.", { exact: true }).waitFor();
       await planning.getByText("Approved by fictional-owner", { exact: false }).waitFor();
       await planning.getByText("Required checks and independent Standards and Spec reviews still apply.", { exact: true }).waitFor();
       assert.equal(await page.getByRole("button", { name: "Accept specification", exact: true }).count(), 0);
