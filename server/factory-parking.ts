@@ -101,7 +101,7 @@ export class FactoryParking {
       if (!this.abort.signal.aborted) this.store.event(run.implementation_id, "conversation_resumed", { run_id: id, continuation_id: body.park_id, revision: body.revision });
     } catch (error) {
       const safe = (error instanceof FactoryError || error instanceof HerdrError) && ["agent_busy", "worker_busy", "delivery_busy", "agent_blocked", "agent_not_ready", "input_draft", "run_unavailable", "recovery_copy"].includes(error.code);
-      this.settle(run, target, workerId, safe ? (error instanceof FactoryError || error instanceof HerdrError) && ["agent_busy", "worker_busy", "delivery_busy", "agent_blocked", "agent_not_ready"].includes(error.code) ? "parking" : "blocked" : "uncertain", error instanceof Error ? error.message : "Continuation delivery is uncertain; inspect the native conversation", safe ? "working" : "disconnected");
+      this.settle(run, target, workerId, safe ? (error instanceof FactoryError || error instanceof HerdrError) && ["agent_busy", "worker_busy", "delivery_busy", "agent_blocked", "agent_not_ready"].includes(error.code) ? "parking" : "blocked" : "uncertain", safe && error instanceof Error ? error.message : "Continuation delivery could not be confirmed; inspect the native conversation before sending again", safe ? "working" : "disconnected");
     } finally { this.sending.delete(targetId); }
   }
   private settle(run: FactoryRun, target: FactoryRun | FactoryWorker, workerId: string | null, condition: NonNullable<FactoryRun["continuation"]>["condition"], reason: string, nativeCondition: FactoryRun["condition"]): void {
