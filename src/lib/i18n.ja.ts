@@ -1357,4 +1357,15 @@ export const JA: Record<string, string> = {
   "Fetched {time}": "取得日時: {time}",
   "Sync GitHub to collect source history.": "GitHub を同期して原文の履歴を取得してください。",
 
+  "Native GitHub dependencies": "GitHub のネイティブ依存関係",
+  "Sync GitHub to collect native dependency evidence.": "GitHub を同期してネイティブ依存関係の証拠を取得してください。",
+  "Dependency evidence is stale or incomplete. Sync GitHub before starting work.": "依存関係の証拠が古いか不完全です。作業を開始する前に GitHub を同期してください。",
+  "No native GitHub dependencies.": "GitHub のネイティブ依存関係はありません。",
+  "Delivery has not been verified.": "デリバリーはまだ検証されていません。",
+  "Dependency is missing or inaccessible in this Project. Check access and sync GitHub.": "この Project の依存先が存在しないか、アクセスできません。権限を確認して GitHub を同期してください。",
+  "Dependency crosses a Project or repository boundary. Resolve it before starting work.": "依存関係が Project またはリポジトリの境界を越えています。作業を開始する前に解決してください。",
+  "Dependency identity is ambiguous. Inspect the native relationship on GitHub.": "依存先の識別情報が曖昧です。GitHub でネイティブの関係を確認してください。",
+  "Dependency cycle. Correct the native relationships on GitHub.": "依存関係が循環しています。GitHub でネイティブの関係を修正してください。",
+  "Open prerequisite Assignment": "前提となる Assignment を開く",
+  "These are explicit relationships. Closing an issue does not verify delivery.": "これらは明示的な関係です。Issue を閉じてもデリバリーの検証にはなりません。",
 };

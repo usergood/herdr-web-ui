@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { githubDirectory } from "./project-discovery.ts";
 import type { AccountBindingSnapshot } from "../shared/accounts.ts";
 import type { FactoryChat, FactoryMessage, FactoryProject, Implementation, ProjectCheckout } from "../shared/factory.ts";
-import type { ProjectGitHubIssueRevision, ProjectGitHubConfiguration, ProjectGitHubFiles, ProjectGitHubMutation, ProjectGitHubOverview, ProjectGitHubPolicy, ProjectGitHubPull, ProjectGitHubSource, ProjectPullRequest } from "../shared/github-project.ts";
+import type { GitHubIssueDependency, GitHubDependencyEdge, ProjectGitHubIssueRevision, ProjectGitHubConfiguration, ProjectGitHubFiles, ProjectGitHubMutation, ProjectGitHubOverview, ProjectGitHubPolicy, ProjectGitHubPull, ProjectGitHubSource, ProjectPullRequest } from "../shared/github-project.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { FactoryError, hash } from "./factory-host.ts";
 import { MachineAccounts } from "./accounts.ts";
@@ -27,10 +27,28 @@ export class ProjectGitHub {
     this.timer = setInterval(() => { void this.poll(); }, 10_000); this.timer.unref();
   }
   stop(): void { this.stopped = true; clearInterval(this.timer); }
+  sources(id: string): ProjectGitHubSource[] {
+    const policy = this.store.get<ProjectGitHubPolicy>("github_policies", id);
+    const state = this.store.get<SyncState>("github_sync", id);
+    const project = this.store.get<FactoryProject>("projects", id);
+    const scopeCurrent = !!project && !project.removed_at && policy?.project_scope === this.projectScope(id);
+    return this.store.list<ProjectGitHubSource>("github_sources", id).map(source => source.dependencies ? {
+      ...source,
+      dependencies: {
+        ...source.dependencies,
+        fresh: !!policy?.import_issues && scopeCurrent && !!state?.last_sync && !state.problem
+          && this.store.get<Implementation>("implementations", source.implementation_id)?.project_id === id
+          && source.dependencies.edges.every(edge => !edge.implementation_id || this.store.get<Implementation>("implementations", edge.implementation_id)?.project_id === id)
+          && source.dependencies.complete && source.dependencies.policy_revision === policy.revision
+          && source.dependencies.source_revision === source.revision
+          && Date.now() - Date.parse(source.dependencies.fetched_at) < policy.poll_minutes * 60_000,
+      },
+    } : source);
+  }
   overview(id: string): ProjectGitHubOverview {
     this.project(id);
     const state = this.store.get<SyncState>("github_sync", id);
-    return { policy: this.store.get("github_policies", id), pulls: this.store.list("github_pulls", id), sources: this.store.list("github_sources", id), mutations: this.store.list("github_mutations", id), last_sync: state?.last_sync ?? null, problem: state?.problem ?? null };
+    return { policy: this.store.get("github_policies", id), pulls: this.store.list("github_pulls", id), sources: this.sources(id), mutations: this.store.list("github_mutations", id), last_sync: state?.last_sync ?? null, problem: state?.problem ?? null };
   }
   private project(id: string): FactoryProject {
     const project = this.store.get<FactoryProject>("projects", id);
@@ -151,6 +169,20 @@ export class ProjectGitHub {
       cursor = connection.pageInfo.endCursor;
     }
     throw new FactoryError("github_inventory_limit", "PR inventory exceeds the bounded synchronization budget", 409);
+  }
+  private async dependencies(policy: ProjectGitHubPolicy, scope: AccountBindingSnapshot, issue: Issue): Promise<GitHubIssueDependency[]> {
+    const all: GitHubIssueDependency[] = [];
+    for (let page = 1; page <= 100; page++) {
+      const items = await this.api(policy, scope, `repos/${policy.repository}/issues/${issue.number}/dependencies/blocked_by?per_page=30&page=${page}`);
+      if (!Array.isArray(items)) throw new FactoryError("github_dependencies_incomplete", "GitHub did not return complete native issue dependencies; sync again before starting work", 409);
+      for (const item of items) {
+        const repository = typeof item?.repository_url === "string" ? /^https:\/\/api\.github\.com\/repos\/([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)$/.exec(item.repository_url)?.[1] : null;
+        if (!repository || typeof item.node_id !== "string" || !item.node_id || !Number.isSafeInteger(item.number) || item.number < 1 || item.html_url !== `https://github.com/${repository}/issues/${item.number}` || !["open", "closed"].includes(item.state) || typeof item.updated_at !== "string" || !Number.isFinite(Date.parse(item.updated_at)) || item.pull_request || all.some(edge => edge.external_id === item.node_id || edge.repository.toLowerCase() === repository.toLowerCase() && edge.number === item.number)) throw new FactoryError("github_dependencies_incomplete", "GitHub returned incomplete or ambiguous native issue dependencies; inspect GitHub and sync again", 409);
+        all.push({ external_id: item.node_id, repository, number: item.number, url: item.html_url, state: item.state, source_updated_at: item.updated_at });
+      }
+      if (items.length < 30) return all.sort((a, b) => a.repository.localeCompare(b.repository) || a.number - b.number);
+    }
+    throw new FactoryError("github_dependencies_incomplete", "Native issue dependencies exceed the complete snapshot budget; inspect GitHub", 409);
   }
   private import(id: string, externalId: string, number: number, revision: string, title: string, description: string, url: string, state: string, kind: "issue" | "fix", observed?: ProjectGitHubIssueRevision): ProjectGitHubSource {
     return this.store.db.transaction(() => {
@@ -294,15 +326,60 @@ export class ProjectGitHub {
       try {
         const scope = await this.scope(policy);
         const issues = policy.import_issues ? await this.issues(policy, scope) : [];
+        const dependencies = new Map<string, GitHubIssueDependency[]>();
+        const tracked = this.store.list<ProjectGitHubSource>("github_sources", id).filter(source => source.kind === "issue");
+        const pending = issues.filter(issue => issue.state === "open" || tracked.some(source => source.external_id === issue.node_id));
+        for (let index = 0; index < pending.length; index++) {
+          const issue = pending[index]!;
+          const edges = await this.dependencies(policy, scope, issue);
+          dependencies.set(issue.node_id, edges);
+          for (const edge of edges) {
+            if (edge.repository.toLowerCase() !== policy.repository.toLowerCase()) continue;
+            const target = issues.find(target => target.node_id === edge.external_id && target.number === edge.number);
+            if (target && !pending.some(queued => queued.node_id === target.node_id)) pending.push(target);
+          }
+        }
         const pulls = await this.pulls(policy, scope);
         if ((await this.repository(id))?.toLowerCase() !== policy.repository.toLowerCase()) throw new FactoryError("github_repository_mismatch", "The Project GitHub repository changed; verify its settings again", 409);
         this.current(policy);
         for (const issue of issues) {
           if (issue.state !== "open" && !this.store.list<ProjectGitHubSource>("github_sources", id).some((source) => source.external_id === issue.node_id && source.kind === "issue")) continue;
-          const content = { title: issue.title, body: issue.body ?? "", labels: issue.labels.map((label) => label.name).sort(), state: issue.state, source_updated_at: issue.updated_at, repository: policy.repository, url: issue.html_url };
+          const content = { title: issue.title, body: issue.body ?? "", labels: issue.labels.map((label) => label.name).sort(), state: issue.state, source_updated_at: issue.updated_at, repository: policy.repository, url: issue.html_url, native_dependencies: dependencies.get(issue.node_id)!.map(({ external_id, repository, number, url }) => ({ external_id, repository, number, url })) };
           const revision = hash(JSON.stringify(content));
           const observed: ProjectGitHubIssueRevision = { ...content, revision, fetched_at: new Date().toISOString(), account_profile_id: policy.account_profile_id, policy_revision: policy.revision };
           this.import(id, issue.node_id, issue.number, revision, issue.title, `GitHub issue: ${issue.html_url}\n\n${issue.body ?? ""}\n\nProject review context:\n${policy.review_context}`, issue.html_url, issue.state, "issue", observed);
+        }
+        const sources = this.store.list<ProjectGitHubSource>("github_sources", id).filter(source => source.kind === "issue");
+        const cyclic = (sourceId: string, targetId: string): boolean => {
+          const pending = [targetId]; const visited = new Set<string>();
+          while (pending.length) {
+            const next = pending.pop()!;
+            if (next === sourceId) return true;
+            if (visited.has(next)) continue;
+            visited.add(next);
+            for (const edge of dependencies.get(next) ?? []) if (edge.repository.toLowerCase() === policy.repository.toLowerCase()) pending.push(edge.external_id);
+          }
+          return false;
+        };
+        for (const source of sources) {
+          const native = dependencies.get(source.external_id);
+          if (!native) {
+            if (source.dependencies) this.store.put<ProjectGitHubSource>("github_sources", { ...source, dependencies: { ...source.dependencies, complete: false, fresh: false } }, id);
+            continue;
+          }
+          const edges: GitHubDependencyEdge[] = native.map(edge => {
+            if (edge.repository.toLowerCase() !== policy.repository.toLowerCase()) return { ...edge, implementation_id: null, resolution: "cross_boundary", blocker: "cross_boundary" };
+            if (edge.repository.toLowerCase() === policy.repository.toLowerCase() && cyclic(source.external_id, edge.external_id)) return { ...edge, implementation_id: null, resolution: "cyclic", blocker: "cyclic" };
+            const candidates = sources.filter(target => target.external_id === edge.external_id || target.current?.repository.toLowerCase() === edge.repository.toLowerCase() && target.number === edge.number);
+            const inventory = issues.filter(target => target.node_id === edge.external_id || target.number === edge.number);
+            if (candidates.length > 1 || candidates.some(target => target.external_id !== edge.external_id || target.number !== edge.number || target.current?.repository.toLowerCase() !== edge.repository.toLowerCase()) || inventory.some(target => target.node_id !== edge.external_id || target.number !== edge.number)) return { ...edge, implementation_id: null, resolution: "ambiguous", blocker: "ambiguous" };
+            const target = candidates[0];
+            if (target && this.store.get<Implementation>("implementations", target.implementation_id)?.project_id !== id) return { ...edge, implementation_id: null, resolution: "cross_boundary", blocker: "cross_boundary" };
+            if (!target && this.store.list<ProjectGitHubSource>("github_sources").some(other => other.kind === "issue" && other.project_id !== id && other.external_id === edge.external_id && other.current?.repository.toLowerCase() === edge.repository.toLowerCase())) return { ...edge, implementation_id: null, resolution: "cross_boundary", blocker: "cross_boundary" };
+            if (!inventory.length) return { ...edge, implementation_id: null, resolution: "missing", blocker: "missing" };
+            return { ...edge, implementation_id: target?.implementation_id ?? null, resolution: target ? "resolved" : "missing", blocker: target ? "delivery_unverified" : "missing" };
+          });
+          this.store.put<ProjectGitHubSource>("github_sources", { ...source, dependencies: { revision: hash(JSON.stringify(native)), source_revision: source.revision, fetched_at: source.current!.fetched_at, account_profile_id: policy.account_profile_id, policy_revision: policy.revision, complete: true, fresh: true, edges } }, id);
         }
         for (const pull of pulls) {
           const previous = this.store.list<ProjectGitHubPull>("github_pulls", id).find((item) => item.pull.id === pull.id);

@@ -1355,4 +1355,15 @@ export const KO: Record<string, string> = {
   "Fetched {time}": "가져온 시각: {time}",
   "Sync GitHub to collect source history.": "GitHub를 동기화하여 원본 이력을 가져오세요.",
 
+  "Native GitHub dependencies": "GitHub 기본 의존 관계",
+  "Sync GitHub to collect native dependency evidence.": "GitHub를 동기화하여 기본 의존 관계 근거를 수집하세요.",
+  "Dependency evidence is stale or incomplete. Sync GitHub before starting work.": "의존 관계 근거가 오래되었거나 불완전합니다. 작업을 시작하기 전에 GitHub를 동기화하세요.",
+  "No native GitHub dependencies.": "GitHub 기본 의존 관계가 없습니다.",
+  "Delivery has not been verified.": "전달이 아직 검증되지 않았습니다.",
+  "Dependency is missing or inaccessible in this Project. Check access and sync GitHub.": "이 Project에 의존 항목이 없거나 접근할 수 없습니다. 접근 권한을 확인하고 GitHub를 동기화하세요.",
+  "Dependency crosses a Project or repository boundary. Resolve it before starting work.": "의존 관계가 Project 또는 저장소 경계를 넘습니다. 작업을 시작하기 전에 해결하세요.",
+  "Dependency identity is ambiguous. Inspect the native relationship on GitHub.": "의존 항목의 식별 정보가 모호합니다. GitHub에서 기본 관계를 확인하세요.",
+  "Dependency cycle. Correct the native relationships on GitHub.": "순환 의존 관계입니다. GitHub에서 기본 관계를 수정하세요.",
+  "Open prerequisite Assignment": "선행 Assignment 열기",
+  "These are explicit relationships. Closing an issue does not verify delivery.": "명시적으로 지정된 관계입니다. 이슈를 닫아도 전달이 검증되지는 않습니다.",
 };

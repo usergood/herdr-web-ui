@@ -67,12 +67,14 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
     if (githubRoute[2] === "sync") {
       if (view.policy.import_issues) {
         const prior = view.sources.find(source => source.kind === "issue");
-        const revision: ProjectGitHubIssueRevision = { title: "Fictional issue acceptance", body: "Keep the owner's notes while showing the current issue source.", labels: ["needs-plan"], state: "open", source_updated_at: "2026-10-01T12:00:00Z", repository: view.policy.repository, url: `https://github.com/${view.policy.repository}/issues/12`, revision: "fictional-issue-revision-1", fetched_at: new Date().toISOString(), account_profile_id: view.policy.account_profile_id, policy_revision: view.policy.revision };
+        const revision: ProjectGitHubIssueRevision = { title: "Fictional issue acceptance", body: "Keep the owner's notes while showing the current issue source.", labels: ["needs-plan"], state: "open", source_updated_at: "2026-10-01T12:00:00Z", repository: view.policy.repository, url: `https://github.com/${view.policy.repository}/issues/12`, native_dependencies: [], revision: "fictional-issue-revision-1", fetched_at: new Date().toISOString(), account_profile_id: view.policy.account_profile_id, policy_revision: view.policy.revision };
         if (prior) prior.current = revision;
         else {
           const idea = capture(revision.title, revision.body); idea.project_id = id;
           view.sources.push({ ...record(), project_id: id, external_id: "fictional-issue-12", number: 12, kind: "issue", implementation_id: idea.id, revision: revision.revision, url: revision.url, state: revision.state, current: revision, history: [revision] });
         }
+        const source = view.sources.find(source => source.kind === "issue")!;
+        source.dependencies = { revision: "fictional-native-dependencies-1", source_revision: source.revision, fetched_at: revision.fetched_at, account_profile_id: view.policy.account_profile_id, policy_revision: view.policy.revision, complete: true, fresh: true, edges: [] };
       }
       view.last_sync = new Date().toISOString(); view.pulls = [{ ...record(), project_id: id, pull: structuredClone(fictionalGitHubPull), blockers: ["Requested reviews are still pending"], observed_at: view.last_sync, fix_implementation_id: null }]; githubViews.set(id, view); save(); return json(view); }
     return failure("github_fixture_only", "The demo never changes a real GitHub PR");

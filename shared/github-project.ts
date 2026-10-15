@@ -16,13 +16,29 @@ export interface ProjectPullRequest {
   commits: { nodes: { commit: { statusCheckRollup: { contexts: GitHubConnection<{ name?: string; context?: string; conclusion?: string | null; status?: string; state?: string }> } | null } }[] };
   baseRef: { branchProtectionRule: { isAdminEnforced: boolean; requiresApprovingReviews: boolean; requiredApprovingReviewCount: number; requiresStatusChecks: boolean; requiresStrictStatusChecks: boolean; requiresConversationResolution: boolean; requiredStatusCheckContexts: string[] } | null } | null;
 }
+/** A prerequisite returned by GitHub's native blocked_by relationship. */
+export interface GitHubIssueDependency {
+  external_id: string; repository: string; number: number; url: string;
+  state: "open" | "closed"; source_updated_at: string;
+}
+export interface GitHubDependencyEdge extends GitHubIssueDependency {
+  implementation_id: string | null; resolution: "resolved" | "missing" | "cyclic" | "cross_boundary" | "ambiguous";
+  blocker: "delivery_unverified" | "missing" | "cyclic" | "cross_boundary" | "ambiguous";
+}
+/** A complete native relationship snapshot. Sync problems invalidate it for new admission. */
+export interface GitHubDependencyEvidence {
+  revision: string; source_revision: string; fetched_at: string;
+  account_profile_id: string; policy_revision: string; complete: boolean; fresh: boolean;
+  edges: GitHubDependencyEdge[];
+}
 /** One observed issue scope. Fetch evidence never participates in its content revision. */
 export interface ProjectGitHubIssueRevision {
   revision: string; title: string; body: string; labels: string[]; state: "open" | "closed";
   source_updated_at: string; fetched_at: string; repository: string; url: string;
   account_profile_id: string; policy_revision: string;
+  native_dependencies?: Pick<GitHubIssueDependency, "external_id" | "repository" | "number" | "url">[];
 }
-export interface ProjectGitHubSource extends FactoryRecord { project_id: string; external_id: string; number: number; kind: "issue" | "fix"; implementation_id: string; revision: string; url: string; state: string; current?: ProjectGitHubIssueRevision; history?: ProjectGitHubIssueRevision[] }
+export interface ProjectGitHubSource extends FactoryRecord { project_id: string; external_id: string; number: number; kind: "issue" | "fix"; implementation_id: string; revision: string; url: string; state: string; current?: ProjectGitHubIssueRevision; history?: ProjectGitHubIssueRevision[]; dependencies?: GitHubDependencyEvidence }
 export interface ProjectGitHubPull extends FactoryRecord { project_id: string; pull: ProjectPullRequest; blockers: string[]; observed_at: string; fix_implementation_id: string | null }
 export interface ProjectGitHubMutation extends FactoryRecord { project_id: string; repository: string; pull_id: string; number: number; action: "merge" | "update" | "rerequest"; head: string; base: string; policy_revision: string; condition: "sending" | "confirmed" | "uncertain"; problem: string | null }
 export interface ProjectGitHubOverview { policy: ProjectGitHubPolicy | null; pulls: ProjectGitHubPull[]; sources: ProjectGitHubSource[]; mutations: ProjectGitHubMutation[]; last_sync: string | null; problem: string | null }
