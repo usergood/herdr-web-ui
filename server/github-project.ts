@@ -234,7 +234,10 @@ export class ProjectGitHub {
       if (!fresh || fresh.node_id !== source.external_id || fresh.title !== source.current.title || (fresh.body ?? "") !== source.current.body || fresh.updated_at !== source.current.source_updated_at || fresh.state !== source.current.state || !Array.isArray(fresh.labels) || JSON.stringify(fresh.labels.map(label => label.name).sort()) !== JSON.stringify(source.current.labels)) throw new FactoryError("readiness_changed", "The issue changed while collecting readiness; sync again");
       if (source.current.native_dependencies) {
         const native = (await this.dependencies(policy, scope, fresh)).map(({ external_id, repository, number, url }) => ({ external_id, repository, number, url }));
-        if (JSON.stringify(native) !== JSON.stringify(source.current.native_dependencies)) throw new FactoryError("readiness_changed", "The native issue dependencies changed; sync before approving this revision", 409);
+        if (JSON.stringify(native) !== JSON.stringify(source.current.native_dependencies)) {
+          if (source.dependencies) source.dependencies = { ...source.dependencies, complete: false, fresh: false };
+          throw new FactoryError("readiness_changed", "The native issue dependencies changed; sync before approving this revision", 409);
+        }
       }
       const [owner, name] = policy.repository.split("/");
       // REST updated_at has second precision and changes for labels too. lastEditedAt

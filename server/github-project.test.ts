@@ -632,6 +632,7 @@ test("native relationship edits invalidate readiness and owner approval checks t
   // A relationship edited after the displayed source loaded must not be approved silently.
   data.dependencies = {}; writeFileSync(f.state, JSON.stringify(data));
   expect((await f.post(route + "/issues/12/approve", { source_revision: source.revision, policy_revision: policy.revision })).status).toBe(409);
+  expect((await f.get(route)).sources.find((source: { number: number }) => source.number === 12).dependencies.fresh).toBe(false);
   data.events.push(readinessEvent(2, "fictional-owner", "2026-10-02T12:00:00Z")); data.issues[0].updated_at = "2026-10-02T12:00:00Z"; writeFileSync(f.state, JSON.stringify(data));
   source = (await f.post(route + "/sync", {})).body.sources.find((source: { number: number }) => source.number === 12);
   expect(source.readiness.eligible).toBe(true); expect(source.dependencies.edges).toEqual([]);
