@@ -7,9 +7,9 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 
 ## [Unreleased]
 
-### Improved
+### Changed
 - Load Workflow and board current state without retained transcripts, frozen Run context or diffs.
-  Read history and review evidence when opened, and share the board overview with navigation. ([#29](https://github.com/usergood/saurons-eye/pull/29))
+  Read history and review evidence when opened, and share the board overview with navigation. ([#29](https://github.com/usergood/saurons-eye/pull/29) by @usergood)
 
 ## [0.5.0] - 2026-10-15
 
