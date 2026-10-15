@@ -5,6 +5,8 @@ import type { FactoryDetail, FactoryOverview, FactoryProvider, FactoryStage, Imp
 import type { AgentModelSelection } from "../../shared/agent-models.ts";
 import type { Machine } from "../../shared/machines.ts";
 import { factoryDetail, factoryOverview, factoryRequest } from "../lib/factoryApi.ts";
+import { AssignmentDelete } from "./AssignmentDelete.tsx";
+import { ApiError } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { OpenFileContext } from "../lib/filePaths.ts";
 import { base64FromBytes } from "../lib/api.ts";
@@ -56,9 +58,10 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
 
   async function refresh(): Promise<void> {
     const current = ++generation.current; const id = selection.current;
-    const [board, item] = await Promise.all([factoryOverview(), id ? factoryDetail(id) : Promise.resolve(null)]);
+    const [board, item] = await Promise.all([factoryOverview(), id ? factoryDetail(id).catch(error => { if (error instanceof ApiError && error.status === 404) return null; throw error; }) : Promise.resolve(null)]);
     if (current !== generation.current || id !== selection.current) return;
     setOverview(board); setDetail(item);
+    if (id && !item) { window.dispatchEvent(new Event("factory-changed")); choose(null); }
   }
   useEffect(() => {
     let live = true;
@@ -135,7 +138,7 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
       <div className={`factory-board${showArchived || allAssignments ? "" : " factory-inbox-board"}`}>{(showArchived || allAssignments ? stages : ["inbox"] as FactoryStage[]).map((stage) => <section className="factory-lane" key={stage} aria-label={stageLabel(stage, t)}><h2>{stageLabel(stage, t)}</h2>
         {overview.implementations.filter((item) => item.stage === stage && (showArchived ? !!item.archived_at : !item.archived_at) && (conditionFilter === "all" || overview.activity.some((activity) => activity.implementation_id === item.id && activity.condition === conditionFilter)) && (projectFilter === "all" || (item.project_id ?? "unassigned") === projectFilter) && (providerFilter === "all" || (item.provider ?? overview.projects.find((project) => project.id === item.project_id)?.provider ?? overview.settings.provider) === providerFilter) && (machineFilter === "all" || (item.machine_id ?? overview.projects.find((project) => project.id === item.project_id)?.machine_id ?? "local") === machineFilter)).map((item) => <article className="factory-card" key={item.id} draggable onDragStart={(event) => event.dataTransfer.setData("application/x-saurons-eye-card", item.id)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const id = event.dataTransfer.getData("application/x-saurons-eye-card"); if (overview.implementations.some((entry) => entry.id === id) && id !== item.id) void perform(async () => { await factoryRequest(`/implementations/${id}/order`, { before_id: item.id }); }); }}>
           <button className="factory-card-title" onClick={() => choose(item.id)}>{item.title}</button><p>{overview.projects.find((project) => project.id === item.project_id)?.name ?? t("Unassigned")}</p><small>{item.provider ?? overview.projects.find((project) => project.id === item.project_id)?.provider ?? overview.settings.provider} · {machines.find((machine) => machine.id === (item.machine_id ?? overview.projects.find((project) => project.id === item.project_id)?.machine_id))?.name ?? item.machine_id ?? overview.projects.find((project) => project.id === item.project_id)?.machine_id ?? t("Unassigned")}</small><time>{new Date(item.updated_at).toLocaleString()}</time>
-          {item.pause ? <p role="status">{item.pause.condition === "pending" ? t("Pause pending") : t("Paused")}</p> : overview.activity.filter((activity) => activity.implementation_id === item.id).map((activity) => <p key={activity.run_id}>{activity.action} · {activity.condition} · {activity.completed_tickets}/{activity.total_tickets}{activity.waiting_reason && <span role="status"> · {activity.waiting_reason}</span>}</p>)}
+          {item.deletion ? <p role="status">{t("Delete pending")}</p> : item.pause ? <p role="status">{item.pause.condition === "pending" ? t("Pause pending") : t("Paused")}</p> : overview.activity.filter((activity) => activity.implementation_id === item.id).map((activity) => <p key={activity.run_id}>{activity.action} · {activity.condition} · {activity.completed_tickets}/{activity.total_tickets}{activity.waiting_reason && <span role="status"> · {activity.waiting_reason}</span>}</p>)}
           <div className="factory-card-order"><button className="icon-button" aria-label={t("Move earlier")} onClick={() => void perform(async () => { await factoryRequest(`/implementations/${item.id}/order`, { direction: -1 }); })}><ArrowUp /></button><button className="icon-button" aria-label={t("Move later")} onClick={() => void perform(async () => { await factoryRequest(`/implementations/${item.id}/order`, { direction: 1 }); })}><ArrowDown /></button></div>
         </article>)}
       </section>)}</div>
@@ -149,6 +152,7 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
       </section>
       <AssignmentActions preset={preset} onPresetChange={setPreset} key={detail.implementation.id} detail={detail} project={selectedProject} machineId={effectiveMachine} machineName={machines.find(m=>m.id===effectiveMachine)?.name??effectiveMachine} provider={effectiveProvider??"codex"} busy={busy} perform={perform} onOpenPane={onOpenPane} capabilities={execution.capabilities} problem={execution.problem} onCapabilities={execution.apply} />
       <AssignmentPause assignment={detail.implementation} busy={busy} perform={perform} />
+      <AssignmentDelete key={detail.implementation.id} assignment={detail.implementation} busy={busy} perform={perform} onDeleted={() => choose(null)} />
       <WorkflowConversations detail={detail} machines={machines} selectedId={conversationId} onSelect={id => onConversation?.(id)} onOpenPane={onOpenPane} busy={busy} perform={perform} />
       <FactoryAutomaticExecution detail={detail} onOpenPane={onOpenPane} />
       <details className="factory-section"><summary>{t("Advanced controls")}</summary>

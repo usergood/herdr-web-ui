@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { FactoryHostRequests, FactoryArtifact, FactoryChat, FactoryDetail, FactoryMessage, FactoryProject, FactoryProvider, FactoryRun, FactorySettings, Implementation, ProjectCheckout } from "../shared/protocol.ts";
 import { badRequest, errorResponse, httpError, isJsonObject, jsonResponse } from "./http.ts";
 import { FactoryStore } from "./factory-store.ts";
+import { FactoryDeletion } from "./factory-deletion.ts";
 import { FactoryError, hash, inspectCheckout } from "./factory-host.ts";
 import { FactoryArtifacts } from "./factory-artifacts.ts";
 import { FactoryWorkflow } from "./factory-workflow.ts";
@@ -50,6 +51,7 @@ export class FactoryService {
   private readonly references: FactoryReferences;
   private readonly accounts: MachineAccounts;
   private readonly github: ProjectGitHub;
+  private readonly deletion: FactoryDeletion;
   private stopped = false;
   constructor(stateDir: string, private readonly skillsPath: string | null = null, native: Partial<FactoryNative> = {}, endpoint: MachineEndpoint = () => undefined, publicUrl: string | null = null, accountTools: AccountTools = {}, private readonly registeredMachine: (id: string) => boolean = (id) => id === "local" || !!endpoint(id), accountDiscoveryHome?: string) {
     this.accounts = new MachineAccounts(stateDir, accountTools, false, accountDiscoveryHome);
@@ -76,6 +78,8 @@ export class FactoryService {
     this.execution = new FactoryExecution(this.store, this.workflow, this.runtime, this.pipeline);
     this.retrospectives = new FactoryRetrospectives(this.store);
     this.github = new ProjectGitHub(this.store, this.accounts, (machineId, path) => this.runtime.discover(machineId, path));
+    this.deletion = new FactoryDeletion(this.store, (run, deletionId) => this.runtime.deleteAttempt(run, deletionId));
+    this.runtime.reconcileDeletion = id => this.deletion.reconcile(id);
   }
   settings(): FactorySettings {
     const saved = this.store.get<{ id: string; value: Partial<FactorySettings> & { max_implementations?: number } }>("settings", "default");
@@ -143,6 +147,7 @@ export class FactoryService {
       if (!this.agentAuthenticated(request, url)) throw new FactoryError("unauthorized", "Use this Run's scoped tracker credential", 401);
       const run = this.store.get<FactoryRun>("runs", route[1]!);
       if (!run || ["completed", "cancelled", "failed"].includes(run.condition)) throw new FactoryError("run_closed", "This Run's control scope has ended", 409);
+      if (this.store.get<Implementation>("implementations", run.implementation_id)?.deletion) throw new FactoryError("assignment_deleting", "This Assignment has a pending permanent Delete", 409);
       if (request.headers.has("origin") && request.headers.get("origin") !== url.origin) throw new FactoryError("invalid_origin", "Use the scoped tracker on its authenticated app origin", 403);
       const action = route[2]!;
       if (action === "contract" && request.method === "GET") return jsonResponse({ tracker_guide: factoryTrackerGuide, pull_requests: this.store.list("pull_requests", run.implementation_id), automatic_review: this.store.get("automatic_review", run.id), automatic_execution: this.store.get("automatic_execution", run.id), execution_plan: this.store.get("execution_plans", run.id), run, workers: this.store.list("workers", run.id), checks: this.store.list("checks", run.id), review_batches: [...this.store.list("review_batches", run.implementation_id), ...this.store.list("automatic_review_batches", run.implementation_id)], messages: this.store.list<FactoryMessage>("messages", run.implementation_id).filter((message) => (run.manifest as { context_message_ids?: string[] }).context_message_ids?.includes(message.id)), question_revision: this.workflow.questionRevision(run.implementation_id, run.id), questions: this.workflow.questions(run.implementation_id, run.id), frontier: run.action === "implement-spec" ? this.pipeline.frontier(run) : [], artifacts: (run.manifest as { artifacts?: FactoryArtifact[] }).artifacts ?? [] });
@@ -265,6 +270,19 @@ export class FactoryService {
   async handle(request: Request, url: URL): Promise<Response> {
     try {
       if (request.method !== "GET" && request.headers.get("x-herdr-factory") !== "1") return httpError(403, "invalid_origin", "Use factory controls from this app");
+      const deleteRoute = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/delete$/.exec(url.pathname);
+      if (deleteRoute && request.method === "POST") {
+        if (!sameOrigin(request)) return httpError(403, "invalid_origin", "Use Assignment controls from this app");
+        await this.body(request);
+        const result = await this.deletion.request(deleteRoute[1]!);
+        return jsonResponse(result, result.condition === "pending" ? 202 : 200);
+      }
+      if (request.method !== "GET") {
+        const target = /^\/api\/factory\/(implementations|runs|artifacts)\/([a-zA-Z0-9-]+)/.exec(url.pathname);
+        const record = target ? this.store.get<{ id: string; implementation_id?: string }>(target[1]!, target[2]!) : null;
+        const assignmentId = target?.[1] === "implementations" ? target[2]! : record?.implementation_id;
+        if (assignmentId && (this.store.get<Implementation>("implementations", assignmentId)?.deletion || this.store.get("deleted_assignments", assignmentId))) throw new FactoryError("assignment_deleting", "This Assignment has a permanent Delete request; further writes are disabled", 409);
+      }
       const pauseRoute = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/(pause|resume)$/.exec(url.pathname);
       if (pauseRoute && request.method === "POST") {
         if (!sameOrigin(request)) return httpError(403, "invalid_origin", "Use Assignment controls from this app");
@@ -359,7 +377,7 @@ export class FactoryService {
       }
       if (url.pathname === "/api/factory-host/launch" && request.method === "POST") { const body = await this.body(request, 90 * 1024 * 1024); if (!isJsonObject(body.run)) throw new FactoryError("invalid_launch", "Enter an accepted Run identity"); return jsonResponse(await this.executionHost.launch(body.run as unknown as import("../shared/protocol.ts").FactoryRun, isJsonObject(body.access) && typeof body.access.token === "string" && typeof body.access.url === "string" ? { token: body.access.token, url: body.access.url } : undefined, Array.isArray(body.attachments) ? body.attachments : [], isJsonObject(body.references) ? body.references as unknown as import("../shared/protocol.ts").ProjectReferencePayload : undefined), 202); }
       const operation = /^\/api\/factory-host\/runs\/([a-zA-Z0-9-]+)\/operations\/([a-z-]+)$/.exec(url.pathname);
-      if (operation && request.method === "POST" && ["pause", "resume-context", "resume-status", "publish"].includes(operation[2]!) && (!sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1")) return httpError(403, "invalid_origin", "Use authenticated Machine controls from this app");
+      if (operation && request.method === "POST" && ["delete", "pause", "resume-context", "resume-status", "publish"].includes(operation[2]!) && (!sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1")) return httpError(403, "invalid_origin", "Use authenticated Machine execution controls from this app");
       if (operation && request.method === "POST") return jsonResponse(await this.executionHost.operation(operation[1]!, operation[2]!, await this.body(request)));
       const hostReconcile = /^\/api\/factory-host\/runs\/([a-zA-Z0-9-]+)\/reconcile$/.exec(url.pathname);
       if (hostReconcile && request.method === "POST") return jsonResponse(await this.executionHost.reconcile(hostReconcile[1]!));
@@ -740,5 +758,5 @@ export class FactoryService {
       return httpError(404, "not_found", "Unknown factory endpoint");
     } catch (error) { return error instanceof FactoryError ? httpError(error.status, error.code, error.message) : error instanceof SyntaxError ? badRequest("invalid_json", "Enter valid JSON") : errorResponse(error); }
   }
-  stop(): void { if (this.stopped) return; this.stopped = true; this.continuation.stop(); this.planning.stop(); this.execution.stop(); this.github.stop(); this.accounts.stop(); this.runtime.stop(); this.store.close(); }
+  stop(): void { if (this.stopped) return; this.stopped = true; this.deletion.stop(); this.continuation.stop(); this.planning.stop(); this.execution.stop(); this.github.stop(); this.accounts.stop(); this.runtime.stop(); this.store.close(); }
 }

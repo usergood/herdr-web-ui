@@ -6,11 +6,13 @@ export type FactoryStage = "inbox" | "specifying" | "ready" | "running" | "revie
 export type RunCondition = "accepted" | "working" | "ready" | "needs_you" | "blocked" | "disconnected" | "interrupted" | "failed" | "cancelled" | "completed";
 export type FactoryAction = "work" | "setup" | "grill-me" | "grill-with-docs" | "to-spec" | "to-tickets" | "implement-spec" | "retro" | "apply-retro" | "verify-provider";
 export interface FactoryRecord { id: string; created_at: string; updated_at: string }
+export type FactoryDeleteResult = { id: string; condition: "deleted" } | { id: string; condition: "pending"; reasons: string[] };
+export interface FactoryDeleteAttemptResult { run_id: string; deletion_id: string; condition: "deleted" }
 export interface Implementation extends FactoryRecord {
   /** Owner suspension is independent of board position and scheduler parking. */
   pause?: { id: string; condition: "pending" | "paused" | "resuming"; reasons: string[] };
   /** A pending permanent deletion takes precedence over execution controls. */
-  deletion?: { id: string; condition: "pending"; reasons: string[] };
+  deletion?: { id: string; condition: "pending"; reasons: string[]; local_cleanup?: "complete" };
   title: string; description: string; project_id: string | null; provider: FactoryProvider | null;
   machine_id: string | null; stage: FactoryStage; position: number;
   outcome: "none" | "implementation_complete" | "pr_open" | "merged" | "released";
