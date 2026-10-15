@@ -66,6 +66,9 @@ try {
     await source.getByText("Revised source acceptance", { exact: true }).first().waitFor();
     await source.getByText("ready-for-agent", { exact: true }).first().waitFor();
     await source.getByText("Reapply the ready label after reviewing this scope, or approve this revision here.", { exact: true }).waitFor();
+    const readinessReason = source.getByText("Reapply the ready label after reviewing this scope, or approve this revision here.", { exact: true });
+    await readinessReason.scrollIntoViewIfNeeded();
+    await readinessReason.hover();
     if (evidence) await page.screenshot({ path: join(evidence, `readiness-reasons-${viewport.width}.png`) });
     await source.getByRole("button", { name: "Approve this issue revision", exact: true }).click();
     await source.getByText("Current issue scope has trusted readiness.", { exact: true }).waitFor();
