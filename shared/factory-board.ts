@@ -3,7 +3,7 @@ import type { FactoryActivity, FactoryAssignmentProgress, FactoryCapacityWait, F
 type BoardWait = FactoryCapacityWait & { ticket_id?: string };
 const ended = (condition: string) => ["completed", "cancelled", "failed"].includes(condition);
 const executing = (context: FactoryRun | FactoryWorker) => context.condition === "working" && !context.suspension && (!context.continuation || context.continuation.condition === "resumed");
-const attention = (condition: string) => ["needs_you", "blocked", "disconnected", "interrupted", "failed"].includes(condition);
+const attention = (condition: string) => ["needs_you", "blocked", "interrupted", "failed"].includes(condition);
 
 /** Board progress projects retained evidence. It neither admits work nor changes its age. */
 export function assignmentProgress(idea: Implementation, tickets: FactoryTicket[], runs: FactoryRun[], workers: FactoryWorker[], checks: FactoryCheck[] = [], waiting: BoardWait[] = []): FactoryAssignmentProgress {
@@ -24,7 +24,7 @@ export function assignmentProgress(idea: Implementation, tickets: FactoryTicket[
     if (liveChecks.length) activities.add("testing");
   }
   const checkReason = (check: FactoryCheck) => check.condition === "interrupted" ? "Check execution is uncertain; reconcile its reservation" : `Checks failed${check.commands.filter(command => command.exit_code !== 0).map(command => `: ${command.args.join(" ")} (exit ${command.exit_code})`).join("")}`;
-  const contextReason = (context: FactoryRun | FactoryWorker) => context.waiting_reason || context.continuation?.reason || (attention(context.condition) ? `Execution ${context.condition}` : null);
+  const contextReason = (context: FactoryRun | FactoryWorker) => context.waiting_reason || context.continuation?.reason || (attention(context.condition) || context.condition === "disconnected" ? `Execution ${context.condition}` : null);
   const completed = (ticket: FactoryTicket) => {
     const attempts = relevant.filter(worker => worker.ticket_id === ticket.id && worker.role === "implementer");
     const latest = attempts.at(-1);
@@ -52,8 +52,9 @@ export function assignmentProgress(idea: Implementation, tickets: FactoryTicket[
     ...rows.flatMap(row => row.reason ? [row.reason] : []),
     ...latestChecks.filter(check => ["failed", "interrupted"].includes(check.condition)).map(checkReason),
   ])];
-  const needsAttention = (current && attention(current.suspension?.previous_condition ?? current.condition)) || latestWorkers.some(worker => attention(worker.suspension?.previous_condition ?? worker.condition)) || latestChecks.some(check => ["failed", "interrupted"].includes(check.condition));
+  const recovering = runs.some(run => run.condition === "disconnected") || relevant.some(worker => worker.condition === "disconnected");
+  const needsAttention = waits.some(wait => wait.condition === "blocked") || (current && attention(current.suspension?.previous_condition ?? current.condition)) || latestWorkers.some(worker => attention(worker.suspension?.previous_condition ?? worker.condition)) || latestChecks.some(check => ["failed", "interrupted"].includes(check.condition));
   const lane = idea.stage === "done" ? "done" : idea.pause ? (needsAttention ? "needs_you" : waits.some(wait => wait.run_id === null) ? "queued" : idea.stage === "inbox" ? "inbox" : idea.stage === "ready" ? "queued" : idea.stage === "review" ? "needs_you" : "running")
-    : needsAttention || idea.stage === "review" ? "needs_you" : activities.size ? "running" : waits.length || idea.stage === "ready" ? "queued" : idea.stage === "inbox" ? "inbox" : "needs_you";
+    : needsAttention || idea.stage === "review" ? "needs_you" : activities.size || recovering ? "running" : waits.length || idea.stage === "ready" ? "queued" : idea.stage === "inbox" ? "inbox" : "needs_you";
   return { implementation_id: idea.id, lane, activities: (["specifying", "implementing", "testing", "auto_review", "fixing"] as const).filter(activity => activities.has(activity)), counts: { waiting: rows.filter(row => row.state === "waiting").length, running: rows.filter(row => row.state === "running").length, completed: rows.filter(row => row.state === "completed").length }, tickets: rows, reasons };
 }

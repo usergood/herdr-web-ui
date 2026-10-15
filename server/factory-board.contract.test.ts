@@ -162,4 +162,19 @@ describe("Assignment board through authenticated HTTP", () => {
     } finally { f.close(); }
   });
 
+  it("distinguishes automatic reconnects from blocked requests that need owner correction", async () => {
+    const f = await capacityFixture();
+    try {
+      const blocked = await f.assignment("Scope correction needed");
+      const recovering = await f.assignment("Reconnect automatically");
+      expect((await f.api(`/implementations/${blocked}/runs`, { action: "work", idempotency_key: "blocked", expected: {} })).status).toBe(409);
+      f.loseNextLaunch(); f.uncertain(true);
+      const run = await f.api(`/implementations/${recovering}/runs`, { action: "work", idempotency_key: "recovering" }).then(r => r.json());
+      expect(run.condition).toBe("disconnected");
+      const overview = await f.api("").then(r => r.json());
+      expect(overview.progress.find((p: any) => p.implementation_id === recovering)).toMatchObject({ lane: "running", activities: [] });
+      expect(overview.progress.find((p: any) => p.implementation_id === blocked)).toMatchObject({ lane: "needs_you", activities: [] });
+    } finally { f.close(); }
+  });
+
 });
