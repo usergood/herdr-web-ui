@@ -177,4 +177,25 @@ describe("Assignment board through authenticated HTTP", () => {
     } finally { f.close(); }
   });
 
+  it("keeps a parked owner conversation in Needs you when the owner pauses it", async () => {
+    const f = await capacityFixture();
+    try {
+      const id = await f.assignment("Parked owner answer");
+      const run = await f.api(`/implementations/${id}/runs`, { action: "work", idempotency_key: "owner" }).then(r => r.json());
+      await f.api(`/implementations/${id}/questions`, { question: "Which scope?", run_id: run.id });
+      f.runs.get(run.id)!.condition = "ready";
+      const deadline = Date.now() + 4_000;
+      while (true) {
+        const detail = await f.api(`/implementations/${id}`).then(r => r.json());
+        if (detail.runs[0].continuation?.condition === "parked") break;
+        if (Date.now() >= deadline) throw new Error("Owned conversation did not park");
+        await Bun.sleep(30);
+      }
+      const progress = () => f.api("").then(r => r.json()).then(o => o.progress.find((p: any) => p.implementation_id === id));
+      expect(await progress()).toMatchObject({ lane: "needs_you", activities: [] });
+      await f.api(`/implementations/${id}/pause`, {});
+      expect(await progress()).toMatchObject({ lane: "needs_you", activities: [] });
+    } finally { f.close(); }
+  });
+
 });

@@ -52,9 +52,13 @@ export function assignmentProgress(idea: Implementation, tickets: FactoryTicket[
     ...rows.flatMap(row => row.reason ? [row.reason] : []),
     ...latestChecks.filter(check => ["failed", "interrupted"].includes(check.condition)).map(checkReason),
   ])];
-  const recovering = runs.some(run => run.condition === "disconnected") || relevant.some(worker => worker.condition === "disconnected");
+  // Suspension changes native conditions to ready. Preserve the lane's prior phase,
+  // while activity tags and Ticket counts continue to describe verified execution.
+  const laneContexts = [...runs, ...relevant].map(context => idea.pause && context.suspension && !ended(context.condition)
+    ? { ...context, condition: context.suspension.previous_condition, suspension: undefined } : context);
+  const underway = liveChecks.length > 0 || laneContexts.some(context => executing(context) || ["accepted", "disconnected"].includes(context.condition));
   const needsAttention = waits.some(wait => wait.condition === "blocked") || (current && attention(current.suspension?.previous_condition ?? current.condition)) || latestWorkers.some(worker => attention(worker.suspension?.previous_condition ?? worker.condition)) || latestChecks.some(check => ["failed", "interrupted"].includes(check.condition));
-  const lane = idea.stage === "done" ? "done" : idea.pause ? (needsAttention ? "needs_you" : waits.some(wait => wait.run_id === null) ? "queued" : idea.stage === "inbox" ? "inbox" : idea.stage === "ready" ? "queued" : idea.stage === "review" ? "needs_you" : "running")
-    : needsAttention || idea.stage === "review" ? "needs_you" : activities.size || recovering ? "running" : waits.length || idea.stage === "ready" ? "queued" : idea.stage === "inbox" ? "inbox" : "needs_you";
+  const lane = idea.stage === "done" ? "done" : needsAttention || idea.stage === "review" ? "needs_you"
+    : underway ? "running" : waits.length || idea.stage === "ready" ? "queued" : idea.stage === "inbox" ? "inbox" : "needs_you";
   return { implementation_id: idea.id, lane, activities: (["specifying", "implementing", "testing", "auto_review", "fixing"] as const).filter(activity => activities.has(activity)), counts: { waiting: rows.filter(row => row.state === "waiting").length, running: rows.filter(row => row.state === "running").length, completed: rows.filter(row => row.state === "completed").length }, tickets: rows, reasons };
 }
