@@ -193,10 +193,16 @@ try {
       await enable.click();
       await queue.getByText("Automatic implementation is on.", { exact: true }).waitFor();
       assert.deepEqual(automatic.launches, []);
-      await queue.getByText("Queued", { exact: true }).first().waitFor();
+      assert.deepEqual((await automatic.json(route + "/queue")).entries.filter((entry: any) => entry.eligible).map((entry: any) => [entry.number, entry.lane]), [[1, "queued"], [2, "queued"]]);
+      // Lane and eligibility share one rendered status paragraph.
+      await queue.getByText("Queued · Eligible", { exact: true }).first().waitFor();
       await queue.getByText("Resolve the issue's blocked signal before implementation.", { exact: true }).waitFor();
       const first = queue.getByRole("article").filter({ has: page.getByRole("link", { name: "#1 · Fictional scope", exact: true }) });
+      const moved = page.waitForResponse(response => response.url().endsWith("/order") && response.request().method() === "POST");
       await first.getByRole("button", { name: "Move later", exact: true }).click();
+      assert.equal((await moved).status(), 200);
+      assert.equal((await automatic.json(route + "/queue")).entries[0].number, 2);
+      await queue.getByRole("article").first().getByRole("link", { name: `#2 · ${later.title}`, exact: true }).waitFor();
       assert((await queue.getByRole("article").first().textContent())?.includes(later.title));
       automatic.setLaunchOutcome("failed");
       await queue.getByLabel("Pause queue", { exact: true }).uncheck();
