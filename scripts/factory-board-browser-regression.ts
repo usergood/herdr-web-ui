@@ -72,7 +72,7 @@ try {
   await page.getByRole("heading", { name: "History", exact: true }).waitFor();
   await page.getByText("implementation_created", { exact: false }).waitFor();
   const review = board.find(entry => entry.activity === "reviewing")!;
-  await page.route(`**/api/factory/implementations/${review.implementation_id}`, async route => {
+  await page.route(new RegExp(`/api/factory/implementations/${review.implementation_id}(?:\\?.*)?$`), async route => {
     const response = await route.fetch(); const detail: FactoryDetail = await response.json();
     const old: FactoryRun = { id: "owned-past-attempt", implementation_id: review.implementation_id, created_at: "2026-01-01T10:00:00Z", updated_at: "2026-01-01T10:05:00Z", action: "to-spec", provider: "codex", machine_id: "local", condition: "completed", waiting_reason: null, idempotency_key: "owned-past", specification_id: null, graph_hash: null, base: null, checkout: null, worktree: null, branch: null, workspace_id: null, pane_id: null, manifest: {} };
     detail.runs = [old, { ...old, id: "owned-current-attempt", action: "work", condition: "needs_you", created_at: "2026-01-02T10:00:00Z", updated_at: "2026-01-02T10:05:00Z" }];

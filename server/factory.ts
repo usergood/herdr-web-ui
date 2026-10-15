@@ -5,6 +5,7 @@ import { timingSafeEqual } from "node:crypto";
 import { join } from "node:path";
 import type { FactoryHostRequests, FactoryArtifact, FactoryChat, FactoryDetail, FactoryMessage, FactoryProject, FactoryProvider, FactoryRun, FactorySettings, Implementation, ProjectCheckout } from "../shared/protocol.ts";
 import { badRequest, errorResponse, httpError, isJsonObject, jsonResponse } from "./http.ts";
+import { FactoryReads } from "./factory-reads.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { migrateFactoryHistory } from "./factory-history.ts";
 import { FactoryError, hash, inspectCheckout } from "./factory-host.ts";
@@ -481,7 +482,7 @@ export class FactoryService {
       if (hostOutputs && request.method === "GET") return jsonResponse(hostOutputs[2] ? this.executionHost.output(hostOutputs[1]!, url.searchParams.get("name") ?? "", url.searchParams.get("hash") ?? "") : await this.executionHost.outputs(hostOutputs[1]!));
       const prepareRoute = /^\/api\/factory\/machines\/([a-zA-Z0-9_-]+)\/prepare$/.exec(url.pathname);
       if (prepareRoute && request.method === "POST") return jsonResponse(await this.runtime.prepare(prepareRoute[1]!));
-      if (url.pathname === "/api/factory" && request.method === "GET") return jsonResponse({ board: this.store.list<Implementation>("implementations").map(idea => projectFactoryBoard(idea, { tickets: this.workflow.tickets(idea.id), runs: this.store.list<FactoryRun>("runs", idea.id), workers: this.store.list<import("../shared/factory.ts").FactoryWorker>("workers"), checks: this.store.list<import("../shared/factory.ts").FactoryCheck>("checks"), questions: this.workflow.questions(idea.id), ...this.queue.boardContext(idea.id), admission_problem: this.queue.admissionProblem(idea.id) })), implementations: this.store.list<Implementation>("implementations").sort((a, b) => a.position - b.position), pane_links: this.paneLinks(), pane_archives: this.store.list("pane_archives"), projects: this.store.list("projects"), checkouts: this.store.list<ProjectCheckout>("checkouts").map((entry) => { if (url.searchParams.get("navigation") !== "1") return entry; const { instructions: _instructions, ...metadata } = entry; return metadata; }), settings: this.settings(), activity: this.store.list<Implementation>("implementations").flatMap((idea) => { const run = this.store.list<FactoryRun>("runs", idea.id).at(-1); return run ? [{ implementation_id: idea.id, run_id: run.id, condition: run.condition, action: run.action, waiting_reason: run.waiting_reason, completed_tickets: this.workflow.tickets(idea.id).filter((ticket) => ticket.status === "done").length, total_tickets: this.workflow.tickets(idea.id).length }] : []; }) });
+      if (url.pathname === "/api/factory" && request.method === "GET") return jsonResponse(new FactoryReads(this.store).overview(this.settings(), id => ({ ...this.queue.boardContext(id), admission_problem: this.queue.admissionProblem(id) }), url.searchParams.get("navigation") === "1"));
       if (url.pathname === "/api/factory/settings" && request.method === "POST") {
         const body = await this.body(request); const settings = { ...this.settings() };
         const known = new Set(Object.keys(settings));
@@ -874,6 +875,26 @@ export class FactoryService {
       }
       const match = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)$/.exec(url.pathname);
       if (match && request.method === "GET") {
+        if (url.searchParams.get("view") === "current") {
+          const current = new FactoryReads(this.store).current(match[1]!, { ...this.queue.boardContext(match[1]!), admission_problem: this.queue.admissionProblem(match[1]!) });
+          return current ? jsonResponse(current) : httpError(404, "not_found", "Implementation not found");
+        }
+        if (url.searchParams.get("view") === "review") {
+          const current = new FactoryReads(this.store).current(match[1]!, {});
+          if (!current) return httpError(404, "not_found", "Implementation not found");
+          const snapshots = this.store.db.query<{ data: string }, [string]>("SELECT json_remove(data, '$.files') AS data FROM records WHERE kind='snapshots' AND parent=? ORDER BY rowid").all(match[1]!).map(row => JSON.parse(row.data));
+          const batches = this.store.db.query<{ data: string }, [string]>("SELECT json_remove(data, '$.reports') AS data FROM records WHERE kind='review_batches' AND parent=? ORDER BY rowid").all(match[1]!).map(row => JSON.parse(row.data));
+          return jsonResponse({ implementation: current.implementation, runs: current.runs, checks: current.checks, review_evidence: current.review_evidence, review_batches: batches, snapshots, comments: this.store.list("comments", match[1]!) } satisfies import("../shared/factory.ts").FactoryReviewDetail);
+        }
+        if (url.searchParams.get("view") === "snapshot") {
+          const snapshot = this.store.get<import("../shared/factory.ts").ReviewSnapshot>("snapshots", url.searchParams.get("record_id") ?? "");
+          return snapshot?.implementation_id === match[1] ? jsonResponse(snapshot) : httpError(404, "not_found", "Review snapshot not found");
+        }
+        if (url.searchParams.get("view") === "report") {
+          const report = this.store.get<import("../shared/factory.ts").FactoryReviewEvidence>("review_evidence", url.searchParams.get("record_id") ?? "");
+          const run = report && this.store.get<FactoryRun>("runs", report.run_id);
+          return report && run?.implementation_id === match[1] ? jsonResponse(report) : httpError(404, "not_found", "Review report not found");
+        }
         const detail = this.detail(match[1]!);
         return detail ? jsonResponse(detail) : httpError(404, "not_found", "Implementation not found");
       }

@@ -1,9 +1,10 @@
-import { useState } from "react";
-import type { FactoryBatchReceipt, FactoryDetail, ReviewSnapshot } from "../../shared/protocol.ts";
-import { factoryRequest } from "../lib/factoryApi.ts";
+import { useEffect, useState } from "react";
+import type { FactoryBatchReceipt, FactoryReviewDetail, ReviewSnapshot } from "../../shared/protocol.ts";
+import { FactoryReport } from "./FactoryReport.tsx";
+import { factoryRead, factoryRequest } from "../lib/factoryApi.ts";
 import { useT } from "../lib/i18n.ts";
 
-export function FactoryReviewPanel({ detail, busy, perform }: { detail: FactoryDetail; busy: boolean; perform: (action: () => Promise<void>) => Promise<void> }) {
+export function FactoryReviewPanel({ detail, busy, perform }: { detail: FactoryReviewDetail; busy: boolean; perform: (action: () => Promise<void>) => Promise<void> }) {
   const t = useT();
   const [mode, setMode] = useState<"workspace" | "branch">("workspace");
   const [snapshotId, setSnapshotId] = useState<string | null>(null);
@@ -13,7 +14,16 @@ export function FactoryReviewPanel({ detail, busy, perform }: { detail: FactoryD
   const [line, setLine] = useState(1); const [finding, setFinding] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [selectedReports, setSelectedReports] = useState<string[]>([]);
-  const snapshot = detail.snapshots.find((item) => item.id === snapshotId) ?? detail.snapshots.at(-1);
+  const selectedSnapshot = detail.snapshots.find((item) => item.id === snapshotId) ?? detail.snapshots.at(-1);
+  const [loadedSnapshot, setLoadedSnapshot] = useState<ReviewSnapshot | null>(null);
+  const [snapshotAttempt, setSnapshotAttempt] = useState(0);
+  const [snapshotError, setSnapshotError] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true; setLoadedSnapshot(null); setSnapshotError(null);
+    if (selectedSnapshot) void factoryRead<ReviewSnapshot>(`/implementations/${detail.implementation.id}?view=snapshot&record_id=${selectedSnapshot.id}`).then(value => { if (live) setLoadedSnapshot(value); }).catch(error => { if (live) setSnapshotError(error.message); });
+    return () => { live = false; };
+  }, [detail.implementation.id, selectedSnapshot?.id, snapshotAttempt]);
+  const snapshot = loadedSnapshot?.id === selectedSnapshot?.id ? loadedSnapshot : null;
   const file = snapshot?.files[fileIndex];
   const run = detail.runs.at(-1);
   const prefix = `/implementations/${detail.implementation.id}`;
@@ -24,7 +34,7 @@ export function FactoryReviewPanel({ detail, busy, perform }: { detail: FactoryD
       const eligible = report.run_id === run?.id && report.outcome === "failed" && (!currentHead || currentHead === report.head) && !receipt;
       return <article className="factory-message" key={report.id}>
         <label><input type="checkbox" disabled={busy || !eligible} checked={selectedReports.includes(report.id)} onChange={event => setSelectedReports(current => event.target.checked ? [...current.filter(id => detail.review_evidence.find(entry => entry.id === id)?.head === report.head), report.id] : current.filter(id => id !== report.id))} />{report.axis} · {report.outcome} · {report.head.slice(0, 12)}</label>
-        <details><summary>{t("Review finding")} · {report.id}</summary><pre className="factory-diff">{report.content}</pre></details>
+        <details><summary>{t("Review finding")} · {report.id}</summary><FactoryReport assignmentId={detail.implementation.id} reportId={report.id} /></details>
         {receipt && <p role="status">{receipt.id} · {receipt.status}</p>}
       </article>;
     })}
@@ -35,6 +45,8 @@ export function FactoryReviewPanel({ detail, busy, perform }: { detail: FactoryD
       if (receipt.status !== "sent") throw new Error(t("Delivery was not confirmed. Inspect the agent before sending again."));
     })}>{t("Request changes")}</button>}
     <div className="factory-actions"><label>{t("Changes")}<select className="select factory-input" value={mode} onChange={(event) => setMode(event.target.value as "workspace" | "branch")}><option value="workspace">{t("Captured workspace")}</option><option value="branch">{t("Branch aggregate")}</option></select></label><button className="btn factory-button" disabled={busy || !detail.implementation.project_id} onClick={() => void perform(async () => { const captured = await factoryRequest<ReviewSnapshot>(`${prefix}/snapshots`, { mode, ...(run?.worktree ? { run_id: run.id } : {}) }); setSnapshotId(captured.id); setFileIndex(0); setSelected([]); })}>{t("Capture review")}</button></div>
+    {snapshotError && <p role="alert">{snapshotError} <button className="btn factory-button" onClick={() => setSnapshotAttempt(value => value + 1)}>{t("Retry")}</button></p>}
+    {selectedSnapshot && !snapshot && !snapshotError && <p role="status">{t("Loading…")}</p>}
     {snapshot && <><p className="factory-context">{snapshot.mode} · {snapshot.machine_id} · {snapshot.base.slice(0, 12)} → {snapshot.head.slice(0, 12)}</p>
       <label>{t("Review snapshot")}<select className="select factory-input" value={snapshot.id} onChange={(event) => { setSnapshotId(event.target.value); setFileIndex(0); setSelected([]); }}>{detail.snapshots.map((entry) => <option key={entry.id} value={entry.id}>{entry.created_at} · {entry.mode} · {entry.head.slice(0, 8)}</option>)}</select></label>
       <div className="factory-actions"><label>{t("File")}<select className="select factory-input" value={fileIndex} onChange={(event) => setFileIndex(Number(event.target.value))}>{snapshot.files.map((entry, index) => <option key={`${entry.status}:${entry.path}`} value={index}>{entry.path} · {entry.status}</option>)}</select></label><button className="btn factory-button" aria-pressed={sideBySide} onClick={() => setSideBySide((current) => !current)}>{t("Side by side")}</button></div>

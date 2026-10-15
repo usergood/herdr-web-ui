@@ -132,7 +132,7 @@ export interface FactoryDetail {
   retrospectives: FactoryRetrospective[];
   native_snapshots: NativeConversationSnapshot[];
 }
-export interface FactoryOverview { implementations: Implementation[]; projects: FactoryProject[]; checkouts: (Omit<ProjectCheckout, "instructions"> & { instructions?: ProjectCheckout["instructions"] })[]; settings: FactorySettings; activity: { implementation_id: string; run_id: string; condition: RunCondition; action: FactoryAction; waiting_reason: string | null; completed_tickets: number; total_tickets: number }[] }
+export interface FactoryOverview { implementations: FactoryImplementationSummary[]; projects: FactoryProject[]; checkouts: (Omit<ProjectCheckout, "instructions"> & { instructions?: ProjectCheckout["instructions"] })[]; settings: FactorySettings; activity: { implementation_id: string; run_id: string; condition: RunCondition; action: FactoryAction; waiting_reason: string | null; completed_tickets: number; total_tickets: number }[] }
 export interface FactoryPaneLink {
   project_id?: string | null;
   worktree: string | null; workspace_id: string | null;
@@ -170,3 +170,17 @@ export interface NativeConversationSnapshot extends FactoryRecord {
   run_id: string; source_id: string; sequence: number; version: string;
   turns: ConversationTurn[]; cursor: string | null;
 }
+
+/** Pollable owner decisions. Historical collections and evidence bodies are fetched on demand. */
+export type FactoryCurrent = Pick<FactoryDetail, "implementation" | "board" | "graph_hash" | "question_revision" | "question_context" | "specifications" | "tickets" | "approvals" | "questions" | "events" | "runs"> & {
+  /** Changes when retained data changes, including evidence outside this summary. */
+  revision: string;
+  checks: Omit<FactoryCheck, "commands">[];
+  review_evidence: Omit<FactoryReviewEvidence, "content">[];
+};
+export type FactoryReviewDetail = Pick<FactoryCurrent, "implementation" | "runs" | "checks" | "review_evidence"> & {
+  snapshots: Omit<ReviewSnapshot, "files">[];
+  comments: ReviewComment[];
+  review_batches: Omit<import("./protocol.ts").FactoryBatchReceipt, "reports">[];
+};
+export type FactoryImplementationSummary = Omit<Implementation, "description" | "delivery" | "upstream_update">;

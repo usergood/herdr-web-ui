@@ -1128,8 +1128,15 @@ export const DEFAULT_PORT = 7317;
  * GET /api/factory -> FactoryOverview; GET /api/factory/implementations/:id -> FactoryDetail.
  * Both include a board projection with five lifecycle lanes, current workflow activity,
  * execution condition and nullable Ticket progress; stored stages and Run history are retained.
- * GET /api/factory?navigation=1 -> FactoryOverview without checkout instruction contents;
- * sidebar/page polling uses metadata; full instructions remain in frozen Run context.
+ * GET /api/factory?navigation=1 -> FactoryOverview without Assignment descriptions/delivery
+ * evidence/upstream bodies or checkout instruction contents. Sidebar and board share this read.
+ * GET /api/factory/implementations/:id?view=current -> FactoryCurrent: current decisions,
+ * latest Specification, Ticket graph, Run status/model summaries, report/check metadata and
+ * current continuation warnings. No frozen manifests, transcripts, diffs or historical bodies.
+ * GET ...?view=review -> FactoryReviewDetail: selectable report/snapshot metadata and findings.
+ * GET ...?view=report&record_id= -> FactoryReviewEvidence; ?view=snapshot&record_id= -> ReviewSnapshot.
+ * Evidence must belong to the named Assignment (otherwise 404). The default full detail remains
+ * available on demand; the current revision token invalidates open history after retained writes.
  * POST /api/factory/implementations (implementation) -> Implementation, 201, initial Chat retained.
  * POST /api/factory/projects (project) -> FactoryProject, 201, checkout verified on selected Machine.
  * POST /api/factory/project-discovery (project_discovery) -> ProjectDiscovery;
@@ -1272,7 +1279,7 @@ export const DEFAULT_PORT = 7317;
  * proposal -> FactoryRetrospective, 201. Bodies are FactoryAgentRequests; proposals are action-scoped.
  * POST .../worker/:id/:action (empty) has the corresponding owner worker response above.
  */
-export type { FactoryBoardItem, FactoryBoardLane, FactoryActivity, FactoryOverview, FactoryDetail, Implementation, FactoryProject, ProjectCheckout, FactoryChat, FactoryMessage, FactoryEvent, SpecificationVersion, FactoryTicket, FactoryApproval, FactoryQuestion, FactoryArtifact, FactoryRun, ReviewSnapshot, ReviewComment, FactorySettings, FactoryProvider, FactoryStage, FactoryAction, RunCondition, FactoryCapabilities, FactoryProviderCapability, FactoryOutput } from "./factory.ts";
+export type { FactoryCurrent, FactoryReviewDetail, FactoryBoardItem, FactoryBoardLane, FactoryActivity, FactoryOverview, FactoryDetail, Implementation, FactoryProject, ProjectCheckout, FactoryChat, FactoryMessage, FactoryEvent, SpecificationVersion, FactoryTicket, FactoryApproval, FactoryQuestion, FactoryArtifact, FactoryRun, ReviewSnapshot, ReviewComment, FactorySettings, FactoryProvider, FactoryStage, FactoryAction, RunCondition, FactoryCapabilities, FactoryProviderCapability, FactoryOutput } from "./factory.ts";
 export type { FactoryWorker, FactoryCheck, FactoryReviewEvidence, FactoryRetrospective } from "./factory.ts";
 export type { NativeConversationSnapshot } from "./factory.ts";
 export type { FactoryPaneLink, FactoryPaneArchive } from "./factory.ts";

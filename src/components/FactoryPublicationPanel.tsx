@@ -5,7 +5,7 @@ import { accountRequest } from "../lib/accountsApi.ts";
 import { useT } from "../lib/i18n.ts";
 import "./FactoryPublicationPanel.css";
 
-export function FactoryPublicationPanel({ detail, busy, perform }: { detail: FactoryDetail; busy: boolean; perform: (action: () => Promise<void>) => Promise<void> }) {
+export function FactoryPublicationPanel({ detail, busy, perform }: { detail: Pick<FactoryDetail, "implementation" | "runs">; busy: boolean; perform: (action: () => Promise<void>) => Promise<void> }) {
   const t = useT(), run = detail.runs.at(-1);
   const [title, setTitle] = useState(detail.implementation.title);
   const [body, setBody] = useState(detail.implementation.description);

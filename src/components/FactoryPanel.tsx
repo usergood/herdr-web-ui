@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ArrowDown, ArrowUp, ArrowLeft, Archive, MessageSquarePlus, Paperclip, Plus, RefreshCw, Settings } from "lucide-react";
-import type { FactoryBoardItem, FactoryBoardLane, FactoryDetail, FactoryOverview, FactoryProvider, FactoryStage, Implementation, RunCondition, SpecificationVersion } from "../../shared/protocol.ts";
+import type { FactoryBoardItem, FactoryBoardLane, FactoryCurrent, FactoryReviewDetail, FactoryOverview, FactoryProvider, FactoryStage, Implementation, RunCondition, SpecificationVersion } from "../../shared/protocol.ts";
 import type { AgentModelSelection } from "../../shared/agent-models.ts";
 import type { Machine } from "../../shared/machines.ts";
-import { factoryDetail, factoryOverview, factoryRequest } from "../lib/factoryApi.ts";
+import { factoryCurrent, factoryRequest } from "../lib/factoryApi.ts";
 import { useT } from "../lib/i18n.ts";
 import { ProjectUpstreamStatus } from "./ProjectUpstreamStatus.tsx";
 import { OpenFileContext } from "../lib/filePaths.ts";
@@ -12,6 +12,7 @@ import { Markdown } from "./Markdown.tsx";
 import { FactoryOperationsPanel } from "./FactoryOperationsPanel.tsx";
 import { FactoryWorkflowPanel } from "./FactoryWorkflowPanel.tsx";
 import { FactoryArtifactPreview } from "./FactoryArtifactPreview.tsx";
+import { FactoryDetailSection } from "./FactoryDetailSection.tsx";
 import { FactoryReviewPanel } from "./FactoryReviewPanel.tsx";
 import { FactoryExecutionPanel } from "./FactoryExecutionPanel.tsx";
 import { FactoryPublicationPanel } from "./FactoryPublicationPanel.tsx";
@@ -35,13 +36,13 @@ function stageLabel(stage: FactoryStage, t: ReturnType<typeof useT>): string {
 function selectedFromUrl(): string | null { const match = /^#factory\/([a-zA-Z0-9-]+)$/.exec(location.hash); return match?.[1] ?? null; }
 type PlannedTicket = { key: string; title: string; acceptance: string; dependencies: string[] };
 
-export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = null, allAssignments = false, onChoose, onNavigate }: { machines: Machine[]; onOpenPane: (machineId: string, paneId: string) => void; selectedId?: string | null; projectId?: string | null; allAssignments?: boolean; onChoose?: (id: string | null) => void; onNavigate?: (view: ProjectView) => void }) {
+export function FactoryPanel({ overview, refreshOverview, machines, onOpenPane, selectedId, projectId = null, allAssignments = false, onChoose, onNavigate }: { overview: FactoryOverview | null; refreshOverview: () => Promise<void>; machines: Machine[]; onOpenPane: (machineId: string, paneId: string) => void; selectedId?: string | null; projectId?: string | null; allAssignments?: boolean; onChoose?: (id: string | null) => void; onNavigate?: (view: ProjectView) => void }) {
   const t = useT();
-  const [overview, setOverview] = useState<FactoryOverview | null>(null);
   const [selected, setSelected] = useState<string | null>(() => selectedId === undefined ? selectedFromUrl() : selectedId);
-  const [detail, setDetail] = useState<FactoryDetail | null>(null);
+  const [detail, setDetail] = useState<FactoryCurrent | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(busy); busyRef.current = busy;
   const [title, setTitle] = useState(""); const [notes, setNotes] = useState("");
   const [note, setNote] = useState("");
   const [projectFilter, setProjectFilter] = useState(projectId ?? "all");
@@ -60,10 +61,10 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const fileInput = useRef<HTMLInputElement>(null);
-  function boardLane(item: Implementation): FactoryBoardLane {
+  function boardLane(item: FactoryOverview["implementations"][number]): FactoryBoardLane {
     return overview?.board?.find(entry => entry.implementation_id === item.id)?.lane ?? ({ inbox: "inbox", specifying: "needs_you", ready: "queued", running: "running", review: "needs_you", done: "done" } as const)[item.stage];
   }
-  function boardItem(item: Implementation): FactoryBoardItem {
+  function boardItem(item: FactoryOverview["implementations"][number]): FactoryBoardItem {
     const projected = overview?.board?.find(entry => entry.implementation_id === item.id);
     if (projected) return projected;
     const legacy = overview?.activity.find(entry => entry.implementation_id === item.id);
@@ -72,21 +73,21 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
 
   async function refresh(): Promise<void> {
     const current = ++generation.current; const id = selection.current;
-    const [board, item] = await Promise.all([factoryOverview(), id ? factoryDetail(id) : Promise.resolve(null)]);
+    const item = id ? await factoryCurrent(id) : null;
     if (current !== generation.current || id !== selection.current) return;
-    setOverview(board); setDetail(item);
+    setDetail(item);
   }
   useEffect(() => {
     let live = true;
     let timer: ReturnType<typeof setTimeout>;
     const read = async () => {
-      try { if (document.visibilityState === "visible" && !busy) await refresh(); }
+      try { if (document.visibilityState === "visible" && !busyRef.current) await refresh(); }
       catch (failure) { if (live) setError(failure instanceof Error ? failure.message : String(failure)); }
       finally { if (live) timer = setTimeout(() => void read(), 5000); }
     };
     void read();
     return () => { live = false; generation.current++; clearTimeout(timer); };
-  }, [selected, busy]);
+  }, [selected]);
   useEffect(() => { setNote(""); setSpecification(""); setSource(null); setSelectedChat(""); }, [selected]);
   function choose(id: string | null): void {
     generation.current++; selection.current = id; setSelected(id); setDetail(null);
@@ -112,7 +113,7 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
   }, [detail?.implementation.id, effectiveProvider, effectiveMachine, selectedProject?.id, selectedProject?.execution_preset?.model, selectedProject?.execution_preset?.reasoning, detail?.runs.at(-1)?.id]);
   const checkout = overview?.checkouts.find((entry) => entry.project_id === selectedProject?.id && entry.machine_id === effectiveMachine);
   const execution = useFactoryCapabilities(effectiveMachine, detail?.implementation.id ?? null, JSON.stringify(selectedProject?.account_bindings?.[effectiveMachine] ?? {}));
-  const chatId = detail?.chats.find((chat) => chat.id === selectedChat)?.id ?? detail?.chats[0]?.id ?? "";
+  const chatId = selectedChat;
   async function capture(event: FormEvent): Promise<void> {
     event.preventDefault(); await perform(async () => {
       const idea = await factoryRequest<Implementation>("/implementations", { title, description: notes, project_id: projectId });
@@ -125,7 +126,7 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
       if (!overview || file.size > overview.settings.max_artifact_bytes) throw new Error(t("This attachment exceeds the size limit."));
       const bytes = new Uint8Array(await file.arrayBuffer());
       const media = file.name.toLowerCase().endsWith(".md") ? "text/markdown" : file.type || "text/plain";
-      await factoryRequest(`${prefix}/artifacts`, { chat_id: chatId, name: file.name, media_type: media, content_base64: base64FromBytes(bytes), size: file.size, origin: "upload" });
+      await factoryRequest(`${prefix}/artifacts`, { chat_id: chatId || (await factoryRequest<import("../../shared/factory.ts").FactoryDetail>(prefix)).chats[0]?.id || "", name: file.name, media_type: media, content_base64: base64FromBytes(bytes), size: file.size, origin: "upload" });
     });
   }
 
@@ -136,7 +137,7 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
         <button className="btn factory-heading-button btn-primary factory-button" onClick={() => onNavigate?.({ kind: "project-inbox", id: boardProject.id })}><MessageSquarePlus aria-hidden="true" />{t("Add message")}</button>
       </>}
       {(selected || !allAssignments || !projectId) && <button className="btn factory-heading-button factory-button" onClick={() => selected ? choose(null) : onNavigate?.(projectId ? { kind: "project", id: projectId } : { kind: allAssignments ? "inbox" : "assignments" })}><ArrowLeft aria-hidden="true" />{selected || !allAssignments ? t("Assignments") : t("Inbox")}</button>}
-      <button className="icon-button" aria-label={t("Refresh factory")} disabled={busy} onClick={() => void perform(refresh)}><RefreshCw aria-hidden="true" /></button>
+      <button className="icon-button" aria-label={t("Refresh factory")} disabled={busy} onClick={() => void perform(refreshOverview)}><RefreshCw aria-hidden="true" /></button>
     </div></div>
     {error && <p role="alert" className="error-state">{error}</p>}
     {busy && <p role="status">{t("Saving…")}</p>}
@@ -174,8 +175,8 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
       <AssignmentActions preset={preset} onPresetChange={setPreset} key={detail.implementation.id} detail={detail} project={selectedProject} machineId={effectiveMachine} machineName={machines.find(m=>m.id===effectiveMachine)?.name??effectiveMachine} provider={effectiveProvider??"codex"} busy={busy} perform={perform} onOpenPane={onOpenPane} capabilities={execution.capabilities} problem={execution.problem} onCapabilities={execution.apply} />
       <FactoryPublicationPanel key={detail.implementation.id} detail={detail} busy={busy} perform={perform} />
       {detail.implementation.project_id && <FactoryIssueBatches key={detail.implementation.id} implementationId={detail.implementation.id} projectId={detail.implementation.project_id} busy={busy} perform={perform} />}
-      <FactoryReviewPanel key={detail.implementation.id} detail={detail} busy={busy} perform={perform} />
-      <details className="factory-section"><summary>{t("Advanced controls")}</summary>
+      <FactoryDetailSection<FactoryReviewDetail> view="review" key={`review-${detail.implementation.id}`} id={detail.implementation.id} revision={detail.revision} title={t("Review changes")}>{full => <FactoryReviewPanel detail={full} busy={busy} perform={perform} />}</FactoryDetailSection>
+      <FactoryDetailSection key={`history-${detail.implementation.id}`} id={detail.implementation.id} revision={detail.revision} title={t("Advanced controls")}>{detail => { const chatId = detail.chats.find(chat => chat.id === selectedChat)?.id ?? detail.chats[0]?.id ?? ""; return <>
         <div className="factory-filters">
           <label>{t("Provider")}<select className="select factory-input" value={detail.implementation.provider ?? ""} disabled={busy} onChange={(event) => void perform(async () => { await factoryRequest(`${prefix}/configure`, { provider: (event.target.value || null) as FactoryProvider | null }); })}><option value="">{t("Project default")}</option><option>codex</option><option>claude</option><option>opencode</option></select></label>
           <label>{t("Machine")}<select className="select factory-input" value={detail.implementation.machine_id ?? ""} disabled={busy} onChange={(event) => void perform(async () => { await factoryRequest(`${prefix}/configure`, { machine_id: event.target.value || null }); })}><option value="" disabled={!selectedProject}>{selectedProject ? t("Project default") : t("Select a Machine")}</option>{machines.map((machine) => <option key={machine.id} value={machine.id}>{machine.name}</option>)}</select></label>
@@ -205,7 +206,7 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
       <FactoryRetrospectivePanel preset={preset} detail={detail} busy={busy} perform={perform} />
       <section className="factory-section"><h3>{t("Retained native conversations")}</h3>{detail.native_snapshots.map((snapshot) => <details key={snapshot.id}><summary>{snapshot.run_id} · {snapshot.sequence} · {new Date(snapshot.created_at).toLocaleString()}</summary>{snapshot.turns.map((turn, index) => <article className="factory-message" key={index}><small>{turn.role} · {turn.ts}</small>{turn.parts.map((part, index) => part.kind === "text" ? <Markdown key={index}>{part.text}</Markdown> : part.kind === "skill" ? <small key={index}>{part.skill.name} · {part.skill.status}</small> : part.kind === "tool" ? <details key={index}><summary>{part.name} · {part.summary}</summary><pre>{part.output}</pre></details> : null)}</article>)}{snapshot.cursor && <button className="btn factory-button" disabled={busy} onClick={() => void perform(async () => { await factoryRequest(`/runs/${snapshot.run_id}/import-conversation`, { before: snapshot.cursor ?? undefined }); })}>{t("Retain older native history")}</button>}</details>)}</section>
       <section className="factory-section"><h3>{t("History")}</h3>{detail.events.map((event) => <p key={event.id}><time>{new Date(event.created_at).toLocaleString()}</time> · {event.kind}</p>)}</section>
-      </details>
+      </>; }}</FactoryDetailSection>
     </div>}
   </section></OpenFileContext.Provider>;
 }

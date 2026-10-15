@@ -23,8 +23,34 @@ import type { FactoryAction, FactoryRun } from "../shared/factory.ts";
 import type { FactoryNative } from "./factory-native.ts";
 import { githubScheduleFixture } from "./github-schedules.fixture.ts";
 import { batchProposal, githubIssueBatchFixture } from "./github-issue-batches.fixture.ts";
+import { factoryLoadingFixture } from "./factory-loading.fixture.ts";
 import { factoryDeliveryFixture } from "./factory-delivery.fixture.ts";
 import { factoryMergeFixture } from "./factory-merge.fixture.ts";
+
+describe("factory loading HTTP contract", () => {
+  it("authenticates compact reads and scopes lazy report/snapshot bodies to their Assignment", async () => {
+    const fixture = factoryLoadingFixture(); fixture.service.stop();
+    const app = createServer({ port: 0, token: "owned-loading-token", stateDir: fixture.root, machines: false, factory: { accountDiscoveryHome: fixture.root } });
+    const origin = `http://localhost:${app.port}/api/factory`;
+    const headers = { authorization: "Bearer owned-loading-token" };
+    try {
+      expect((await fetch(`${origin}/implementations/${fixture.id}?view=current`)).status).toBe(401);
+      const read = (path: string) => fetch(origin + path, { headers });
+      const current = await read(`/implementations/${fixture.id}?view=current`);
+      expect(current.status).toBe(200);
+      const summary = await current.json(); expect(summary.revision).toBeString();
+      expect(summary.messages).toBeUndefined(); expect(summary.native_snapshots).toBeUndefined();
+      const report = await read(`/implementations/${fixture.id}?view=report&record_id=report-0-0`);
+      expect(report.status).toBe(200); expect((await report.json()).content.length).toBeGreaterThan(40_000);
+      const wrong = await read("/implementations/assignment-1?view=snapshot&record_id=snapshot-0-0");
+      expect(wrong.status).toBe(404); expect(await wrong.json()).toMatchObject({ error: { code: "not_found" } });
+      const full = await (await read(`/implementations/${fixture.id}`)).json();
+      expect(full.native_snapshots).toHaveLength(4);
+      const nav = await (await read("?navigation=1")).json();
+      expect(nav.implementations[0].description).toBeUndefined();
+    } finally { app.stop(); fixture.close(); }
+  });
+});
 
 describe("implementation PR publication HTTP contract", () => {
   it("requires the explicit mutation header and same origin for automatic publication settings", async () => {
