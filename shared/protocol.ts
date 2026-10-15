@@ -1260,6 +1260,7 @@ export interface FactoryRequests {
   model_catalog: { project_id: string; machine_id: string; provider: import("./factory.ts").FactoryProvider };
   pane_archive: { machine_id: string; pane_id: string; archived: boolean; terminal_id?: string; session_ref?: string | null };
   github_readiness: import("./github-readiness.ts").ReadinessConfiguration;
+  github_plan_preparation: import("./issue-planning.ts").PrepareIssuePlan;
   github_readiness_approval: { source_revision: string; policy_revision: string };
   github_configuration: import("./github-project.ts").ProjectGitHubConfiguration;
   github_action: { head: string; base: string; policy_revision: string };
@@ -1309,6 +1310,9 @@ export type FactoryRequestBody = FactoryRequests[keyof FactoryRequests];
  * separately selects one verified readiness identity and all triage/blocked mappings.
  * POST .../github/issues/:number/approve ({source_revision,policy_revision}) -> ProjectGitHubOverview;
  * explicit owner approval of fresh current scope only; never dispatches work.
+ * POST .../github/issues/:number/prepare (PrepareIssuePlan) -> ProjectGitHubOverview;
+ * reuses trusted planning and retains a bounded graph/provenance or targeted owner questions. Never starts work.
+ * Source planning records retain exact content, dependencies, seams, graph and original authorization.
  * POST .../github/configure -> ProjectGitHubPolicy, uses ProjectGitHubConfiguration.
  * POST .../github/sync -> ProjectGitHubOverview; imports issue/fix records and applies opted-in PR policies.
  * Sources retain current issue scope, revision history and fetch evidence; incomplete inventories

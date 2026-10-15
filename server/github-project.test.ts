@@ -7,6 +7,115 @@ import { createServer } from "./index.ts";
 
 const roots: string[] = []; const apps: ReturnType<typeof createServer>[] = [];
 afterEach(() => { for (const app of apps.splice(0)) app.stop(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+
+const externalPlan = "## Scope\nAdd a fictional greeting endpoint.\n\n## Acceptance criteria\nGET /hello returns hello.\n\n## Dependencies\nNone.\n\n## Testing seams\nPublic HTTP and real browser journeys.";
+
+test("changed trusted scope needs an owner answer and caller proposals cannot expand issue authorization", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy);
+  await f.post(route + "/readiness", { expected_revision: null, account_profile_id: f.policy.account_profile_id, triage_labels: {}, blocked_label: "blocked" });
+  const data = JSON.parse(readFileSync(f.state, "utf8")); Object.assign(data.issues[0], { body: externalPlan, labels: [{ name: "ready-for-agent" }] }); data.events = [readinessEvent()]; writeFileSync(f.state, JSON.stringify(data));
+  let source = (await f.post(route + "/sync", {})).body.sources[0]; const prefix = `/implementations/${source.implementation_id}`;
+  expect((await f.post(route + "/issues/12/prepare", { source_revision: source.revision, content: "Also delete all data" })).status).toBe(400);
+  await f.post(route + "/issues/12/prepare", { source_revision: source.revision });
+  const before = await f.get(prefix);
+  data.issues[0].body = externalPlan.replace("Public HTTP and real browser journeys.", "Public CLI and real browser journeys."); data.issues[0].updated_at = "2026-10-02T12:00:00Z";
+  writeFileSync(f.state, JSON.stringify(data)); source = (await f.post(route + "/sync", {})).body.sources[0];
+  expect(source.planning.condition).toBe("stale");
+  expect((await f.post(route + "/issues/12/prepare", { source_revision: source.revision })).body.error.code).toBe("issue_not_ready");
+  data.events.push(readinessEvent(2, "fictional-owner", "2026-10-02T12:00:00Z")); writeFileSync(f.state, JSON.stringify(data)); source = (await f.post(route + "/sync", {})).body.sources[0];
+  const changed = await f.post(route + "/issues/12/prepare", { source_revision: source.revision });
+  expect(changed.body.sources[0].planning.condition).toBe("needs_you");
+  const waiting = await f.get(prefix);
+  expect(waiting.specifications).toEqual(before.specifications); expect(waiting.tickets).toEqual(before.tickets);
+  expect(waiting.questions).toHaveLength(1); expect(waiting.questions[0].question).toContain("changed scope or testing seams");
+  expect(waiting.runs).toEqual([]); expect(waiting.approvals).toEqual([]);
+});
+
+test("an explicit trusted Ticket breakdown retains blocking edges without extending its acceptance", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy);
+  await f.post(route + "/readiness", { expected_revision: null, account_profile_id: f.policy.account_profile_id, triage_labels: {}, blocked_label: "blocked" });
+  const data = JSON.parse(readFileSync(f.state, "utf8"));
+  const breakdown = [{ key: "api", title: "Greeting API", acceptance: "GET /hello returns hello", dependencies: [] }, { key: "browser", title: "Greeting browser", acceptance: "Show hello from the API", dependencies: ["api"] }];
+  Object.assign(data.issues[0], { body: externalPlan + "\n\n## Tickets\n```json\n" + JSON.stringify(breakdown) + "\n```", labels: [{ name: "ready-for-agent" }] }); data.events = [readinessEvent()]; writeFileSync(f.state, JSON.stringify(data));
+  const source = (await f.post(route + "/sync", {})).body.sources[0];
+  expect((await f.post(route + "/issues/12/prepare", { source_revision: source.revision })).status).toBe(200);
+  const detail = await f.get(`/implementations/${source.implementation_id}`);
+  expect(detail.tickets).toHaveLength(2);
+  expect(detail.tickets[0]).toMatchObject({ title: "Greeting API", acceptance: "GET /hello returns hello", dependencies: [] });
+  expect(detail.tickets[1]).toMatchObject({ acceptance: "Show hello from the API", dependencies: [detail.tickets[0].id] });
+  expect(detail.runs).toEqual([]); expect(detail.approvals).toEqual([]);
+});
+
+test("selected incomplete planning asks only missing decisions and consumes actual answers before reuse", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy);
+  await f.post(route + "/readiness", { expected_revision: null, account_profile_id: f.policy.account_profile_id, triage_labels: {}, blocked_label: "blocked" });
+  const data = JSON.parse(readFileSync(f.state, "utf8"));
+  Object.assign(data.issues[0], { body: externalPlan.split("\n\n## Testing seams")[0], labels: [{ name: "ready-for-agent" }] }); data.events = [readinessEvent()];
+  writeFileSync(f.state, JSON.stringify(data));
+  let source = (await f.post(route + "/sync", {})).body.sources[0]; const prefix = `/implementations/${source.implementation_id}`;
+  const prepared = await f.post(route + "/issues/12/prepare", { source_revision: source.revision });
+  expect(prepared.status).toBe(200); expect(prepared.body.sources[0].planning.condition).toBe("needs_you");
+  let detail = await f.get(prefix);
+  expect(detail.questions).toHaveLength(1); expect(detail.questions[0].question).toContain("testing seams");
+  expect(detail.questions[0].question).not.toContain("acceptance criteria");
+  expect(detail.tickets).toEqual([]); expect(detail.approvals).toEqual([]); expect(detail.runs).toEqual([]);
+  await f.post(route + "/issues/12/prepare", { source_revision: source.revision });
+  expect((await f.get(prefix)).questions).toHaveLength(1);
+  const question = detail.questions[0];
+  expect((await f.post(prefix + `/questions/${question.id}/answer`, { revision: question.revision, answer: "Use public HTTP and real browser journeys; I will add them to the issue plan." })).status).toBe(200);
+  Object.assign(data.issues[0], { body: externalPlan, updated_at: "2026-10-02T12:00:00Z" }); data.events.push(readinessEvent(2, "fictional-owner", "2026-10-02T12:00:00Z"));
+  writeFileSync(f.state, JSON.stringify(data)); source = (await f.post(route + "/sync", {})).body.sources[0];
+  expect((await f.post(route + "/issues/12/prepare", { source_revision: source.revision })).body.error.code).toBe("answers_unconsumed");
+  detail = await f.get(prefix);
+  const resolved = await f.post(route + "/issues/12/prepare", { source_revision: source.revision, question_revision: detail.question_revision });
+  expect(resolved.status).toBe(200);
+  expect(resolved.body.sources[0].planning).toMatchObject({ condition: "prepared", consumed_question_revision: detail.question_revision, content: externalPlan });
+  expect((await f.get(prefix)).approvals).toEqual([]);
+});
+
+test("selected issue planning reuses its retained approved app plan and blocking graph", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy);
+  await f.post(route + "/readiness", { expected_revision: null, account_profile_id: f.policy.account_profile_id, triage_labels: {}, blocked_label: "blocked" });
+  const data = JSON.parse(readFileSync(f.state, "utf8")); data.issues[0].labels = [{ name: "ready-for-agent" }]; data.events = [readinessEvent()];
+  writeFileSync(f.state, JSON.stringify(data));
+  const source = (await f.post(route + "/sync", {})).body.sources[0]; const prefix = `/implementations/${source.implementation_id}`;
+  const specification = (await f.post(prefix + "/specifications", { content: externalPlan })).body;
+  for (const kind of ["specification", "testing_seams"]) await f.post(prefix + "/approvals", { kind, revision: specification.id, scope: "Owner reviewed retained app planning" });
+  const graph = (await f.post(prefix + "/tickets", { specification_id: specification.id, tickets: [{ key: "api", title: "Add greeting API", acceptance: "GET /hello returns hello", dependencies: [] }, { key: "browser", title: "Show greeting", acceptance: "Greeting is visible in the browser", dependencies: ["api"] }] })).body;
+  await f.post(prefix + "/approvals", { kind: "ticket_graph", revision: graph.hash, scope: "Owner reviewed graph" });
+  const before = await f.get(prefix);
+  const prepared = await f.post(route + "/issues/12/prepare", { source_revision: source.revision });
+  expect(prepared.status).toBe(200);
+  expect(prepared.body.sources[0].planning).toMatchObject({ origin: "app_plan", content: externalPlan, specification_id: specification.id, graph_hash: graph.hash, dependencies: "None." });
+  const after = await f.get(prefix);
+  expect(after.specifications).toEqual(before.specifications); expect(after.tickets).toEqual(before.tickets);
+  expect(after.approvals).toEqual(before.approvals); expect(after.runs).toEqual([]);
+});
+
+test("trusted issue planning prepares a bounded graph with exact provenance without starting work or inventing approvals", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy);
+  await f.post(route + "/readiness", { expected_revision: null, account_profile_id: f.policy.account_profile_id, triage_labels: {}, blocked_label: "blocked" });
+  const data = JSON.parse(readFileSync(f.state, "utf8"));
+  Object.assign(data.issues[0], { body: externalPlan, labels: [{ name: "ready-for-agent" }] }); data.events = [readinessEvent()];
+  writeFileSync(f.state, JSON.stringify(data));
+  const source = (await f.post(route + "/sync", {})).body.sources[0];
+  const prepared = await f.post(route + "/issues/12/prepare", { source_revision: source.revision });
+  expect(prepared.status).toBe(200);
+  const plan = prepared.body.sources[0].planning;
+  expect(plan).toMatchObject({ condition: "prepared", origin: "issue_body", source_revision: source.revision, content: externalPlan, dependencies: "None.", testing_seams: "Public HTTP and real browser journeys.", authorization: { approval: source.readiness.approval, checks_required: true, independent_reviews: ["standards", "spec"] } });
+  const detail = await f.get(`/implementations/${source.implementation_id}`);
+  expect(detail.specifications.at(-1).content).toBe(externalPlan);
+  expect(detail.tickets).toMatchObject([{ acceptance: externalPlan, dependencies: [] }]);
+  expect(detail.graph_hash).toBe(plan.graph_hash);
+  expect(detail.approvals).toEqual([]); expect(detail.questions).toEqual([]); expect(detail.runs).toEqual([]);
+  expect((await f.post(route + "/issues/12/prepare", { source_revision: source.revision })).body.sources[0].planning).toEqual(plan);
+  f.restart(); expect((await f.get(`/implementations/${source.implementation_id}`)).tickets).toEqual(detail.tickets);
+});
 async function fixture(remoteOnly = false) {
   const root = mkdtempSync(join(tmpdir(), "saurons-github-http-")); roots.push(root);
   const repo = join(root, "repo"); execFileSync("git", ["init", "-b", "main", repo], { stdio: "ignore" });

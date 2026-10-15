@@ -1,3 +1,5 @@
+import { FactoryWorkflow } from "./factory-workflow.ts";
+import { prepareIssuePlan } from "./issue-planning.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -60,7 +62,10 @@ export class ProjectGitHub {
     const sync = this.store.get<SyncState>("github_sync", source.project_id);
     if ((!sync?.last_sync || sync.problem) && !readiness.blockers.includes("sync_required")) readiness.blockers.push("sync_required");
     readiness.eligible = !readiness.blockers.length;
-    return { ...source, readiness };
+    const planning = this.store.get<import("../shared/issue-planning.ts").IssuePlanning>("github_plans", source.id);
+    const workflow = new FactoryWorkflow(this.store);
+    const current = planning && readiness.eligible && planning.source_revision === source.revision && planning.authorization.approval.id === readiness.approval?.id && (planning.condition !== "prepared" || planning.specification_id === workflow.specification(source.implementation_id)?.id && planning.graph_hash === workflow.graphHash(source.implementation_id) && (!workflow.questions(source.implementation_id).length || planning.consumed_question_revision === workflow.questionRevision(source.implementation_id)));
+    return { ...source, readiness, planning: planning ? { ...planning, condition: current ? planning.condition : "stale" } : undefined };
   }
   private project(id: string): FactoryProject {
     const project = this.store.get<FactoryProject>("projects", id);
@@ -105,6 +110,19 @@ export class ProjectGitHub {
     } catch { /* The workflow retains explicit automation gates when protection is unreadable. */ }
     if (this.projectScope(id) !== scope) throw new FactoryError("account_scope_changed", "The Project changed during GitHub discovery", 409);
     return { repository, default_branch: branch, reviewers, required_checks: checks, protected: protectedBranch };
+  }
+  async prepareIssue(id: string, number: number, body: Record<string, unknown>): Promise<ProjectGitHubOverview> {
+    return this.locked(id, async () => {
+      this.project(id);
+      if (Object.keys(body).some(key => !["source_revision", "question_revision"].includes(key))) throw new FactoryError("invalid_plan_request", "Planning reuses only retained trusted content");
+      const source = this.sources(id).find(source => source.kind === "issue" && source.number === number);
+      if (!source || body.source_revision !== source.revision) throw new FactoryError("issue_changed", "Refresh the issue before preparing planning", 409);
+      const idea = this.store.get<Implementation>("implementations", source.implementation_id);
+      if (!idea || idea.project_id !== id || idea.archived_at) throw new FactoryError("issue_changed", "Select the issue in its original Project", 409);
+      if (this.store.list<import("../shared/factory.ts").FactoryRun>("runs", idea.id).some(run => !["completed", "failed", "cancelled"].includes(run.condition))) throw new FactoryError("planning_busy", "Finish or reconcile active work before preparing a new plan", 409);
+      prepareIssuePlan(this.store, this.describeSource(source), body.question_revision);
+      return this.overview(id);
+    });
   }
   private async locked<T>(id: string, run: () => Promise<T>): Promise<T> {
     if (this.busy.has(id)) throw new FactoryError("github_busy", "Wait for this Project's GitHub operation", 409);
