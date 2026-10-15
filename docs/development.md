@@ -361,12 +361,12 @@ after changing the staged session. Files, images, push and remote PCs are not pa
 1. Open a release PR that bumps `version` in `package.json` and `herdr-plugin.toml`,
    moves the `Unreleased` notes in [CHANGELOG.md](../CHANGELOG.md) under the new version,
    and tells the release in [release-summaries.json](../release-summaries.json) the way a
-   game's patch notes do: under the version, for each of `en`, `ko`, `ja` and `zh`, the lists
+   game's patch notes do: under the version, for each of `en`, `ko`, `ja`, `zh` and `tr`, the lists
    `new`, `improved` and `fixed` (a list with nothing to say is left out), each a few lines of
    plain text, 90 characters at most, the same number of lines in every language. It is what
    an install shows before and after the update, with the changelog section folded under it,
    so a line names what changes for the people who use the app and leaves out PR numbers and
-   internals. The unit suite and the release workflow fail without all four languages.
+   internals. The unit suite and the release workflow fail without all five languages.
    The GitHub release is written from the same files by `scripts/release-notes.ts`: the
    English lists under New features, Improvements and Bug fixes, then the version's whole
    changelog section folded under **Full changelog**.
@@ -514,8 +514,8 @@ consume private-repository Free-plan minutes; artifact/cache storage has separat
 Failure artifacts expire after one day, and superseded CI runs are cancelled. Do not raise
 paid storage limits or inject production account/provider secrets into test jobs.
 
-Release, Website, Remote PC bundles and Windows install remain disabled. They are manual
-workflows; no weekly installer job or tag-triggered publication is scheduled. Publishing
+Release is enabled for owner-dispatched application updates. Website, Remote PC bundles
+and Windows install remain disabled. These are manual workflows; no weekly installer job or tag-triggered publication is scheduled. Publishing
 uses the owner's protected `release` environment. Website redesign is documented in
 [site-redesign.md](factory/site-redesign.md); GitHub Pages remains unconfigured.
 

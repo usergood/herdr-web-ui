@@ -20,7 +20,9 @@ implementation is verified. Website redesign and publication remain later work.
 - Pin and verify executable Windows prerequisite downloads. Fresh installation of a reviewed
   commit must work without release history. Update acceptance selects an explicit previous/current
   fork release pair, rejects incompatible inherited plugin IDs, and requests discovery explicitly.
-- Keep Release, Website, Remote PC bundles and Windows install disabled in GitHub. Remote bundles
+- Release is enabled by owner authorization for manual application releases; its full validation
+  and protected release environment remain required. Keep Website, Remote PC bundles and
+  Windows install disabled in GitHub. Remote bundles
   become manual with publication off by default; publishing requires main, version checks,
   full CI and a protected publication environment. No tag, release, installation or deployment
   is authorized by this task.
