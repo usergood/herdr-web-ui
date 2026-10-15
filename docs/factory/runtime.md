@@ -30,6 +30,8 @@ Creating a specification revision invalidates the current Ticket graph for futur
 
 ## Work, review and history
 
+Assignment details and the Project sidebar now preserve named Specifications, Orchestrator and Human Review entries across native-context handoffs. Ticket implementations, independent reviewer contexts and repair histories retain their original parentage and provenance. This is a history/navigation view; automatic startup and Human Review execution remain separate implementation work. See [Workflow conversation history](workflow-conversations.md) for the current behavior and wire metadata.
+
 The integration branch and worktree belong to the Run. Implementers receive separate worktrees at the current integration tip. The scoped tracker exposes stable Ticket IDs, accepted context, questions, versioned answer consumption, worker operations, checks and proposal operations. Its private capability lives in a 0600 file and cannot approve specifications or control another Run.
 
 Only the dependency frontier can start ordinary Ticket work. Shared document claims exclude competing writers. Workers reconcile the current integration tip, run the configured checks and submit a committed candidate. The serialized backend merger rejects stale tips, changed cwd/branch/repository, dirty tracked changes, unclaimed shared documents and committed application scaffolding. It retains the branch and never updates the default branch.

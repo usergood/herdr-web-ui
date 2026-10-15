@@ -15,7 +15,7 @@ const native = await herdrRpc<WorkspaceCreateResult>("workspace.create", { cwd: 
 const fixtureStore = new FactoryStore(state);
 fixtureStore.put("workers", { ...f.implementation, worktree: state, workspace_id: native.workspace.workspace_id, pane_id: native.root_pane.pane_id }, f.orchestrator.id);
 fixtureStore.close();
-let app = createServer({ port: 0, stateDir: state, token: "", factory: { accountDiscoveryHome: state } });
+let app = createServer({ port: 0, stateDir: state, token: "", factory: { accountDiscoveryHome: state, native: { version: async () => null } } });
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
@@ -49,7 +49,7 @@ try {
   await fixes.nth(1).click();
   await panel.getByText("Retained human-fix-context decisions", { exact: true }).waitFor();
   const route = new URL(page.url()).hash;
-  app.stop(); app = createServer({ port: 0, stateDir: state, token: "", factory: { accountDiscoveryHome: state } });
+  app.stop(); app = createServer({ port: 0, stateDir: state, token: "", factory: { accountDiscoveryHome: state, native: { version: async () => null } } });
   await page.goto(`http://localhost:${app.port}/${route}`);
   await panel.getByText("Retained human-fix-context decisions", { exact: true }).waitFor();
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
