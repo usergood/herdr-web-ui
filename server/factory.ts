@@ -44,6 +44,7 @@ export class FactoryService {
   private readonly references: FactoryReferences;
   private readonly accounts: MachineAccounts;
   private readonly github: ProjectGitHub;
+  private address: string | null = null;
   private stopped = false;
   constructor(stateDir: string, private readonly skillsPath: string | null = null, native: Partial<FactoryNative> = {}, endpoint: MachineEndpoint = () => undefined, publicUrl: string | null = null, accountTools: AccountTools = {}, private readonly registeredMachine: (id: string) => boolean = (id) => id === "local" || !!endpoint(id), accountDiscoveryHome?: string) {
     this.accounts = new MachineAccounts(stateDir, accountTools, false, accountDiscoveryHome);
@@ -60,8 +61,15 @@ export class FactoryService {
       if (!allowPartial && (latest(["native_snapshot_unavailable", "planning_handoff_retained"]) === "native_snapshot_unavailable" || latest(["planning_documents_unavailable", "planning_documents_retained"]) === "planning_documents_unavailable")) throw new FactoryError("handoff_incomplete", "Some planning context could not be retained. Review the warning and choose Continue with available context", 409);
     });
     this.retrospectives = new FactoryRetrospectives(this.store);
-    this.github = new ProjectGitHub(this.store, this.accounts, (machineId, path) => this.runtime.discover(machineId, path));
+    this.github = new ProjectGitHub(this.store, this.accounts, (machineId, path) => this.runtime.discover(machineId, path), {
+      reconcile: async () => { await this.runtime.recover(); await this.runtime.reconcileCapacity(); },
+      start: (id, scope, key, validate) => {
+        if (!this.address) throw new FactoryError("factory_address_required", "Wait for the connection server address", 409);
+        return this.runtime.start(id, { action: "implement-spec", issue_scope: scope, idempotency_key: key }, this.address, { validateScope: validate });
+      },
+    });
   }
+  bindAddress(address: string): void { this.address = address; }
   settings(): FactorySettings { return this.store.get<{ id: string; value: FactorySettings }>("settings", "default")?.value ?? { ...initialSettings, skills_path: this.skillsPath }; }
   private activeWork(id: string): boolean {
     const runs = this.store.list<FactoryRun>("runs", id); const ids = new Set(runs.map((run) => run.id));

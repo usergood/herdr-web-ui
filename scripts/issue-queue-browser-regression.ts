@@ -163,4 +163,74 @@ try {
   }
   assert.deepEqual(errors, []);
   console.log("PASS: desktop/mobile awaiting merge, separate owner acceptance, available Project capacity and unrelated admission without false delivery");
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    const automatic = githubQueueFixture(true);
+    const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });
+    page.setDefaultTimeout(10_000); page.on("pageerror", error => errors.push(error.message));
+    try {
+      const { project, account, route } = await automatic.setup();
+      const later = { ...automatic.issue, number: 2, node_id: "fictional-auto-2", title: "Queued automatic greeting" };
+      const blocked = { ...automatic.issue, number: 3, node_id: "fictional-auto-3", title: "Blocked automatic greeting", labels: [{ name: "blocked" }, { name: "ready-for-agent" }] };
+      automatic.save([automatic.issue, later, blocked], false, {}, true);
+      await page.goto(automatic.origin + `/#projects/${project.id}/settings`);
+      await page.getByRole("tab", { name: "GitHub", exact: true }).click();
+      await page.getByLabel("Automatic sync", { exact: true }).check();
+      const saved = page.waitForResponse(response => response.url().endsWith(route + "/configure") && response.request().method() === "POST");
+      await page.getByRole("button", { name: "Save Project settings", exact: true }).click(); await saved;
+      const readiness = page.getByRole("region", { name: "Issue readiness", exact: true });
+      await readiness.getByRole("combobox", { name: "Readiness account", exact: true }).selectOption(account.id);
+      const selected = page.waitForResponse(response => response.url().endsWith(route + "/readiness") && response.request().method() === "POST");
+      await readiness.getByRole("button", { name: "Save readiness settings", exact: true }).click(); await selected;
+      await readiness.getByText("Readiness identity: fictional-owner", { exact: true }).waitFor();
+      const queue = page.getByRole("region", { name: "Issue queue", exact: true });
+      const enable = queue.getByRole("button", { name: "Enable automatic implementation", exact: true });
+      assert(await enable.isDisabled());
+      await queue.getByLabel("Pause queue", { exact: true }).check();
+      await queue.getByRole("button", { name: "Save queue settings", exact: true }).click();
+      await queue.getByText("Queue paused. Admitted work continues.", { exact: true }).waitFor();
+      await queue.getByRole("button", { name: "Preview eligible backlog", exact: true }).click();
+      await queue.getByText("Eligible issues: 2", { exact: true }).waitFor();
+      await enable.click();
+      await queue.getByText("Automatic implementation is on.", { exact: true }).waitFor();
+      assert.deepEqual(automatic.launches, []);
+      await queue.getByText("Queued", { exact: true }).first().waitFor();
+      await queue.getByText("Resolve the issue's blocked signal before implementation.", { exact: true }).waitFor();
+      const first = queue.getByRole("article").filter({ has: page.getByRole("link", { name: "#1 · Fictional scope", exact: true }) });
+      await first.getByRole("button", { name: "Move later", exact: true }).click();
+      assert((await queue.getByRole("article").first().textContent())?.includes(later.title));
+      automatic.setLaunchOutcome("failed");
+      await queue.getByLabel("Pause queue", { exact: true }).uncheck();
+      await queue.getByRole("button", { name: "Save queue settings", exact: true }).click();
+      await queue.getByText("Automatic implementation is on.", { exact: true }).waitFor();
+      await page.waitForFunction(() => !document.querySelector('[aria-label="Issue queue"] form button:disabled'));
+      const sources = (await automatic.json(route)).sources;
+      const failedSource = sources.find((source: any) => source.number === 2);
+      const failedPath = `/implementations/${failedSource.implementation_id}`;
+      const failed = (await automatic.json(failedPath)).runs[0];
+      assert.equal(failed.condition, "failed");
+      await automatic.json(route + "/sync", {});
+      assert.equal((await automatic.json(failedPath)).runs.length, 1);
+      await page.goto(automatic.origin + `/#factory/${failedSource.implementation_id}`);
+      await page.getByText("Attempt failed. Use Retry to start again.", { exact: true }).waitFor();
+      automatic.setLaunchOutcome("working");
+      // Another failed backlog attempt releases capacity; Retry still needs the owner's explicit action.
+      await page.getByRole("region", { name: "Issue planning", exact: true }).getByRole("button", { name: "Retry", exact: true }).click();
+      const contract = page.getByRole("region", { name: "Admitted issue contract", exact: true }).last();
+      await contract.getByText("Execution confirmed.", { exact: true }).waitFor();
+      const run = (await automatic.json(failedPath)).runs.at(-1);
+      assert.equal(run.retry_of, failed.id);
+      automatic.save([automatic.issue, later, blocked], true, {}, true);
+      assert.equal((await automatic.post(route + "/sync", {})).status, 409);
+      await page.reload();
+      await contract.getByText("Execution confirmed.", { exact: true }).waitFor();
+      later.body += "\nChanged automatic scope.";
+      automatic.save([automatic.issue, later, blocked], false, {}, true); await automatic.json(route + "/sync", {});
+      await page.reload();
+      await contract.getByText("Controlled pause requested. Issue scope changed.", { exact: true }).waitFor();
+      assert.deepEqual((await automatic.json(failedPath)).runs.at(-1).manifest, run.manifest);
+      assert(await contract.evaluate(element => element.scrollWidth <= element.clientWidth));
+    } finally { await page.close(); automatic.close(); }
+  }
+  assert.deepEqual(errors, []);
+  console.log("PASS: desktop/mobile identity selection, reviewed automatic opt-in, queued/blocked priority, pause, failed-attempt Retry, outage continuation and controlled pause");
 } finally { await browser.close(); fixture.close(); }

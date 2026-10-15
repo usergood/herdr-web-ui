@@ -1321,8 +1321,12 @@ export type FactoryRequestBody = FactoryRequests[keyof FactoryRequests];
  * max_implementations:1. effective_limit also respects the current global limit. implementing_count
  * includes uncertain execution and builds; available_slots reports remaining Project capacity.
  * POST .../github/queue (QueueConfiguration) -> IssueQueue; expected_revision guards replacement.
- * This version refuses automatic_implementation:true; no dispatch is connected.
- * POST .../github/preview ({}) -> IssueQueue; retains a preview revision/count, never a start approval.
+ * Enabling automatic_implementation requires preview_revision from the exact current preview,
+ * an explicitly selected readiness identity, enabled sync and issue imports. Existing and future
+ * eligible issues use guarded admission, frozen contracts, limits, recovery and explicit Retry.
+ * dispatch_problem retains a pre-admission blocking code/message without inventing an attempt.
+ * POST .../github/preview ({}) -> IssueQueue; syncs evidence, prepares sufficient trusted plans and
+ * retains a preview revision/count. Preview alone does not enable or dispatch implementation.
  * preview_current is false after relevant policy, account, scope, plan, evidence, freshness or priority
  * changes. Both POSTs require same origin and x-herdr-machine:1 plus x-herdr-factory:1.
  * GET /api/factory/projects/:id/github -> ProjectGitHubOverview.

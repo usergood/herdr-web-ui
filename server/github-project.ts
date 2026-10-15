@@ -29,9 +29,13 @@ interface Issue { number: number; node_id: string; title: string; body: string |
 /** Project-scoped metadata and guarded mutation. Never executes foreign PR code. */
 export class ProjectGitHub {
   private readonly busy = new Set<string>();
+  private readonly dispatching = new Set<string>();
   private stopped = false;
   private readonly timer: ReturnType<typeof setInterval>;
-  constructor(private readonly store: FactoryStore, private readonly accounts: MachineAccounts, private readonly discover?: (machineId: string, path: string) => Promise<import("../shared/project-setup.ts").ProjectDiscovery>) {
+  constructor(private readonly store: FactoryStore, private readonly accounts: MachineAccounts, private readonly discover?: (machineId: string, path: string) => Promise<import("../shared/project-setup.ts").ProjectDiscovery>, private readonly execution?: {
+    reconcile: () => Promise<void>;
+    start: (id: string, scope: import("../shared/issue-admission.ts").IssueStartScope, key: string, validate: () => void) => Promise<unknown>;
+  }) {
     this.timer = setInterval(() => { void this.poll(); }, 10_000); this.timer.unref();
   }
   stop(): void { this.stopped = true; clearInterval(this.timer); }
@@ -69,13 +73,15 @@ export class ProjectGitHub {
     const revision = hash(JSON.stringify({ policy, global_limit: globalLimit, github_policy: githubPolicy, readiness_policy: readinessPolicy, profiles: profiles.map(profile => [profile.id, profile.revision, profile.state, profile.verified_identity]), scope: this.projectScope(id), sources, entries, contracts: entries.map(entry => [this.workflowScope(entry.implementation_id)]) }));
     const preview = this.store.get<{ id: string; revision: string; created_at: string; eligible_count: number }>("github_queue_previews", id);
     const implementingCount = implementingAssignments(this.store, this.store.list<import("../shared/factory.ts").FactoryRun>("runs").filter(run => run.action === "implement-spec" && (run.manifest as { project?: FactoryProject }).project?.id === id)).size;
-    return { policy, global_limit: globalLimit, effective_limit: Math.min(policy.max_implementations, globalLimit), implementing_count: implementingCount, available_slots: Math.max(0, Math.min(policy.max_implementations, globalLimit) - implementingCount), revision, eligible_count: entries.filter(entry => entry.eligible).length, entries, preview: preview ? { revision: preview.revision, created_at: preview.created_at, eligible_count: preview.eligible_count } : null, preview_current: preview?.revision === revision };
+    const dispatchProblem = this.store.get<{ code: string; message: string; source_id: string | null }>("github_queue_problems", id);
+    return { policy, dispatch_problem: dispatchProblem ? { code: dispatchProblem.code, message: dispatchProblem.message, source_id: dispatchProblem.source_id } : null, global_limit: globalLimit, effective_limit: Math.min(policy.max_implementations, globalLimit), implementing_count: implementingCount, available_slots: Math.max(0, Math.min(policy.max_implementations, globalLimit) - implementingCount), revision, eligible_count: entries.filter(entry => entry.eligible).length, entries, preview: preview ? { revision: preview.revision, created_at: preview.created_at, eligible_count: preview.eligible_count } : null, preview_current: preview?.revision === revision };
   }
   private workflowScope(id: string): unknown {
     const workflow = new FactoryWorkflow(this.store);
     return [workflow.specification(id), workflow.graphHash(id), workflow.questionRevision(id), this.store.list("approvals", id), this.store.list("runs", id)];
   }
   async previewQueue(id: string): Promise<import("../shared/issue-queue.ts").IssueQueue> {
+    await this.sync(id, true, false);
     return this.locked(id, async () => {
       const queue = this.queue(id);
       this.store.put("github_queue_previews", { id, revision: queue.revision, created_at: new Date().toISOString(), eligible_count: queue.eligible_count }, id);
@@ -129,16 +135,63 @@ export class ProjectGitHub {
   }
 
   async configureQueue(id: string, body: Record<string, unknown>): Promise<import("../shared/issue-queue.ts").IssueQueue> {
-    return this.locked(id, async () => {
+    await this.locked(id, async () => {
       const current = this.queue(id);
       if (body.expected_revision !== current.policy.revision) throw new FactoryError("queue_policy_changed", "Refresh the Project queue settings", 409);
-      if (body.automatic_implementation === true) throw new FactoryError("automatic_implementation_unavailable", "Automatic implementation is not available yet", 409);
-      if (Object.keys(body).some(key => !["expected_revision", "automatic_implementation", "paused", "max_implementations"].includes(key)) || body.automatic_implementation !== false || typeof body.paused !== "boolean" || !Number.isInteger(body.max_implementations) || (body.max_implementations as number) < 1 || (body.max_implementations as number) > current.global_limit) throw new FactoryError("invalid_queue_policy", "Select pause and an implementing Assignment limit within the global limit");
-      const policy = { id, project_id: id, revision: randomUUID(), automatic_implementation: false, paused: body.paused, max_implementations: body.max_implementations as number };
+      if (Object.keys(body).some(key => !["expected_revision", "automatic_implementation", "preview_revision", "paused", "max_implementations"].includes(key)) || typeof body.automatic_implementation !== "boolean" || typeof body.paused !== "boolean" || !Number.isInteger(body.max_implementations) || (body.max_implementations as number) < 1 || (body.max_implementations as number) > current.global_limit) throw new FactoryError("invalid_queue_policy", "Select pause and an implementing Assignment limit within the global limit");
+      if (body.automatic_implementation && !current.policy.automatic_implementation) {
+        if (!current.preview_current || body.preview_revision !== current.revision) throw new FactoryError("queue_preview_required", "Review the current eligible backlog before enabling automatic implementation", 409);
+        const github = this.store.get<ProjectGitHubPolicy>("github_policies", id);
+        const readiness = this.store.get<ProjectReadinessPolicy>("github_readiness_policies", id);
+        if (!github?.sync_enabled || !github.import_issues || !readiness || readiness.project_scope !== this.projectScope(id)) throw new FactoryError("automatic_setup_required", "Select a readiness identity and enable GitHub synchronization and issue imports", 409);
+        const owner = (await this.accounts.freeze({ github: readiness.account_profile_id })).profiles[0]!.identity;
+        this.current(github);
+        if (owner.account_id !== readiness.owner.account_id || owner.login.toLowerCase() !== readiness.owner.login.toLowerCase()) throw new FactoryError("readiness_changed", "Verify the selected readiness identity again", 409);
+        if (this.queue(id).revision !== current.revision) throw new FactoryError("queue_preview_required", "Review the current eligible backlog before enabling automatic implementation", 409);
+      }
+      const policy = { id, project_id: id, revision: randomUUID(), automatic_implementation: body.automatic_implementation, paused: body.paused, max_implementations: body.max_implementations as number };
       this.store.put("github_queue_policies", policy, id);
+      this.store.remove("github_queue_problems", id);
       this.store.event(null, "github_queue_configured", { project_id: id, revision: policy.revision });
       return this.queue(id);
     });
+    await this.dispatchQueue(id);
+    return this.queue(id);
+  }
+
+  private automaticPolicy(id: string, revision: string | null): void {
+    const queue = this.store.get<import("../shared/issue-queue.ts").ProjectQueuePolicy>("github_queue_policies", id);
+    const policy = this.store.get<ProjectGitHubPolicy>("github_policies", id);
+    if (this.stopped || !queue?.automatic_implementation || queue.paused || queue.revision !== revision || !policy?.sync_enabled || !policy.import_issues) throw new FactoryError("automatic_policy_changed", "Automatic implementation authorization changed; review the queue", 409);
+    this.current(policy);
+  }
+  /** Only this sync loop drains the queue, after the evidence writer released its lock. */
+  private async dispatchQueue(id: string): Promise<void> {
+    const policy = this.store.get<import("../shared/issue-queue.ts").ProjectQueuePolicy>("github_queue_policies", id);
+    if (!this.execution || !policy?.automatic_implementation || policy.paused || this.busy.has(id) || this.dispatching.has(id) || this.stopped) return;
+    this.dispatching.add(id);
+    let sourceId: string | null = null;
+    try {
+      this.automaticPolicy(id, policy.revision);
+      await this.execution.reconcile();
+      const budget = this.queue(id).eligible_count;
+      for (let index = 0; index < budget; index++) {
+        this.automaticPolicy(id, policy.revision);
+        const entry = this.queue(id).entries.find(entry => entry.eligible);
+        if (!entry) break;
+        const source = this.overview(id).sources.find(source => source.id === entry.source_id)!;
+        sourceId = source.id;
+        const scope = { source_id: source.id, source_revision: source.revision, graph_hash: source.planning!.graph_hash! };
+        await this.execution.start(entry.implementation_id, scope, `automatic-${source.id}-${source.revision}`, () => this.automaticPolicy(id, policy.revision));
+      }
+      if (!this.stopped) this.store.remove("github_queue_problems", id);
+    } catch (error) {
+      if (!this.stopped) {
+        const problem = { id, source_id: sourceId, code: error instanceof FactoryError ? error.code : "automatic_unavailable", message: error instanceof FactoryError ? error.message : "Automatic implementation could not be admitted; review Project setup" };
+        this.store.put("github_queue_problems", problem, id);
+        this.store.event(null, "github_automatic_waiting", { project_id: id, code: problem.code });
+      }
+    } finally { this.dispatching.delete(id); }
   }
   async linkDelivery(id: string, number: number, body: Record<string, unknown>): Promise<ProjectGitHubOverview> {
     return this.locked(id, async () => {
@@ -549,8 +602,8 @@ export class ProjectGitHub {
       throw new FactoryError("github_diff_limit", "PR has too many files for a complete review snapshot", 409);
     });
   }
-  async sync(id: string): Promise<ProjectGitHubOverview> {
-    return this.locked(id, async () => {
+  async sync(id: string, prepare = false, dispatch = true): Promise<ProjectGitHubOverview> {
+    await this.locked(id, async () => {
       const policy = this.store.get<ProjectGitHubPolicy>("github_policies", id);
       if (!policy) throw new FactoryError("github_not_configured", "Configure Project GitHub synchronization", 409);
       try {
@@ -580,6 +633,15 @@ export class ProjectGitHub {
           const source = this.import(id, issue.node_id, issue.number, revision, issue.title, `GitHub issue: ${issue.html_url}\n\n${issue.body ?? ""}\n\nProject review context:\n${policy.review_context}`, issue.html_url, issue.state, "issue", observed);
           await this.collectReadiness(policy, scope, source);
           reconcileIssuePlan(this.store, source);
+          const collected = this.store.get<ProjectGitHubSource>("github_sources", source.id)!;
+          const readiness = issueReadiness(this.store.get<ProjectReadinessPolicy>("github_readiness_policies", id), collected);
+          const workflow = new FactoryWorkflow(this.store);
+          const questions = workflow.questions(source.implementation_id);
+          const plan = this.store.get<import("../shared/issue-planning.ts").IssuePlanning>("github_plans", source.id);
+          const answersNeedConsumption = questions.length && questions.every(question => question.answer !== null) && plan?.consumed_question_revision !== workflow.questionRevision(source.implementation_id);
+          if ((prepare || this.store.get<import("../shared/issue-queue.ts").ProjectQueuePolicy>("github_queue_policies", id)?.automatic_implementation) && readiness.eligible && !answersNeedConsumption && !this.store.list("runs", source.implementation_id).length) {
+            prepareIssuePlan(this.store, { ...collected, readiness });
+          }
         }
         const sources = this.store.list<ProjectGitHubSource>("github_sources", id).filter(source => source.kind === "issue");
         const verificationScope = coverageRevision(this.store, id);
@@ -666,6 +728,8 @@ export class ProjectGitHub {
         throw error;
       } finally { this.reconcileAdmissions(id); }
     });
+    if (dispatch) await this.dispatchQueue(id);
+    return this.overview(id);
   }
   private async poll(): Promise<void> {
     if (this.stopped) return;
@@ -674,7 +738,7 @@ export class ProjectGitHub {
       if (this.store.get<FactoryProject>("projects", policy.id)?.removed_at) continue;
       if (policy.sync_enabled && !this.busy.has(policy.id) && (this.store.get<SyncState>("github_sync", policy.id)?.next_sync ?? 0) <= Date.now()) {
         try { await this.sync(policy.id); } catch { /* Durable problem and backoff are visible through the owner API. */ }
-      }
+      } else if (policy.sync_enabled) await this.dispatchQueue(policy.id);
     }
   }
 }

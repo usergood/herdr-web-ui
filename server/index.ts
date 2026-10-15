@@ -3290,6 +3290,10 @@ export function createServer(
   }, 100);
   outputTimer.unref();
 
+  const factoryAddress = new URL(server.url);
+  if (["0.0.0.0", "[::]"].includes(factoryAddress.hostname)) factoryAddress.hostname = "127.0.0.1";
+  factory.bindAddress(factoryAddress.origin);
+
   return {
     port: server.port ?? 0,
     hostname,

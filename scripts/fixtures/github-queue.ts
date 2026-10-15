@@ -14,7 +14,7 @@ export function githubQueueFixture(execution = false) {
   const cli = join(root, "gh.mjs");
   const syncGate = join(root, "sync-gate"); const syncEntered = join(root, "sync-entered");
   const issue = { repository_url: "https://api.github.com/repos/fictional/project", number: 1, node_id: "fictional-contract-issue", title: "Fictional scope", body: "## Scope\nShow a greeting.\n## Acceptance criteria\nShow hello.\n## Dependencies\nNone.\n## Testing seams\nPublic HTTP and real browser journeys.", labels: [{ name: "ready-for-agent" }], state: "open", updated_at: "2026-10-01T12:00:00Z", html_url: "https://github.com/fictional/project/issues/1" };
-  const save = (issues = [issue], fail = false, dependencies: Record<string, typeof issue[]> = {}) => writeFileSync(responses, JSON.stringify({ issues, fail, dependencies }));
+  const save = (issues = [issue], fail = false, dependencies: Record<string, typeof issue[]> = {}, trusted = false) => writeFileSync(responses, JSON.stringify({ issues, fail, dependencies, trusted }));
   save();
   writeFileSync(cli, `import { existsSync, readFileSync, writeFileSync } from "node:fs";
 const data = JSON.parse(readFileSync(${JSON.stringify(responses)}, "utf8")); const endpoint = process.argv[3];
@@ -24,7 +24,7 @@ if (endpoint.includes("/issues?") && existsSync(${JSON.stringify(syncGate)})) {
 }
 const number = Number(process.argv.find(arg => arg.startsWith("query="))?.match(/issue[(]number:([0-9]+)/)?.[1] ?? endpoint.match(/issues[/]([0-9]+)/)?.[1]);
 const issue = data.issues.find(issue => issue.number === number) ?? data.issues[0];
-console.log(JSON.stringify(endpoint === "user" ? {login:"fictional-owner",id:1042} : endpoint.includes("/dependencies/blocked_by") ? data.dependencies[number] ?? [] : endpoint.includes("/issues?") ? data.fail ? {} : data.issues : endpoint.includes("/events?") ? [] : endpoint.includes("/issues/") ? issue : endpoint === "graphql" ? {data:{repository:{pullRequests:{nodes:[],pageInfo:{hasNextPage:false,endCursor:null}},issue:{id:issue.node_id,title:issue.title,body:issue.body,state:issue.state.toUpperCase(),createdAt:"2026-09-30T12:00:00Z",updatedAt:issue.updated_at,lastEditedAt:null}}}} : {full_name:"fictional/project"}));`);
+console.log(JSON.stringify(endpoint === "user" ? {login:"fictional-owner",id:1042} : endpoint.includes("/dependencies/blocked_by") ? data.dependencies[number] ?? [] : endpoint.includes("/issues?") ? data.fail ? {} : data.issues : endpoint.includes("/events?") ? data.trusted ? [{id:number,event:"labeled",label:{name:"ready-for-agent"},actor:{login:"fictional-owner",id:1042},created_at:issue.updated_at}] : [] : endpoint.includes("/issues/") ? issue : endpoint === "graphql" ? {data:{repository:{pullRequests:{nodes:[],pageInfo:{hasNextPage:false,endCursor:null}},issue:{id:issue.node_id,title:issue.title,body:issue.body,state:issue.state.toUpperCase(),createdAt:"2026-09-30T12:00:00Z",updatedAt:issue.updated_at,lastEditedAt:null}}}} : {full_name:"fictional/project"}));`);
   // Owned remote native transport: no CLI agent, worktree or live herdr is launched.
   let checkout: unknown; let capabilities: unknown;
   let executionHandler: ((request: Request) => Promise<Response | null>) | null = null;

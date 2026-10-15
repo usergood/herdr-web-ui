@@ -34,7 +34,7 @@ test("owner queue controls retain pause and bounded capacity without enabling im
     const proof = { ...config, expected_revision: saved.policy.revision };
     for (const max_implementations of [0, 7, 1.5]) expect((await fixture.post(route + "/queue", { ...proof, max_implementations })).status).toBe(400);
     const enable = await fixture.post(route + "/queue", { ...proof, automatic_implementation: true });
-    expect(enable.status).toBe(409); expect((await enable.json()).error.code).toBe("automatic_implementation_unavailable");
+    expect(enable.status).toBe(409); expect((await enable.json()).error.code).toBe("queue_preview_required");
     fixture.restart();
     expect((await fixture.json(route + "/queue")).policy).toEqual(saved.policy);
   } finally { fixture.close(); }

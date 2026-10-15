@@ -3856,7 +3856,7 @@ it("Project issue queue endpoints expose revision-bound previews without creatin
     const response = await fixture.post(route + "/preview", {});
     expect(response.status).toBe(200);
     const preview = await response.json() as import("../shared/issue-queue.ts").IssueQueue;
-    expect(preview).toMatchObject({ policy: { project_id: project.id, automatic_implementation: false, max_implementations: 1 }, global_limit: 6, effective_limit: 1, eligible_count: 0, entries: [], preview_current: true, preview: { revision: preview.revision, eligible_count: 0 } });
+    expect(preview).toMatchObject({ policy: { project_id: project.id, automatic_implementation: false, max_implementations: 1 }, global_limit: 6, effective_limit: 1, eligible_count: 0, preview_current: true, preview: { revision: preview.revision, eligible_count: 0 } });
     const stale = await fixture.post(route + "/queue", { expected_revision: "stale", automatic_implementation: false, paused: true, max_implementations: 1 });
     expect(stale.status).toBe(409);
     expect(await stale.json()).toEqual({ error: { code: "queue_policy_changed", message: "Refresh the Project queue settings" } });
@@ -3894,4 +3894,22 @@ it("failed issue Retry uses the guarded factory mutation and structured error co
     expect(missing.status).toBe(404);
     expect(await missing.json()).toEqual({ error: { code: "not_found", message: "Run not found" } });
   } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+});
+
+it("automatic issue policy requires an exact preview and retains a separate paused opt-in", async () => {
+  const { githubQueueFixture } = await import("../scripts/fixtures/github-queue.ts");
+  const fixture = githubQueueFixture();
+  try {
+    const { route, configuration } = await fixture.setup();
+    await fixture.json(route + "/configure", { ...configuration, expected_revision: (await fixture.json(route)).policy.revision, sync_enabled: true });
+    const config: import("../shared/protocol.ts").QueueConfiguration = { expected_revision: null, automatic_implementation: true, paused: true, max_implementations: 1 };
+    const missing = await fixture.post(route + "/queue", config);
+    expect(missing.status).toBe(409);
+    expect(await missing.json()).toEqual({ error: { code: "queue_preview_required", message: "Review the current eligible backlog before enabling automatic implementation" } });
+    const preview = await fixture.json(route + "/preview", {});
+    const enabled = await fixture.post(route + "/queue", { ...config, preview_revision: preview.revision });
+    expect(enabled.status).toBe(200);
+    expect(await enabled.json()).toMatchObject({ policy: { automatic_implementation: true, paused: true }, eligible_count: 0, dispatch_problem: null });
+    expect((await fixture.json("")).activity).toEqual([]);
+  } finally { fixture.close(); }
 });

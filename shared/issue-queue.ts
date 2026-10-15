@@ -1,10 +1,11 @@
-/** Intake eligibility and queue controls never authorize an execution attempt. */
+/** Automatic starts require explicit opt-in bound to a reviewed backlog. */
 export interface ProjectQueuePolicy {
   project_id: string; revision: string | null; automatic_implementation: boolean;
   paused: boolean; max_implementations: number;
 }
 export interface QueueConfiguration {
-  expected_revision: string | null; automatic_implementation: false;
+  expected_revision: string | null; automatic_implementation: boolean;
+  preview_revision?: string;
   paused: boolean; max_implementations: number;
 }
 export interface IssueQueueEntry {
@@ -14,6 +15,7 @@ export interface IssueQueueEntry {
   reasons: { code: string; detail: string }[];
 }
 export interface IssueQueue {
+  dispatch_problem?: { code: string; message: string; source_id: string | null } | null;
   implementing_count: number; available_slots: number;
   policy: ProjectQueuePolicy; global_limit: number; effective_limit: number; revision: string;
   eligible_count: number; entries: IssueQueueEntry[];

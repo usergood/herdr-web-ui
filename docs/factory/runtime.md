@@ -54,6 +54,12 @@ For an upgrade rehearsal, restore a copy, start an isolated instance against tha
 
 Backups cover application records and imported blobs. Git repositories, native transcript stores, worktree outputs that have not been imported, SSH credentials and device/transport configuration require their own machine backups. Do not claim those are present in a database/blob restore.
 
+## GitHub issue implementation
+
+Projects keep automatic implementation off until the owner selects a separate readiness identity, reviews a current eligible backlog preview and explicitly enables it in **Project settings → GitHub**. The existing sync controls cover both current and future issues; preview and sync prepare sufficient trusted plans without a manual Prepare for each issue. Missing decisions remain **Needs you**. See [Project GitHub workflow](github-project-workflow.md#issue-readiness-and-automatic-implementation) for setup, priority, limits, pause, source/dependency evidence, outage handling and explicit Retry.
+
+Automatic and owner-requested starts share admission, frozen contracts and durable recovery. Active or uncertain workers/builds retain their reservations. Current checks and independent reviews can free implementation capacity while reviewed work awaits merge, without marking it delivered. Publication, owner acceptance, merge, release and deployment remain separately scoped. Existing Projects are never opted in by an application update.
+
 ## Validation
 
 Focused contracts use owned Git/Herdr resources and authenticated bridge fixtures. The browser runner covers capture, notes, restart, desktop/mobile and malicious HTML isolation. `scripts/factory-native-contract.ts` is an optional genuine-provider check using the owner's installed CLI/authentication in an isolated Herdr session:
