@@ -367,6 +367,19 @@ export class ProjectGitHub {
     const value = await this.accounts.github(scope, ["api", path, "-H", "X-GitHub-Api-Version: 2026-03-10", ...extra], () => this.current(policy));
     this.current(policy); this.accounts.assertPublic(JSON.stringify(value)); return value;
   }
+  /** A validated row can prove drift even when the remaining inventory is unavailable. */
+  private observeIssue(policy: ProjectGitHubPolicy, issue: Issue): void {
+    const source = this.store.list<ProjectGitHubSource>("github_sources", policy.id).find(source => source.kind === "issue" && source.external_id === issue.node_id && source.number === issue.number);
+    if (!source?.current) return;
+    const readiness = issueReadiness(this.store.get<ProjectReadinessPolicy>("github_readiness_policies", policy.id), { ...source, current: { ...source.current, labels: issue.labels.map(label => label.name) } });
+    const reason = issue.state === "closed" ? "issue_closed"
+      : issue.title !== source.current.title || (issue.body ?? "") !== source.current.body ? "scope_changed"
+      : readiness.blockers.some(blocker => ["blocked", "triage_conflict", "role_not_ready", "mapping_conflict"].includes(blocker)) ? "readiness_revoked" : null;
+    if (reason) {
+      this.current(policy);
+      this.reconcileAdmissions(policy.id, { sourceId: source.id, reason });
+    }
+  }
   private async issues(policy: ProjectGitHubPolicy, scope: AccountBindingSnapshot): Promise<Issue[]> {
     const all: Issue[] = [];
     for (let page = 1; page <= 100; page++) {
@@ -377,6 +390,7 @@ export class ProjectGitHub {
         if (item.pull_request) continue;
         if (!Number.isSafeInteger(item.number) || item.number < 1 || typeof item.node_id !== "string" || !item.node_id || typeof item.title !== "string" || typeof item.html_url !== "string" || item.body !== null && typeof item.body !== "string" || !["open", "closed"].includes(item.state) || typeof item.updated_at !== "string" || !Number.isFinite(Date.parse(item.updated_at)) || !Array.isArray(item.labels) || item.labels.some((label: unknown) => !label || typeof label !== "object" || !("name" in label) || typeof label.name !== "string") || all.some((prior) => prior.node_id === item.node_id || prior.number === item.number)) throw new FactoryError("github_invalid_response", "GitHub did not return a complete valid issue inventory", 409);
         all.push(item);
+        this.observeIssue(policy, item);
       }
       if (items.length < 30) return all;
     }
@@ -477,6 +491,7 @@ export class ProjectGitHub {
   }
   private async dependencies(policy: ProjectGitHubPolicy, scope: AccountBindingSnapshot, issue: Issue): Promise<GitHubIssueDependency[]> {
     const all: GitHubIssueDependency[] = [];
+    const source = this.store.list<ProjectGitHubSource>("github_sources", policy.id).find(source => source.kind === "issue" && source.external_id === issue.node_id && source.number === issue.number);
     for (let page = 1; page <= 100; page++) {
       const items = await this.api(policy, scope, `repos/${policy.repository}/issues/${issue.number}/dependencies/blocked_by?per_page=30&page=${page}`);
       if (!Array.isArray(items)) throw new FactoryError("github_dependencies_incomplete", "GitHub did not return complete native issue dependencies; sync again before starting work", 409);
@@ -484,8 +499,21 @@ export class ProjectGitHub {
         const repository = typeof item?.repository_url === "string" ? /^https:\/\/api\.github\.com\/repos\/([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)$/.exec(item.repository_url)?.[1] : null;
         if (!repository || typeof item.node_id !== "string" || !item.node_id || !Number.isSafeInteger(item.number) || item.number < 1 || item.html_url !== `https://github.com/${repository}/issues/${item.number}` || !["open", "closed"].includes(item.state) || typeof item.updated_at !== "string" || !Number.isFinite(Date.parse(item.updated_at)) || item.pull_request || all.some(edge => edge.external_id === item.node_id || edge.repository.toLowerCase() === repository.toLowerCase() && edge.number === item.number)) throw new FactoryError("github_dependencies_incomplete", "GitHub returned incomplete or ambiguous native issue dependencies; inspect GitHub and sync again", 409);
         all.push({ external_id: item.node_id, repository, number: item.number, url: item.html_url, state: item.state, source_updated_at: item.updated_at });
+        // An added relationship proves drift on its own; absence needs every page.
+        if (source?.current?.native_dependencies && !source.current.native_dependencies.some(edge => edge.external_id === item.node_id && edge.repository === repository && edge.number === item.number && edge.url === item.html_url)) {
+          this.current(policy);
+          this.reconcileAdmissions(policy.id, { sourceId: source.id, reason: "scope_changed" });
+        }
       }
-      if (items.length < 30) return all.sort((a, b) => a.repository.localeCompare(b.repository) || a.number - b.number);
+      if (items.length < 30) {
+        all.sort((a, b) => a.repository.localeCompare(b.repository) || a.number - b.number);
+        const native = all.map(({ external_id, repository, number, url }) => ({ external_id, repository, number, url }));
+        if (source?.current?.native_dependencies && JSON.stringify(native) !== JSON.stringify(source.current.native_dependencies)) {
+          this.current(policy);
+          this.reconcileAdmissions(policy.id, { sourceId: source.id, reason: "scope_changed" });
+        }
+        return all;
+      }
     }
     throw new FactoryError("github_dependencies_incomplete", "Native issue dependencies exceed the complete snapshot budget; inspect GitHub", 409);
   }

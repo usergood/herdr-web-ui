@@ -1,6 +1,7 @@
-import type { GitHubDependencyEdge, ProjectGitHubIssueRevision, ProjectGitHubSource } from "../../shared/github-project.ts";
+import type { ProjectGitHubIssueRevision, ProjectGitHubSource } from "../../shared/github-project.ts";
 import type { FactoryRun, FactoryTicket } from "../../shared/factory.ts";
 import { useT } from "../lib/i18n.ts";
+import { dependencyReason } from "../lib/dependencyReason.ts";
 import { IssueQueueStatus } from "./IssueQueueStatus.tsx";
 import { IssueReadiness } from "./IssueReadiness.tsx";
 import { accountRequest } from "../lib/accountsApi.ts";
@@ -23,20 +24,6 @@ function IssueRevision({ revision }: { revision: ProjectGitHubIssueRevision }) {
   </article>;
 }
 
-function DependencyReason({ edge }: { edge: GitHubDependencyEdge }) {
-  const t = useT();
-  switch (edge.blocker) {
-    case "delivery_unverified": return <p>{t("Delivery has not been verified.")}</p>;
-    case "wrong_target": return <p>{t("Intended PRs must merge into the target branch.")}</p>;
-    case "release_unverified": return <p>{t("A containing release has not been verified.")}</p>;
-    case null: return <p>{t("Verified dependency delivery.")}</p>;
-    case "cross_boundary": return <p>{t("Dependency crosses a Project or repository boundary. Resolve it before starting work.")}</p>;
-    case "cyclic": return <p>{t("Dependency cycle. Correct the declared relationships.")}</p>;
-    case "ambiguous": return <p>{t("Dependency identity is ambiguous. Inspect the declared relationships.")}</p>;
-    case "missing": return <p>{t("Dependency is missing or inaccessible in this Project. Check access and sync GitHub.")}</p>;
-  }
-}
-
 function NativeDependencies({ source }: { source: ProjectGitHubSource }) {
   const t = useT(); const evidence = source.dependencies;
   return <section aria-label={t("Issue dependencies")} className="assignment-native-dependencies">
@@ -50,7 +37,7 @@ function NativeDependencies({ source }: { source: ProjectGitHubSource }) {
       {evidence.edges.length === 0 ? <p>{t("No issue dependencies.")}</p> : <ul>
         {evidence.edges.map(edge => <li key={`${edge.repository}:${edge.number}:${edge.external_id}`}>
           <a href={edge.url} target="_blank" rel="noreferrer">{edge.repository} #{edge.number}</a>
-          {edge.blocker === null && !evidence.fresh ? <p>{t("Delivery evidence needs refresh.")}</p> : <DependencyReason edge={edge} />}
+          <p>{edge.blocker === null && !evidence.fresh ? t("Delivery evidence needs refresh.") : dependencyReason(edge.blocker, t)}</p>
           <p>{edge.requires === "release" ? t("Requires merge and containing release") : t("Requires verified merge")}</p>
           {edge.provenance?.map((origin, index) => <p key={index}>{origin.kind === "github_native" ? t("Native GitHub relationship") : t("Approved app plan")}</p>)}
           {edge.delivery?.merges.map(merge => <p key={merge.number}><a href={merge.url} target="_blank" rel="noreferrer">{t("PR #{number}", { number: merge.number })}</a> · {merge.target_branch} · <code>{merge.merge_commit}</code></p>)}

@@ -119,6 +119,162 @@ test("a known active-scope edit requests controlled pause without rewriting the 
   } finally { fixture.close(); }
 }, 20_000);
 
+test("an inventory edit pauses admitted work before a later dependency failure", async () => {
+  const fixture = githubQueueFixture(true); let release = () => {};
+  try {
+    const { path, start, route } = await prepared(fixture);
+    const run = await fixture.json(path + "/runs", start);
+    fixture.issue.body += "\nNew behavior observed in the inventory.";
+    fixture.save([fixture.issue], false, { "1": null });
+    const held = fixture.holdSync("/dependencies/blocked_by"); release = held.release;
+    const pending = fixture.post(route + "/sync", {});
+    await held.waiting;
+    try {
+      const detail = await fixture.json(path);
+      expect(detail.runs[0].condition).toBe("needs_you");
+      expect(detail.runs[0].issue_pause?.reason).toBe("scope_changed");
+      expect(detail.runs[0].manifest).toEqual(run.manifest);
+    } finally { release(); await pending; }
+    expect((await pending).status).toBe(409);
+    fixture.restart();
+    expect((await fixture.json(path)).runs[0].issue_pause.reason).toBe("scope_changed");
+  } finally { release(); fixture.close(); }
+}, 20_000);
+
+test("observed native dependency changes pause frozen work before a PR outage", async () => {
+  const fixture = githubQueueFixture(true); let release = () => {};
+  try {
+    const { path, start, route } = await prepared(fixture);
+    const run = await fixture.json(path + "/runs", start);
+    const dependency = { ...fixture.issue, number: 2, node_id: "new-prerequisite", html_url: "https://github.com/fictional/project/issues/2" };
+    fixture.save([fixture.issue], false, { "1": [dependency] }, false, [fixture.issue], undefined, { pulls_fail: true });
+    const held = fixture.holdSync("graphql"); release = held.release;
+    const pending = fixture.post(route + "/sync", {});
+    await held.waiting;
+    try {
+      const detail = await fixture.json(path);
+      expect(detail.runs[0].issue_pause?.reason).toBe("scope_changed");
+      expect(detail.runs[0].manifest).toEqual(run.manifest);
+      expect(detail.github_sources[0].current.native_dependencies).toEqual([]);
+    } finally { release(); await pending; }
+    expect((await pending).status).toBe(409);
+    expect((await fixture.json(path)).github_sync.problem).toContain("PR inventory");
+  } finally { release(); fixture.close(); }
+}, 20_000);
+
+test("a validated added dependency pauses frozen work before the next dependency page fails", async () => {
+  const fixture = githubQueueFixture(true); let release = () => {};
+  try {
+    const { path, start, route } = await prepared(fixture);
+    const run = await fixture.json(path + "/runs", start);
+    const dependencies = Array.from({ length: 30 }, (_, index) => ({ ...fixture.issue, number: index + 2, node_id: `prerequisite-${index}`, html_url: `https://github.com/fictional/project/issues/${index + 2}` }));
+    fixture.save([fixture.issue], false, {}, false, [fixture.issue], undefined, { dependency_pages: { "1": [dependencies, null] } });
+    const held = fixture.holdSync("/dependencies/blocked_by?per_page=30&page=2"); release = held.release;
+    const pending = fixture.post(route + "/sync", {});
+    await held.waiting;
+    try {
+      const detail = await fixture.json(path);
+      expect(detail.runs[0].issue_pause?.reason).toBe("scope_changed");
+      expect(detail.runs[0].manifest).toEqual(run.manifest);
+    } finally { release(); await pending; }
+    expect((await pending).status).toBe(409);
+  } finally { release(); fixture.close(); }
+}, 20_000);
+
+test.each([
+  ["title", "dependency", "scope_changed"],
+  ["body", "pulls", "scope_changed"],
+  ["closure", "dependency", "issue_closed"],
+  ["readiness", "pulls", "readiness_revoked"],
+  ["blocked", "dependency", "readiness_revoked"],
+])("inventory %s drift survives a later %s failure", async (change, failure, reason) => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { path, start, route } = await prepared(fixture);
+    const run = await fixture.json(path + "/runs", start);
+    if (change === "title") fixture.issue.title = "New title";
+    if (change === "body") fixture.issue.body += "\nNew scope.";
+    if (change === "closure") fixture.issue.state = "closed";
+    if (change === "readiness") fixture.issue.labels = [];
+    if (change === "blocked") fixture.issue.labels.push({ name: "blocked" });
+    fixture.save([fixture.issue], false, failure === "dependency" ? { "1": null } : {}, false, [fixture.issue], undefined, { pulls_fail: failure === "pulls" });
+    expect((await fixture.post(route + "/sync", {})).status).toBe(409);
+    const detail = await fixture.json(path);
+    expect(detail.runs[0].condition).toBe("needs_you");
+    expect(detail.runs[0].issue_pause?.reason).toBe(reason);
+    expect(detail.runs[0].manifest).toEqual(run.manifest);
+    expect(detail.github_sources[0].current.revision).toBe(start.issue_scope.source_revision);
+    expect(detail.github_sync.problem).toBeString();
+    expect(detail.implementation.outcome).toBe("none");
+  } finally { fixture.close(); }
+}, 20_000);
+
+test.each(["body", "closure", "readiness"])("positive %s drift on an issue page survives a later page failure", async change => {
+  const fixture = githubQueueFixture(true); let release = () => {};
+  try {
+    const { path, start, route } = await prepared(fixture);
+    const run = await fixture.json(path + "/runs", start);
+    const worker = await fixture.json(`/runs/${run.id}/workers`, { role: "implementer", ticket_id: run.manifest.tickets[0].id, idempotency_key: "owned-partial-inventory-worker" });
+    expect(worker.condition).toBe("disconnected");
+    const siblings = Array.from({ length: 29 }, (_, index) => ({ ...fixture.issue, number: index + 2, node_id: `sibling-${index}`, html_url: `https://github.com/fictional/project/issues/${index + 2}` }));
+    if (change === "body") fixture.issue.body += "\nEdited on the first page.";
+    if (change === "closure") fixture.issue.state = "closed";
+    if (change === "readiness") fixture.issue.labels = [];
+    fixture.save([fixture.issue], false, {}, false, [fixture.issue], undefined, { issue_pages: [[fixture.issue, ...siblings], null] });
+    const held = fixture.holdSync("/issues?state=all&per_page=30&page=2"); release = held.release;
+    const pending = fixture.post(route + "/sync", {});
+    await held.waiting;
+    const reason = change === "closure" ? "issue_closed" : change === "readiness" ? "readiness_revoked" : "scope_changed";
+    try {
+      const detail = await fixture.json(path);
+      expect(detail.runs[0].issue_pause?.reason).toBe(reason);
+      expect(detail.runs[0].manifest).toEqual(run.manifest);
+      expect(detail.workers).toEqual([worker]);
+    } finally { release(); await pending; }
+    expect((await pending).status).toBe(409);
+    await fixture.post(route + "/sync", {});
+    fixture.restart();
+    const detail = await fixture.json(path);
+    expect(detail.runs[0].issue_pause?.reason).toBe(reason);
+    expect(detail.runs[0].worktree).toBe(run.worktree);
+    expect(detail.workers).toEqual([worker]);
+    expect(detail.questions.filter((question: any) => question.run_id === run.id && question.answer === null)).toHaveLength(1);
+    expect(detail.github_sources[0].current.revision).toBe(start.issue_scope.source_revision);
+  } finally { release(); fixture.close(); }
+}, 20_000);
+
+test.each(["missing", "malformed", "dependency", "pulls", "unrelated_label"])("%s inventory evidence alone leaves frozen work running", async failure => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { path, start, route } = await prepared(fixture);
+    const run = await fixture.json(path + "/runs", start);
+    const siblings = Array.from({ length: 30 }, (_, index) => ({ ...fixture.issue, number: index + 2, node_id: `sibling-${index}`, html_url: `https://github.com/fictional/project/issues/${index + 2}` }));
+    const malformed = { ...fixture.issue, body: "Unvalidated changed scope", updated_at: "not-a-timestamp" };
+    if (failure === "unrelated_label") fixture.issue.labels.push({ name: "documentation" });
+    fixture.save([fixture.issue], false, failure === "dependency" || failure === "unrelated_label" ? { "1": null } : {}, false, [fixture.issue], undefined, { issue_pages: failure === "missing" ? [siblings, null] : failure === "malformed" ? [[malformed]] : undefined, pulls_fail: failure === "pulls" });
+    expect((await fixture.post(route + "/sync", {})).status).toBe(409);
+    const detail = await fixture.json(path);
+    expect(detail.runs[0]).toEqual(run);
+    expect(detail.questions).toEqual([]);
+    expect(detail.github_sources[0].current.revision).toBe(start.issue_scope.source_revision);
+  } finally { fixture.close(); }
+}, 20_000);
+
+test("a malformed dependency alone cannot pause frozen work", async () => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { path, start, route } = await prepared(fixture);
+    const run = await fixture.json(path + "/runs", start);
+    fixture.save([fixture.issue], false, { "1": [{ ...fixture.issue, number: 2, node_id: "unvalidated-prerequisite", html_url: "https://github.com/fictional/project/issues/2", updated_at: "invalid" }] });
+    const response = await fixture.post(route + "/sync", {});
+    expect(response.status).toBe(409);
+    expect((await response.json()).error.code).toBe("github_dependencies_incomplete");
+    const detail = await fixture.json(path);
+    expect(detail.runs[0]).toEqual(run);
+    expect(detail.questions).toEqual([]);
+  } finally { fixture.close(); }
+}, 20_000);
+
 test("an edit detected during readiness collection pauses frozen work before another sync", async () => {
   const fixture = githubQueueFixture(true);
   try {

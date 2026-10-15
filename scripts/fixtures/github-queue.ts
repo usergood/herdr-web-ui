@@ -15,19 +15,24 @@ export function githubQueueFixture(execution = false) {
   const cli = join(root, "gh.mjs");
   const syncGate = join(root, "sync-gate"); const syncEntered = join(root, "sync-entered");
   const issue = { repository_url: "https://api.github.com/repos/fictional/project", number: 1, node_id: "fictional-contract-issue", title: "Fictional scope", body: "## Scope\nShow a greeting.\n## Acceptance criteria\nShow hello.\n## Dependencies\nNone.\n## Testing seams\nPublic HTTP and real browser journeys.", labels: [{ name: "ready-for-agent" }], state: "open", updated_at: "2026-10-01T12:00:00Z", html_url: "https://github.com/fictional/project/issues/1" };
-  const save = (issues = [issue], fail = false, dependencies: Record<string, typeof issue[]> = {}, trusted = false, freshIssues = issues, readiness?: { dependencies?: Record<string, typeof issue[] | null>; proof?: Record<string, unknown> | null }) => {
+  const save = (issues = [issue], fail = false, dependencies: Record<string, typeof issue[] | null> = {}, trusted = false, freshIssues = issues, readiness?: { dependencies?: Record<string, typeof issue[] | null>; proof?: Record<string, unknown> | null }, sync?: { issue_pages?: (typeof issue[] | null)[]; dependency_pages?: Record<string, (typeof issue[] | null)[]>; pulls_fail?: boolean }) => {
     rmSync(dependencyReads, { force: true });
-    writeFileSync(responses, JSON.stringify({ issues, fail, dependencies, trusted, freshIssues, readiness }));
+    writeFileSync(responses, JSON.stringify({ issues, fail, dependencies, trusted, freshIssues, readiness, sync }));
   };
   save();
   writeFileSync(cli, `import { existsSync, readFileSync, writeFileSync } from "node:fs";
 const data = JSON.parse(readFileSync(${JSON.stringify(responses)}, "utf8")); const endpoint = process.argv[3];
-if (endpoint.includes("/issues?") && existsSync(${JSON.stringify(syncGate)})) {
+const gate = existsSync(${JSON.stringify(syncGate)}) ? readFileSync(${JSON.stringify(syncGate)}, "utf8") : null;
+if (gate && endpoint.includes(gate)) {
   writeFileSync(${JSON.stringify(syncEntered)}, "entered"); const deadline = Date.now() + 8000;
   while (existsSync(${JSON.stringify(syncGate)})) { if (Date.now() > deadline) throw new Error("Owned GitHub gate timed out"); await new Promise(resolve => setTimeout(resolve, 10)); }
 }
 const number = Number(process.argv.find(arg => arg.startsWith("query="))?.match(/issue[(]number:([0-9]+)/)?.[1] ?? endpoint.match(/issues[/]([0-9]+)/)?.[1]);
 const issue = (endpoint.includes("/issues/") && !endpoint.includes("/events?") && !endpoint.includes("/dependencies/") ? data.freshIssues : data.issues).find(issue => issue.number === number) ?? data.issues[0];
+if (endpoint.includes("/issues?") && data.sync?.issue_pages) { console.log(JSON.stringify(data.sync.issue_pages[Number(new URL("https://fixture.invalid/" + endpoint).searchParams.get("page")) - 1] ?? null)); process.exit(0); }
+if (endpoint.includes("/dependencies/blocked_by") && data.sync?.dependency_pages?.[number]) { console.log(JSON.stringify(data.sync.dependency_pages[number][Number(new URL("https://fixture.invalid/" + endpoint).searchParams.get("page")) - 1] ?? null)); process.exit(0); }
+if (endpoint === "graphql" && !Number.isSafeInteger(number) && data.sync?.pulls_fail) { console.log(JSON.stringify({ errors: [{ message: "Fictional PR outage" }] })); process.exit(0); }
+if (endpoint.includes("/dependencies/blocked_by") && Object.hasOwn(data.dependencies, number) && data.dependencies[number] === null) { console.log("null"); process.exit(0); }
 if (endpoint.includes("/dependencies/blocked_by") && data.readiness?.dependencies) {
   const counts = existsSync(${JSON.stringify(dependencyReads)}) ? JSON.parse(readFileSync(${JSON.stringify(dependencyReads)}, "utf8")) : {};
   counts[number] = (counts[number] ?? 0) + 1; writeFileSync(${JSON.stringify(dependencyReads)}, JSON.stringify(counts));
@@ -110,8 +115,8 @@ console.log(JSON.stringify(endpoint === "user" ? {login:"fictional-owner",id:104
     launchGate = async () => { entered(); await gate; };
     return { waiting, release: () => { launchGate = null; release(); } };
   }
-  function holdSync() {
-    writeFileSync(syncGate, "hold"); rmSync(syncEntered, { force: true });
+  function holdSync(endpoint = "/issues?") {
+    writeFileSync(syncGate, endpoint); rmSync(syncEntered, { force: true });
     const waiting = (async () => { const deadline = Date.now() + 5000; while (!existsSync(syncEntered)) { if (Date.now() > deadline) throw new Error("Owned GitHub observation did not reach its gate"); await new Promise(resolve => setTimeout(resolve, 10)); } })();
     return { waiting, release: () => rmSync(syncGate, { force: true }) };
   }
