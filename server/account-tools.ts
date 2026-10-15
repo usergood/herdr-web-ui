@@ -62,7 +62,15 @@ export class NativeAccountTools {
       sealCredentialFiles(directory);
       const value = await new Promise((resolve, reject) => {
         const child = execFile(tool.executable, [...tool.args ?? [], ...args], { cwd: directory, env: this.environment(service, directory), timeout: 10_000, killSignal: "SIGKILL", maxBuffer, windowsHide: true }, (error, stdout) => {
-          this.children.delete(child); if (error) { reject(error); return; } try { resolve(JSON.parse(stdout)); } catch (error) { reject(error); }
+          this.children.delete(child);
+          try {
+            const value = JSON.parse(stdout);
+            // gh exits 1 for a GraphQL error response. Keep its structured envelope
+            // so callers can distinguish permission refusal from lost transport;
+            // native stderr and unstructured failures remain private.
+            if (error && !(error.code === 1 && service === "github" && args[0] === "api" && args[1] === "graphql" && value && Array.isArray(value.errors) && "data" in value)) { reject(error); return; }
+            resolve(value);
+          } catch (parseError) { reject(error ?? parseError); }
         }); this.children.add(child);
       }); sealCredentialFiles(directory); return value;
     } catch { throw new FactoryError("account_login_unavailable", "The selected account could not be verified; finish its native sign-in and try again", 409); }

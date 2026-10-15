@@ -1,53 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { execFileSync } from "node:child_process";
-import { createServer } from "./index.ts";
+import { githubFixture } from "../scripts/factory-github-fixture.ts";
 
-const roots: string[] = []; const apps: ReturnType<typeof createServer>[] = [];
-afterEach(() => { for (const app of apps.splice(0)) app.stop(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
-async function fixture() {
-  const root = mkdtempSync(join(tmpdir(), "saurons-github-http-")); roots.push(root);
-  const repo = join(root, "repo"); execFileSync("git", ["init", "-b", "main", repo], { stdio: "ignore" });
-  writeFileSync(join(repo, "README.md"), "# Fictional Project\n");
-  execFileSync("git", ["-C", repo, "add", "README.md"]);
-  execFileSync("git", ["-C", repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "fixture"], { stdio: "ignore" });
-  execFileSync("git", ["-C", repo, "remote", "add", "origin", "https://github.com/fictional/project.git"]);
-  const state = join(root, "responses.json"); const log = join(root, "calls.jsonl");
-  writeFileSync(state, JSON.stringify({ issues: [{ number: 12, node_id: "fictional-issue-12", title: "Import this ticket", body: "Acceptance: keep my notes", html_url: "https://github.com/fictional/project/issues/12", state: "open" }], pulls: [] }));
-  const tool = join(root, "gh.mjs");
-  writeFileSync(tool, `import { readFileSync, appendFileSync, existsSync, writeFileSync } from "node:fs";
-const args = process.argv.slice(2); const data = JSON.parse(readFileSync(${JSON.stringify(state)}, "utf8"));
-appendFileSync(${JSON.stringify(log)}, JSON.stringify({args, scoped: Boolean(process.env.GH_CONFIG_DIR), token: process.env.GITHUB_TOKEN ?? null}) + "\\n");
-let result; const endpoint = args[1];
-const users = readFileSync(${JSON.stringify(log)}, "utf8").trim().split("\\n").map((line) => JSON.parse(line)).filter((call) => call.args[1] === "user").length;
-if (endpoint === "graphql" && data.pause || endpoint === "user" && data.pause_user === users) {
-  writeFileSync(${JSON.stringify(join(root, "reading"))}, "reading");
-  const deadline = Date.now() + 5000;
-  while (!existsSync(${JSON.stringify(join(root, "continue"))}) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
-}
-if (endpoint === "user") result = { login: "fictional-owner", id: 1042 };
-else if (endpoint?.includes("/issues?")) result = endpoint.includes("page=1&") ? data.issues : [];
-else if (endpoint === "graphql") result = { data: { repository: { viewerPermission: "ADMIN", pullRequests: { nodes: data.pulls, pageInfo: { hasNextPage: false, endCursor: null } }, pullRequest: data.pull ?? data.pulls[0] } } };
-else if (endpoint?.endsWith("/merge")) result = { merged: !data.fail_merge, sha: "fictional-merged" };
-else if (endpoint?.endsWith("/update-branch")) result = { message: "Updating pull request branch", url: "https://api.github.com/fictional/update" };
-else if (endpoint?.endsWith("/rerequest")) result = { requested_reviewers: [{ login: "fictional-reviewer" }] };
-else if (endpoint?.includes("/files?")) result = [{ filename: "src/example.ts", status: "modified", additions: 1, deletions: 1, patch: "@@ -1 +1 @@\\n-old\\n+new" }];
-else result = {};
-process.stdout.write(JSON.stringify(result));
-`);
-  const app = createServer({ port: 0, stateDir: root, token: "github-test-owner", machines: false, factory: { accountTools: { github: { executable: process.execPath, args: [tool] } } } }); apps.push(app);
-  const headers = { authorization: "Bearer github-test-owner", "content-type": "application/json", "x-herdr-factory": "1", "x-herdr-machine": "1" };
-  const origin = `http://localhost:${app.port}`;
-  const post = async (path: string, body: unknown) => { const response = await fetch(origin + "/api/factory" + path, { method: "POST", headers, body: JSON.stringify(body) }); return { status: response.status, body: await response.json() }; };
-  const get = async (path: string) => (await fetch(origin + "/api/factory" + path, { headers })).json();
-  const profile = (await post("/machines/local/accounts", { name: "Fixture", service: "github", expected_login: "fictional-owner" })).body;
-  expect((await post(`/machines/local/accounts/${profile.id}/verify`, { expected_revision: profile.revision })).status).toBe(200);
-  const project = (await post("/projects", { name: "Fixture", path: repo, machine_id: "local", provider: "codex", tracker: "app" })).body;
-  const policy = { expected_revision: null, repository: "fictional/project", account_profile_id: profile.id, sync_enabled: false, import_issues: true, import_fixes: true, auto_update: false, auto_merge: false, trusted_reviewers: ["fictional-reviewer"], required_checks: ["Fast checks"], review_context: "Follow Project standards and testing seams.", poll_minutes: 5 };
-  return { app, root, state, log, project, policy, post, get, origin, headers };
-}
+const fixtures: Awaited<ReturnType<typeof githubFixture>>[] = [];
+afterEach(() => { for (const f of fixtures.splice(0)) f.close(); });
+async function fixture() { const f = await githubFixture(); fixtures.push(f); return f; }
 
 test("scoped GitHub tickets arrive once in Inbox while owner notes survive later synchronization", async () => {
   const f = await fixture(); const route = `/projects/${f.project.id}/github`;
@@ -64,26 +22,205 @@ test("scoped GitHub tickets arrive once in Inbox while owner notes survive later
 });
 
 function connection<T>(nodes: T[]) { return { nodes, pageInfo: { hasNextPage: false, endCursor: null } }; }
-test("Delete retains only pending local identity until linked GitHub cleanup is confirmed", async () => {
+test("Delete permanently removes the linked issue and stale sync cannot recreate its Assignment", async () => {
   const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const stale = readFileSync(f.state, "utf8");
   await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
   const idea = (await f.get("")).implementations[0];
   const removed = await f.post(`/implementations/${idea.id}/delete`, {});
-  expect(removed.status).toBe(202); expect(removed.body.condition).toBe("pending");
-  expect(removed.body.reasons.join(" ")).toContain("GitHub");
-  const pending = await f.get(`/implementations/${idea.id}`);
-  expect(pending.implementation.description).toBe(""); expect(pending.messages).toEqual([]);
-  expect(pending.implementation.deletion.local_cleanup).toBe("complete");
+  expect(removed).toEqual({ status: 200, body: { id: idea.id, condition: "deleted" } });
+  expect(JSON.parse(readFileSync(f.state, "utf8")).issues).toEqual([]);
+  expect((await f.get(route)).sources).toEqual([]);
+  writeFileSync(f.state, stale);
   await f.post(route + "/sync", {});
-  expect((await f.get("")).implementations.map((entry: { id: string }) => entry.id)).toEqual([idea.id]);
-  expect(readFileSync(f.log, "utf8")).not.toContain("deleteIssue");
+  expect((await f.get("")).implementations).toEqual([]);
+  expect(await f.post(`/implementations/${idea.id}/delete`, {})).toEqual(removed);
 });
+test("denied issue deletion stays pending with suppression across restart and recovers automatically", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
+  const idea = (await f.get("")).implementations[0];
+  const data = JSON.parse(readFileSync(f.state, "utf8")); data.permission = "WRITE";
+  writeFileSync(f.state, JSON.stringify(data));
+  const response = await f.post(`/implementations/${idea.id}/delete`, {});
+  expect(response.status).toBe(202);
+  expect(response.body.reasons.join(" ")).toContain("repository-admin");
+  expect(JSON.parse(readFileSync(f.state, "utf8")).issues).toHaveLength(1);
+  f.restart();
+  await f.post(route + "/sync", {});
+  expect((await f.get("")).implementations).toHaveLength(1);
+  const pending = await f.get(`/implementations/${idea.id}`);
+  expect(pending.messages).toEqual([]); expect(pending.implementation.description).toBe("");
+  expect((await f.get(route)).sources).toEqual([]);
+  data.permission = "ADMIN"; writeFileSync(f.state, JSON.stringify(data));
+  const deadline = Date.now() + 8000;
+  while (Date.now() < deadline && (await f.get("")).implementations.length) await Bun.sleep(30);
+  expect((await f.get("")).implementations).toEqual([]);
+  expect(JSON.parse(readFileSync(f.state, "utf8")).issues).toEqual([]);
+}, 15000);
+test("a lost GitHub deletion reply remains pending, then reconciles without repeating the mutation", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
+  const idea = (await f.get("")).implementations[0];
+  const data = JSON.parse(readFileSync(f.state, "utf8")); data.lose_delete = true;
+  writeFileSync(f.state, JSON.stringify(data));
+  const replies = await Promise.all([f.post(`/implementations/${idea.id}/delete`, {}), f.post(`/implementations/${idea.id}/delete`, {})]);
+  expect(replies.map(r => r.status)).toEqual([202, 202]);
+  expect(replies[0]!.body.reasons.join(" ")).toContain("GitHub");
+  f.restart();
+  expect((await f.post(`/implementations/${idea.id}/delete`, {})).body).toEqual({ id: idea.id, condition: "deleted" });
+  const calls = readFileSync(f.log, "utf8").trim().split("\n").map(line => JSON.parse(line));
+  expect(calls.filter(call => call.args.some((arg: string) => arg.includes("deleteIssue(")))).toHaveLength(1);
+  expect((await f.get("")).implementations).toEqual([]);
+});
+test("permanent issue deletion follows a complete paginated inventory", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
+  const idea = (await f.get("")).implementations[0];
+  const data = JSON.parse(readFileSync(f.state, "utf8"));
+  data.paginate = true;
+  data.issues = [...Array.from({ length: 100 }, (_, i) => ({ number: i + 100, node_id: `other-${i}` })), ...data.issues];
+  writeFileSync(f.state, JSON.stringify(data));
+  expect((await f.post(`/implementations/${idea.id}/delete`, {})).status).toBe(200);
+  expect(JSON.parse(readFileSync(f.state, "utf8")).issues).toHaveLength(100);
+  expect((await f.get("")).implementations).toEqual([]);
+});
+test("pending issue deletion never switches to a changed GitHub identity", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
+  const idea = (await f.get("")).implementations[0];
+  const data = JSON.parse(readFileSync(f.state, "utf8")); data.permission = "WRITE"; writeFileSync(f.state, JSON.stringify(data));
+  expect((await f.post(`/implementations/${idea.id}/delete`, {})).status).toBe(202);
+  const profile = (await f.get("/machines/local/accounts")).profiles[0];
+  const configured = await f.post(`/machines/local/accounts/${profile.id}/configure`, { expected_revision: profile.revision, name: profile.name, expected_login: "another-owner", expected_account_id: "2042" });
+  expect(configured.status).toBe(200);
+  data.login = "another-owner"; data.account_id = 2042; data.permission = "ADMIN"; writeFileSync(f.state, JSON.stringify(data));
+  expect((await f.post(`/machines/local/accounts/${profile.id}/verify`, { expected_revision: configured.body.revision })).status).toBe(200);
+  const result = await f.post(`/implementations/${idea.id}/delete`, {});
+  expect(result.status).toBe(202);
+  expect(result.body.reasons.join(" ")).toContain("authorized GitHub identity");
+  expect(JSON.parse(readFileSync(f.state, "utf8")).issues).toHaveLength(1);
+});
+test("an ambiguous GitHub receipt stays pending until an independent inventory confirms removal", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
+  const idea = (await f.get("")).implementations[0];
+  const data = JSON.parse(readFileSync(f.state, "utf8")); data.ambiguous_delete = true; writeFileSync(f.state, JSON.stringify(data));
+  const response = await f.post(`/implementations/${idea.id}/delete`, {});
+  expect(response.status).toBe(202);
+  expect(response.body.reasons.join(" ")).toContain("did not confirm");
+  f.restart();
+  expect((await f.post(`/implementations/${idea.id}/delete`, {})).body).toEqual({ id: idea.id, condition: "deleted" });
+});
+test("confirmed GitHub cleanup is not repeated while another Delete obligation remains pending", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
+  const idea = (await f.get("")).implementations[0];
+  const stale = readFileSync(f.state, "utf8");
+  await f.post("/backups", {});
+  expect((await f.post(`/implementations/${idea.id}/delete`, {})).status).toBe(202);
+  writeFileSync(f.state, stale);
+  f.restart();
+  await f.post(`/implementations/${idea.id}/delete`, {});
+  const mutations = readFileSync(f.log, "utf8").trim().split("\n").map(line => JSON.parse(line)).filter(call => call.args.some((a: string) => a.includes("deleteIssue(")));
+  expect(mutations).toHaveLength(1);
+});
+test("an unreadable GitHub inventory cannot be mistaken for an already-missing issue", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
+  const idea = (await f.get("")).implementations[0];
+  const data = JSON.parse(readFileSync(f.state, "utf8")); data.incomplete_inventory = true; writeFileSync(f.state, JSON.stringify(data));
+  const response = await f.post(`/implementations/${idea.id}/delete`, {});
+  expect(response.status).toBe(202);
+  expect(response.body.reasons.join(" ")).toContain("inventory is incomplete");
+  expect(JSON.parse(readFileSync(f.state, "utf8")).issues).toHaveLength(1);
+});
+test("GitHub organization denial stays pending with a concrete safe permission reason", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
+  const idea = (await f.get("")).implementations[0];
+  const data = JSON.parse(readFileSync(f.state, "utf8")); data.deny_delete = true; writeFileSync(f.state, JSON.stringify(data));
+  const response = await f.post(`/implementations/${idea.id}/delete`, {});
+  expect(response.status).toBe(202);
+  expect(response.body.reasons.join(" ")).toContain("FORBIDDEN");
+  expect(response.body.reasons.join(" ")).toContain("organization");
+  expect(JSON.stringify(response.body)).not.toContain("untrusted diagnostic");
+  expect(JSON.parse(readFileSync(f.state, "utf8")).issues).toHaveLength(1);
+});
+test("source suppression survives unavailable cleanup credentials and applies across Projects for the same repository", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
+  const idea = (await f.get("")).implementations[0];
+  const profile = (await f.get("/machines/local/accounts")).profiles[0];
+  expect((await f.post(`/machines/local/accounts/${profile.id}/disable`, { expected_revision: profile.revision })).status).toBe(200);
+  expect((await f.post(`/implementations/${idea.id}/delete`, {})).status).toBe(202);
+  const otherAccount = (await f.post("/machines/local/accounts", { name: "Another fixture", service: "github", expected_login: "fictional-owner" })).body;
+  await f.post(`/machines/local/accounts/${otherAccount.id}/verify`, { expected_revision: otherAccount.revision });
+  const otherProject = (await f.post("/projects", { name: "Other fixture", path: join(f.root, "repo"), machine_id: "local", provider: "codex", tracker: "app" })).body;
+  const otherRoute = `/projects/${otherProject.id}/github`;
+  expect((await f.post(otherRoute + "/configure", { ...f.policy, account_profile_id: otherAccount.id })).status).toBe(200);
+  expect((await f.post(otherRoute + "/sync", {})).status).toBe(200);
+  expect((await f.get("")).implementations.map((a: { id: string }) => a.id)).toEqual([idea.id]);
+});
+test("a temporary GitHub identity transport outage recovers automatically without another owner verification", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
+  const idea = (await f.get("")).implementations[0];
+  const data = JSON.parse(readFileSync(f.state, "utf8")); data.offline_identity = true; writeFileSync(f.state, JSON.stringify(data));
+  const response = await f.post(`/implementations/${idea.id}/delete`, {});
+  expect(response.status).toBe(202);
+  expect(response.body.reasons.join(" ")).toContain("GitHub");
+  f.restart();
+  data.offline_identity = false; writeFileSync(f.state, JSON.stringify(data));
+  const deadline = Date.now() + 8000;
+  while (Date.now() < deadline && (await f.get("")).implementations.length) await Bun.sleep(30);
+  expect((await f.get("")).implementations).toEqual([]);
+  expect(JSON.parse(readFileSync(f.state, "utf8")).issues).toEqual([]);
+}, 15000);
 function pull(state = "APPROVED") {
   return { number: 27, id: "fictional-pr-27", title: "Improve imports", body: "Fictional patch", url: "https://github.com/fictional/project/pull/27", state: "OPEN", isDraft: false, headRefOid: "a".repeat(40), baseRefOid: "b".repeat(40), headRefName: "feature", baseRefName: "main", author: { login: "fictional-owner" }, headRepository: { nameWithOwner: "fictional/project" }, viewerCanUpdate: true, mergeStateStatus: "CLEAN", reviewDecision: state === "APPROVED" ? "APPROVED" : "CHANGES_REQUESTED",
     reviews: connection([{ id: "review-1", state, body: "Please validate the acceptance cases", submittedAt: "2026-10-11T12:00:00Z", author: { login: "fictional-reviewer" }, commit: { oid: "a".repeat(40) } }]), reviewRequests: connection([]), reviewThreads: connection([]),
     commits: { nodes: [{ commit: { statusCheckRollup: { contexts: connection([{ name: "Fast checks", status: "COMPLETED", conclusion: "SUCCESS" }]) } } }] },
     baseRef: { branchProtectionRule: { isAdminEnforced: true, requiresApprovingReviews: true, requiredApprovingReviewCount: 1, requiresStatusChecks: true, requiresStrictStatusChecks: true, requiresConversationResolution: true, requiredStatusCheckContexts: ["Fast checks"] } } };
 }
+test("retained PRs do not automatically recreate or update deleted work; explicit owner intake stays distinct", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const pr = pull("CHANGES_REQUESTED");
+  writeFileSync(f.state, JSON.stringify({ issues: [], pulls: [pr] }));
+  const policy = (await f.post(route + "/configure", { ...f.policy, auto_update: true })).body;
+  await f.post(route + "/sync", {});
+  const idea = (await f.get("")).implementations[0];
+  expect((await f.post(`/implementations/${idea.id}/delete`, {})).status).toBe(200);
+  f.restart();
+  pr.headRefOid = "c".repeat(40); pr.mergeStateStatus = "BEHIND";
+  writeFileSync(f.state, JSON.stringify({ issues: [], pulls: [pr] }));
+  expect((await f.post(route + "/sync", {})).status).toBe(200);
+  expect((await f.get("")).implementations).toEqual([]);
+  expect(JSON.parse(readFileSync(f.state, "utf8")).pulls).toEqual([pr]);
+  expect(readFileSync(f.log, "utf8")).not.toContain('"PUT"');
+  expect((await f.get(route)).pulls[0].fix_implementation_id).toBeNull();
+  expect((await f.post(route + "/pulls/27/import", { head: pr.headRefOid, base: pr.baseRefOid, policy_revision: policy.revision })).status).toBe(200);
+  const explicit = (await f.get("")).implementations;
+  expect(explicit).toHaveLength(1); expect(explicit[0].id).not.toBe(idea.id);
+});
+test("Delete fences an automatic PR merge already waiting on its last identity check", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  writeFileSync(f.state, JSON.stringify({ issues: [], pulls: [pull("CHANGES_REQUESTED")] }));
+  await f.post(route + "/configure", { ...f.policy, auto_merge: true });
+  await f.post(route + "/sync", {});
+  const idea = (await f.get("")).implementations[0];
+  const users = readFileSync(f.log, "utf8").trim().split("\n").map(line => JSON.parse(line)).filter(call => call.args[1] === "user").length;
+  writeFileSync(f.state, JSON.stringify({ issues: [], pulls: [pull()], pause_user: users + 6 }));
+  const sync = f.post(route + "/sync", {});
+  const deadline = Date.now() + 5000;
+  while (!existsSync(join(f.root, "reading")) && Date.now() < deadline) await Bun.sleep(10);
+  expect(existsSync(join(f.root, "reading"))).toBe(true);
+  try { expect((await f.post(`/implementations/${idea.id}/delete`, {})).status).toBe(200); }
+  finally { writeFileSync(join(f.root, "continue"), "continue"); }
+  await sync;
+  expect(readFileSync(f.log, "utf8")).not.toContain('"PUT"');
+  expect((await f.get("")).implementations).toEqual([]);
+}, 15000);
 test("requested changes queue one factory Implementation with Project rules; pending review creates no fixes", async () => {
   const f = await fixture(); const route = `/projects/${f.project.id}/github`;
   const pending = pull("PENDING"); writeFileSync(f.state, JSON.stringify({ issues: [], pulls: [pending] }));

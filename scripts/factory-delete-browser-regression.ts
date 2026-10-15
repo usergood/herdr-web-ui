@@ -3,6 +3,7 @@ import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
 import { capacityFixture } from "./factory-capacity-fixture.ts";
+import { checkGitHubDelete } from "./factory-github-delete-browser.ts";
 
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
@@ -68,4 +69,5 @@ try {
     } finally { await context.close(); f.close(); }
   }
   console.log("PASS desktop/mobile Delete control, confirmation, pending reason, reload and final removal");
+  await checkGitHubDelete(browser);
 } finally { await browser.close(); }
