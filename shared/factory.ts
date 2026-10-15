@@ -75,6 +75,11 @@ export interface FactoryPlanningRequest extends FactoryRecord {
   attempts?: number; next_attempt_at?: number;
   condition: "pending" | "queued" | "started" | "blocked"; reason: string | null; run_id: string | null;
 }
+export interface FactoryAutomaticExecution extends FactoryRecord {
+  run_id: string; plan_hash: string;
+  condition: "executing" | "waiting" | "blocked" | "checked";
+  reason: string | null; attempts: number; next_attempt_at: number;
+}
 export interface FactoryQuestion extends FactoryRecord { implementation_id: string; run_id: string | null; worker_id?: string | null; question: string; answer_kind?: "text" | "confirmation"; answer: string | null; revision: string }
 export interface FactoryArtifact extends FactoryRecord {
   implementation_id: string; chat_id: string; name: string; media_type: string;
@@ -151,6 +156,7 @@ export interface FactoryCapacity {
 }
 export interface FactoryOverview { capacity: FactoryCapacity }
 export interface FactoryDetail {
+  automatic_execution?: FactoryAutomaticExecution[];
   automatic_planning?: FactoryPlanningRequest[];
   execution_plans?: FactoryExecutionPlan[];
   capacity_waiting?: FactoryCapacityWait[];
@@ -181,6 +187,8 @@ export interface FactoryProviderCapability { provider: FactoryProvider; version:
 export interface FactoryCapabilities { providers: FactoryProviderCapability[]; skill_manifest: { commit: string; hash: string; file_count: number } | null; factory_host_protocol: 1; project_reference_protocol?: 1; account_profile_protocol?: 1 }
 export interface FactoryOutput { name: string; media_type: string; hash: string; size: number }
 export interface FactoryWorker extends FactoryRecord {
+  /** The Machine merged this candidate; central progress/cleanup still needs its receipt. */
+  integration_pending?: boolean;
   suspension?: FactorySuspension;
   continuation?: FactoryPark;
   /** Frozen when repair work is accepted; never inferred from the latest review stage. */

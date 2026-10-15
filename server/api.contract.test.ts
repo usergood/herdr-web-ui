@@ -55,6 +55,29 @@ it("authenticates permanent Delete, enforces origin/Machine headers and returns 
   } finally { f.close(); }
 });
 
+it("exposes plan-bound automatic execution progress through authenticated detail and scoped contract", async () => {
+  const f = await capacityFixture();
+  try {
+    const id = await f.assignment("Execution contract"); const path = `/implementations/${id}`;
+    const detail = () => f.api(path).then(r => r.json());
+    await f.api(`/projects/${(await detail()).implementation.project_id}/configure`, { checks: [["bun", "test"]], permissions: "Owned fixtures" });
+    const spec = await f.api(`${path}/specifications`, { content: "Accepted public API behavior" }).then(r => r.json());
+    await f.api(`${path}/specification-acceptance`, { source: "button", specification_id: spec.id, hash: spec.hash });
+    const deadline = Date.now() + 6000; let run: FactoryRun | undefined;
+    while (!run) { run = (await detail()).runs.find((r: FactoryRun) => r.condition === "working"); if (Date.now() > deadline) throw new Error("Orchestrator did not start"); if (!run) await Bun.sleep(20); }
+    const plan = await f.agent(run.id, "tickets", { specification_id: spec.id, testing_plan: "Authenticated HTTP", tickets: [{ key: "one", title: "Accepted behavior", acceptance: "The API serves it", dependencies: [] }] }).then(r => r.json());
+    let progress;
+    while (!progress) { progress = (await detail()).automatic_execution[0]; if (Date.now() > deadline) throw new Error("Execution progress was not retained"); if (!progress) await Bun.sleep(20); }
+    expect(progress).toMatchObject({ run_id: run.id, plan_hash: plan.hash, condition: "executing", attempts: 0 });
+    const contract = await f.agent(run.id, "contract").then(r => r.json());
+    expect(contract.automatic_execution.plan_hash).toBe(plan.hash);
+    expect(contract.execution_plan.authority.kind).toBe("specification");
+    const denied = await fetch(`http://localhost:${f.app.port}/api/factory${path}`);
+    expect(denied.status).toBe(401);
+    expect(await denied.json()).toMatchObject({ error: { code: "unauthorized", message: expect.any(String) } });
+  } finally { f.close(); }
+});
+
 it("keeps restored pending Delete authority above authenticated Assignment Resume", async () => {
   const f = await capacityFixture();
   try {

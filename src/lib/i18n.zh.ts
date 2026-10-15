@@ -18,6 +18,9 @@ export const ZH: Record<string, string> = {
   "Exported copies and external provider history are excluded from Delete.": "删除操作不包括导出的副本和外部提供商历史。",
   "Delete all owned work": "删除所有所属工作",
   "Delete Assignment": "删除 Assignment",
+  "Automatic execution": "自动执行",
+  "Tickets, checks and integration continue automatically.": "工单、检查和集成将自动继续。",
+
   "Assignment execution": "Assignment 执行",
   "Pause pending": "等待暂停",
   "Paused": "已暂停",

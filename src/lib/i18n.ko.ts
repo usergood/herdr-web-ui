@@ -14,6 +14,9 @@ export const KO: Record<string, string> = {
   "Exported copies and external provider history are excluded from Delete.": "내보낸 사본과 외부 제공자의 기록은 삭제 대상에서 제외됩니다.",
   "Delete all owned work": "소유한 모든 작업 삭제",
   "Delete Assignment": "Assignment 삭제",
+  "Automatic execution": "자동 실행",
+  "Tickets, checks and integration continue automatically.": "티켓, 검사 및 통합이 자동으로 계속됩니다.",
+
   "Assignment execution": "Assignment 실행",
   "Pause pending": "일시 정지 대기 중",
   "Paused": "일시 정지됨",

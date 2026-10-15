@@ -16,6 +16,9 @@ export const JA: Record<string, string> = {
   "Exported copies and external provider history are excluded from Delete.": "エクスポートしたコピーと外部プロバイダーの履歴は削除対象外です。",
   "Delete all owned work": "所有するすべての作業を削除",
   "Delete Assignment": "Assignment を削除",
+  "Automatic execution": "自動実行",
+  "Tickets, checks and integration continue automatically.": "チケット、チェック、統合は自動的に進みます。",
+
   "Assignment execution": "Assignment の実行",
   "Pause pending": "一時停止を待機中",
   "Paused": "一時停止中",
