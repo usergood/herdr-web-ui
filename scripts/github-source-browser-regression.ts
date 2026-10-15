@@ -89,7 +89,11 @@ try {
     await page.goto(origin + `/#factory/${targetId}`);
     const coverage = page.getByRole("region", { name: "Dependency delivery", exact: true });
     await coverage.getByLabel("Target branch", { exact: true }).fill("main");
-    await coverage.getByLabel("Intended PRs", { exact: true }).fill("27 " + "a".repeat(40));
+    // A prefilled textarea adds its value to the wrapping label's textContent;
+    // its computed accessible name remains "Intended PRs" on both viewports.
+    const intendedPrs = coverage.getByRole("textbox", { name: "Intended PRs", exact: true });
+    assert.equal(await intendedPrs.inputValue(), viewport.width === 1440 ? "" : "27 " + "a".repeat(40));
+    await intendedPrs.fill("27 " + "a".repeat(40));
     await coverage.getByRole("button", { name: "Save intended coverage", exact: true }).click();
     await coverage.getByText("Coverage linked. Sync GitHub to verify delivery.", { exact: true }).waitFor();
     await post(route + "/sync", {}); await page.goto(origin + `/#factory/${id}`);
