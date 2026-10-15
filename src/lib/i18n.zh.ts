@@ -1407,7 +1407,6 @@ export const ZH: Record<string, string> = {
   "Testing": "测试中",
   "Auto-Review": "自动审查",
   "Fixing": "修复中",
-  "Delete pending": "等待删除",
   "Resume pending": "等待恢复",
   "{waiting} waiting · {running} running · {completed} completed": "等待 {waiting} · 运行 {running} · 完成 {completed}",
   "Active Tickets": "运行中的工单",

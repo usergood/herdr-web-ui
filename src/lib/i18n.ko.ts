@@ -1403,7 +1403,6 @@ export const KO: Record<string, string> = {
   "Testing": "테스트 중",
   "Auto-Review": "자동 검토",
   "Fixing": "수정 중",
-  "Delete pending": "삭제 대기 중",
   "Resume pending": "재개 대기 중",
   "{waiting} waiting · {running} running · {completed} completed": "대기 {waiting} · 실행 {running} · 완료 {completed}",
   "Active Tickets": "진행 중인 티켓",

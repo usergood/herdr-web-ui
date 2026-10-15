@@ -1405,7 +1405,6 @@ export const JA: Record<string, string> = {
   "Testing": "テスト中",
   "Auto-Review": "自動レビュー",
   "Fixing": "修正中",
-  "Delete pending": "削除待ち",
   "Resume pending": "再開待ち",
   "{waiting} waiting · {running} running · {completed} completed": "待機 {waiting} · 実行中 {running} · 完了 {completed}",
   "Active Tickets": "実行中のチケット",

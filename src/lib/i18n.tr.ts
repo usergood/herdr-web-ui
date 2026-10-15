@@ -1358,7 +1358,6 @@ export const TR: Record<string, string> = {
   "Testing": "Test ediliyor",
   "Auto-Review": "Otomatik inceleme",
   "Fixing": "Düzeltiliyor",
-  "Delete pending": "Silme bekleniyor",
   "Resume pending": "Devam etme bekleniyor",
   "{waiting} waiting · {running} running · {completed} completed": "{waiting} bekliyor · {running} çalışıyor · {completed} tamamlandı",
   "Active Tickets": "Etkin biletler",
