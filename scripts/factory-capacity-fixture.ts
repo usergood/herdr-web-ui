@@ -3,9 +3,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "../server/index.ts";
+import type { AccountTools } from "../server/account-tools.ts";
 import type { FactoryCheck, FactoryRun, FactoryWorker, NativeConversationSnapshot } from "../shared/factory.ts";
 
-export async function capacityFixture(scenario: { advancingHeads?: boolean } = {}) {
+export async function capacityFixture(scenario: { advancingHeads?: boolean; accountTools?: AccountTools } = {}) {
   const tips = new Map<string, string>(); let candidate = 1;
   const state = mkdtempSync(join(tmpdir(), "factory-capacity-"));
   const token = "owned-capacity-fixture";
@@ -33,6 +34,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean } = {
   let reviewFiles = [{ path: "progress.ts", status: "branch:M", diff: "@@ -1 +1 @@\n-before\n+after\n", binary: false, oversized: false }];
   const publications = new Map<string, any>();
   let losePublication = false;
+  let publicationGate: { entered: () => void; wait: Promise<void> } | null = null;
   let loseStop = false;
   let denyPublication = false;
   let mergeFailure: string | null = null; let loseMerge = false;
@@ -124,7 +126,8 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean } = {
       }
       if (action === "operations/publish") {
         if (denyPublication) return Response.json({ error: { code: "publication_unconfigured", message: "Unsafe remote diagnostic must not be copied" } }, { status: 409 });
-        if (!publications.has(run.id)) publications.set(run.id, { run_id: run.id, head: body.head, repository: "fictional/project", base_branch: "main", branch: run.branch, number: 27, url: "https://github.com/fictional/project/pull/27" });
+        if (!publications.has(run.id) || publications.get(run.id).head !== body.head) publications.set(run.id, { run_id: run.id, head: body.head, repository: "fictional/project", base_branch: "main", branch: run.branch, number: 27, url: "https://github.com/fictional/project/pull/27" });
+        if (publicationGate) { const gate = publicationGate; publicationGate = null; gate.entered(); await gate.wait; }
         if (losePublication) { losePublication = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost publication acknowledgment" } }, { status: 503 }); }
         return Response.json(publications.get(run.id));
       }
@@ -150,7 +153,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean } = {
     }
     return Response.json({ error: { code: "not_found", message: `Unimplemented owned Machine fixture route: ${path}` } }, { status: 404 });
   } });
-  const options = { port: 0, token, stateDir: state, machines: false as const, factory: { accountDiscoveryHome: state, native: { version: async () => "owned-capacity-cli" }, machineEndpoint: (id: string) => id.startsWith("owned-") ? { url: `http://localhost:${machine.port}`, token } : undefined } };
+  const options = { port: 0, token, stateDir: state, machines: false as const, factory: { accountTools: scenario.accountTools, accountDiscoveryHome: state, native: { version: async () => "owned-capacity-cli" }, machineEndpoint: (id: string) => id.startsWith("owned-") ? { url: `http://localhost:${machine.port}`, token } : undefined } };
   app = createServer(options);
   function api(path: string, body?: unknown) {
     return fetch(`http://localhost:${app.port}/api/factory${path}`, { method: body === undefined ? "GET" : "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-herdr-factory": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
@@ -173,6 +176,12 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean } = {
     reviewUnavailable: (value: boolean) => { reviewUnavailable = value; },
     reviewHead: (head: string | null) => { reviewHead = head; },
     reviewFiles: (files: typeof reviewFiles) => { reviewFiles = files; },
+    holdNextPublication: () => {
+      let entered!: () => void; let release!: () => void;
+      const started = new Promise<void>(resolve => { entered = resolve; });
+      const wait = new Promise<void>(resolve => { release = resolve; });
+      publicationGate = { entered, wait }; return { started, release };
+    },
     loseNextPublication: () => { losePublication = true; },
     denyPublication: () => { denyPublication = true; },
     changeHead: (runId: string, head: string) => { tips.set(runId, head); },

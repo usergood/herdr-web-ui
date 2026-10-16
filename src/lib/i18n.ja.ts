@@ -1446,4 +1446,8 @@ export const JA: Record<string, string> = {
   "Draft comments": "コメントの下書き",
   "Submitted comments": "送信済みコメント",
   "Saved drafts do not start repairs or authorize a merge.": "保存した下書きは修正を開始せず、マージを承認しません。",
+  "Decline": "却下",
+  "Decline submits all saved drafts for repair and grants no merge authority.": "却下すると保存済みのすべての下書きを修正用に提出し、マージは許可しません。",
+  "Fixes are running. A later approval is required to merge.": "修正を実行中です。マージには後で承認が必要です。",
+  "Fixes passed checks and independent reviews. Awaiting your approval.": "修正がチェックと独立レビューに合格しました。承認を待っています。",
 };

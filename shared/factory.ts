@@ -84,7 +84,7 @@ export interface FactoryAutomaticExecution extends FactoryRecord {
   reason: string | null; attempts: number; next_attempt_at: number;
 }
 export interface FactoryAutomaticReview extends FactoryRecord {
-  context_revision?: string; generation?: number;
+  context_revision?: string; generation?: number; human_batch_id?: string;
   run_id: string; head: string; round: number;
   condition: "reviewing" | "repairing" | "publishing" | "published" | "waiting" | "blocked";
   reason: string | null; attempts: number; next_attempt_at: number;
@@ -101,6 +101,7 @@ export interface FactoryPullRequest extends FactoryRecord {
   number: number; url: string; check_id: string; evidence_ids: string[];
 }
 export interface FactoryPublicationRequest {
+  previous_head?: string;
   head: string; workspace_hash: string; check_id: string; evidence_ids: string[];
   reports: { worker_id: string; source_id: string }[];
 }
@@ -192,98 +193,8 @@ export interface FactoryHumanApproval extends FactoryRecord {
   condition: "pending" | "blocked" | FactoryMergeResult["condition"];
   reason: string | null; merge_sha: string | null; release_tag: string | null;
 }
-export interface FactoryHumanReviewDelivery {
-  id: string; review_id: string;
-  condition: "queued" | "sending" | "sent" | "uncertain"; reason: string | null;
-}
-export interface FactoryHumanReview extends FactoryRecord {
-  implementation_id: string; run_id: string; conversation_id: string;
-  head: string; snapshot_id: string | null; assistant_run_id: string | null;
-  condition: "capturing" | "ready" | "waiting" | "blocked"; reason: string | null;
-}
-export interface FactoryDetail {
-  human_review_approvals?: FactoryHumanApproval[];
-  human_reviews?: FactoryHumanReview[];
-  human_review_deliveries?: FactoryHumanReviewDelivery[];
-  automatic_review_batches?: FactoryAutomaticReviewBatch[];
-  pull_requests?: FactoryPullRequest[];
-  automatic_review?: FactoryAutomaticReview[];
-  automatic_execution?: FactoryAutomaticExecution[];
-  automatic_planning?: FactoryPlanningRequest[];
-  execution_plans?: FactoryExecutionPlan[];
-  capacity_waiting?: FactoryCapacityWait[];
-  conversations?: FactoryConversation[];
-  graph_hash: string; question_revision: string;
-  /** Current decision scope; full historical questions remain in questions below. */
-  question_context?: { revision: string; questions: FactoryQuestion[]; run_id: string | null };
-  implementation: Implementation; chats: FactoryChat[]; messages: FactoryMessage[];
-  specifications: SpecificationVersion[]; tickets: FactoryTicket[]; approvals: FactoryApproval[];
-  questions: FactoryQuestion[]; artifacts: FactoryArtifact[]; runs: FactoryRun[];
-  snapshots: ReviewSnapshot[]; comments: ReviewComment[]; events: FactoryEvent[];
-  workers: FactoryWorker[]; checks: FactoryCheck[]; review_evidence: FactoryReviewEvidence[];
-  frontier: FactoryTicket[];
-  retrospectives: FactoryRetrospective[];
-  native_snapshots: NativeConversationSnapshot[];
-}
-export interface FactoryOverview { implementations: Implementation[]; projects: FactoryProject[]; checkouts: (Omit<ProjectCheckout, "instructions"> & { instructions?: ProjectCheckout["instructions"] })[]; settings: FactorySettings; activity: { implementation_id: string; run_id: string; condition: RunCondition; action: FactoryAction; waiting_reason: string | null; completed_tickets: number; total_tickets: number }[] }
-export interface FactoryPaneLink {
-  project_id?: string | null;
-  worktree: string | null; workspace_id: string | null;
-  implementation_id: string; run_id: string; worker_id: string | null;
-  machine_id: string; pane_id: string; provider: FactoryProvider;
-  title: string; condition: RunCondition;
-}
-export interface FactoryPaneArchive extends FactoryRecord { machine_id: string; pane_id: string; terminal_id?: string; session_ref?: string | null; title?: string; archived_at: string | null }
-export interface FactoryOverview { pane_links?: FactoryPaneLink[]; pane_archives?: FactoryPaneArchive[]; conversations?: FactoryConversation[] }
-export interface FactoryProviderCapability { provider: FactoryProvider; version: string | null; installed: boolean; skills_verified: boolean; factory_ready: boolean; reasons: string[] }
-export interface FactoryCapabilities { providers: FactoryProviderCapability[]; skill_manifest: { commit: string; hash: string; file_count: number } | null; factory_host_protocol: 1; human_review_protocol?: 1; project_reference_protocol?: 1; account_profile_protocol?: 1 }
-export interface FactoryOutput { name: string; media_type: string; hash: string; size: number }
-export interface FactoryWorker extends FactoryRecord {
-  /** The Machine merged this candidate; central progress/cleanup still needs its receipt. */
-  integration_pending?: boolean;
-  suspension?: FactorySuspension;
-  continuation?: FactoryPark;
-  /** Frozen when repair work is accepted; never inferred from the latest review stage. */
-  review_origin?: "automatic" | "human";
-  run_id: string; ticket_id: string; role: "implementer" | "standards" | "spec";
-  condition: RunCondition; base: string; head: string | null; integration_tip: string;
-  worktree: string | null; branch: string | null; workspace_id: string | null; pane_id: string | null;
-  shared_paths: string[]; waiting_reason: string | null;
-  rework_batch_id: string | null;
-}
-export interface FactorySuspension {
-  queued_at?: string;
-  pause_id: string; condition: "stopped" | "resuming" | "uncertain";
-  previous_condition: RunCondition;
-}
-export interface FactoryPauseResult { run: FactoryRun; workers: FactoryWorker[]; checks: FactoryCheck[] }
-export interface FactoryCheck extends FactoryRecord {
-  run_id: string; worker_id: string | null; head: string; workspace_hash: string;
-  commands: { args: string[]; exit_code: number; output: string }[];
-  condition: "working" | "passed" | "failed" | "interrupted";
-}
-export interface FactoryReviewEvidence extends FactoryRecord {
-  run_id: string; worker_id: string; axis: "standards" | "spec"; head: string;
-  source_id: string; content: string; outcome: "passed" | "failed";
-}
-export interface FactoryRetrospective extends FactoryRecord {
-  project_id: string; evidence_ids: string[]; scope_hash: string;
-  proposal: string; approved: boolean; applied_run_id: string | null;
-}
-export interface NativeConversationSnapshot extends FactoryRecord {
-  /** Absent/null on historical coordinator captures. */
-  worker_id?: string | null;
-  run_id: string; source_id: string; sequence: number; version: string;
-  turns: ConversationTurn[]; cursor: string | null;
-}
-
-/** Public board projection; counts cover the complete current Ticket scope. */
-export type FactoryBoardLane = "inbox" | "queued" | "running" | "needs_you" | "done";
-export type FactoryActivity = "specifying" | "implementing" | "testing" | "auto_review" | "fixing";
-export interface FactoryAssignmentProgress {
-  implementation_id: string; lane: FactoryBoardLane; activities: FactoryActivity[];
-  counts: { waiting: number; running: number; completed: number };
-  tickets: { ticket_id: string; title: string; state: "waiting" | "running" | "completed"; reason: string | null }[];
-  reasons: string[];
-}
-export interface FactoryOverview { progress: FactoryAssignmentProgress[] }
+export interface FactoryHumanFeedbackBatch extends FactoryRecord {
+  implementation_id: string; run_id: string; review_id: string; snapshot_id: string; head: string;
+  origin: "human"; disposition: "decline"; merge_authorized: false;
+  key: string; signature: string; status: "sent"; comment_ids: string[]; ticket_ids: string[];
+  resolution?: { head: string; check_id: string; evidence_ids: string[] };

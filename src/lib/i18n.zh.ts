@@ -1448,4 +1448,8 @@ export const ZH: Record<string, string> = {
   "Draft comments": "评论草稿",
   "Submitted comments": "已提交的评论",
   "Saved drafts do not start repairs or authorize a merge.": "保存草稿不会启动修复或授权合并。",
+  "Decline": "拒绝",
+  "Decline submits all saved drafts for repair and grants no merge authority.": "拒绝会提交所有已保存的草稿以供修复，不授予合并权限。",
+  "Fixes are running. A later approval is required to merge.": "正在修复。合并前需要您稍后批准。",
+  "Fixes passed checks and independent reviews. Awaiting your approval.": "修复已通过检查和独立审查，正在等待您的批准。",
 };

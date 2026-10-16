@@ -479,7 +479,7 @@ export class FactoryRuntime {
     if (capabilities.human_review_protocol !== 1) throw new FactoryError("human_review_bridge_required", "The selected Machine needs Human Review bridge support before its assistant can execute", 409);
     const reviewRuns = this.store.list<FactoryRun>("runs", parent.implementation_id).filter(r => r.conversation_kind === "human_review");
     const key = `human-review-${review.id}-${message.id}`;
-    const existing = reviewRuns.find(r => r.id === review.assistant_run_id && !["completed", "cancelled", "failed"].includes(r.condition)) ?? reviewRuns.find(r => r.idempotency_key === key);
+    const existing = reviewRuns.find(r => r.id === review.assistant_run_id && r.base === review.head && !["completed", "cancelled", "failed"].includes(r.condition)) ?? reviewRuns.find(r => r.idempotency_key === key);
     if (existing) {
       // Admission and the durable sending claim precede every native effect.
       this.store.db.transaction(() => { agentCapacityPool(this.store, this.settings()); claim(); }).immediate();

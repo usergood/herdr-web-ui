@@ -1,15 +1,16 @@
 import type { ProjectGitHubPolicy, ProjectGitHubPull, ProjectGitHubSource } from "../shared/github-project.ts";
+import type { FactoryPullRequest, FactoryRun } from "../shared/factory.ts";
 import type { AccountBindingSnapshot, AccountIdentity } from "../shared/accounts.ts";
 import { MachineAccounts } from "./accounts.ts";
 import { FactoryError, hash } from "./factory-host.ts";
 import { FactoryStore } from "./factory-store.ts";
 
 interface SourceIdentity { repository: string; external_id: string; number: number; kind: "issue" | "fix" }
-interface Suppression extends SourceIdentity { id: string }
+type Suppression = (SourceIdentity | { repository: string; kind: "fix"; branch: string }) & { id: string };
 interface Deletion extends SourceIdentity { id: string; implementation_id: string; project_id: string; account_profile_id: string; identity: AccountIdentity; confirmed: boolean }
 
-export function githubSuppressed(store: FactoryStore, repository: string, externalId: string, number: number, kind: "issue" | "fix"): boolean {
-  return store.list<Suppression>("github_suppressions").some(source => source.repository.toLowerCase() === repository.toLowerCase() && source.kind === kind && (source.external_id === externalId || source.number === number));
+export function githubSuppressed(store: FactoryStore, repository: string, externalId: string, number: number, kind: "issue" | "fix", branch?: string): boolean {
+  return store.list<Suppression>("github_suppressions").some(source => source.repository.toLowerCase() === repository.toLowerCase() && source.kind === kind && ("branch" in source ? source.branch === branch : source.external_id === externalId || source.number === number));
 }
 
 /** Capture source fences before awaiting cleanup; retain no Assignment content. */
@@ -24,8 +25,23 @@ export class GitHubDeletion {
       const identity: SourceIdentity = { repository: match[1]!, external_id: source.external_id, number: source.number, kind: source.kind };
       return { source, identity, key: hash(JSON.stringify(identity)) };
     });
+    const published = this.store.list<FactoryPullRequest>("pull_requests", id).map(pr => {
+      const run = this.store.get<FactoryRun>("runs", pr.run_id);
+      const policy = (run?.manifest as { project?: { pull_request?: { repository: string } } } | undefined)?.project?.pull_request;
+      if (!run || run.implementation_id !== id || pr.repository !== policy?.repository || pr.branch !== run.branch || !Number.isSafeInteger(pr.number) || pr.number < 1 || pr.url !== `https://github.com/${pr.repository}/pull/${pr.number}`) throw new FactoryError("github_source_uncertain", "The published PR identity needs reconciliation before Delete", 409);
+      return { repository: pr.repository, external_id: pr.url, number: pr.number, kind: "fix" as const };
+    });
+    // Publication can have taken effect before its reply reaches this owner.
+    const publishing = this.store.list<FactoryRun>("runs", id).flatMap(run => {
+      const review = this.store.get<{ head: string | null; check_id: string | null }>("automatic_review", run.id);
+      const repository = (run.manifest as { project?: { pull_request?: { repository: string } } }).project?.pull_request?.repository;
+      if (!review?.head || !review.check_id || !repository || !run.branch) return [];
+      if (!/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(repository)) throw new FactoryError("github_source_uncertain", "The publication repository needs reconciliation before Delete", 409);
+      return [{ repository, kind: "fix" as const, branch: run.branch }];
+    });
     // This fence must survive a missing/disabled account or changed configuration.
     this.store.db.transaction(() => {
+      for (const identity of [...published, ...publishing]) this.store.put<Suppression>("github_suppressions", { id: hash(JSON.stringify(identity)), ...identity });
       for (const { source, identity, key } of sources) {
         this.store.put<Suppression>("github_suppressions", { id: key, ...identity });
         for (const pull of this.store.list<ProjectGitHubPull>("github_pulls", source.project_id)) if (pull.fix_implementation_id === id) this.store.put("github_pulls", { ...pull, fix_implementation_id: null }, source.project_id);

@@ -1,5 +1,6 @@
 import { agentCapacityPool, factoryCapacity } from "./factory-capacity.ts";
 import type { FactoryCheck, FactoryProject, FactoryReviewEvidence, FactoryRun, FactorySettings, FactoryTicket, FactoryWorker, Implementation } from "../shared/protocol.ts";
+import type { FactoryAutomaticReview, FactoryHumanFeedbackBatch, ReviewComment } from "../shared/factory.ts";
 import { FactoryError } from "./factory-host.ts";
 import { FactoryRuntime } from "./factory-runtime.ts";
 import { FactoryStore } from "./factory-store.ts";
@@ -45,9 +46,13 @@ export class FactoryPipeline {
       if (raced) return { worker: raced, fresh: false };
       this.run(id, role === "implementer");
       const ticket = role === "implementer" ? this.frontier(run).find((entry) => entry.id === body.ticket_id) : null;
-      const batch = typeof body.review_batch_id === "string" ? this.store.get<{ id: string; run_id: string; status: string; origin?: string; ticket_ids?: string[] }>("review_batches", body.review_batch_id) ?? this.store.get<import("../shared/factory.ts").FactoryAutomaticReviewBatch>("automatic_review_batches", body.review_batch_id) : null;
-      const rework = role === "implementer" && batch?.run_id === id && batch.status === "sent" && (!batch.ticket_ids || batch.ticket_ids.includes(String(body.ticket_id))) ? this.workflow.executionTickets(run).find((entry) => entry.id === body.ticket_id) : null;
+      const batch = typeof body.review_batch_id === "string" ? this.store.get<{ id: string; run_id: string; status: string; origin?: string; head?: string; resolution?: unknown; ticket_ids?: string[] }>("review_batches", body.review_batch_id) ?? this.store.get<import("../shared/factory.ts").FactoryAutomaticReviewBatch>("automatic_review_batches", body.review_batch_id) : null;
+      const rework = role === "implementer" && batch?.run_id === id && batch.status === "sent" && !batch.resolution && (!batch.ticket_ids || batch.ticket_ids.includes(String(body.ticket_id))) ? this.workflow.executionTickets(run).find((entry) => entry.id === body.ticket_id) : null;
       if (role === "implementer" && !ticket && !rework) throw new FactoryError("ticket_not_ready", "Select a ready Ticket or an explicitly delivered rework batch", 409);
+      if (rework && batch?.origin === "human") {
+        const integrated = this.store.list<FactoryWorker>("workers", id).filter(w => w.rework_batch_id === batch.id && w.condition === "completed").at(-1);
+        if (tip.head !== (integrated?.head ?? batch.head)) throw new FactoryError("review_stale", "The candidate changed outside the submitted Human Review repair lineage", 409);
+      }
       if (rework && this.store.list<FactoryWorker>("workers", id).some((worker) => worker.ticket_id === rework.id && owns(worker.condition))) throw new FactoryError("ticket_owned", "This Ticket already has an active or uncertain writer", 409);
       if (role !== "implementer" && this.store.list<FactoryWorker>("workers", id).some((worker) => worker.role === "implementer" && owns(worker.condition))) throw new FactoryError("writers_active", "Quiesce repository writers before independent final reviews", 409);
       agentCapacityPool(this.store, this.settings());
@@ -55,12 +60,15 @@ export class FactoryPipeline {
       const configured = (run.manifest as { project: FactoryProject }).project.shared_paths ?? [];
       if (!Array.isArray(shared) || shared.some((path) => typeof path !== "string" || !configured.includes(path))) throw new FactoryError("invalid_shared_paths", "Claim only configured shared document paths");
       if (this.store.list<FactoryWorker>("workers", id).some((worker) => owns(worker.condition) && worker.shared_paths.some((path) => shared.includes(path)))) throw new FactoryError("shared_writer_owned", "Another worker owns a selected shared document", 409);
-      const worker: FactoryWorker & { key: string } = { ...this.store.record(), run_id: id, ticket_id: (ticket ?? rework)?.id ?? id, role, condition: "accepted", base: tip.head, head: null, integration_tip: tip.head, worktree: null, branch: null, workspace_id: null, pane_id: null, shared_paths: shared as string[], waiting_reason: null, rework_batch_id: rework ? batch!.id : null, ...(rework && batch?.origin === "automatic" ? { review_origin: "automatic" as const } : {}), key: body.idempotency_key as string };
+      const worker: FactoryWorker & { key: string } = { ...this.store.record(), run_id: id, ticket_id: (ticket ?? rework)?.id ?? id, role, condition: "accepted", base: tip.head, head: null, integration_tip: tip.head, worktree: null, branch: null, workspace_id: null, pane_id: null, shared_paths: shared as string[], waiting_reason: null, rework_batch_id: rework ? batch!.id : null, ...(rework && (batch?.origin === "automatic" || batch?.origin === "human") ? { review_origin: batch.origin } : {}), key: body.idempotency_key as string };
       this.store.put("workers", worker, id); this.store.event(run.implementation_id, "worker_accepted", { worker_id: worker.id, role, ticket_id: worker.ticket_id }); return { worker, fresh: true };
     }).immediate();
     if (!claimed.fresh) return claimed.worker;
+    const feedbackId = role === "implementer" ? null : this.store.get<FactoryAutomaticReview>("automatic_review", id)?.human_batch_id;
+    const feedbackBatch = feedbackId ? this.store.get<FactoryHumanFeedbackBatch>("review_batches", feedbackId) : null;
+    const humanFeedback = feedbackBatch ? { batch: feedbackBatch, comments: this.store.list<ReviewComment>("comments", run.implementation_id).filter(c => c.batch_id === feedbackBatch.id) } : null;
     let worker: FactoryWorker;
-    try { worker = await this.runtime.operation(run, "worker", { worker: claimed.worker, context: { review_batch: claimed.worker.rework_batch_id ? this.store.get("automatic_review_batches", claimed.worker.rework_batch_id) ?? this.store.get("review_batches", claimed.worker.rework_batch_id) : null, manifest: { ...(run.manifest as object), tickets: this.workflow.executionTickets(run) }, execution_plan: this.store.get("execution_plans", run.id), ticket: this.workflow.executionTickets(run).find((ticket) => ticket.id === claimed.worker.ticket_id), questions: this.workflow.questions(run.implementation_id), findings: this.store.list<import("../shared/protocol.ts").ReviewComment>("comments", run.implementation_id).filter((comment) => comment.batch_id === claimed.worker.rework_batch_id && claimed.worker.rework_batch_id !== null) } }); }
+    try { worker = await this.runtime.operation(run, "worker", { worker: claimed.worker, context: { human_feedback: humanFeedback, review_batch: claimed.worker.rework_batch_id ? this.store.get("automatic_review_batches", claimed.worker.rework_batch_id) ?? this.store.get("review_batches", claimed.worker.rework_batch_id) : null, manifest: { ...(run.manifest as object), tickets: this.workflow.executionTickets(run) }, execution_plan: this.store.get("execution_plans", run.id), ticket: this.workflow.executionTickets(run).find((ticket) => ticket.id === claimed.worker.ticket_id), questions: this.workflow.questions(run.implementation_id), findings: this.store.list<import("../shared/protocol.ts").ReviewComment>("comments", run.implementation_id).filter((comment) => comment.batch_id === claimed.worker.rework_batch_id && claimed.worker.rework_batch_id !== null) } }); }
     catch { worker = { ...claimed.worker, condition: "disconnected", waiting_reason: "Worker dispatch is uncertain; preserve its reservation and reconcile" }; }
     if (worker.id !== claimed.worker.id || worker.run_id !== run.id || worker.ticket_id !== claimed.worker.ticket_id || worker.role !== role || worker.base !== tip.head) throw new FactoryError("worker_identity_changed", "The Machine returned a different worker identity; preserve the accepted reservation", 409);
     const parent = this.store.get<FactoryRun>("runs", id);

@@ -1154,6 +1154,9 @@ export const DEFAULT_PORT = 7317;
  * POST /api/factory/implementations/:id/configure (configure) -> Implementation; future defaults only.
  * POST /api/factory/implementations/:id/human-review/messages (human_review_message) -> FactoryMessage, 202;
  * repeat-safe explicit discussion, queued on normal capacity; no fixes or merge authority.
+ * POST /api/factory/implementations/:id/human-review/submit (human_review_submission) -> FactoryHumanFeedbackBatch, 202;
+ * atomically submits Decline and all exact-snapshot drafts, repeat-safe by request identity;
+ * dispatches fresh repairs, checks and independent reviews, then awaits explicit approval. Grants no merge authority.
  * FactoryCapabilities.human_review_protocol: 1 is required on the execution bridge;
  * older bridges cannot launch discussion as ordinary editing work.
  * FactoryDetail.human_reviews retains the automatic checked-PR handoff and captured snapshot.
@@ -1358,6 +1361,7 @@ export interface FactoryRequests {
   snapshot: { mode: "branch" | "workspace"; run_id?: string };
   comment: { snapshot_id: string; path: string; change?: string; side: "old" | "new"; line_start: number; line_end: number; content: string };
   comment_edit: { content: string };
+  human_review_submission: { review_id: string; snapshot_id: string; head: string; disposition: "decline"; comment_ids: string[]; idempotency_key: string };
   request_changes: { run_id: string; snapshot_id: string; comment_ids: string[]; idempotency_key: string };
   resolve: { head: string; summary: string };
   retrospective: { evidence_ids: string[]; proposal: string };

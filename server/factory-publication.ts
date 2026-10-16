@@ -75,6 +75,27 @@ export class FactoryPublication {
       try { pull = await api(["api", `repos/${policy.repository}/pulls`, "--method", "POST", "-f", `title=feat: ${title}`, "-f", `head=${run.branch}`, "-f", `base=${policy.base_branch}`, "-f", `body=${description}`]) as GitHubPull; }
       catch { throw new FactoryError("publication_uncertain", "PR creation was sent; reconcile its exact identity before any further action", 409); }
     }
+    if (pull && !pull.body?.includes(marker) && typeof body.previous_head === "string") {
+      const previous = this.store.get<PublicationIntent>("host_publications", `${id}:${body.previous_head}`);
+      const previousMarker = `<!-- saurons-eye:${id}:${body.previous_head} -->`;
+      if (!previous || previous.condition !== "published" || previous.number !== pull.number || previous.branch !== run.branch || previous.repository !== policy.repository || previous.base_branch !== policy.base_branch || pull.state !== "open" || !pull.body?.includes(previousMarker) || ![body.previous_head, body.head].includes(pull.head?.sha) || pull.head.ref !== run.branch || pull.head.repo?.full_name !== policy.repository || pull.base?.ref !== policy.base_branch || pull.base.repo?.full_name !== policy.repository || pull.html_url !== previous.url) throw new FactoryError("publication_target_changed", "The repaired candidate must update the exact previously published PR", 409);
+      if (intent.condition !== "prepared") throw new FactoryError("publication_uncertain", "PR update was sent; reconcile its retained identity before any further action", 409);
+      const destination = `https://github.com/${policy.repository}.git`;
+      const remote = (await git(run.worktree, ["ls-remote", "--heads", destination, `refs/heads/${run.branch}`])).trim().split(/\s+/)[0];
+      if (remote !== body.previous_head && remote !== body.head) throw new FactoryError("publication_branch_changed", "The owned remote branch changed outside this repair", 409);
+      try { await git(run.worktree, ["merge-base", "--is-ancestor", body.previous_head, String(body.head)]); }
+      catch { throw new FactoryError("publication_branch_changed", "The repaired head must preserve the published history", 409); }
+      await assertCurrent();
+      if (remote !== body.head) await git(run.worktree, ["push", "--", destination, `${body.head}:refs/heads/${run.branch}`]);
+      await assertCurrent();
+      intent = { ...intent, condition: "sending" }; this.store.put("host_publications", intent, id);
+      const description = pull.body.replace(previousMarker, marker) + `\n\nRepaired candidate: ${body.head}\nCheck: ${String(body.check_id)}\nIndependent reports: ${(body.evidence_ids as string[]).join(", ")}\nMerge still requires Human Review authorization.\n`;
+      try { await api(["api", `repos/${policy.repository}/pulls/${pull.number}`, "--method", "PATCH", "-f", `body=${description}`]); }
+      catch { throw new FactoryError("publication_uncertain", "PR update was sent; reconcile its exact identity before any further action", 409); }
+      const updated = await api(["api", `repos/${policy.repository}/pulls?state=all&head=${encodeURIComponent(policy.repository.split("/")[0] + ":" + run.branch)}&base=${encodeURIComponent(policy.base_branch)}&per_page=100`]);
+      if (!Array.isArray(updated) || updated.length !== 1) throw new FactoryError("publication_uncertain", "The updated owned PR is not yet unambiguous", 409);
+      pull = updated[0] as GitHubPull;
+    }
     if (pull.state !== "open" || !pull.body?.includes(marker) || pull.head?.sha !== body.head || pull.head.ref !== run.branch || pull.head.repo?.full_name !== policy.repository || pull.base?.ref !== policy.base_branch || pull.base.repo?.full_name !== policy.repository || !Number.isSafeInteger(pull.number) || pull.number < 1 || pull.html_url !== `https://github.com/${policy.repository}/pull/${pull.number}`) throw new FactoryError("publication_target_changed", "The PR identity, revision or destination differs from the authorized candidate", 409);
     await assertCurrent();
     this.store.put("host_publications", { ...intent, condition: "published", number: pull.number, url: pull.html_url }, id);

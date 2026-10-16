@@ -1399,4 +1399,8 @@ export const TR: Record<string, string> = {
   "Draft comments": "Yorum taslakları",
   "Submitted comments": "Gönderilen yorumlar",
   "Saved drafts do not start repairs or authorize a merge.": "Kaydedilen taslaklar onarım başlatmaz veya birleştirme yetkisi vermez.",
+  "Decline": "Reddet",
+  "Decline submits all saved drafts for repair and grants no merge authority.": "Reddet, kayıtlı tüm taslakları düzeltme için gönderir ve birleştirme yetkisi vermez.",
+  "Fixes are running. A later approval is required to merge.": "Düzeltmeler sürüyor. Birleştirmek için daha sonra onay gerekir.",
+  "Fixes passed checks and independent reviews. Awaiting your approval.": "Düzeltmeler kontrolleri ve bağımsız incelemeleri geçti. Onayınız bekleniyor.",
 };
