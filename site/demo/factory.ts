@@ -37,11 +37,11 @@ function record(): FactoryRecord { const now = new Date().toISOString(); return 
 function json(body: unknown, status = 200): Response { return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } }); }
 function failure(code: string, message: string, status = 409): Response { return json({ error: { code, message } }, status); }
 let readRevision = 0;
-const projectQueuePolicies = new Map<string, { revision: string; max_implementations: number; paused: boolean }>();
+const projectQueuePolicies = new Map<string, { revision: string; paused: boolean }>();
 function save(): void { readRevision++; try { localStorage.setItem(storageKey, JSON.stringify({ details: [...details], projectQueuePolicies: [...projectQueuePolicies], queuePolicies: [...queuePolicies], queuePreviews: [...queuePreviews], githubViews: [...githubViews], projects, checkouts, settings, blobs: [...blobs], referenceVersions, referenceHeads, paneArchives })); } catch { /* demo storage can be blocked or full; records remain in this page */ } }
 try {
   const raw = localStorage.getItem(storageKey);
-  if (raw) { const saved = JSON.parse(raw); for (const [id, policy] of saved.projectQueuePolicies ?? []) projectQueuePolicies.set(id, policy); if (Array.isArray(saved.queuePolicies)) for (const [id, policy] of saved.queuePolicies) queuePolicies.set(id, policy); if (Array.isArray(saved.queuePreviews)) for (const [id, preview] of saved.queuePreviews) queuePreviews.set(id, preview); if (Array.isArray(saved.githubViews)) for (const [id, view] of saved.githubViews) githubViews.set(id, view);  if (Array.isArray(saved.details)) for (const [id, detail] of saved.details) details.set(id, { automatic_review_batches: [], pull_requests: [], automatic_review: [], automatic_execution: [], workers: [], checks: [], review_evidence: [], frontier: [], retrospectives: [], native_snapshots: [], ...detail }); referenceVersions = saved.referenceVersions ?? []; referenceHeads = saved.referenceHeads ?? []; paneArchives = saved.paneArchives ?? []; projects = saved.projects ?? []; checkouts = saved.checkouts ?? []; if (saved.settings) { const { max_implementations: _removed, ...retained } = saved.settings; settings = { ...settings, ...retained }; } if (Array.isArray(saved.blobs)) for (const [id, content] of saved.blobs) blobs.set(id, content); }
+  if (raw) { const saved = JSON.parse(raw); for (const [id, policy] of saved.projectQueuePolicies ?? []) projectQueuePolicies.set(id, { revision: policy.revision, paused: policy.paused }); if (Array.isArray(saved.queuePolicies)) for (const [id, policy] of saved.queuePolicies) queuePolicies.set(id, { project_id: id, revision: policy.revision, automatic_implementation: policy.automatic_implementation, paused: policy.paused }); if (Array.isArray(saved.queuePreviews)) for (const [id, preview] of saved.queuePreviews) queuePreviews.set(id, preview); if (Array.isArray(saved.githubViews)) for (const [id, view] of saved.githubViews) githubViews.set(id, view);  if (Array.isArray(saved.details)) for (const [id, detail] of saved.details) details.set(id, { automatic_review_batches: [], pull_requests: [], automatic_review: [], automatic_execution: [], workers: [], checks: [], review_evidence: [], frontier: [], retrospectives: [], native_snapshots: [], ...detail }); referenceVersions = saved.referenceVersions ?? []; referenceHeads = saved.referenceHeads ?? []; paneArchives = saved.paneArchives ?? []; projects = saved.projects ?? []; checkouts = saved.checkouts ?? []; if (saved.settings) { const { max_implementations: _removed, ...retained } = saved.settings; settings = { ...settings, ...retained }; } if (Array.isArray(saved.blobs)) for (const [id, content] of saved.blobs) blobs.set(id, content); }
 } catch { /* fictional fixtures do not depend on persistent storage */ }
 function capture(title: string, description: string): Implementation {
   const implementation: Implementation = { ...record(), title, description, project_id: null, provider: null, machine_id: null, stage: "inbox", position: details.size, outcome: "none" };
@@ -97,14 +97,13 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
     const id = queueRoute[1]!;
     if (!projects.some(project => project.id === id)) return failure("not_found", "Fictional Project not found", 404);
     let policy = projectQueuePolicies.get(id);
-    const maximum = settings.max_agents;
     if (method === "POST" && queueRoute[2] === "configure") {
       if (body.expected_revision !== (policy?.revision ?? null)) return failure("queue_changed", "Refresh the fictional queue");
-      if (!Number.isSafeInteger(body.max_implementations) || Number(body.max_implementations) < 1 || Number(body.max_implementations) > maximum && body.max_implementations !== (policy?.max_implementations ?? 1) || typeof body.paused !== "boolean") return failure("invalid_queue", "Select a Project limit within the global limits", 400);
-      policy = { revision: crypto.randomUUID(), max_implementations: Number(body.max_implementations), paused: body.paused };
+      if (Object.keys(body).some(key => !["expected_revision", "paused"].includes(key)) || typeof body.paused !== "boolean") return failure("invalid_queue", "Select queue pause settings", 400);
+      policy = { revision: crypto.randomUUID(), paused: body.paused };
       projectQueuePolicies.set(id, policy); save();
     } else if (method !== "GET" || queueRoute[2]) return failure("invalid_operation", "Select a fictional queue operation", 400);
-    const view: ProjectQueueOverview = { project_id: id, revision: policy?.revision ?? null, max_implementations: policy?.max_implementations ?? 1, effective_limit: Math.min(policy?.max_implementations ?? 1, maximum), paused: policy?.paused ?? false, next_implementation_id: null, capacity: { project_implementations: 0, implementations: 0, agents: 0, builds: 0, max_agents: settings.max_agents, max_builds: settings.max_builds }, items: [...details.values()].map(detail => detail.implementation).filter(idea => idea.project_id === id && !idea.archived_at && idea.stage !== "done").sort((a, b) => a.position - b.position).map(idea => ({ implementation_id: idea.id, title: idea.title, priority: idea.position, eligible: false, reasons: ["planning_required", ...(policy?.paused ? ["queue_paused"] : [])], failed_run_id: null, problem: null })) };
+    const view: ProjectQueueOverview = { project_id: id, revision: policy?.revision ?? null, paused: policy?.paused ?? false, next_implementation_id: null, capacity: { project_implementations: 0, implementations: 0, agents: 0, builds: 0, max_agents: settings.max_agents, max_builds: settings.max_builds }, items: [...details.values()].map(detail => detail.implementation).filter(idea => idea.project_id === id && !idea.archived_at && idea.stage !== "done").sort((a, b) => a.position - b.position).map(idea => ({ implementation_id: idea.id, title: idea.title, priority: idea.position, eligible: false, reasons: ["planning_required", ...(policy?.paused ? ["queue_paused"] : [])], failed_run_id: null, problem: null })) };
     return json(view);
   }
   if (/^\/api\/factory\/implementations\/[^/]+\/completion-evidence$/.test(path)) return json({ repository_changes: "unknown", quiescent: false, reason: "The fictional demo cannot verify repository changes or native ownership.", checked_at: new Date().toISOString() });
@@ -153,7 +152,7 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
     const id = githubRoute[1]!; if (!projects.some((project) => project.id === id)) return failure("not_found", "Fictional Project not found", 404);
     const view: ProjectGitHubOverview = githubViews.get(id) ?? { policy: null, pulls: [], sources: [], mutations: [], last_sync: null, problem: null };
     if (githubRoute[2] === "queue" || githubRoute[2] === "preview") {
-      const policy = queuePolicies.get(id) ?? { project_id: id, revision: null, automatic_implementation: false, paused: false, max_implementations: 1 };
+      const policy = queuePolicies.get(id) ?? { project_id: id, revision: null, automatic_implementation: false, paused: false };
       // Demo planning/verification operations are deliberately unavailable: never invent eligibility.
       const entries: IssueQueue["entries"] = readinessView(view).sources.filter(source => source.kind === "issue").map(source => ({ source_id: source.id, implementation_id: source.implementation_id, number: source.number, title: source.current?.title ?? "", position: details.get(source.implementation_id)?.implementation.position ?? 0, eligible: false, lane: "inbox" as const, reasons: [...(source.readiness?.blockers ?? []).map(code => ({ code: "readiness_" + code, detail: "" })), { code: "planning_required", detail: "" }, { code: "dependencies_stale", detail: "" }] })).sort((a,b) => a.position-b.position);
       async function queueRevision(policy: ProjectQueuePolicy): Promise<string> {
@@ -161,6 +160,7 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
         return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2,"0")).join("");
       }
       if (method === "POST" && githubRoute[2] === "queue") {
+        if (Object.keys(body).some(key => !["expected_revision", "automatic_implementation", "preview_revision", "paused"].includes(key)) || typeof body.automatic_implementation !== "boolean" || typeof body.paused !== "boolean") return failure("invalid_queue_policy", "Select automatic implementation and pause settings", 400);
         if (body.expected_revision !== policy.revision) return failure("queue_policy_changed", "Refresh the fictional queue settings");
         if (body.automatic_implementation === true) {
           const preview = queuePreviews.get(id);
@@ -168,14 +168,13 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
           if (!preview || preview.revision !== revision || body.preview_revision !== revision) return failure("queue_preview_required", "Review the current eligible backlog before enabling automatic implementation");
           return failure("demo_unavailable", "Automatic execution requires an owned Machine; the demo keeps fictional records only");
         }
-        if (body.automatic_implementation !== false || typeof body.paused !== "boolean" || !Number.isInteger(body.max_implementations) || Number(body.max_implementations) < 1 || Number(body.max_implementations) > settings.max_agents) return failure("invalid_queue_policy", "Select pause and a limit within global capacity", 400);
-        queuePolicies.set(id, { ...policy, revision: crypto.randomUUID(), automatic_implementation: false, paused: body.paused, max_implementations: Number(body.max_implementations) }); save();
+        queuePolicies.set(id, { ...policy, revision: crypto.randomUUID(), automatic_implementation: false, paused: body.paused }); save();
       }
       const currentPolicy = queuePolicies.get(id) ?? policy;
       const revision = await queueRevision(currentPolicy);
       if (method === "POST" && githubRoute[2] === "preview") { queuePreviews.set(id, { revision, created_at: new Date().toISOString(), eligible_count: 0 }); save(); }
       const preview = queuePreviews.get(id) ?? null;
-      return json({ policy: currentPolicy, dispatch_problem: null, global_limit: settings.max_agents, effective_limit: Math.min(currentPolicy.max_implementations, settings.max_agents), implementing_count: 0, available_slots: Math.min(currentPolicy.max_implementations, settings.max_agents), revision, eligible_count: 0, entries, preview, preview_current: preview?.revision === revision } satisfies IssueQueue);
+      return json({ policy: currentPolicy, dispatch_problem: null, implementing_count: 0, revision, eligible_count: 0, entries, preview, preview_current: preview?.revision === revision } satisfies IssueQueue);
     }
     if (method === "GET" && githubRoute[4] === "files") return json({ head: fictionalGitHubPull.headRefOid, base: fictionalGitHubPull.baseRefOid, files: [{ filename: "README.md", status: "modified", additions: 1, deletions: 0, patch: "@@ -1 +1,2 @@\n # Fictional Project\n+An example improvement." }] });
     if (method === "GET") return json(readinessView(view));
