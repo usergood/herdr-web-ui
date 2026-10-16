@@ -1,4 +1,5 @@
 import { factoryCapacity } from "./factory-capacity.ts";
+import { issueRetryAvailable } from "./issue-queue.ts";
 import { existsSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
@@ -141,7 +142,7 @@ export class FactoryRuntime {
   async retry(runId: string, body: Record<string, unknown>, origin: string): Promise<FactoryRun> {
     const previous = this.store.get<FactoryRun>("runs", runId);
     if (!previous) throw new FactoryError("not_found", "Run not found", 404);
-    if (!(previous.manifest as { issue_admission?: unknown }).issue_admission || previous.condition !== "failed" || body.issue_scope === undefined) throw new FactoryError("retry_unavailable", "Only a failed issue attempt can be retried after current scope review", 409);
+    if (!(previous.manifest as { issue_admission?: unknown }).issue_admission || !issueRetryAvailable(this.store, previous) || body.issue_scope === undefined) throw new FactoryError("retry_unavailable", "Retry requires a failed issue attempt or a confirmed owner Stop of controlled-pause work, followed by current scope review", 409);
     return this.start(previous.implementation_id, { ...body, action: "implement-spec", retry_of: runId }, origin);
   }
   async start(id: string, body: Record<string, unknown>, origin: string, continuation?: { runId?: string; finish?: () => Promise<void>; validateScope?: () => void }): Promise<FactoryRun> {
@@ -175,10 +176,10 @@ export class FactoryRuntime {
     if (implementation.archived_at || project?.removed_at) throw new FactoryError("inactive_assignment", "Restore this Assignment and Project before starting work", 409);
     const action = body.action as FactoryAction;
     if (body.issue_scope !== undefined && action !== "implement-spec") throw new FactoryError("invalid_issue_scope", "Prepared issue scope authorizes implementation only");
-    if (action === "implement-spec" && body.retry_of === undefined && this.store.list<FactoryRun>("runs", id).some(run => run.condition === "failed" && (run.manifest as { issue_admission?: unknown }).issue_admission)) throw new FactoryError("retry_required", "Failed issue work requires the owner’s explicit Retry", 409);
+    if (action === "implement-spec" && body.retry_of === undefined && this.store.list<FactoryRun>("runs", id).some(run => (run.condition === "failed" || run.condition === "cancelled" && run.issue_pause) && (run.manifest as { issue_admission?: unknown }).issue_admission)) throw new FactoryError("retry_required", "Failed or stopped controlled-pause issue work requires the owner’s explicit Retry", 409);
     const validateRetry = () => {
       const latest = this.store.list<FactoryRun>("runs", id).at(-1);
-      if (body.retry_of !== undefined && (latest?.id !== body.retry_of || latest.condition !== "failed")) throw new FactoryError("retry_superseded", "Refresh the latest attempt before Retry", 409);
+      if (body.retry_of !== undefined && (latest?.id !== body.retry_of || !issueRetryAvailable(this.store, latest))) throw new FactoryError("retry_superseded", "Refresh the latest attempt before Retry", 409);
     };
     validateRetry();
     const retryRunId = typeof body.retry_of === "string" ? body.retry_of : undefined;

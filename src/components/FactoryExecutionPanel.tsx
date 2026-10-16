@@ -14,6 +14,9 @@ export function FactoryExecutionPanel({ detail, project, busy, perform, onOpenPa
   const command = (path: string, body: FactoryRequestBody = {}) => perform(async () => { await factoryRequest(`${prefix}${path}`, body); });
   const workerCommand = (workerId: string, runId: string, action: string) => perform(async () => { await factoryRequest(`/runs/${runId}/workers/${workerId}/${action}`, {}); });
   const check = detail.checks.filter((entry) => entry.worker_id === null && entry.run_id === run.id).at(-1);
+  const reviewed = run.implementation_completion;
+  const accepted = detail.approvals.some(approval => approval.kind === "review" && approval.revision === (reviewed?.head ?? check?.head) && approval.scope.startsWith(`Run ${run.id};`));
+  const canAccept = !run.issue_pause && (active || run.condition === "completed" && !!reviewed && check?.head === reviewed.head);
   return <section className="factory-section">
     <h3>{t("Execution evidence")}</h3>
     <p>{run.branch} · {run.base}</p>
@@ -45,7 +48,7 @@ export function FactoryExecutionPanel({ detail, project, busy, perform, onOpenPa
       <button className="btn factory-button" disabled={busy || !active} onClick={() => void command("/checks")}>{t("Run integration checks")}</button>
       <button className="btn factory-button" disabled={busy || !active} onClick={() => void command("/workers", { role: "standards", idempotency_key: crypto.randomUUID() })}>{t("Start Standards review")}</button>
       <button className="btn factory-button" disabled={busy || !active} onClick={() => void command("/workers", { role: "spec", idempotency_key: crypto.randomUUID() })}>{t("Start Spec review")}</button>
-      <button className="btn factory-button" disabled={busy || !active || check?.condition !== "passed"} onClick={() => void command("/accept", { head: check?.head ?? "" })}>{t("Accept reviewed head")}</button>
+      {!accepted && <button className="btn factory-button" disabled={busy || !canAccept || check?.condition !== "passed"} onClick={() => void command("/accept", { head: reviewed?.head ?? check?.head ?? "" })}>{t("Accept reviewed head")}</button>}
     </div>
     {detail.checks.map((entry) => <details key={entry.id}><summary>{t("Checks")} · {entry.condition} · {entry.head}</summary><button className="btn factory-button" disabled={busy} onClick={() => void perform(async () => { await factoryRequest(`/runs/${entry.run_id}/checks/${entry.id}/reconcile`, {}); })}>{t("Reconcile checks")}</button>{entry.commands.map((command, index) => <div key={index}><p>{command.args.join(" ")} · {command.exit_code}</p><pre>{command.output}</pre></div>)}</details>)}
     {detail.review_evidence.map((report) => <details key={report.id}><summary>{report.axis} · {report.outcome} · {report.head}</summary><pre>{report.content}</pre></details>)}

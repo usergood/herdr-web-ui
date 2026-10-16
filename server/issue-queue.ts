@@ -1,4 +1,4 @@
-import type { FactoryRun, Implementation } from "../shared/factory.ts";
+import type { FactoryEvent, FactoryRun, Implementation } from "../shared/factory.ts";
 import type { ProjectGitHubSource } from "../shared/github-project.ts";
 import type { IssueQueueEntry, ProjectQueuePolicy } from "../shared/issue-queue.ts";
 import type { FactoryStore } from "./factory-store.ts";
@@ -7,6 +7,12 @@ import { FactoryWorkflow } from "./factory-workflow.ts";
 /** Completed planning is reusable history; implementation attempts still require explicit Retry. */
 export function issueExecutionAttempts(store: FactoryStore, id: string): FactoryRun[] {
   return store.list<FactoryRun>("runs", id).filter(run => run.action === "implement-spec" || !["completed", "failed", "cancelled"].includes(run.condition));
+}
+
+/** A paused contract never resumes: only an owner's confirmed Stop permits a new attempt. */
+export function issueRetryAvailable(store: FactoryStore, run: FactoryRun | undefined): boolean {
+  if (!run || run.implementation_completion_pending || run.implementation_completion) return false;
+  return run.condition === "failed" || run.condition === "cancelled" && !!run.issue_pause && store.list<FactoryEvent>("events", run.implementation_id).some(event => event.kind === "run_stopped" && (event.data as { run_id?: string } | null)?.run_id === run.id);
 }
 
 /** One eligibility result is shared by previews, source detail and the board. */
@@ -20,7 +26,7 @@ export function issueQueueEntry(store: FactoryStore, source: ProjectGitHubSource
   if (idea?.outcome !== "none" || idea?.stage === "done") reason("assignment_finished");
   const attempts = issueExecutionAttempts(store, source.implementation_id);
   const latest = attempts.at(-1);
-  if (attempts.length && !(latest?.id === retryRunId && latest?.condition === "failed")) reason("attempt_exists");
+  if (attempts.length && !(latest?.id === retryRunId && issueRetryAvailable(store, latest))) reason("attempt_exists");
   if (!accountReady) reason("account_unavailable");
   for (const blocker of source.readiness?.blockers ?? ["sync_required"]) reason("readiness_" + blocker);
   if (!source.planning) reason("planning_required");

@@ -779,6 +779,68 @@ test("moving a prerequisite Assignment to another Project preserves source histo
   expect(detail.github_sources[0].dependencies.fresh).toBe(false);
 });
 
+test("a native prerequisite already closed on initial sync remains accessible for verified delivery without importing unrelated history", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const issues = [dependencyIssue(12), { ...dependencyIssue(24), state: "closed" }, { ...dependencyIssue(36), state: "closed" }];
+  const data = { issues, pulls: [], dependencies: { 12: [issues[1]] }, dependency_pages: { 36: [{ message: "Unrelated historical evidence unavailable" }] }, delivery_pulls: { 27: deliveryPull() }, comparisons: { ["c".repeat(40) + "..." + "f".repeat(40)]: { status: "ahead", base_commit: { sha: "c".repeat(40) }, merge_base_commit: { sha: "c".repeat(40) } } } };
+  writeFileSync(f.state, JSON.stringify(data));
+  await f.post(route + "/configure", f.policy);
+  expect((await f.post(route + "/sync", {})).status).toBe(200);
+  const sources = (await f.get(route)).sources;
+  expect(sources.map((source: { number: number }) => source.number)).toEqual([12, 24]);
+  const target = sources.find((source: { number: number }) => source.number === 24);
+  expect((await f.get(`/implementations/${target.implementation_id}`)).github_sources[0]).toMatchObject({ id: target.id, state: "closed" });
+  expect(sources[0].dependencies.edges[0]).toMatchObject({ implementation_id: target.implementation_id, resolution: "resolved", blocker: "delivery_unverified" });
+  expect((await f.post(route + "/issues/24/delivery", { source_revision: target.revision, expected_revision: null, target_branch: "main", intended_prs: [{ number: 27, head: "a".repeat(40) }], release_tag: null })).status).toBe(200);
+  for (let index = 0; index < 2; index++) {
+    expect((await f.post(route + "/sync", {})).status).toBe(200);
+    const current = (await f.get(route)).sources;
+    expect(current.map((source: { id: string }) => source.id)).toEqual(sources.map((source: { id: string }) => source.id));
+    expect(current[0].dependencies).toMatchObject({ satisfied: true, edges: [{ blocker: null, delivery: { merges: [{ number: 27, merge_commit: "c".repeat(40) }] } }] });
+    expect((await f.get(`/implementations/${target.implementation_id}`)).runs).toEqual([]);
+  }
+});
+
+test("an approved plan can discover an already-closed prerequisite and require its containing release", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const issues = [dependencyIssue(12), { ...dependencyIssue(24), state: "closed" }];
+  const comparison = { status: "ahead", base_commit: { sha: "c".repeat(40) }, merge_base_commit: { sha: "c".repeat(40) } };
+  const data = { issues, pulls: [], dependencies: {}, delivery_pulls: { 27: deliveryPull() }, comparisons: { ["c".repeat(40) + "..." + "f".repeat(40)]: comparison, ["c".repeat(40) + "..." + "d".repeat(40)]: comparison }, tag_ref: { ref: "refs/tags/v1", object: { type: "commit", sha: "d".repeat(40) } }, releases: { v1: { tag_name: "v1", html_url: "https://github.com/fictional/project/releases/tag/v1", draft: true, published_at: null as string | null } } };
+  writeFileSync(f.state, JSON.stringify(data)); await f.post(route + "/configure", f.policy); await f.post(route + "/sync", {});
+  const source = (await f.get(route)).sources[0]; const prefix = `/implementations/${source.implementation_id}`;
+  const specification = (await f.post(prefix + "/specifications", { content: externalPlan.replace("None.", JSON.stringify([{ repository: "fictional/project", number: 24, requires: "release" }])) })).body;
+  for (const kind of ["specification", "testing_seams"]) await f.post(prefix + "/approvals", { kind, revision: specification.id, scope: "Fictional owner approved related release prerequisite" });
+  expect((await f.post(route + "/sync", {})).status).toBe(200);
+  const sources = (await f.get(route)).sources;
+  expect(sources.map((source: { number: number }) => source.number)).toEqual([12, 24]);
+  const target = sources[1];
+  expect((await f.post(route + "/issues/24/delivery", { source_revision: target.revision, expected_revision: null, target_branch: "main", intended_prs: [{ number: 27, head: "a".repeat(40) }], release_tag: "v1" })).status).toBe(200);
+  await f.post(route + "/sync", {});
+  expect((await f.get(route)).sources[0].dependencies).toMatchObject({ satisfied: false, edges: [{ requires: "release", blocker: "release_unverified" }] });
+  data.releases.v1.draft = false; data.releases.v1.published_at = "2026-10-04T12:00:00Z";
+  writeFileSync(f.state, JSON.stringify(data));
+  for (let index = 0; index < 2; index++) {
+    expect((await f.post(route + "/sync", {})).status).toBe(200);
+    expect((await f.get(route)).sources[0].dependencies).toMatchObject({ satisfied: true, edges: [{ requires: "release", blocker: null, delivery: { release: { tag: "v1", commit: "d".repeat(40) } } }] });
+    expect((await f.get(`/implementations/${target.implementation_id}`)).runs).toEqual([]);
+  }
+});
+
+test("the first backlog preview retains closed prerequisites from the newly prepared trusted issue plan", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const issues = [{ ...dependencyIssue(12), body: externalPlan.replace("None.", '[{"repository":"fictional/project","number":24,"requires":"merge"}]'), labels: [{ name: "ready-for-agent" }] }, { ...dependencyIssue(24), state: "closed" }, { ...dependencyIssue(36), state: "closed" }];
+  writeFileSync(f.state, JSON.stringify({ issues, pulls: [], events: [readinessEvent()], dependencies: { 24: [issues[2]] } }));
+  await f.post(route + "/configure", f.policy);
+  await f.post(route + "/readiness", { expected_revision: null, account_profile_id: f.policy.account_profile_id, triage_labels: {}, blocked_label: "blocked" });
+  expect((await f.post(route + "/preview", {})).status).toBe(200);
+  const sources = (await f.get(route)).sources;
+  expect(sources.map((source: { number: number }) => source.number)).toEqual([12, 24, 36]);
+  expect(sources[0].planning.condition).toBe("prepared");
+  expect(sources[0].dependencies.edges[0]).toMatchObject({ implementation_id: sources[1].implementation_id, resolution: "resolved", blocker: "delivery_unverified" });
+  expect(sources[1].dependencies.edges[0]).toMatchObject({ implementation_id: sources[2].implementation_id, resolution: "resolved", blocker: "delivery_unverified" });
+  for (const source of sources) expect((await f.get(`/implementations/${source.implementation_id}`)).runs).toEqual([]);
+});
+
 test("unrelated historical closed issues do not require dependency access for current imports", async () => {
   const f = await fixture(); const route = `/projects/${f.project.id}/github`;
   const closed = { ...dependencyIssue(24), state: "closed" };

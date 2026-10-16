@@ -5,10 +5,53 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { githubQueueFixture } from "./fixtures/github-queue.ts";
+import { githubReviewFixture } from "./fixtures/github-review.ts";
 
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 const errors: string[] = [];
 try {
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    const fixture = githubReviewFixture();
+    const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });
+    page.setDefaultTimeout(10_000); page.on("pageerror", error => errors.push(error.message));
+    try {
+      const { run, path, route } = await fixture.prepare();
+      fixture.issue.body += "\nA reviewed change to the greeting.";
+      fixture.save(); await fixture.json(route + "/sync", {});
+      await page.goto(fixture.origin + `/#factory/${run.implementation_id}`);
+      const original = page.getByRole("region", { name: "Admitted issue contract", exact: true }).first();
+      await original.getByText("Controlled pause requested. Issue scope changed.", { exact: true }).waitFor();
+      await page.getByText("Advanced controls", { exact: true }).last().click();
+      await page.getByRole("button", { name: "Stop Run", exact: true }).click();
+      await page.getByRole("button", { name: "Reconcile Run", exact: true }).last().click();
+      const actions = page.getByRole("region", { name: "Next step", exact: true });
+      for (let remaining = await actions.getByLabel("Your answer", { exact: true }).count(); remaining > 0; remaining--) {
+        await actions.getByLabel("Your answer", { exact: true }).first().fill("Keep produced work and use the reviewed current issue plan in a new attempt.");
+        const saved = page.waitForResponse(response => /\/questions\/[^/]+\/answer$/.test(response.url()) && response.request().method() === "POST");
+        await actions.getByRole("button", { name: "Save answer", exact: true }).first().click();
+        assert.equal((await saved).status(), 200);
+        await actions.getByLabel("Your answer", { exact: true }).nth(remaining - 1).waitFor({ state: "detached" });
+      }
+      await page.getByRole("button", { name: "Approve this issue revision", exact: true }).click();
+      await page.getByRole("button", { name: "Prepare issue plan", exact: true }).click();
+      await page.getByText("Planning prepared", { exact: true }).waitFor();
+      await fixture.json(route + "/sync", {}); await page.reload();
+      const retry = page.getByRole("region", { name: "Issue planning", exact: true }).getByRole("button", { name: "Retry", exact: true });
+      await retry.waitFor();
+      const stopped = (await fixture.json(path)).runs[0];
+      assert.equal(stopped.condition, "cancelled");
+      assert.deepEqual(stopped.manifest, run.manifest);
+      assert.equal((await fixture.json(path)).runs.length, 1);
+      await retry.click();
+      await page.getByRole("region", { name: "Admitted issue contract", exact: true }).last().getByText("Execution confirmed.", { exact: true }).waitFor();
+      const detail = await fixture.json(path);
+      assert.equal(detail.runs.length, 2);
+      assert.equal(detail.runs[1].retry_of, run.id);
+      assert.deepEqual(detail.runs[0], stopped);
+      assert.equal(await retry.count(), 0);
+    } finally { await page.close(); fixture.close(); }
+  }
+  console.log("PASS: desktop/mobile controlled pause, Stop, answers, renewed readiness, prepared plan and explicit successor");
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
     const fixture = githubQueueFixture(true);
     const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });

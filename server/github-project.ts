@@ -667,21 +667,29 @@ export class ProjectGitHub {
         const dependencies = new Map<string, GitHubIssueDependency[]>();
         const tracked = this.store.list<ProjectGitHubSource>("github_sources", id).filter(source => source.kind === "issue");
         const pending = issues.filter(issue => issue.state === "open" || tracked.some(source => source.external_id === issue.node_id));
-        for (let index = 0; index < pending.length; index++) {
-          const issue = pending[index]!;
-          const edges = await this.dependencies(policy, scope, issue);
-          dependencies.set(issue.node_id, edges);
+        // Retain only reachable closed history, bounded by the validated issue inventory.
+        const includeRelated = (edges: { repository: string; number: number; external_id?: string }[]) => {
           for (const edge of edges) {
             if (edge.repository.toLowerCase() !== policy.repository.toLowerCase()) continue;
-            const target = issues.find(target => target.node_id === edge.external_id && target.number === edge.number);
+            const target = issues.find(target => target.number === edge.number && (edge.external_id === undefined || target.node_id === edge.external_id));
             if (target && !pending.some(queued => queued.node_id === target.node_id)) pending.push(target);
           }
-        }
+        };
+        let dependencyIndex = 0;
+        const collectDependencies = async () => {
+          while (dependencyIndex < pending.length) {
+            const issue = pending[dependencyIndex++]!;
+            const edges = await this.dependencies(policy, scope, issue);
+            dependencies.set(issue.node_id, edges);
+            const source = tracked.find(source => source.external_id === issue.node_id);
+            includeRelated([...edges, ...(source ? dependencyPlan(this.store, source).declarations : [])]);
+          }
+        };
+        await collectDependencies();
         const pulls = await this.pulls(policy, scope);
         if ((await this.repository(id))?.toLowerCase() !== policy.repository.toLowerCase()) throw new FactoryError("github_repository_mismatch", "The Project GitHub repository changed; verify its settings again", 409);
         this.current(policy);
-        for (const issue of issues) {
-          if (issue.state !== "open" && !this.store.list<ProjectGitHubSource>("github_sources", id).some((source) => source.external_id === issue.node_id && source.kind === "issue")) continue;
+        for (const issue of pending) {
           const content = { title: issue.title, body: issue.body ?? "", labels: issue.labels.map((label) => label.name).sort(), state: issue.state, source_updated_at: issue.updated_at, repository: policy.repository, url: issue.html_url, native_dependencies: dependencies.get(issue.node_id)!.map(({ external_id, repository, number, url }) => ({ external_id, repository, number, url })) };
           const { source_updated_at, ...scopeContent } = content;
           const revision = hash(JSON.stringify(scopeContent));
@@ -698,6 +706,10 @@ export class ProjectGitHub {
           if ((prepare || this.store.get<import("../shared/issue-queue.ts").ProjectQueuePolicy>("github_queue_policies", id)?.automatic_implementation) && readiness.eligible && !answersNeedConsumption && !issueExecutionAttempts(this.store, source.implementation_id).length) {
             prepareIssuePlan(this.store, { ...collected, readiness });
           }
+          // The first preview can prepare a trusted plan for the first time. Expand
+          // its declared prerequisites in this same snapshot, including native descendants.
+          includeRelated(dependencyPlan(this.store, collected).declarations);
+          await collectDependencies();
         }
         const sources = this.store.list<ProjectGitHubSource>("github_sources", id).filter(source => source.kind === "issue");
         const verificationScope = coverageRevision(this.store, id);

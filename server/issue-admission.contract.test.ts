@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { githubQueueFixture } from "../scripts/fixtures/github-queue.ts";
+import { githubReviewFixture } from "../scripts/fixtures/github-review.ts";
 
 async function prepared(fixture: ReturnType<typeof githubQueueFixture>) {
   const setup = await fixture.setup();
@@ -506,6 +507,63 @@ test("global agent capacity remains effective even when the Project allows anoth
   } finally { fixture.close(); }
 }, 20_000);
 
+
+test.each(["free", "worker", "build"])("a confirmed owner Stop permits one explicit successor after current scope resolution while retaining %s ownership", async ownership => {
+  const fixture = githubReviewFixture(); let release = () => {};
+  try {
+    const { path, run, route, readiness, source } = await fixture.prepare();
+    if (ownership === "worker") await fixture.json(`/runs/${run.id}/workers`, { role: "implementer", ticket_id: (run.manifest as { tickets: { id: string }[] }).tickets[0]!.id, idempotency_key: "retained-native-worker" });
+    if (ownership === "build") { fixture.setCheck("interrupted"); await fixture.json(`/runs/${run.id}/checks`, {}); }
+    fixture.issue.body += "\nA reviewed change to the greeting.";
+    fixture.save(); await fixture.json(route + "/sync", {});
+    const scope = { source_id: source.id, source_revision: source.revision, graph_hash: run.graph_hash };
+    expect((await fixture.post(`/runs/${run.id}/retry`, { idempotency_key: "before-stop", issue_scope: scope })).status).toBe(409);
+    fixture.setUncertainStop(true);
+    expect((await fixture.post(`/runs/${run.id}/stop`, {})).status).toBe(409);
+    expect((await fixture.post(`/runs/${run.id}/retry`, { idempotency_key: "uncertain-stop", issue_scope: scope })).status).toBe(409);
+    fixture.setUncertainStop(false);
+    const stopped = await fixture.json(`/runs/${run.id}/stop`, {});
+    expect(stopped).toMatchObject({ condition: "cancelled", issue_pause: { reason: "scope_changed" }, worktree: run.worktree, manifest: run.manifest });
+    await fixture.json(`/runs/${run.id}/reconcile`, {});
+    let detail = await fixture.json(path);
+    for (const question of detail.questions.filter((question: any) => question.answer === null)) await fixture.json(path + `/questions/${question.id}/answer`, { revision: question.revision, answer: "Keep produced work and use the reviewed current issue plan in a new attempt." });
+    const current = (await fixture.json(route)).sources[0];
+    await fixture.json(route + "/issues/1/approve", { source_revision: current.revision, policy_revision: readiness.revision });
+    detail = await fixture.json(path);
+    await fixture.json(route + "/issues/1/prepare", { source_revision: current.revision, question_revision: detail.question_revision });
+    await fixture.json(route + "/sync", {}); fixture.restart();
+    detail = await fixture.json(path);
+    expect(detail.runs).toEqual([stopped]);
+    const prepared = detail.github_sources[0];
+    const successorScope = { source_id: source.id, source_revision: prepared.revision, graph_hash: prepared.planning.graph_hash };
+    expect((await fixture.post(path + "/runs", { action: "implement-spec", idempotency_key: "no-automatic-resume", issue_scope: successorScope })).status).toBe(409);
+    const generic = await fixture.post(path + "/runs", { action: "implement-spec", idempotency_key: "no-manual-bypass" });
+    expect((await generic.json()).error.code).toBe("retry_required");
+    const retry = { idempotency_key: "owner-stopped-successor", issue_scope: successorScope };
+    if (ownership !== "free") {
+      const response = await fixture.post(`/runs/${run.id}/retry`, retry);
+      expect(response.status).toBe(409);
+      expect(["implementation_owned", "project_capacity_exhausted"]).toContain((await response.json()).error.code);
+      const retained = await fixture.json(path);
+      expect(retained.runs).toEqual([stopped]);
+      expect(ownership === "worker" ? retained.workers[0].condition : retained.checks[0].condition).toBe(ownership === "worker" ? "ready" : "interrupted");
+      return;
+    }
+    const held = fixture.holdCapabilities(); release = held.release;
+    const first = fixture.post(`/runs/${run.id}/retry`, retry);
+    await Promise.race([held.waiting, new Promise((_, reject) => setTimeout(() => reject(new Error("Successor did not reach native observation")), 5000))]);
+    const same = fixture.post(`/runs/${run.id}/retry`, retry);
+    const other = fixture.post(`/runs/${run.id}/retry`, { ...retry, idempotency_key: "competing-successor" });
+    release();
+    const responses = await Promise.all([first, same, other]);
+    expect(responses.map(response => response.status)).toEqual([202, 202, 409]);
+    const next = await responses[0]!.json();
+    expect((await responses[1]!.json()).id).toBe(next.id);
+    expect(next).toMatchObject({ condition: "working", retry_of: run.id, manifest: { issue_admission: { source: { revision: prepared.revision } } } });
+    expect((await fixture.json(`/runs/${run.id}/retry`, retry)).id).toBe(next.id);
+    expect((await fixture.json(path)).runs).toEqual([stopped, next]);
+  } finally { release(); fixture.close(); }
+}, 30_000);
 
 test("failed issue work waits through sync and restart for explicit owner Retry", async () => {
   const fixture = githubQueueFixture(true);

@@ -1196,8 +1196,9 @@ export const DEFAULT_PORT = 7317;
  * owned/uncertain children or builds can finish execution. implementation_completion records that
  * revision; owner review acceptance remains separate. Implementation.activity may be awaiting_merge,
  * with Board stage review until intended merge coverage (and any required release) is verified.
- * POST .../retry (issue_retry) -> FactoryRun, 202; owner-only failed issue attempt successor.
- * Revalidates current issue_scope, queue and ownership; retry_of retains the failed Run identity.
+ * POST .../retry (issue_retry) -> FactoryRun, 202; owner-only successor of a failed issue attempt
+ * or controlled-pause attempt with confirmed owner Stop. Revalidates current issue_scope,
+ * answers, queue and ownership; retry_of retains the original Run identity. Never auto-retries.
  * POST .../stop (stop) -> FactoryRun; verified ownership released, history/work retained.
  * POST .../cleanup (empty) -> FactoryCleanup; only stopped clean owned checkouts removed.
  * POST .../verify-provider (empty) -> FactoryCapabilities; genuine loading/owner-round evidence required.

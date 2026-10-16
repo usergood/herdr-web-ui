@@ -9,7 +9,52 @@ import { githubReviewFixture } from "./fixtures/github-review.ts";
 
 const fixture = githubQueueFixture();
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
+const errors: string[] = [];
 try {
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    const manual = githubReviewFixture();
+    const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });
+    page.setDefaultTimeout(10_000); page.on("pageerror", error => errors.push(error.message));
+    try {
+      const { project } = await manual.setup();
+      const assignment = await manual.json("/implementations", { title: "Owned manual Assignment", description: "Show a greeting", project_id: project.id });
+      const path = `/implementations/${assignment.id}`;
+      const specification = await manual.json(path + "/specifications", { content: "Show hello through the public HTTP interface." });
+      for (const kind of ["specification", "testing_seams"]) await manual.json(path + "/approvals", { kind, revision: specification.id, scope: "Owned fixture approval for public HTTP" });
+      const graph = await manual.json(path + "/tickets", { specification_id: specification.id, tickets: [{ key: "greeting", title: "Greeting", acceptance: "Show hello", dependencies: [] }] });
+      await manual.json(path + "/approvals", { kind: "ticket_graph", revision: graph.hash, scope: "Owned fixture graph approval" });
+      const run = await manual.json(path + "/runs", { action: "implement-spec", idempotency_key: "owned-manual-implementation" });
+      await manual.integrate(run); const check = await manual.json(`/runs/${run.id}/checks`, {});
+      await manual.review(run, "standards"); await manual.review(run, "spec");
+      assert.equal((await manual.json(`/runs/${run.id}/reconcile`, {})).condition, "completed");
+      await page.goto(manual.origin + `/#factory/${assignment.id}`);
+      const actions = page.getByRole("region", { name: "Next step", exact: true });
+      assert.equal((await manual.json(path)).implementation.stage, "review");
+      assert.equal((await manual.post(path + "/archive", {})).status, 409);
+      await actions.getByRole("button", { name: "Accept reviewed head", exact: true }).click();
+      await page.getByRole("button", { name: "Archive task", exact: true }).waitFor();
+      assert.equal(await actions.getByRole("button", { name: "Accept reviewed head", exact: true }).count(), 0);
+      // A previous acceptance at this same head does not accept a later Run.
+      const followup = await manual.json(path + "/runs", { action: "implement-spec", idempotency_key: "owned-manual-followup" });
+      await manual.integrate(followup); await manual.json(`/runs/${followup.id}/checks`, {});
+      await manual.review(followup, "standards"); await manual.review(followup, "spec");
+      await manual.json(`/runs/${followup.id}/reconcile`, {});
+      await page.reload();
+      await page.getByText("Advanced controls", { exact: true }).last().click();
+      const execution = page.getByRole("heading", { name: "Execution evidence", exact: true }).locator("..");
+      assert(await execution.getByRole("button", { name: "Accept reviewed head", exact: true }).isEnabled());
+      await (viewport.width < 640 ? execution : actions).getByRole("button", { name: "Accept reviewed head", exact: true }).click();
+      await page.getByRole("button", { name: "Archive task", exact: true }).click();
+      await page.getByRole("button", { name: "Restore", exact: true }).waitFor();
+      const detail = await manual.json(path);
+      assert.equal(detail.implementation.stage, "done");
+      assert(detail.implementation.archived_at);
+      assert.equal(detail.approvals.filter((approval: any) => approval.kind === "review" && approval.revision === check.head).length, 2);
+      assert.equal(await actions.getByRole("button", { name: "Accept reviewed head", exact: true }).count(), 0);
+      assert.equal(await execution.getByRole("button", { name: "Accept reviewed head", exact: true }).count(), 0);
+    } finally { await page.close(); manual.close(); }
+  }
+  console.log("PASS: desktop/mobile retired manual implementation acceptance and archive");
   const { project, route, readiness } = await fixture.setup();
   const second = { ...fixture.issue, number: 2, node_id: "fictional-2", title: "Later greeting", html_url: "https://github.com/fictional/project/issues/2" };
   const blocked = { ...fixture.issue, number: 3, node_id: "fictional-3", title: "Blocked greeting", labels: [{ name: "blocked" }, { name: "ready-for-agent" }] };
@@ -22,7 +67,6 @@ try {
     await fixture.json(route + `/issues/${number}/prepare`, { source_revision: source.revision });
   }
   await fixture.json(route + "/sync", {});
-  const errors: string[] = [];
   const evidence = process.env["UI_EVIDENCE_DIR"]; if (evidence) mkdirSync(evidence, { recursive: true });
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
     const queue = await fixture.json(route + "/queue");
