@@ -390,6 +390,24 @@ test.each(["before", "after"])("a workspace changed %s cleanup cannot establish 
   } finally { fixture.close(); }
 }, 20_000);
 
+test("frozen setup and checks allow independent-review retirement, slot release and owner acceptance", async () => {
+  const fixture = githubReviewFixture();
+  try {
+    const { run, path, route, project } = await fixture.prepare({ setup: [["bun", "install", "--frozen-lockfile"], ["bun", "run", "prepare"]], checks: [["bun", "run", "typecheck"], ["bun", "run", "test:unit"]] });
+    await fixture.integrate(run);
+    await fixture.json(`/projects/${project.id}/configure`, { setup: [["bun", "install"]], checks: [["bun", "run", "build"]] });
+    const check = await fixture.json(`/runs/${run.id}/checks`, {});
+    expect(check.commands.map((command: any) => command.args)).toEqual([["bun", "install", "--frozen-lockfile"], ["bun", "run", "prepare"], ["bun", "run", "typecheck"], ["bun", "run", "test:unit"]]);
+    await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    const finished = await fixture.json(`/runs/${run.id}/reconcile`, {});
+    expect(finished).toMatchObject({ condition: "completed", implementation_completion: { head: check.head, workspace_hash: check.workspace_hash, check_id: check.id } });
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 0, available_slots: 1 });
+    expect((await fixture.json(path)).approvals).toEqual([]);
+    expect((await fixture.post(`/runs/${run.id}/accept`, { head: check.head })).status).toBe(200);
+    expect((await fixture.json(path)).approvals).toContainEqual(expect.objectContaining({ kind: "review", revision: check.head }));
+  } finally { fixture.close(); }
+}, 15_000);
+
 test("passing check evidence must include the frozen Project commands before releasing or accepting implementation", async () => {
   const fixture = githubReviewFixture();
   try {
@@ -403,6 +421,42 @@ test("passing check evidence must include the frozen Project commands before rel
     expect(accepted.status).toBe(409); expect((await accepted.json()).error.code).toBe("fresh_evidence_required");
   } finally { fixture.close(); }
 }, 20_000);
+
+test.each([
+  { kind: "missing setup", commands: [["bun", "run", "typecheck"]] },
+  { kind: "missing later setup", commands: [["bun", "install", "--frozen-lockfile"], ["bun", "run", "typecheck"]] },
+  { kind: "changed setup arguments", commands: [["bun", "install"], ["bun", "run", "prepare"], ["bun", "run", "typecheck"]] },
+  { kind: "reordered setup", commands: [["bun", "run", "prepare"], ["bun", "install", "--frozen-lockfile"], ["bun", "run", "typecheck"]] },
+  { kind: "checks before setup", commands: [["bun", "run", "typecheck"], ["bun", "install", "--frozen-lockfile"], ["bun", "run", "prepare"]] },
+  { kind: "extra setup", commands: [["bun", "install", "--frozen-lockfile"], ["bun", "run", "prepare"], ["bun", "run", "extra"], ["bun", "run", "typecheck"]] },
+  { kind: "failing first setup", commands: [["bun", "install", "--frozen-lockfile"], ["bun", "run", "prepare"], ["bun", "run", "typecheck"]], exitCodes: [1, 0, 0] },
+  { kind: "failing later setup", commands: [["bun", "install", "--frozen-lockfile"], ["bun", "run", "prepare"], ["bun", "run", "typecheck"]], exitCodes: [0, 1, 0] },
+  { kind: "setup only", commands: [["bun", "install", "--frozen-lockfile"], ["bun", "run", "prepare"]] },
+])("$kind receipts retain capacity and reject acceptance despite a passing check status", async ({ commands, exitCodes }) => {
+  const fixture = githubReviewFixture();
+  try {
+    const { run, path, route } = await fixture.prepare({ setup: [["bun", "install", "--frozen-lockfile"], ["bun", "run", "prepare"]], checks: [["bun", "run", "typecheck"]] });
+    await fixture.integrate(run);
+    fixture.setCheckCommands(commands, exitCodes);
+    const check = await fixture.json(`/runs/${run.id}/checks`, {});
+    expect(check.condition).toBe("passed");
+    await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    expect((await fixture.json(`/runs/${run.id}/reconcile`, {})).condition).toBe("ready");
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1, available_slots: 0 });
+    const accepted = await fixture.post(`/runs/${run.id}/accept`, { head: check.head });
+    expect(accepted.status).toBe(409); expect((await accepted.json()).error.code).toBe("fresh_evidence_required");
+    const detail = await fixture.json(path);
+    expect(detail.runs[0].implementation_completion).toBeUndefined();
+    expect(detail.approvals).toEqual([]);
+  } finally { fixture.close(); }
+}, 15_000);
+
+test("setup commands without known checks cannot authorize implementation", async () => {
+  const fixture = githubReviewFixture();
+  try {
+    await expect(fixture.prepare({ setup: [["bun", "install", "--frozen-lockfile"]], checks: [] })).rejects.toThrow("project_setup_required");
+  } finally { fixture.close(); }
+}, 15_000);
 
 test("a completed-looking coordinator without both reviews retains the Project slot", async () => {
   const fixture = githubReviewFixture();

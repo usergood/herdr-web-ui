@@ -145,9 +145,10 @@ export class FactoryPipeline {
     const spec = reviews.filter(entry => entry.axis === "spec").at(-1);
     const workers = this.store.list<FactoryWorker>("workers", run.id);
     const tickets = (run.manifest as { tickets: FactoryTicket[] }).tickets;
-    const commands = (run.manifest as { project: FactoryProject }).project.checks;
+    const project = (run.manifest as { project: FactoryProject }).project;
+    const commands = [...project.setup ?? [], ...project.checks ?? []];
     if (!check || check.condition !== "passed" || check.head !== current.head || check.workspace_hash !== current.workspace_hash
-      || !/^[a-f0-9]{40}$/.test(current.head) || !current.workspace_hash || !commands?.length
+      || !/^[a-f0-9]{40}$/.test(current.head) || !current.workspace_hash || !project.checks?.length
       || JSON.stringify(check.commands.map(command => command.args)) !== JSON.stringify(commands) || check.commands.some(command => command.exit_code !== 0)
       || !standards || !spec || [standards, spec].some(review => review.outcome !== "passed" || review.head !== current.head)
       || standards.worker_id === spec.worker_id || [standards, spec].some(review => !workers.some(worker => worker.id === review.worker_id && worker.role === review.axis && worker.base === current.head && worker.condition === "completed"))

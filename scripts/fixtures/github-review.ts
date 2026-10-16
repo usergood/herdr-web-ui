@@ -1,5 +1,5 @@
 /** Owned Machine protocol fixture. All assertions use the app's public HTTP operations. */
-import type { FactoryCheck, FactoryRun, FactoryWorker } from "../../shared/factory.ts";
+import type { FactoryCheck, FactoryProject, FactoryRun, FactoryWorker } from "../../shared/factory.ts";
 import { githubQueueFixture } from "./github-queue.ts";
 
 export function githubReviewFixture() {
@@ -9,6 +9,7 @@ export function githubReviewFixture() {
   let coordinator: FactoryRun["condition"] = "ready";
   let checkCondition: FactoryCheck["condition"] = "passed";
   let checkCommands: string[][] | null = null;
+  let checkExitCodes: number[] = [];
   let reviewOutcome: "passed" | "failed" = "passed";
   let uncertainStop = false;
   let stopCondition: FactoryRun["condition"] = "cancelled";
@@ -47,12 +48,16 @@ export function githubReviewFixture() {
     if (["refresh", "reconcile-worker"].includes(action!)) return worker ? Response.json(worker) : null;
     if (action === "integrate" && worker) { const next = { ...worker, condition: "completed" } as FactoryWorker; workers.set(worker.id, next); return Response.json(next); }
     if (action === "stop-worker") return Response.json({ ok: true });
-    if (action === "check") return Response.json({ ...body.check, head, workspace_hash: workspaceHash, condition: checkCondition, commands: (checkCommands ?? (run.manifest as { project: { checks: string[][] } }).project.checks).map(args => ({ args, exit_code: 0, output: "Owned fixture check passed" })) });
+    if (action === "check") {
+      const project = (run.manifest as { project: FactoryProject }).project;
+      return Response.json({ ...body.check, head, workspace_hash: workspaceHash, condition: checkCondition, commands: (checkCommands ?? [...project.setup ?? [], ...project.checks ?? []]).map((args, index) => ({ args, exit_code: checkExitCodes[index] ?? 0, output: "Owned fixture command receipt" })) });
+    }
     if (action === "review-evidence" && worker) return Response.json({ head, source_id: `owned-review-${worker.id}`, content: `Independent ${worker.role} fixture report`, outcome: reviewOutcome });
     return null;
   });
-  async function prepare() {
+  async function prepare(commands?: Pick<FactoryProject, "setup" | "checks">) {
     const setup = await fixture.setup();
+    if (commands) await fixture.json(`/projects/${setup.project.id}/configure`, commands);
     const source = (await fixture.json(setup.route + "/sync", {})).sources[0];
     await fixture.json(setup.route + "/issues/1/approve", { source_revision: source.revision, policy_revision: setup.readiness.revision });
     await fixture.json(setup.route + "/issues/1/prepare", { source_revision: source.revision });
@@ -80,5 +85,5 @@ export function githubReviewFixture() {
     const detail = await fixture.json(path);
     return { path, start: { action: "implement-spec", idempotency_key: "unrelated-issue", issue_scope: { source_id: source.id, source_revision: source.revision, graph_hash: detail.graph_hash } } };
   }
-  return { ...fixture, prepare, integrate, review, second, setCleanupOutcome(value: typeof cleanupOutcome) { cleanupOutcome = value; }, setHeadUnavailable(value = true) { headUnavailable = value; if (!value) cleanedRuns.clear(); }, setHead(value: string) { head = value; }, setWorkspaceHash(value: string) { workspaceHash = value; }, setCoordinator(value: typeof coordinator) { coordinator = value; }, setCheck(value: typeof checkCondition) { checkCondition = value; }, setCheckCommands(value: string[][] | null) { checkCommands = value; }, setReview(value: typeof reviewOutcome) { reviewOutcome = value; }, setUncertainStop(value: boolean) { uncertainStop = value; }, setStopCondition(value: typeof stopCondition) { stopCondition = value; }, setStopHead(value: string) { stopHead = value; }, setNativeIdentity() { nativeIdentity = true; } };
+  return { ...fixture, prepare, integrate, review, second, setCleanupOutcome(value: typeof cleanupOutcome) { cleanupOutcome = value; }, setHeadUnavailable(value = true) { headUnavailable = value; if (!value) cleanedRuns.clear(); }, setHead(value: string) { head = value; }, setWorkspaceHash(value: string) { workspaceHash = value; }, setCoordinator(value: typeof coordinator) { coordinator = value; }, setCheck(value: typeof checkCondition) { checkCondition = value; }, setCheckCommands(value: string[][] | null, exitCodes: number[] = []) { checkCommands = value; checkExitCodes = exitCodes; }, setReview(value: typeof reviewOutcome) { reviewOutcome = value; }, setUncertainStop(value: boolean) { uncertainStop = value; }, setStopCondition(value: typeof stopCondition) { stopCondition = value; }, setStopHead(value: string) { stopHead = value; }, setNativeIdentity() { nativeIdentity = true; } };
 }
