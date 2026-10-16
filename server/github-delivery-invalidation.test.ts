@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { githubQueueFixture } from "../scripts/fixtures/github-queue.ts";
 import { githubDeliveryResponses } from "../scripts/fixtures/github-delivery.ts";
 import { deliveryFixture } from "./github-delivery-scope.fixture.ts";
 
