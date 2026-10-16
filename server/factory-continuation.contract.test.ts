@@ -224,6 +224,10 @@ describe("continuing approved workflow steps", () => {
       expect(paused.pause.reasons.join(" ")).toContain("build");
       const native = await fetch(`http://localhost:${f.app.port}/api/session`, { headers: { authorization: "Bearer owned-uncertain-build" } }).then(r => r.json());
       expect(native.snapshot.panes.some((p: { pane_id: string }) => p.pane_id === run.pane_id)).toBe(false);
+      const retained = await f.request(f.prefix).then(r => r.json());
+      expect(retained.runs[0]).toMatchObject({ id: run.id, worktree: run.worktree, suspension: { condition: "uncertain" } });
+      expect(retained.checks[0]).toMatchObject({ run_id: run.id, condition: "interrupted" });
+      expect((await f.request("").then(r => r.json())).capacity.builds.used).toBe(1);
     } finally { await f.close(); }
   }, 60_000);
   it("stops the known root while retaining a changed child identity for reconciliation", async () => {

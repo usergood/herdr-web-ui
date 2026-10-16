@@ -586,10 +586,18 @@ export class FactoryExecutionHost {
     if (!lease) throw new FactoryError("native_identity_uncertain", "This host has no owned lease to stop", 409);
     lease.control_revision = (lease.control_revision ?? 0) + 1;
     this.store.put("host_leases", { ...lease, closing: true });
-    if (!deleting && ["cancelled", "completed", "failed"].includes(lease.run.condition)) { await this.worktrees.stopChecks(id); if (!childrenAttempted) await this.worktrees.stopWorkers(id); await Promise.allSettled([...(this.operations.get(id) ?? [])]); return lease.run; }
+    let buildFailure: unknown;
+    try { await this.worktrees.stopChecks(id); } catch (error) { buildFailure = error; }
+    let childFailure: unknown;
+    if (!deleting && ["cancelled", "completed", "failed"].includes(lease.run.condition)) {
+      if (!childrenAttempted) { try { await this.worktrees.stopWorkers(id); } catch (error) { childFailure = error; } }
+      await Promise.allSettled([...(this.operations.get(id) ?? [])]);
+      if (childFailure) throw childFailure;
+      if (buildFailure) throw buildFailure;
+      return lease.run;
+    }
     const run = lease.run;
     this.store.put("host_leases", { ...lease, closing: true });
-    await this.worktrees.stopChecks(id);
     const snapshot = await this.native.snapshot();
     const workspace = snapshot.workspaces.find((entry) => entry.workspace_id === run.workspace_id);
     const pane = snapshot.panes.find((entry) => entry.pane_id === run.pane_id);
@@ -612,13 +620,17 @@ export class FactoryExecutionHost {
     const alreadyClosed = unchangedWorktree && recordedNativeGone(snapshot);
     const neverAllocated = deleting && (lease as { native_attempted?: boolean }).native_attempted === false && !run.workspace_id && !run.pane_id && !snapshot.workspaces.some(entry => entry.label === `saurons-eye-run-${id}`);
     if (!alreadyClosed && !neverAllocated && (!workspace || workspace.label !== `saurons-eye-run-${id}` || !pane?.cwd || realpathSync(pane.cwd) !== run.worktree)) throw new FactoryError("native_identity_uncertain", "Verify the recorded native identity before stopping it; ownership is retained", 409);
-    if (!childrenAttempted) await this.worktrees.stopWorkers(id);
+    // Unknown children or builds keep their reservations, but cannot prevent shutdown
+    // of this independently verified root. Failure still prevents a whole-Run receipt.
+    if (!childrenAttempted) { try { await this.worktrees.stopWorkers(id); } catch (error) { childFailure = error; } }
     if (!alreadyClosed && !neverAllocated) await this.native.closeWorkspace(workspace!.workspace_id);
     const observed = await this.native.snapshot();
     if (!neverAllocated && !factoryWorkspaceGone(observed, run, `saurons-eye-run-${id}`) && !(cleanedWorktree() && recordedNativeGone(observed))) throw new FactoryError("native_stop_uncertain", "The native Run has not been confirmed stopped; ownership is retained", 409);
-    await this.worktrees.stopChecks(id);
+    try { await this.worktrees.stopChecks(id); buildFailure = undefined; } catch (error) { buildFailure = error; }
     await Promise.allSettled([...(this.operations.get(id) ?? [])]);
     if (!deleting) this.assertNotDeleting(id);
+    if (childFailure) throw childFailure;
+    if (buildFailure) throw buildFailure;
     const stopped: FactoryRun = { ...run, condition: "cancelled", waiting_reason: null, updated_at: new Date().toISOString() };
     this.store.put("host_leases", { ...lease, closing: true, run: stopped }); return stopped;
   }
