@@ -1,5 +1,4 @@
-import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, rmdirSync, unlinkSync } from "node:fs";
-import { Database } from "bun:sqlite";
+import { existsSync, lstatSync, realpathSync, rmdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import type { FactoryDeleteResult, FactoryRun, Implementation } from "../shared/factory.ts";
 import { FactoryError } from "./factory-host.ts";
@@ -10,7 +9,7 @@ import { GitHubDeletion } from "./github-deletion.ts";
 export class FactoryDeletion {
   private stopped = false;
   private readonly pending = new Map<string, Promise<FactoryDeleteResult>>();
-  constructor(private readonly store: FactoryStore, private readonly cleanup: (run: FactoryRun, deletionId: string) => Promise<void>, private readonly github: GitHubDeletion) {}
+  constructor(private readonly store: FactoryStore, private readonly cleanup: (run: FactoryRun, deletionId: string) => Promise<void>, private readonly purgeBackups: (id: string) => void, private readonly github: GitHubDeletion) {}
   async request(id: string): Promise<FactoryDeleteResult> {
     if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Delete is disabled on a restored copy", 409);
     const idea = this.store.get<Implementation>("implementations", id);
@@ -44,7 +43,7 @@ export class FactoryDeletion {
     catch (error) { reasons.push(`GitHub cleanup planning remains pending: ${error instanceof FactoryError ? error.message : "source authorization is unavailable"}`); }
     let journal = this.store.get<{ id: string; backups: boolean; github: boolean; local_done: boolean; blobs: string[] }>("assignment_deletions", id);
     if (!journal) {
-      journal = { id, backups: this.backupObligation(id), github: this.store.list<{ implementation_id: string }>("github_sources").some(source => source.implementation_id === id), local_done: false, blobs: [] };
+      journal = { id, backups: true, github: this.store.list<{ implementation_id: string }>("github_sources").some(source => source.implementation_id === id), local_done: false, blobs: [] };
       this.store.put("assignment_deletions", journal);
     }
     for (const run of this.store.list<FactoryRun>("runs", id)) {
@@ -64,7 +63,9 @@ export class FactoryDeletion {
       this.store.put("implementations", { ...idea, deletion: { ...idea.deletion, reasons } });
       return { id, condition: "pending", reasons };
     }
-    journal.backups ||= this.backupObligation(id);
+    let backupReason: string | undefined;
+    try { this.purgeBackups(id); journal.backups = false; }
+    catch (error) { journal.backups = true; backupReason = error instanceof FactoryError ? error.message : "App-managed backup and recovery cleanup failed; deletion remains pending"; }
     const inbox = join(this.store.root, "inbox", id);
     const inboxInfo = lstatSync(inbox, { throwIfNoEntry: false });
     if (inboxInfo) {
@@ -106,7 +107,7 @@ export class FactoryDeletion {
       unlinkSync(path);
     }
     const localCleanup = reasons.length ? undefined : "complete" as const;
-    if (journal.backups) reasons.push("App-managed backup and recovery cleanup has not been confirmed");
+    if (journal.backups) reasons.push(backupReason ?? "App-managed backup and recovery cleanup has not been confirmed");
     if (journal.github) {
       try { await this.github.reconcile(id); }
       catch (error) { reasons.push(`GitHub permanent issue deletion remains pending: ${error instanceof FactoryError ? error.message : "check the selected account and transport"}`); }
@@ -120,17 +121,4 @@ export class FactoryDeletion {
     return { id, condition: "deleted" };
   }
   stop(): void { this.stopped = true; this.github.stop(); }
-  private backupObligation(id: string): boolean {
-    for (const name of readdirSync(join(this.store.root, "backups"))) {
-      const directory = join(this.store.root, "backups", name);
-      const database = join(directory, name.startsWith("restore-") ? "factory/records.sqlite" : "records.sqlite");
-      try {
-        if (lstatSync(directory).isSymbolicLink() || realpathSync(directory) !== directory || lstatSync(database).isSymbolicLink() || realpathSync(database) !== database) return true;
-        const copy = Database.deserialize(readFileSync(database), { readonly: true });
-        try { if (copy.query("SELECT 1 FROM records WHERE kind='implementations' AND id=?").get(id)) return true; }
-        finally { copy.close(); }
-      } catch { return true; /* An unreadable/in-flight recovery copy is an unconfirmed obligation. */ }
-    }
-    return false;
-  }
 }
