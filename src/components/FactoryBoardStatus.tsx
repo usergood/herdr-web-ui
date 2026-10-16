@@ -21,7 +21,7 @@ export function FactoryBoardStatus({ state, showActivity = true, showTicketProgr
   }
   return <div className="factory-board-status">
     {showActivity && label && <p className="factory-activity" role="status" aria-label={label}><Icon aria-hidden="true" /><span>{label}</span></p>}
-    {state.lane === "needs_you" && <p className="factory-attention"><CircleAlert aria-hidden="true" />{state.condition === "failed" ? t("Failed") : t("Needs you")}</p>}
+    {state.lane === "needs_you" && <p className="factory-attention" role={state.condition === "failed" ? "alert" : "status"}><CircleAlert aria-hidden="true" />{state.condition === "failed" ? t("Failed") : t("Needs you")}</p>}
     {showTicketProgress && state.ticket_progress && <p>{t("Tickets: {completed}/{total}", state.ticket_progress)}</p>}
     {state.waiting_reason && <p role="status">{state.waiting_reason}</p>}
   </div>;
