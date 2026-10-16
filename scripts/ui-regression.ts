@@ -1496,7 +1496,11 @@ try {
   await dialog.getByLabel(/^Name/).fill("herdr-web-ui-test-browser-created");
   await dialog.getByRole("button", { name: "Start", exact: true }).click();
   await until(() => createRequests === 1, "creation started");
-  assert.equal(createCwd, join(root, "a", "made-here"), "Start uses the folder Browse is showing");
+  const madeDirectory = join(root, "a", "made-here");
+  // Directory keeps ~/… inside the host's home, including CI's workspace-local TMPDIR.
+  const requestedCwd = createCwd as string | null;
+  const requestedDirectory = requestedCwd?.startsWith("~/") ? join(homedir(), requestedCwd.slice(2)) : requestedCwd;
+  assert.equal(requestedDirectory, madeDirectory, "Start uses the folder Browse is showing");
   await page.keyboard.press("Escape");
   assert.equal(await dialog.isVisible(), true, "in-flight creation cannot be dismissed");
   assert.equal(await dialog.getByRole("button", { name: "Close dialog" }).isDisabled(), true);
@@ -1507,6 +1511,12 @@ try {
   await dialog.waitFor({ state: "hidden" });
   await until(async () => (await page.locator(`.pane-select[title^="${created.pane_id} —"]`).getAttribute("aria-current")) === "true", "created pane selected");
   assert.equal(createRequests, 1);
+  await until(async () => {
+    const response = await context.request.get(`${origin}/api/session`);
+    assert.equal(response.status(), 200);
+    const { snapshot } = await response.json() as { snapshot: SessionSnapshot };
+    return snapshot.panes.find((pane) => pane.pane_id === created.pane_id)?.cwd === madeDirectory;
+  }, "created workspace runs in the exact folder Browse is showing");
   console.log("PASS session creation stays pending and opens one owned workspace");
 
   // Existing git worktrees are discovered through the list API. A new worktree from the row's
