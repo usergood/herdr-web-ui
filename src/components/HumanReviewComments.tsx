@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useState, type Dispatch, type SetStateAction } from "react";
 import type { FactoryDetail, ReviewComment, ReviewSnapshot } from "../../shared/factory.ts";
 import { factoryRequest } from "../lib/factoryApi.ts";
 import { useT } from "../lib/i18n.ts";
 
 type Perform = (action: () => Promise<void>) => Promise<void>;
 type Selection = { side: "old" | "new"; start: number; end: number };
+export type ReviewCompositions = Record<string, { selection: Selection | null; text: string }>;
 
 /** Numbers come only from captured hunks, including both sides of context rows. */
 function diffRows(diff: string) {
@@ -22,10 +23,8 @@ function diffRows(diff: string) {
   });
 }
 
-export function ReviewLineComments({ snapshot, file, busy, perform }: { snapshot: ReviewSnapshot; file: ReviewSnapshot["files"][number]; busy: boolean; perform: Perform }) {
+export function ReviewLineComments({ snapshot, file, busy, perform, compositions, setCompositions }: { snapshot: ReviewSnapshot; file: ReviewSnapshot["files"][number]; busy: boolean; perform: Perform; compositions: ReviewCompositions; setCompositions: Dispatch<SetStateAction<ReviewCompositions>> }) {
   const t = useT();
-  // Keep each file's unsaved composition while navigating the captured file list.
-  const [compositions, setCompositions] = useState<Record<string, { selection: Selection | null; text: string }>>({});
   const [extend, setExtend] = useState(false);
   const identity = JSON.stringify([snapshot.id, file.path, file.status]);
   const { selection, text } = compositions[identity] ?? { selection: null, text: "" };

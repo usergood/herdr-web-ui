@@ -3,7 +3,7 @@ import type { FactoryDetail, ReviewSnapshot } from "../../shared/factory.ts";
 import { factoryRequest } from "../lib/factoryApi.ts";
 import { useT } from "../lib/i18n.ts";
 import "./HumanReviewConversation.css";
-import { ReviewDrafts, ReviewLineComments } from "./HumanReviewComments.tsx";
+import { ReviewDrafts, ReviewLineComments, type ReviewCompositions } from "./HumanReviewComments.tsx";
 
 function ChangedFiles({ files, selected, choose, prefix = "" }: { files: ReviewSnapshot["files"]; selected: number; choose: (index: number) => void; prefix?: string }) {
   const directories = [...new Set(files.flatMap(file => {
@@ -15,6 +15,8 @@ function ChangedFiles({ files, selected, choose, prefix = "" }: { files: ReviewS
 
 export function HumanReviewConversation({ detail, busy, perform, history }: { detail: FactoryDetail; busy: boolean; history: ReactNode; perform: (action: () => Promise<void>) => Promise<void> }) {
   const t = useT(); const review = detail.human_reviews?.at(-1);
+  const [compositions, setCompositions] = useState<ReviewCompositions>({});
+  const composing = Object.values(compositions).some(draft => !!draft.text.trim());
   const [fileIndex, setFileIndex] = useState(0);
   const [text, setText] = useState(""); const [key, setKey] = useState(() => crypto.randomUUID());
   const approval = detail.human_review_approvals?.find(a => a.review_id === review?.id);
@@ -29,8 +31,8 @@ export function HumanReviewConversation({ detail, busy, perform, history }: { de
       <p role="status">{review.reason ?? t("Review the captured result and discuss it with the assistant.")}</p>
       <p className="field-hint">{t("Approval merges this checked and independently reviewed candidate into its authorized target.")}</p>
       {approval && <p role="status">{approval.reason ?? (approval.condition === "released" ? t("Release verified") : approval.condition === "merged" ? t("Merge verified") : t("Merge approval retained"))}</p>}
-      {(retainedComments || text.trim()) && <p role="status">{t("Finish your draft comments before approving without comments.")}</p>}
-      <button className="btn factory-button" disabled={busy || review.condition !== "ready" || !review.snapshot_id || retainedComments || !!text.trim() || !!approval && approval.condition !== "blocked"} onClick={() => void perform(async () => {
+      {(retainedComments || composing || text.trim()) && <p role="status">{t("Finish your draft comments before approving without comments.")}</p>}
+      <button className="btn factory-button" disabled={busy || review.condition !== "ready" || !review.snapshot_id || retainedComments || composing || !!text.trim() || !!approval && approval.condition !== "blocked"} onClick={() => void perform(async () => {
         if (!review.snapshot_id) return;
         await factoryRequest(`/implementations/${detail.implementation.id}/human-review/approve`, { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, idempotency_key: `approve-${review.id}` });
       })}>{t("Approve and merge")}</button>
@@ -40,7 +42,7 @@ export function HumanReviewConversation({ detail, busy, perform, history }: { de
       <div className="human-review-layout"><div className="human-review-candidate">{snapshot && <>
         <details className="human-review-provenance"><summary>{t("Review snapshot")}</summary><dl><dt>{t("Review snapshot")}</dt><dd>{snapshot.id}</dd><dt>{t("Before")}</dt><dd>{snapshot.base}</dd><dt>{t("After")}</dt><dd>{snapshot.head}</dd><dt>{t("Captured workspace")}</dt><dd>{snapshot.machine_id} · {snapshot.mode} · {snapshot.hash}</dd></dl></details>
         <div className="human-review-changes"><nav aria-label={t("Changed files")}><ChangedFiles files={snapshot.files} selected={fileIndex} choose={setFileIndex} /></nav>
-          <section className="human-review-diff" aria-label={t("Captured diff")}>{file ? <><h5>{file.path} · {file.status}</h5>{file.oversized ? <p role="status">{t("This file exceeds the review size limit.")}</p> : file.binary ? <p role="status">{t("Binary file: a text diff is unavailable.")}</p> : <ReviewLineComments snapshot={snapshot} file={file} busy={busy} perform={perform} />}</> : <p role="status">{t("No changed files in this snapshot.")}</p>}</section>
+          <section className="human-review-diff" aria-label={t("Captured diff")}>{file ? <><h5>{file.path} · {file.status}</h5>{file.oversized ? <p role="status">{t("This file exceeds the review size limit.")}</p> : file.binary ? <p role="status">{t("Binary file: a text diff is unavailable.")}</p> : <ReviewLineComments snapshot={snapshot} file={file} busy={busy} perform={perform} compositions={compositions} setCompositions={setCompositions} />}</> : <p role="status">{t("No changed files in this snapshot.")}</p>}</section>
         </div>
       </>}<ReviewDrafts detail={detail} busy={busy} perform={perform} /></div>
       <section aria-label={t("Review discussion")}>{detail.messages.filter(m => chatIds.has(m.chat_id)).map(m => <article className="factory-message" key={m.id}><p>{m.content}</p></article>)}

@@ -12,6 +12,10 @@ try {
       const f = await capacityFixture({ advancingHeads: true });
       const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
       try {
+        if (scenario === "merge") f.reviewFiles([
+          { path: "progress.ts", status: "branch:M", diff: "@@ -1 +1 @@\n-before\n+after\n", binary: false, oversized: false },
+          { path: "logo.bin", status: "branch:A", diff: "", binary: true, oversized: false },
+        ]);
         const { id, detail, run } = await published(f, scenario === "release" ? "release" : "merge");
         await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
         const occupied = await f.assignment("Occupied approval capacity");
@@ -32,6 +36,21 @@ try {
         const approve = review.getByRole("button", { name: "Approve and merge", exact: true });
         assert(await approve.isEnabled());
         if (scenario === "merge") {
+          await review.getByRole("button", { name: "After 1", exact: true }).click();
+          const lineDraft = review.getByRole("textbox", { name: "Review finding", exact: true });
+          await lineDraft.fill("Unfinished line feedback"); assert(await approve.isDisabled());
+          await review.getByRole("button", { name: "logo.bin · branch:A", exact: true }).click();
+          assert(await approve.isDisabled());
+          await review.getByRole("button", { name: "progress.ts · branch:M", exact: true }).click();
+          assert.equal(await lineDraft.inputValue(), "Unfinished line feedback");
+          await review.getByRole("button", { name: "Save draft finding", exact: true }).click();
+          await review.getByRole("region", { name: "Draft comments", exact: true }).getByText("Unfinished line feedback", { exact: true }).waitFor();
+          await page.reload();
+          await review.getByRole("region", { name: "Draft comments", exact: true }).getByText("Unfinished line feedback", { exact: true }).waitFor();
+          assert(await approve.isDisabled());
+          await review.getByRole("button", { name: "Remove draft", exact: true }).click();
+          await review.getByText("Finish your draft comments before approving without comments.", { exact: true }).waitFor({ state: "hidden" });
+          assert(await approve.isEnabled());
           const draft = review.getByRole("textbox", { name: "Discuss this review", exact: true });
           await draft.fill("Unfinished review feedback"); assert(await approve.isDisabled()); await draft.fill("");
         }
