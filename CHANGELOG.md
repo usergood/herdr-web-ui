@@ -8,6 +8,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 ## [Unreleased]
 
 ### Fixed
+- Approve all saved Human Review comments together, repair and independently validate their exact lineage, then merge without another approval; retain authorization across restart and Pause while blocking unrelated changes and unsafe delivery.
 - Approve checked Human Review candidates with an explicit, repeat-safe merge control, preserve stale/protected/denied outcomes, and verify merge or containing-release delivery before Done.
 - Submit Human Review Decline with all saved comments, dispatch fresh repairs and independent validation, and return the updated PR to the same conversation awaiting explicit approval.
 - Draft line and range comments directly in Human Review on desktop and mobile, retain saved drafts across reloads, and edit/remove drafts while preserving original revision anchors and visible staleness.
