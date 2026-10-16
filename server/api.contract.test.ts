@@ -519,20 +519,37 @@ describe("factory records", () => {
     // Hold child rest observations, including background ones; a parent snapshot must not satisfy this barrier.
     const app = createServer({ port: 0, stateDir: state, machines: false, factory: { native: { version: async () => "owned-fixture", ...(phase === "reconciliation" ? { paneState: async (paneId: string) => { const snapshot = await sessionSnapshot(); const pane = snapshot.panes.find(entry => entry.pane_id === paneId); if (holdReconciliation && paneId === childPaneId) { allocated(); await gate; } return pane ?? null; } } : {}), createWorkspace: async (options) => { const result = await workspaceCreate(options); workspaces.push(result.workspace.workspace_id); if (phase === "allocation" && options.label?.startsWith("saurons-eye-worker-")) { allocated(); await gate; } return result; }, startAgent: async (options) => { starts++; await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "idle" }); if (phase === "launch response" && options.name.startsWith("eye-worker-")) { allocated(); await gate; } } } } });
     const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    let child: Promise<Response> | undefined; let stopping: Promise<Response> | undefined;
     try {
       const project = await request("projects", { name: "Owned Stop race", path: repo, machine_id: "local", provider: "codex", tracker: "app" }).then((response) => response.json());
       const idea = await request("implementations", { title: "Stop accepted child", description: "" }).then((response) => response.json());
       await request(`implementations/${idea.id}/configure`, { project_id: project.id });
       const run = await request(`implementations/${idea.id}/runs`, { action: "grill-with-docs", idempotency_key: "parent-stop" }).then((response) => response.json());
-      let child = request(`runs/${run.id}/workers`, { role: "standards", idempotency_key: "accepted-child" });
+      child = request(`runs/${run.id}/workers`, { role: "standards", idempotency_key: "accepted-child" });
       if (phase === "reconciliation") { const worker = await child.then((response) => response.json()); childPaneId = worker.pane_id; holdReconciliation = true; child = request(`runs/${run.id}/workers/${worker.id}/reconcile`, {}); }
       await allocation;
-      expect((await request(`runs/${run.id}/stop`, {})).status).toBe(200);
+      let stopAcknowledged = false;
+      stopping = request(`runs/${run.id}/stop`, {}).then(response => { stopAcknowledged = true; return response; });
+      // Stop closes verified native contexts, but cannot acknowledge shutdown
+      // until the accepted child operation has returned its held response.
+      for (const deadline = Date.now() + 6000;;) {
+        const response = await fetch(`http://localhost:${app.port}/api/session`); expect(response.status).toBe(200);
+        const { snapshot } = await response.json();
+        if (!snapshot.workspaces.some((workspace: { workspace_id: string }) => workspaces.includes(workspace.workspace_id))) break;
+        if (Date.now() >= deadline) throw new Error("Stop did not close its owned native contexts");
+        await Bun.sleep(20);
+      }
+      const pending = await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then(response => response.json());
+      expect(pending.runs.find((entry: FactoryRun) => entry.id === run.id).condition).not.toBe("cancelled");
+      expect(stopAcknowledged).toBe(false);
       release(); const worker = await child.then((response) => response.json());
+      expect((await stopping).status).toBe(200);
+      const stopped = await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then(response => response.json());
+      expect(stopped.runs.find((entry: FactoryRun) => entry.id === run.id).condition).toBe("cancelled");
       expect(worker.condition).toBe("cancelled"); expect(starts).toBe(phase === "allocation" ? 1 : 2);
       expect((await sessionSnapshot()).workspaces.some((workspace) => workspaces.includes(workspace.workspace_id))).toBe(false);
       expect(existsSync(worker.worktree)).toBe(true);
-    } finally { release(); for (const id of workspaces) await workspaceClose(id).catch(() => {}); app.stop(); rmSync(state, { recursive: true, force: true }); }
+    } finally { release(); await stopping?.catch(() => {}); await child?.catch(() => {}); for (const id of workspaces) await workspaceClose(id).catch(() => {}); app.stop(); rmSync(state, { recursive: true, force: true }); }
   }, 15_000);
   it.each(["launch response", "reconciliation"])("preserves Stop after a late coordinator %s", async (phase) => {
     const state = mkdtempSync(join(tmpdir(), "saurons-eye-stop-root-"));
