@@ -398,7 +398,7 @@ export class FactoryRuntime {
       if (issueScope) this.consumeRetry(id, record.id);
       if (projectReferences) this.references.freeze(projectReferences.project_id);
       // Freeze the compatibility decision; absence of a legacy delivery scope is not authority.
-      if (!bindAssignmentDelivery && !implementation.delivery_scope && project) this.store.put("manual_completion_scopes", { id: record.id, project_id: project.id, contract_hash: contractHash }, id);
+      if (!bindAssignmentDelivery && !selectedImplementation.delivery_scope && project) this.store.put("manual_completion_scopes", { id: record.id, project_id: project.id, contract_hash: contractHash }, id);
       this.store.put("runs", record, id);
       this.store.put("run_access", { id: record.id, token: randomBytes(32).toString("base64url"), url: `${api.origin}/api/factory-agent/${record.id}` });
       this.store.put("run_artifacts", { id: record.id, artifacts });
