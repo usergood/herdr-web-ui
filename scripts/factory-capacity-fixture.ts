@@ -34,6 +34,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
   let legacyHumanReview = false;
   let reviewUnavailable = false;
   let reviewHead: string | null = null;
+  const researchReadyRuns = new Set<string>();
   let reviewFiles = [{ path: "progress.ts", status: "branch:M", diff: "@@ -1 +1 @@\n-before\n+after\n", binary: false, oversized: false }];
   const publications = new Map<string, any>();
   let losePublication = false;
@@ -58,7 +59,11 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
       return Response.json({ ...capabilities, ...(legacyHumanReview ? { human_review_protocol: undefined } : {}), providers: capabilities!.providers.map((p: object) => ({ ...p, factory_ready: true })) });
     }
     if (path === "/review" && reviewUnavailable) return Response.json({ error: { code: "machine_offline", message: "Owned unavailable review capture" } }, { status: 503 });
-    if (path === "/review") return Response.json({ repository: `owned-repo:${[...runs.values()].find(run => run.worktree === body.path)?.checkout ?? body.path}`, head: reviewHead ?? tips.get([...runs.values()].find(run => run.worktree === body.path)?.id ?? "") ?? "1".repeat(40), files: reviewFiles });
+    if (path === "/review") {
+      const run = [...runs.values()].find(run => run.worktree === body.path);
+      const research = [...runs.values()].some(candidate => researchReadyRuns.has(candidate.id) && (candidate.worktree === body.path || candidate.checkout === body.path));
+      return Response.json({ repository: `owned-repo:${run?.checkout ?? body.path}`, head: reviewHead ?? tips.get(run?.id ?? "") ?? "1".repeat(40), files: research ? [] : reviewFiles });
+    }
     if (path === "/project-discovery") return Response.json({ protocol: 1, path: body.path, repository: `owned-repo:${body.path}`, head: "1".repeat(40), name: "Owned capacity fixture", checks: [], guidance: [], providers: [], permission_modes: {}, github: { repository: null, account_hint: null, directory_scoped: false }, warnings: [] });
     if (path === "/inspect") return Response.json({ path: body.path, repository: `owned-repo:${[...runs.values()].find(run => run.worktree === body.path)?.checkout ?? body.path}`, head: tips.get([...runs.values()].find(run => run.worktree === body.path)?.id ?? "") ?? "1".repeat(40), branch: "main", instructions: [] });
     if (path === "/launch") {
@@ -197,6 +202,11 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
     reviewUnavailable: (value: boolean) => { reviewUnavailable = value; },
     reviewHead: (head: string | null) => { reviewHead = head; },
     reviewFiles: (files: typeof reviewFiles) => { reviewFiles = files; },
+    researchReady: (runId: string) => {
+      const run = runs.get(runId);
+      if (!run) throw new Error("Select an owned fixture Run before marking research ready");
+      run.condition = "ready"; researchReadyRuns.add(runId);
+    },
     holdNextPublication: () => {
       let entered!: () => void; let release!: () => void;
       const started = new Promise<void>(resolve => { entered = resolve; });

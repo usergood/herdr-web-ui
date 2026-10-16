@@ -23,7 +23,10 @@ async function ticketProgressBoard(): Promise<void> {
       const finishedRun = await f.api(`/implementations/${finished}/runs`, { action: "work", idempotency_key: "finished" }).then(r => r.json());
       f.runs.get(finishedRun.id)!.workspace_id = "owned-finished";
       f.runs.get(finishedRun.id)!.pane_id = "owned-finished:p1";
+      f.researchReady(finishedRun.id);
       assert.equal((await f.api(`/runs/${finishedRun.id}/reconcile`, {})).status, 200);
+      const completion = await f.api(`/implementations/${finished}/completion-evidence`).then(r => r.json());
+      assert.deepEqual({ changes: completion.repository_changes, quiescent: completion.quiescent }, { changes: "none", quiescent: true });
       assert.equal((await f.api(`/implementations/${finished}/complete-work`, { run_id: finishedRun.id })).status, 200);
       const failed = await f.assignment("Failed work needs you");
       const failedRun = await f.api(`/implementations/${failed}/runs`, { action: "work", idempotency_key: "failed" }).then(r => r.json());
