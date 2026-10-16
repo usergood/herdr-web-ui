@@ -173,8 +173,9 @@ describe("waiting factory conversations through authenticated HTTP", () => {
       expect(f.prompts).toHaveLength(1);
       expect((await f.api("").then(r => r.json())).capacity.builds.used).toBe(1);
       f.unavailableCheckObservation(false);
-      const observed = await eventually(() => f.api(`/implementations/${id}`).then(r => r.json()), d => d.checks.some((entry: { id: string; condition: string }) => entry.id === check.id && entry.condition === "passed"));
-      expect(observed.checks.find((entry: { id: string }) => entry.id === check.id)).toMatchObject({ id: check.id, run_id: run.id, condition: "passed" });
+      const observation = await f.api(`/runs/${run.id}/checks/${check.id}/reconcile`, {});
+      expect(observation.status).toBe(200);
+      expect(await observation.json()).toMatchObject({ id: check.id, run_id: run.id, condition: "passed" });
       expect((await f.api("").then(r => r.json())).capacity.builds.used).toBe(0);
       expect(f.executedChecks).toEqual([check.id]);
     } finally { f.close(); }

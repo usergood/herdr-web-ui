@@ -217,7 +217,10 @@ describe("continuing approved workflow steps", () => {
     try {
       const run = await f.start("work", "uncertain-build");
       const store = new FactoryStore(join(f.repo, "..", "state"));
-      store.put("host_checks", { ...store.record(), run_id: run.id, worker_id: null, head: run.base, workspace_hash: "", commands: [], condition: "interrupted" }, run.id);
+      const check = { ...store.record(), run_id: run.id, worker_id: null, head: run.base, workspace_hash: "", commands: [], condition: "interrupted" };
+      // Dispatch persists the coordinator reservation before the Machine sees the check.
+      store.put("checks", check, run.id);
+      store.put("host_checks", check, run.id);
       store.close();
       const paused = await f.request(`${f.prefix}/pause`, {}).then(r => r.json());
       expect(paused.pause.condition).toBe("pending");
