@@ -1,4 +1,76 @@
 {
+  "0.6.0": {
+    "en": {
+      "new": [
+        "Opt in to automatic implementation of trusted GitHub issues after backlog review.",
+        "Control issue queues with priorities, pauses and capacity limits."
+      ],
+      "improved": [
+        "Reuse approved plans and expose readiness and dependency blockers.",
+        "Free implementation slots while work awaits separate merge or release approval."
+      ],
+      "fixed": [
+        "Keep approval current when issue requirements or dependencies change.",
+        "Keep completion accurate when release or merge evidence changes."
+      ]
+    },
+    "ko": {
+      "new": [
+        "백로그 검토 후 신뢰할 수 있는 GitHub 이슈의 자동 구현을 선택할 수 있습니다.",
+        "우선순위, 일시 중지와 실행 한도로 이슈 대기열을 제어합니다."
+      ],
+      "improved": [
+        "승인된 계획을 재사용하고 준비 상태와 의존성 문제를 표시합니다.",
+        "병합이나 릴리스 승인을 기다리는 작업은 구현 슬롯을 반환합니다."
+      ],
+      "fixed": [
+        "이슈 요구 사항이나 의존성이 바뀌면 승인을 갱신하도록 합니다.",
+        "릴리스나 병합 증거가 바뀌어도 완료 상태를 정확하게 유지합니다."
+      ]
+    },
+    "ja": {
+      "new": [
+        "バックログの確認後、信頼できるGitHub課題の自動実装を有効にできます。",
+        "優先度、一時停止、実行数の上限で課題キューを管理できます。"
+      ],
+      "improved": [
+        "承認済みの計画を再利用し、準備状況や依存関係の問題を表示します。",
+        "マージやリリースの承認待ちでも、実装用の枠を次の作業に渡せます。"
+      ],
+      "fixed": [
+        "課題の要件や依存関係が変わると、承認の更新を求めます。",
+        "リリースやマージの証拠が変わっても、完了状態を正しく保ちます。"
+      ]
+    },
+    "zh": {
+      "new": [
+        "审查待办事项后，可选择启用可信 GitHub 问题的自动实现。",
+        "通过优先级、暂停和容量限制管理问题队列。"
+      ],
+      "improved": [
+        "复用已批准的计划，并显示就绪状态和依赖阻塞原因。",
+        "工作等待单独的合并或发布批准时，释放实现名额。"
+      ],
+      "fixed": [
+        "问题需求或依赖变化时，要求更新批准。",
+        "发布或合并证据变化时，保持完成状态准确。"
+      ]
+    },
+    "tr": {
+      "new": [
+        "İş listesini inceledikten sonra güvenilir GitHub sorunlarının otomatik uygulamasını açın.",
+        "Sorun kuyruklarını öncelik, duraklatma ve kapasite sınırlarıyla yönetin."
+      ],
+      "improved": [
+        "Onaylı planları yeniden kullanın; hazırlık ve bağımlılık engellerini görün.",
+        "Ayrı birleştirme veya sürüm onayı bekleyen işler uygulama kapasitesini serbest bırakır."
+      ],
+      "fixed": [
+        "Sorun gereksinimleri veya bağımlılıklar değiştiğinde onayı yenileyin.",
+        "Sürüm veya birleştirme kanıtları değiştiğinde tamamlanma durumunu doğru tutun."
+      ]
+    }
+  },
   "0.5.1": {
     "en": {
       "improved": [

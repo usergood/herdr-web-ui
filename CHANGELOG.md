@@ -7,9 +7,12 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-16
+
 ### Added
 
 - Add default-off automatic implementation of trusted GitHub issues after an explicit readiness identity and current backlog review. Existing and future eligible plans use queue priority, pause and capacity limits, guarded frozen-scope starts, durable recovery and owner Retry. Missing decisions and dependency/sync problems stay visible; current checks and independent reviews free capacity while reviewed work awaits separately approved delivery. Issue/PR publication, merge, release and deployment remain separate actions.
+  ([#31](https://github.com/usergood/saurons-eye/pull/31) by @usergood)
 
 ## [0.5.1] - 2026-10-15
 
@@ -3381,7 +3384,8 @@ First public version.
 - Installable PWA, a mobile key bar, web push alerts and optional token auth.
 - Distribution as a herdr plugin.
 
-[Unreleased]: https://github.com/devswha/herdr-web-ui/compare/v0.4.8...HEAD
+[Unreleased]: https://github.com/usergood/saurons-eye/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/usergood/saurons-eye/compare/v0.5.1...v0.6.0
 [0.4.8]: https://github.com/devswha/herdr-web-ui/compare/v0.4.7...v0.4.8
 [0.4.7]: https://github.com/devswha/herdr-web-ui/compare/v0.4.6...v0.4.7
 [0.4.6]: https://github.com/devswha/herdr-web-ui/compare/v0.4.5...v0.4.6
