@@ -7,6 +7,18 @@
  * keep their English names.
  */
 export const TR: Record<string, string> = {
+  "Automatic review and PR": "Otomatik inceleme ve PR",
+  "Reviewing": "İnceleniyor",
+  "Fixing": "Düzeltiliyor",
+  "Publishing PR": "PR yayımlanıyor",
+  "PR published": "PR yayımlandı",
+  "Waiting": "Bekliyor",
+  "Blocked": "Engellendi",
+  "Open PR": "PR aç",
+  "PR repository (owner/repository)": "PR deposu (sahip/depo)",
+  "PR target branch": "PR hedef dalı",
+  "Publish a checked PR automatically after Specification approval.": "Şartname onayından sonra doğrulanmış bir PR otomatik yayımlanır.",
+  "Tickets, checks, reviews, repairs and PR publication continue automatically.": "Biletler, kontroller, incelemeler, düzeltmeler ve PR yayını otomatik olarak devam eder.",
   "Assignment deletion": "Assignment silme",
   "Delete pending": "Silme bekleniyor",
   "Local cleanup is complete. Required external cleanup is still pending.": "Yerel temizlik tamamlandı. Gerekli harici temizlik hâlâ bekleniyor.",
@@ -16,7 +28,6 @@ export const TR: Record<string, string> = {
   "Delete all owned work": "Sahip olunan tüm çalışmaları sil",
   "Delete Assignment": "Assignment sil",
   "Automatic execution": "Otomatik yürütme",
-  "Tickets, checks and integration continue automatically.": "Biletler, kontroller ve entegrasyon otomatik olarak devam eder.",
 
   "Assignment execution": "Assignment yürütmesi",
   "Pause pending": "Duraklatma bekleniyor",
@@ -1357,12 +1368,10 @@ export const TR: Record<string, string> = {
   "Implementing": "Uygulanıyor",
   "Testing": "Test ediliyor",
   "Auto-Review": "Otomatik inceleme",
-  "Fixing": "Düzeltiliyor",
   "Resume pending": "Devam etme bekleniyor",
   "{waiting} waiting · {running} running · {completed} completed": "{waiting} bekliyor · {running} çalışıyor · {completed} tamamlandı",
   "Active Tickets": "Etkin biletler",
   "All Tickets ({count})": "Tüm biletler ({count})",
   "Completed": "Tamamlandı",
-  "Waiting": "Bekliyor",
   "Queued": "Sırada",
 };

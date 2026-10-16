@@ -63,7 +63,7 @@ try {
       await page.reload();
       await progress.getByText("checked", { exact: true }).waitFor();
       await progress.getByText("Implement the accepted result", { exact: true }).waitFor();
-      assert.equal(f.workerLaunches.length, 1);
+      assert.equal((await detail()).workers.filter((w: { role: string }) => w.role === "implementer").length, 1);
       assert.equal((await detail()).approvals.length, 1);
       assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       assert.deepEqual(errors, []);

@@ -72,6 +72,17 @@ it("exposes plan-bound automatic execution progress through authenticated detail
     const contract = await f.agent(run.id, "contract").then(r => r.json());
     expect(contract.automatic_execution.plan_hash).toBe(plan.hash);
     expect(contract.execution_plan.authority.kind).toBe("specification");
+    expect(await detail()).toMatchObject({ automatic_review: [], automatic_review_batches: [], pull_requests: [] });
+    const publication = `http://localhost:${f.app.port}/api/factory-host/runs/${run.id}/operations/publish`;
+    for (const [headers, status] of [
+      [{ "x-herdr-factory": "1" }, 401],
+      [{ authorization: `Bearer ${f.token}`, "x-herdr-factory": "1" }, 403],
+      [{ authorization: `Bearer ${f.token}`, "x-herdr-factory": "1", "x-herdr-machine": "1", origin: "https://foreign.invalid" }, 403],
+    ] as const) {
+      const refused = await fetch(publication, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: "{}" });
+      expect(refused.status).toBe(status);
+      expect(await refused.json()).toMatchObject({ error: { code: expect.any(String), message: expect.any(String) } });
+    }
     const denied = await fetch(`http://localhost:${f.app.port}/api/factory${path}`);
     expect(denied.status).toBe(401);
     expect(await denied.json()).toMatchObject({ error: { code: "unauthorized", message: expect.any(String) } });

@@ -10,6 +10,18 @@
  * Placeholders in braces keep their English names.
  */
 export const ZH: Record<string, string> = {
+  "Automatic review and PR": "自动审查和PR",
+  "Reviewing": "审查中",
+  "Fixing": "修复中",
+  "Publishing PR": "正在发布PR",
+  "PR published": "PR已发布",
+  "Waiting": "等待中",
+  "Blocked": "已阻止",
+  "Open PR": "打开PR",
+  "PR repository (owner/repository)": "PR仓库 (所有者/仓库)",
+  "PR target branch": "PR目标分支",
+  "Publish a checked PR automatically after Specification approval.": "规格获批后自动发布已验证的PR。",
+  "Tickets, checks, reviews, repairs and PR publication continue automatically.": "工单、检查、审查、修复和PR发布将自动继续。",
   "Assignment deletion": "删除 Assignment",
   "Delete pending": "删除待处理",
   "Local cleanup is complete. Required external cleanup is still pending.": "本地清理已完成。所需的外部清理仍在等待处理。",
@@ -19,7 +31,6 @@ export const ZH: Record<string, string> = {
   "Delete all owned work": "删除所有所属工作",
   "Delete Assignment": "删除 Assignment",
   "Automatic execution": "自动执行",
-  "Tickets, checks and integration continue automatically.": "工单、检查和集成将自动继续。",
 
   "Assignment execution": "Assignment 执行",
   "Pause pending": "等待暂停",
@@ -1406,12 +1417,10 @@ export const ZH: Record<string, string> = {
   "Implementing": "实现中",
   "Testing": "测试中",
   "Auto-Review": "自动审查",
-  "Fixing": "修复中",
   "Resume pending": "等待恢复",
   "{waiting} waiting · {running} running · {completed} completed": "等待 {waiting} · 运行 {running} · 完成 {completed}",
   "Active Tickets": "运行中的工单",
   "All Tickets ({count})": "全部工单 ({count})",
   "Completed": "已完成",
-  "Waiting": "等待中",
   "Queued": "排队中",
 };

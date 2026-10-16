@@ -25,6 +25,7 @@ import type { MachineAccounts } from "./accounts.ts";
 import { withAccountEnvironment } from "./account-execution.ts";
 import { stagePlanningDocuments } from "./factory-planning-docs.ts";
 import { prepareFactoryPrompt } from "./factory-prompt.ts";
+import { FactoryPublication } from "./factory-publication.ts";
 import { deleteHostFiles } from "./factory-delete-host.ts";
 
 function providerProofId(provider: string, snapshot?: AccountBindingSnapshot | null): string {
@@ -44,10 +45,12 @@ export class FactoryExecutionHost {
   private preparedPath: string | null;
   private readonly genuineNative: boolean;
   readonly worktrees: FactoryWorktrees;
+  private readonly publication: FactoryPublication;
   constructor(private readonly store: FactoryStore, private readonly sourcePath: () => string | null, native: Partial<FactoryNative> = {}, private readonly accounts?: MachineAccounts) {
     this.native = { ...factoryNative, ...native };
     this.genuineNative = Object.keys(native).every((key) => key === "paneState") && accounts?.native.genuine !== false;
     this.worktrees = new FactoryWorktrees(store, this.native, () => this.skillPath(), accounts);
+    this.publication = new FactoryPublication(store, accounts, id => this.reconcile(id), id => this.worktrees.head(id));
     const prepared = this.store.get<{ id: string; path: string }>("host_skills", "default"); this.preparedPath = prepared?.path ?? null;
   }
   discover(path: string) { return discoverProject(path, this.native, this.accounts?.discoveryHome); }
@@ -115,7 +118,7 @@ export class FactoryExecutionHost {
     this.store.db.transaction(() => {
       this.store.put("host_deleted_runs", { id, ...result });
       for (const kind of ["host_leases", "host_access", "host_pause_intents", "host_deletions", "host_delete_requests", "host_scaffolding", "host_native_identity"]) this.store.remove(kind, id);
-      for (const kind of ["host_workers", "host_checks", "host_pause_results", "host_resumptions"]) for (const entry of this.store.list<{ id: string }>(kind, id)) {
+      for (const kind of ["host_workers", "host_checks", "host_pause_results", "host_resumptions", "host_review_evidence", "host_publications"]) for (const entry of this.store.list<{ id: string }>(kind, id)) {
         this.store.remove(kind, entry.id); this.store.remove("host_scaffolding", entry.id); this.store.remove("host_native_identity", entry.id);
       }
     }).immediate();
@@ -164,6 +167,7 @@ export class FactoryExecutionHost {
   }
   private async performOperation(id: string, action: string, body: Record<string, unknown>): Promise<unknown> {
     this.assertNotDeleting(id);
+    if (action === "publish") return this.publication.publish(id, body);
     if (action === "resume-status") {
       const prior = this.store.get<{ context: FactoryRun | FactoryWorker }>("host_resumptions", `${body.pause_id}:${body.worker_id ?? id}`);
       const target = typeof body.worker_id === "string" ? this.store.get<FactoryWorker>("host_workers", body.worker_id) : this.store.get<{ run: FactoryRun }>("host_leases", id)?.run;
@@ -216,9 +220,12 @@ export class FactoryExecutionHost {
       let conversation;
       try { conversation = await paneConversation(worker.pane_id); }
       catch { throw new FactoryError("native_evidence_required", "The review context has no readable native transcript; retain its reservation", 409); }
-      const content = conversation.turns.filter((turn) => turn.role === "assistant").flatMap((turn) => turn.parts.flatMap((part) => part.kind === "text" ? [part.text] : [])).join("\n\n");
+      const head = await this.worktrees.reviewHead(id, worker.id);
+      const content = conversation.turns.filter(turn => turn.role === "assistant").at(-1)?.parts.flatMap(part => part.kind === "text" ? [part.text] : []).join("\n\n") ?? "";
       if (!/FACTORY_REVIEW: (PASS|FAIL)/.test(content) || !conversation.turns.some((turn) => turn.parts.some((part) => (part.kind === "tool" || part.kind === "skill") && part.skill?.name === "code-review" && part.skill.status === "loaded"))) throw new FactoryError("review_evidence_required", "Retain actual native code-review loading and a completed axis report", 409);
-      return { content: this.accounts?.sanitize(content) ?? content, source_id: hash(conversation.history_id), outcome: /FACTORY_REVIEW: FAIL/.test(content) ? "failed" : "passed", head: (await git(worker.worktree!, ["rev-parse", "HEAD"])).trim() };
+      const report = { content: this.accounts?.sanitize(content) ?? content, source_id: hash(conversation.history_id), outcome: /FACTORY_REVIEW: FAIL/.test(content) ? "failed" : "passed", head };
+      this.store.put("host_review_evidence", { ...this.store.record(), ...report, id: worker.id, worker_id: worker.id, run_id: id, axis: worker.role }, id);
+      return report;
     }
     throw new FactoryError("not_found", "Unknown worktree operation", 404);
   }
