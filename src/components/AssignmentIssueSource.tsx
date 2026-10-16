@@ -7,6 +7,7 @@ import { IssueQueueStatus } from "./IssueQueueStatus.tsx";
 import { IssueReadiness } from "./IssueReadiness.tsx";
 import { accountRequest } from "../lib/accountsApi.ts";
 import { Markdown } from "./Markdown.tsx";
+import { FactoryDetailSection } from "./FactoryDetailSection.tsx";
 import "./AssignmentIssueSource.css";
 import { useState } from "react";
 
@@ -126,9 +127,9 @@ export function AssignmentIssueSource({ sources, problem, busy, perform, tickets
         </>}
         {source.readiness?.eligible && source.planning?.condition !== "prepared" && <button className="btn" disabled={busy} onClick={() => void perform(async () => { await accountRequest(`/projects/${source.project_id}/github/issues/${source.number}/prepare`, { source_revision: source.revision, question_revision: questionRevision }); })}>{t("Prepare issue plan")}</button>}
       </section>}
-      {!!source.history?.length && <details><summary>{t("Source history")}</summary>
-        {source.history.map((revision, index) => <IssueRevision key={`${revision.revision}:${index}`} revision={revision} />)}
-      </details>}
+      {(source.current || !!source.history?.length) && <FactoryDetailSection id={source.implementation_id} revision={source.revision} title={t("Source history")}>
+        {detail => detail.github_sources?.find(retained => retained.id === source.id)?.history?.map((revision, index) => <IssueRevision key={`${revision.revision}:${index}`} revision={revision} />)}
+      </FactoryDetailSection>}
     </div>)}
   </section>;
 }

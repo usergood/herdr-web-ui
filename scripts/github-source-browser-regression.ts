@@ -156,7 +156,9 @@ try {
     await dependencies.getByText("Dependency cycle. Correct the declared relationships.", { exact: true }).waitFor();
     assert.equal(await assignmentLink.count(), 0);
     saveIssues(); await post(route + "/sync", {}); await page.reload();
+    const historyRead = page.waitForResponse(response => response.url().endsWith(`/api/factory/implementations/${id}`) && response.request().method() === "GET");
     await source.getByText("Source history", { exact: true }).click();
+    assert.equal((await historyRead).status(), 200);
     await source.getByText("Original source acceptance", { exact: true }).waitFor();
     await page.getByText("Advanced controls", { exact: true }).click();
     await page.locator(".factory-message").getByText("My independent owner note", { exact: true }).waitFor();
