@@ -82,7 +82,7 @@ try {
       await review.getByText("Explain this change", { exact: true }).waitFor();
       await page.reload(); await review.getByText("Explain this change", { exact: true }).waitFor();
       f.runs.get(f.launches.at(-1)!)!.condition = "ready";
-      const started = await until(detail, d => d.runs.some((r: any) => r.conversation_kind === "human_review"));
+      const started = await until(detail, d => d.runs.some((r: any) => r.conversation_kind === "human_review" && r.condition === "working"));
       const assistant = started.runs.find((r: any) => r.conversation_kind === "human_review");
       f.setTranscript({ source_id: "browser-review", version: "one", cursor: null, turns: [{ role: "assistant", ts: new Date().toISOString(), parts: [{ kind: "text", text: "The captured change preserves progress." }] }] });
       f.runs.get(assistant.id)!.condition = "ready";
