@@ -222,10 +222,6 @@ export class FactoryService {
     this.accounts.assertPublic(JSON.stringify(value));
     return value;
   }
-  private intakeImplementations(): Implementation[] {
-    const entries = new Map(this.store.list<FactoryProject>("projects").filter(project => !project.removed_at).flatMap(project => this.github.queue(project.id).entries).map(entry => [entry.implementation_id, entry]));
-    return this.store.list<Implementation>("implementations").sort((a, b) => a.position - b.position).map(idea => ({ ...idea, intake: entries.get(idea.id) }));
-  }
   detail(id: string): FactoryDetail | null {
     const implementation = this.store.get<Implementation>("implementations", id);
     if (!implementation) return null;
@@ -378,11 +374,11 @@ export class FactoryService {
         if (request.method !== "POST" || queueRoute[2] !== "configure" || !sameOrigin(request)) return httpError(403, "invalid_origin", "Use Project queue controls from this app");
         return jsonResponse(this.queue.configure(queueRoute[1]!, await this.body(request)));
       }
-      const retryRoute = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/retry$/.exec(url.pathname);
-      if (retryRoute) {
+      const implementationRetryRoute = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/retry$/.exec(url.pathname);
+      if (implementationRetryRoute) {
         if (request.method !== "POST" || !sameOrigin(request)) return httpError(403, "invalid_origin", "Use Retry from this app");
         await this.runtime.reconcileCapacity();
-        return jsonResponse(this.queue.retry(retryRoute[1]!, await this.body(request)));
+        return jsonResponse(this.queue.retry(implementationRetryRoute[1]!, await this.body(request)));
       }
       const issueBatchAction = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/issue-batches\/([a-zA-Z0-9-]+)\/(review|publish|resume)$/.exec(url.pathname);
       if (issueBatchAction) {
@@ -724,8 +720,8 @@ export class FactoryService {
         if (body.retry_of !== undefined) throw new FactoryError("invalid_start", "Use the explicit Retry operation");
         return jsonResponse(await this.runtime.start(startRoute[1]!, body, url.origin), 202);
       }
-      const retryRoute = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/retry$/.exec(url.pathname);
-      if (retryRoute && request.method === "POST") return jsonResponse(await this.runtime.retry(retryRoute[1]!, await this.body(request), url.origin), 202);
+      const runRetryRoute = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/retry$/.exec(url.pathname);
+      if (runRetryRoute && request.method === "POST") return jsonResponse(await this.runtime.retry(runRetryRoute[1]!, await this.body(request), url.origin), 202);
       const reconcileRoute = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/reconcile$/.exec(url.pathname);
       if (reconcileRoute && request.method === "POST") return jsonResponse(await this.runtime.reconcile(reconcileRoute[1]!));
       const stopRoute = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/stop$/.exec(url.pathname);
