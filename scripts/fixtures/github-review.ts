@@ -86,13 +86,26 @@ export function githubReviewFixture() {
     const run = await fixture.json(path + "/runs", { action: "implement-spec", idempotency_key: "owned-reviewed-issue", issue_scope: { source_id: source.id, source_revision: source.revision, graph_hash: detail.graph_hash } });
     return { ...setup, source, path, run: run as FactoryRun };
   }
+  async function settleChildSummary(run: FactoryRun) {
+    if (coordinator !== "ready") return;
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const current = await fixture.json(`/runs/${run.id}/reconcile`, {});
+      if (!current.continuation || current.continuation.condition === "resumed") return;
+      if (current.continuation.kind !== "children" || ["uncertain", "blocked"].includes(current.continuation.condition)) throw new Error(`Owned child summary cannot continue: ${JSON.stringify(current.continuation)}`);
+      await Bun.sleep(25);
+    }
+    throw new Error("Owned child summary did not finish before the next public worker action");
+  }
   async function integrate(run: FactoryRun) {
     const worker = await fixture.json(`/runs/${run.id}/workers`, { role: "implementer", ticket_id: (run.manifest as { tickets: { id: string }[] }).tickets[0]!.id, idempotency_key: "owned-writer" });
     await fixture.json(`/runs/${run.id}/workers/${worker.id}/check`, {});
+    await settleChildSummary(run);
     await fixture.json(`/runs/${run.id}/workers/${worker.id}/integrate`, {});
   }
   async function review(run: FactoryRun, axis: "standards" | "spec", key: string = axis) {
     const worker = await fixture.json(`/runs/${run.id}/workers`, { role: axis, idempotency_key: `owned-${key}` });
+    await settleChildSummary(run);
     return fixture.json(`/runs/${run.id}/workers/${worker.id}/review-evidence`, {});
   }
   async function second(route: string, readiness: { revision: string }) {

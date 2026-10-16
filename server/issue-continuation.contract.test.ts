@@ -279,7 +279,8 @@ test("a ready planning predecessor cannot release an uncertain worker reservatio
     const response = await fixture.post(path + "/continue", body);
     expect(response.status).toBe(409); expect((await response.json()).error.code).toBe("implementation_owned");
     const detail = await fixture.json(path);
-    expect(detail.workers).toEqual([worker]);
+    expect(detail.workers).toEqual([{ ...worker, waiting_reason: expect.stringContaining("uncertain") }]);
+    expect((await fixture.json("")).capacity.contexts).toContainEqual(expect.objectContaining({ run_id: planning.id, worker_id: worker.id, pool: "normal", uncertain: true }));
     expect(detail.runs).toHaveLength(1); expect(detail.runs[0]).toMatchObject({ id: planning.id, condition: "ready" });
   } finally { fixture.close(); }
 }, 15_000);
@@ -331,29 +332,38 @@ test("a ready ordinary Work Run is not a retiring issue planning predecessor", a
 test.each(["independent_project", "global"])("Continue preserves global capacity and admits independent Project work after the planning handoff (%s)", async limit => {
   const fixture = issueContinuationFixture();
   try {
-    const { path, planning, body, route, readiness, project } = await fixture.preparedPlanning();
+    const { path, planning, body, project } = await fixture.preparedPlanning();
+    let occupied: any;
     fixture.beforeFinish(async () => {
-      if (limit === "global") {
-        const idea = await fixture.json("/implementations", { title: "Other active context", project_id: project.id, description: "Owned unrelated Work" });
-        await fixture.json(`/implementations/${idea.id}/runs`, { action: "work", idempotency_key: "other-active-context" });
-        await fixture.json("/settings", { max_agents: 1 });
-      } else {
-        fixture.save([fixture.issue, { ...fixture.issue, number: 2, node_id: "other-issue", title: "Other issue", html_url: "https://github.com/fictional/project/issues/2" }]);
-        const second = (await fixture.json(route + "/sync", {})).sources.find((source: any) => source.number === 2);
-        await fixture.json(route + "/issues/2/approve", { source_revision: second.revision, policy_revision: readiness.revision });
-        await fixture.json(route + "/issues/2/prepare", { source_revision: second.revision });
-        const current = (await fixture.json(route + "/sync", {})).sources.find((source: any) => source.number === 2);
-        await fixture.json(`/implementations/${current.implementation_id}/runs`, { action: "implement-spec", idempotency_key: "other-project-owner", issue_scope: { source_id: current.id, source_revision: current.revision, graph_hash: current.planning.graph_hash } });
-      }
+      const idea = await fixture.json("/implementations", { title: "Other active context", project_id: project.id, description: "Owned independent Work" });
+      occupied = await fixture.json(`/implementations/${idea.id}/runs`, { action: "work", idempotency_key: "other-active-context" });
+      expect(occupied.condition).toBe("working");
+      if (limit === "global") await fixture.json("/settings", { max_agents: 1 });
     });
     const response = await fixture.post(path + "/continue", body);
+    const result = await response.json();
+    expect({ status: response.status, body: result }).toMatchObject({ status: 202 });
     if (limit === "global") {
-      expect(response.status).toBe(409); expect((await response.json()).error.code).toBe("capacity_exhausted");
-      expect((await fixture.json(path)).runs).toMatchObject([{ id: planning.id, condition: "completed" }]);
+      expect(result).toMatchObject({ condition: "queued", reason: expect.stringContaining("1/1") });
+      const waiting = (await fixture.json(path));
+      expect(waiting.runs).toMatchObject([{ id: planning.id, condition: "completed" }]);
+      expect(waiting.capacity_waiting).toContainEqual(expect.objectContaining({ id: result.id, idempotency_key: body.idempotency_key, condition: "queued", created_at: result.created_at }));
+      expect((await fixture.json(path)).capacity_waiting).toEqual(waiting.capacity_waiting);
+      expect((await fixture.json("")).capacity).toMatchObject({ normal: { used: 1, limit: 1 } });
+      fixture.setRunCondition(occupied.id, "ready");
+      await fixture.json(`/runs/${occupied.id}/reconcile`, {});
+      const deadline = Date.now() + 5000;
+      let detail;
+      do {
+        detail = await fixture.json(path);
+        if (detail.runs.some((run: any) => run.action === "implement-spec")) break;
+        await Bun.sleep(25);
+      } while (Date.now() < deadline);
+      expect(detail.runs).toMatchObject([{ id: planning.id, condition: "completed" }, { action: "implement-spec", idempotency_key: body.idempotency_key, condition: "working", manifest: { issue_admission: { source: { id: body.issue_scope.source_id, revision: body.issue_scope.source_revision } } } }]);
     } else {
-      expect(response.status).toBe(202);
-      expect(await response.json()).toMatchObject({ action: "implement-spec", condition: "working" });
-      expect((await fixture.json(path)).runs).toMatchObject([{ id: planning.id, condition: "completed" }, { action: "implement-spec", condition: "working" }]);
+      expect(result).toMatchObject({ action: "implement-spec", condition: "working" });
+      expect((await fixture.json(path)).runs).toMatchObject([{ id: planning.id, condition: "completed" }, { id: result.id, action: "implement-spec", condition: "working" }]);
+      expect((await fixture.json("")).capacity).toMatchObject({ normal: { used: 2, limit: 6 } });
     }
   } finally { fixture.close(); }
 }, 15_000);
