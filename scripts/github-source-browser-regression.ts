@@ -41,7 +41,7 @@ try {
   const evidence = process.env["UI_EVIDENCE_DIR"];
   if (evidence) mkdirSync(evidence, { recursive: true });
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
-    merged = false; mergeBranch = "main"; saveIssues(); await post(route + "/sync", {});
+    merged = false; mergeBranch = "main"; prerequisite.state = "open"; saveIssues(); await post(route + "/sync", {});
     const page = await browser.newPage({ viewport }); page.setDefaultTimeout(10_000);
     page.on("pageerror", error => errors.push(error.message));
     await page.goto(origin + `/#projects/${project.id}/settings`);
@@ -86,16 +86,26 @@ try {
     await intendedPrs.fill("27 " + "a".repeat(40));
     await coverage.getByRole("button", { name: "Save intended coverage", exact: true }).click();
     await coverage.getByText("Coverage linked. Sync GitHub to verify delivery.", { exact: true }).waitFor();
+    const linked = (await fetch(origin + "/api/factory" + route).then(response => response.json())).sources.find((entry: { number: number }) => entry.number === 24).delivery;
     await post(route + "/sync", {}); await page.goto(origin + `/#factory/${id}`);
     await dependencies.getByText("Dependencies are blocked.", { exact: true }).waitFor();
     merged = true; mergeBranch = "other"; saveIssues(); await post(route + "/sync", {}); await page.reload();
     await dependencies.getByText("Intended PRs must merge into the target branch.", { exact: true }).waitFor();
-    mergeBranch = "main"; saveIssues(); await post(route + "/sync", {}); await page.reload();
+    mergeBranch = "main"; prerequisite.state = "closed"; saveIssues();
+    const closed = (await post(route + "/sync", {})).sources.find((entry: { number: number }) => entry.number === 24);
+    assert.deepEqual(closed.delivery, linked, "closure must preserve the coverage linked while open");
+    assert.equal(closed.delivery_scope_current, true);
+    assert.equal(closed.readiness.eligible, false);
+    assert(closed.readiness.blockers.includes("closed"));
+    await page.goto(origin + `/#factory/${targetId}`);
+    await page.getByRole("region", { name: "GitHub issue source", exact: true }).getByText("Issue is closed", { exact: true }).first().waitFor();
+    await coverage.getByText("Coverage linked. Sync GitHub to verify delivery.", { exact: true }).waitFor();
+    assert.equal(await coverage.getByText("Issue changed. Review and relink intended coverage.", { exact: true }).count(), 0);
+    await page.goto(origin + `/#factory/${id}`);
     await dependencies.getByText("Dependencies are satisfied.", { exact: true }).waitFor();
     await dependencies.getByRole("link", { name: "PR #27", exact: true }).waitFor();
     assert.equal(await dependencies.getByText("Delivery has not been verified.", { exact: true }).count(), 0);
     if (evidence) { await dependencies.scrollIntoViewIfNeeded(); await page.screenshot({ path: join(evidence, `verified-dependency-${viewport.width}.png`) }); }
-    const linked = (await fetch(origin + "/api/factory" + route).then(response => response.json())).sources.find((entry: { number: number }) => entry.number === 24).delivery;
     const originalLabels = prerequisite.labels;
     for (const labels of [[...originalLabels, { name: "documentation" }], originalLabels]) {
       prerequisite.labels = labels; prerequisite.updated_at = labels.length > originalLabels.length ? "2026-10-04T12:00:00Z" : "2026-10-05T12:00:00Z";

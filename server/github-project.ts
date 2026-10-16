@@ -4,7 +4,7 @@ import { implementingAssignments } from "./factory-capacity.ts";
 import { FactoryWorkflow } from "./factory-workflow.ts";
 import { effectiveIssueTestingSeams, prepareIssuePlan, reconcileIssuePlan } from "./issue-planning.ts";
 import { combinedDependencies, dependencyPlan } from "./issue-dependencies.ts";
-import { coverageRevision, deliveryScopeCurrent, invalidateIssueDelivery, linkIssueDelivery, verifyIssueDelivery } from "./issue-delivery.ts";
+import { coverageRevision, deliveryScopeCurrent, invalidateIssueDelivery, linkIssueDelivery, observeIssueDeliveryState, verifyIssueDelivery } from "./issue-delivery.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -381,7 +381,9 @@ export class ProjectGitHub {
   private observeIssue(policy: ProjectGitHubPolicy, issue: Issue): void {
     const source = this.store.list<ProjectGitHubSource>("github_sources", policy.id).find(source => source.kind === "issue" && source.external_id === issue.node_id && source.number === issue.number);
     if (!source?.current) return;
-    if (issue.state !== source.current.state || issue.title !== source.current.title || (issue.body ?? "") !== source.current.body) {
+    observeIssueDeliveryState(this.store, source, issue.state);
+    // Closure revokes admission below, but does not change the intended work.
+    if ((issue.state !== source.current.state && issue.state !== "closed") || issue.title !== source.current.title || (issue.body ?? "") !== source.current.body) {
       this.current(policy);
       invalidateIssueDelivery(this.store, source);
     }
@@ -481,9 +483,10 @@ export class ProjectGitHub {
       const result = await this.api(policy, scope, "graphql", ["-f", "query=" + query]) as { errors?: unknown; data?: { repository?: { issue?: { id: string; title: string; body: string; state: string; createdAt: string; updatedAt: string; lastEditedAt: string | null } } } };
       const proof = result.data?.repository?.issue;
       const validProof = !result.errors && proof?.id === source.external_id && typeof proof.title === "string" && typeof proof.body === "string" && ["OPEN", "CLOSED"].includes(proof.state) && typeof proof.createdAt === "string" && Number.isFinite(Date.parse(proof.createdAt)) && typeof proof.updatedAt === "string" && Number.isFinite(Date.parse(proof.updatedAt)) && (proof.lastEditedAt === null || typeof proof.lastEditedAt === "string" && Number.isFinite(Date.parse(proof.lastEditedAt)));
+      if (validProof) observeIssueDeliveryState(this.store, source, proof.state === "CLOSED" ? "closed" : "open");
       if (validProof && (proof.state.toLowerCase() !== source.current.state || proof.title !== source.current.title || proof.body !== source.current.body)) {
         this.current(policy);
-        invalidateIssueDelivery(this.store, source);
+        if ((proof.state.toLowerCase() !== source.current.state && proof.state !== "CLOSED") || proof.title !== source.current.title || proof.body !== source.current.body) invalidateIssueDelivery(this.store, source);
         this.reconcileAdmissions(policy.id, { sourceId: source.id, reason: proof.state === "CLOSED" ? "issue_closed" : "scope_changed" });
       }
       // Edit history can prove a later scope change even after the text was

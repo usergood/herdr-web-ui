@@ -36,6 +36,91 @@ async function deliveryFixture({ requires = "merge", closed = false, readyLabel 
   } catch (error) { fixture.close(); throw error; }
 }
 
+test.each(["merge", "release"] as const)("closing unchanged requirements preserves intended coverage for later verified %s delivery", async requires => {
+  const f = await deliveryFixture({ requires });
+  try {
+    f.prerequisite.state = "closed";
+    f.fixture.save(f.issues, false, f.dependencies); f.coverageResponses();
+    const closed = (await f.fixture.json(f.route + "/sync", {})).sources.find((source: any) => source.number === 2);
+    expect(closed).toMatchObject({ delivery_scope_current: true, delivery: { source_revision: f.target.revision }, readiness: { eligible: false, blockers: expect.arrayContaining(["closed"]) } });
+    const path = `/implementations/${f.target.implementation_id}`;
+    expect((await f.fixture.json(path)).implementation.stage).not.toBe("done");
+    expect((await f.fixture.json(f.route + "/queue")).entries.find((entry: any) => entry.number === 1).eligible).toBe(false);
+    f.fixture.restart();
+    f.pull.merged = true; f.coverageResponses();
+    if (requires === "release") {
+      f.fixture.setApiResponses({ ...githubDeliveryResponses(), "repos/fictional/project/releases/tags/v1": null });
+      await f.fixture.json(f.route + "/sync", {});
+      expect((await f.fixture.json(path)).implementation.stage).not.toBe("done");
+      expect((await f.fixture.json(f.route + "/queue")).entries.find((entry: any) => entry.number === 1).eligible).toBe(false);
+      f.coverageResponses();
+    }
+    const merged = await f.fixture.json(f.route + "/sync", {});
+    expect(merged.sources.find((source: any) => source.number === 2).delivery).toEqual(closed.delivery);
+    const completed = (await f.fixture.json(path)).implementation;
+    expect(completed).toMatchObject({ stage: "done", outcome: requires === "release" ? "released" : "merged", delivery_evidence: { coverage_revision: closed.delivery.revision, source_revision: f.target.revision, requires, merges: [{ number: 27, target_branch: "main" }] } });
+    expect(merged.sources.find((source: any) => source.number === 1).dependencies).toMatchObject({ satisfied: true, edges: [{ blocker: null }] });
+    expect((await f.fixture.json(f.route + "/queue")).entries.find((entry: any) => entry.number === 1).eligible).toBe(true);
+    f.prerequisite.labels.push({ name: "documentation" });
+    f.fixture.save(f.issues, false, f.dependencies); f.coverageResponses();
+    const metadata = (await f.fixture.json(f.route + "/sync", {})).sources.find((source: any) => source.number === 2);
+    expect(metadata).toMatchObject({ delivery_scope_current: true, delivery: closed.delivery });
+    expect((await f.fixture.json(path)).implementation).toEqual(completed);
+    f.fixture.save(f.issues, true, f.dependencies); f.coverageResponses();
+    expect((await f.fixture.post(f.route + "/sync", {})).status).toBe(409);
+    f.fixture.restart();
+    expect((await f.fixture.json(path)).implementation).toEqual(completed);
+    expect((await f.fixture.json(f.route + "/queue")).entries.find((entry: any) => entry.number === 1).eligible).toBe(false);
+    f.fixture.save(f.issues, false, f.dependencies); f.coverageResponses();
+    await f.fixture.json(f.route + "/sync", {});
+    expect((await f.fixture.json(f.route + "/queue")).entries.find((entry: any) => entry.number === 1).eligible).toBe(true);
+  } finally { f.fixture.close(); }
+});
+
+test.each(["REST", "GraphQL"] as const)("closure first observed at the %s fence preserves coverage through incomplete evidence and restart", async fence => {
+  const f = await deliveryFixture();
+  try {
+    f.pull.merged = true;
+    const proof = { id: f.prerequisite.node_id, title: f.prerequisite.title, body: f.prerequisite.body, state: "CLOSED", createdAt: "2026-09-30T12:00:00Z", updatedAt: f.prerequisite.updated_at, lastEditedAt: null };
+    f.fixture.save(f.issues, false, f.dependencies, false, fence === "REST" ? [f.issues[0]!, { ...f.prerequisite, state: "closed" }] : f.issues, fence === "GraphQL" ? { proof } : undefined);
+    f.coverageResponses();
+    const partial = (await f.fixture.json(f.route + "/sync", {})).sources.find((source: any) => source.number === 2);
+    expect(partial).toMatchObject({ delivery_scope_current: true, readiness_evidence: { complete: false } });
+    const path = `/implementations/${f.target.implementation_id}`;
+    expect((await f.fixture.json(path)).implementation.stage).not.toBe("done");
+    expect((await f.fixture.json(f.route + "/queue")).entries.find((entry: any) => entry.number === 1).eligible).toBe(false);
+    f.fixture.restart();
+    f.prerequisite.state = "closed";
+    f.fixture.save(f.issues, false, f.dependencies); f.coverageResponses();
+    const complete = (await f.fixture.json(f.route + "/sync", {})).sources.find((source: any) => source.number === 2);
+    expect(complete.delivery).toEqual(partial.delivery);
+    expect(complete.delivery_scope_current).toBe(true);
+    expect((await f.fixture.json(path)).implementation).toMatchObject({ stage: "done", outcome: "merged", delivery_evidence: { coverage_revision: partial.delivery.revision } });
+    expect((await f.fixture.json(f.route + "/queue")).entries.find((entry: any) => entry.number === 1).eligible).toBe(true);
+  } finally { f.fixture.close(); }
+});
+
+test.each(["REST", "GraphQL"] as const)("reopening after closure seen only at the %s fence still requires renewed intended coverage", async fence => {
+  const f = await deliveryFixture();
+  try {
+    const proof = { id: f.prerequisite.node_id, title: f.prerequisite.title, body: f.prerequisite.body, state: "CLOSED", createdAt: "2026-09-30T12:00:00Z", updatedAt: f.prerequisite.updated_at, lastEditedAt: null };
+    f.fixture.save(f.issues, false, f.dependencies, false, fence === "REST" ? [f.issues[0]!, { ...f.prerequisite, state: "closed" }] : f.issues, fence === "GraphQL" ? { proof } : undefined);
+    f.coverageResponses();
+    await f.fixture.json(f.route + "/sync", {});
+    f.fixture.restart();
+    f.pull.merged = true;
+    f.fixture.save(f.issues, false, f.dependencies); f.coverageResponses();
+    const view = await f.fixture.json(f.route + "/sync", {});
+    const target = view.sources.find((source: any) => source.number === 2);
+    expect(target).toMatchObject({ state: "open", delivery_scope_current: false });
+    expect((await f.fixture.json(`/implementations/${f.target.implementation_id}`)).implementation.stage).not.toBe("done");
+    expect(view.sources.find((source: any) => source.number === 1).dependencies.satisfied).toBe(false);
+    await f.fixture.json(f.route + "/issues/2/delivery", { ...f.coverage, source_revision: target.revision, expected_revision: target.delivery.revision });
+    await f.fixture.json(f.route + "/sync", {});
+    expect((await f.fixture.json(`/implementations/${f.target.implementation_id}`)).implementation).toMatchObject({ stage: "done", outcome: "merged" });
+  } finally { f.fixture.close(); }
+});
+
 test("a prerequisite body changed at the readiness fence cannot complete or automatically admit its dependent", async () => {
   const f = await deliveryFixture();
   try {
@@ -50,6 +135,42 @@ test("a prerequisite body changed at the readiness fence cannot complete or auto
     expect(detail.implementation.outcome).toBe("none");
     expect((await f.fixture.json(f.route + "/queue")).entries.find((entry: any) => entry.number === 1)).toMatchObject({ eligible: false, reasons: [{ code: "dependency_delivery_unverified", detail: "fictional/project #2" }] });
     expect(f.fixture.launches).toEqual([]);
+  } finally { f.fixture.close(); }
+});
+
+test.each(["body", "native dependencies"] as const)("closure with changed %s still retires intended coverage across a revert", async change => {
+  const f = await deliveryFixture();
+  try {
+    f.prerequisite.state = "closed";
+    const closed = { ...f.prerequisite, body: change === "body" ? "Changed intended work" : f.prerequisite.body };
+    f.fixture.save([f.issues[0]!, closed], false, change === "native dependencies" ? { ...f.dependencies, 2: [f.fixture.issue] } : f.dependencies);
+    f.pull.merged = true; f.coverageResponses();
+    let view = await f.fixture.json(f.route + "/sync", {});
+    expect(view.sources.find((source: any) => source.number === 2).delivery_scope_current).toBe(false);
+    const path = `/implementations/${f.target.implementation_id}`;
+    expect((await f.fixture.json(path)).implementation.stage).not.toBe("done");
+    f.fixture.restart();
+    f.fixture.save(f.issues, false, f.dependencies); f.coverageResponses();
+    view = await f.fixture.json(f.route + "/sync", {});
+    expect(view.sources.find((source: any) => source.number === 2).delivery_scope_current).toBe(false);
+    expect((await f.fixture.json(path)).implementation.stage).not.toBe("done");
+    expect((await f.fixture.json(f.route + "/queue")).entries.find((entry: any) => entry.number === 1).eligible).toBe(false);
+  } finally { f.fixture.close(); }
+});
+
+test.each(["wrong target", "stale PR head"] as const)("closed unchanged work cannot be delivered from a %s", async mismatch => {
+  const f = await deliveryFixture();
+  try {
+    f.prerequisite.state = "closed";
+    f.pull.merged = true;
+    if (mismatch === "wrong target") f.pull.base.ref = "other";
+    else f.pull.head.sha = "b".repeat(40);
+    f.fixture.save(f.issues, false, f.dependencies); f.coverageResponses();
+    const view = await f.fixture.json(f.route + "/sync", {});
+    expect(view.sources.find((source: any) => source.number === 2).delivery_scope_current).toBe(true);
+    expect((await f.fixture.json(`/implementations/${f.target.implementation_id}`)).implementation.stage).not.toBe("done");
+    expect(view.sources.find((source: any) => source.number === 1).dependencies.satisfied).toBe(false);
+    expect((await f.fixture.json(f.route + "/queue")).entries.find((entry: any) => entry.number === 1).eligible).toBe(false);
   } finally { f.fixture.close(); }
 });
 
@@ -181,7 +302,7 @@ test("a failed prerequisite approval fence invalidates previously satisfied depe
   } finally { f.fixture.close(); }
 });
 
-test.each(["REST body", "REST title", "native relationship", "GraphQL body", "GraphQL title", "GraphQL state", "inventory body before outage"] as const)("known %s drift retires current completion but preserves its prior delivery proof", async change => {
+test.each(["REST body", "REST title", "native relationship", "GraphQL body", "GraphQL title", "inventory body before outage"] as const)("known %s drift retires current completion but preserves its prior delivery proof", async change => {
   const f = await deliveryFixture();
   try {
     f.pull.merged = true; f.coverageResponses();
@@ -190,7 +311,7 @@ test.each(["REST body", "REST title", "native relationship", "GraphQL body", "Gr
     const completed = (await f.fixture.json(path)).implementation;
     expect(completed).toMatchObject({ stage: "done", outcome: "merged", delivery_evidence: { source_revision: f.target.revision } });
     const fresh = { ...f.prerequisite, body: change === "REST body" ? "Changed intended behavior" : f.prerequisite.body, title: change === "REST title" ? "Changed title" : f.prerequisite.title };
-    const proof = { id: f.prerequisite.node_id, title: change === "GraphQL title" ? "Changed title" : f.prerequisite.title, body: f.prerequisite.body + (change === "GraphQL body" ? "\nChanged scope" : ""), state: change === "GraphQL state" ? "CLOSED" : "OPEN", createdAt: "2026-09-30T12:00:00Z", updatedAt: f.prerequisite.updated_at, lastEditedAt: null };
+    const proof = { id: f.prerequisite.node_id, title: change === "GraphQL title" ? "Changed title" : f.prerequisite.title, body: f.prerequisite.body + (change === "GraphQL body" ? "\nChanged scope" : ""), state: "OPEN", createdAt: "2026-09-30T12:00:00Z", updatedAt: f.prerequisite.updated_at, lastEditedAt: null };
     const readiness = change === "native relationship" ? { dependencies: { 2: [f.fixture.issue] } } : change.startsWith("GraphQL") ? { proof } : undefined;
     if (change === "inventory body before outage") f.prerequisite.body = "Changed inventory before PR outage";
     f.fixture.save(f.issues, false, f.dependencies, false, [f.issues[0]!, fresh], readiness, change === "inventory body before outage" ? { pulls_fail: true } : undefined);

@@ -39,8 +39,12 @@ export function deliveryScopeCurrent(store: FactoryStore, source: ProjectGitHubS
   }
   // No inferred equivalence for legacy records without the linked observation.
   if (anchor < 0) return false;
-  return [...history.slice(anchor), current].every(observed => !!observed.native_dependencies
-    && (["title", "body", "state", "repository", "url", "native_dependencies"] as const).every(key => JSON.stringify(observed[key]) === JSON.stringify(current[key])));
+  const observations = [...history.slice(anchor), current];
+  // Closing unchanged work preserves intended coverage. Reopening still needs
+  // renewed intent, even if a later observation closes the issue again.
+  return observations.every((observed, index) => !!observed.native_dependencies
+    && (index === 0 || observations[index - 1]!.state === observed.state || observations[index - 1]!.state === "open" && observed.state === "closed")
+    && (["title", "body", "repository", "url", "native_dependencies"] as const).every(key => JSON.stringify(observed[key]) === JSON.stringify(current[key])));
 }
 
 /** Retain superseded proof as history, never as current Assignment completion. */
@@ -58,6 +62,14 @@ export function invalidateIssueDelivery(store: FactoryStore, source: ProjectGitH
       ? { stage: "review", activity: "awaiting_merge", outcome: "implementation_complete" }
       : { stage: "inbox", activity: undefined, outcome: "none" }) });
   })();
+}
+
+/** Retain closure observed at a fallible fence so a later reopening cannot disappear. */
+export function observeIssueDeliveryState(store: FactoryStore, source: ProjectGitHubSource, state: "open" | "closed"): void {
+  const link = store.get<IssueDeliveryLink>("github_delivery_links", source.id);
+  if (!link) return;
+  if (state === "closed") store.put("github_delivery_closures", { id: link.revision, source_id: source.id }, source.implementation_id);
+  else if (store.get("github_delivery_closures", link.revision)) invalidateIssueDelivery(store, source);
 }
 
 export function linkIssueDelivery(store: FactoryStore, source: ProjectGitHubSource, body: Record<string, unknown>): void {

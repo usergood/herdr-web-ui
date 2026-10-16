@@ -976,6 +976,30 @@ test.each(["body", "title", "closure"])("%s drift proven by GraphQL during readi
   } finally { fixture.close(); }
 }, 20_000);
 
+test.each(["REST", "GraphQL"] as const)("coverage preserved through %s closure cannot clear an active Run's controlled pause", async fence => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { path, start, route, source } = await prepared(fixture);
+    const run = await fixture.json(path + "/runs", start);
+    const linked = (await fixture.json(route + "/issues/1/delivery", { source_revision: source.revision, expected_revision: null, target_branch: "main", intended_prs: [{ number: 27, head: "a".repeat(40) }], release_tag: null })).sources[0].delivery;
+    const proof = { id: fixture.issue.node_id, title: fixture.issue.title, body: fixture.issue.body, state: "CLOSED", createdAt: "2026-09-30T12:00:00Z", updatedAt: fixture.issue.updated_at, lastEditedAt: null };
+    fixture.save([fixture.issue], false, {}, false, [{ ...fixture.issue, state: fence === "REST" ? "closed" : "open" }], fence === "GraphQL" ? { proof } : undefined);
+    await fixture.json(route + "/sync", {});
+    const paused = (await fixture.json(path)).runs[0];
+    expect(paused).toMatchObject({ condition: "needs_you", issue_pause: { reason: "issue_closed" }, manifest: run.manifest });
+    expect((await fixture.json(route)).sources[0]).toMatchObject({ delivery_scope_current: true, delivery: linked });
+    fixture.issue.state = "closed"; fixture.save();
+    await fixture.json(route + "/sync", {});
+    fixture.restart();
+    const retained = await fixture.json(path);
+    expect(retained.runs[0]).toMatchObject({ condition: "needs_you", issue_pause: paused.issue_pause, manifest: run.manifest });
+    expect(retained.github_sources[0]).toMatchObject({ delivery_scope_current: true, delivery: linked, readiness: { eligible: false, blockers: expect.arrayContaining(["closed"]) } });
+    expect(retained.implementation.outcome).toBe("none");
+    expect((await fixture.json(route + "/queue")).implementing_count).toBe(1);
+    expect((await fixture.post(path + "/runs", { ...start, idempotency_key: "closed-cannot-restart" })).status).toBe(409);
+  } finally { fixture.close(); }
+}, 15_000);
+
 test("a malformed fresh issue response leaves admitted frozen work running", async () => {
   const fixture = githubQueueFixture(true);
   try {
