@@ -103,6 +103,7 @@ export class FactoryPipeline {
     const cursors = new Set<string>();
     let before: string | undefined;
     let source: string | undefined;
+    let latestVersion: string | undefined;
     let turns = 0;
     try {
       for (let page = 0; page < 128 && Date.now() < deadline; page++) {
@@ -111,9 +112,12 @@ export class FactoryPipeline {
         turns += snapshot.turns.length;
         if (source && source !== snapshot.source_id) throw new FactoryError("native_identity_changed", "The child's native history changed during retention", 409);
         source = snapshot.source_id;
+        if (page === 0) latestVersion = snapshot.version;
         snapshotIds.push(snapshot.id);
         if (!snapshot.cursor) {
           if (!turns) throw new FactoryError("native_history_incomplete", "The child has not recorded its native conversation yet", 409);
+          const latest = await this.retainWorkerHistory(run.id, undefined, worker.id);
+          if (latest.source_id !== source || latest.version !== latestVersion) throw new FactoryError("native_history_incomplete", "The child conversation changed while retaining its history; capture its current context before closing", 409);
           this.store.event(run.implementation_id, "worker_history_retained", { run_id: run.id, worker_id: worker.id, identity: identity(worker), source_id: source, snapshot_ids: snapshotIds });
           return;
         }

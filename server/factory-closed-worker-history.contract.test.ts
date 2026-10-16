@@ -25,7 +25,7 @@ async function accepted(f: Awaited<ReturnType<typeof capacityFixture>>) {
   return { id, run, worker, detail };
 }
 
-const page = (worker: { id: string; role: string }, before?: string) => ({ source_id: `owned-history:${worker.id}`, version: "recorded-v1", cursor: before ? null : "older-context", turns: [{ role: "assistant" as const, ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text" as const, text: `${before ? "Earlier" : "Final"} ${worker.role} context retained automatically` }] }] });
+const page = (worker: { id: string; role: string }, before?: string) => ({ source_id: `owned-history:${worker.id}`, version: before ? "older-page-v1" : "latest-page-v1", cursor: before ? null : "older-context", turns: [{ role: "assistant" as const, ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text" as const, text: `${before ? "Earlier" : "Final"} ${worker.role} context retained automatically` }] }] });
 
 describe("Closed native worker history through authenticated HTTP", () => {
   it("automatically retains every owned remote implementation history page before integration and close, including after restart", async () => {
@@ -87,6 +87,7 @@ describe("Closed native worker history through authenticated HTTP", () => {
       unavailable = false; f.restart();
       const recovered = await until(detail, d => d.workers.find((w: any) => w.id === target.id).condition === "completed");
       expect(recovered.native_snapshots.filter((h: any) => h.worker_id === target.id)).toHaveLength(2);
+      expect(recovered.workers.find((w: any) => w.id === target.id).waiting_reason).toBeNull();
       expect(recovered.events.filter((e: any) => e.kind === "ticket_integrated")).toHaveLength(1);
       expect(f.workerLaunches.filter(id => id === target.id)).toHaveLength(1);
       if (role === "standards") expect(recovered.review_evidence.filter((r: any) => r.worker_id === target.id)).toHaveLength(1);
@@ -102,6 +103,27 @@ describe("Closed native worker history through authenticated HTTP", () => {
       expect(f.closedWorkers.has(worker.id)).toBe(false);
       expect(pending.events.filter((e: any) => e.kind === "ticket_integrated")).toHaveLength(0);
       expect(pending.workers[0].condition).toBe("ready");
+    } finally { f.close(); }
+  });
+
+  it("retains the native context when the latest page changes during pagination, then recaptures before closing", async () => {
+    let changing = true;
+    let revision = 1;
+    const f = await capacityFixture({ workerTranscript: (worker, before) => {
+      if (before && changing) revision++;
+      return { ...page(worker, before), version: before ? "older-page" : `latest-${revision}`, turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: before ? "Earlier native reasoning" : `Final native reasoning revision ${revision}` }] }] };
+    } });
+    try {
+      const { worker, detail } = await accepted(f);
+      f.workers.get(worker.id)!.condition = "ready";
+      const pending = await until(detail, d => d.events.some((e: any) => e.kind === "worker_history_unavailable"));
+      expect(f.closedWorkers.has(worker.id)).toBe(false);
+      expect(pending.events.filter((e: any) => e.kind === "ticket_integrated")).toHaveLength(0);
+      changing = false;
+      const completed = await until(detail, d => d.workers[0].condition === "completed");
+      expect(completed.native_snapshots.filter((h: any) => h.worker_id === worker.id).some((h: any) => h.turns[0].parts[0].text === `Final native reasoning revision ${revision}`)).toBe(true);
+      expect(completed.events.filter((e: any) => e.kind === "ticket_integrated")).toHaveLength(1);
+      expect(f.workerLaunches.filter(id => id === worker.id)).toHaveLength(1);
     } finally { f.close(); }
   });
 
