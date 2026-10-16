@@ -159,7 +159,7 @@ export class FactoryExecution {
       const reports = this.store.list<FactoryReviewEvidence>("review_evidence", run.id).filter(r => state!.evidence_ids.includes(r.id));
       if (reports.some(r => r.outcome === "failed")) {
         if (state.round >= 3) throw new FactoryError("repair_exhausted", "Automatic repair exhausted after three rounds; inspect the retained independent findings", 409);
-        const batch: import("../shared/factory.ts").FactoryAutomaticReviewBatch = { ...this.store.record(), implementation_id: run.implementation_id, run_id: run.id, origin: "automatic", status: "sent", head: state.head, round: state.round, reports, ticket_ids: plan.tickets.map(t => t.id) };
+        const batch: import("../shared/factory.ts").FactoryAutomaticReviewBatch = { ...this.store.record(), implementation_id: run.implementation_id, run_id: run.id, origin: "automatic", ...(state.human_batch_id ? { human_batch_id: state.human_batch_id } : {}), status: "sent", head: state.head, round: state.round, reports, ticket_ids: plan.tickets.map(t => t.id) };
         this.store.db.transaction(() => {
           this.store.put("automatic_review_batches", batch, run.implementation_id);
           this.store.put("automatic_review", { ...state!, condition: "repairing", batch_id: batch.id }, run.implementation_id);
@@ -183,7 +183,7 @@ export class FactoryExecution {
             const batch = this.store.get<import("../shared/factory.ts").FactoryHumanFeedbackBatch>("review_batches", state.human_batch_id)!;
             const resolution = { head: state.head, check_id: state.check_id, evidence_ids: state.evidence_ids };
             this.store.put("review_batches", { ...batch, resolution }, run.implementation_id);
-            for (const comment of this.store.list<import("../shared/factory.ts").ReviewComment>("comments", run.implementation_id).filter(c => c.batch_id === batch.id)) this.store.put("comments", { ...comment, status: "resolved", resolution: { ...resolution, summary: "Feedback repaired and independently reviewed; awaiting owner approval" } }, run.implementation_id);
+            for (const comment of this.store.list<import("../shared/factory.ts").ReviewComment>("comments", run.implementation_id).filter(c => c.batch_id === batch.id)) this.store.put("comments", { ...comment, status: "resolved", resolution: { ...resolution, summary: batch.merge_authorized ? "Approved feedback repaired and independently reviewed; conditional merge authorized" : "Feedback repaired and independently reviewed; awaiting owner approval" } }, run.implementation_id);
           }
           this.store.put("automatic_review", { ...state, condition: "published", reason: null, attempts: 0 }, run.implementation_id);
           const assignment = this.store.get<Implementation>("implementations", run.implementation_id)!;

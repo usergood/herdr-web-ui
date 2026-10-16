@@ -54,7 +54,7 @@ export function ReviewLineComments({ snapshot, file, busy, perform, compositions
   </>;
 }
 
-function Comment({ comment, snapshot, busy, perform }: { comment: ReviewComment; snapshot?: ReviewSnapshot; busy: boolean; perform: Perform }) {
+function Comment({ comment, snapshot, busy, perform, editingChanged }: { comment: ReviewComment; snapshot?: ReviewSnapshot; busy: boolean; perform: Perform; editingChanged: (id: string, editing: boolean) => void }) {
   const t = useT(); const [editing, setEditing] = useState(false); const [text, setText] = useState(comment.content);
   const draft = comment.batch_id === null && !comment.resolution && ["draft", "outdated"].includes(comment.status);
   const prefix = `/implementations/${comment.implementation_id}/comments/${comment.id}`;
@@ -62,21 +62,21 @@ function Comment({ comment, snapshot, busy, perform }: { comment: ReviewComment;
     <p>{comment.path} · {comment.change} · {comment.side === "old" ? t("Before") : t("After")} {comment.line_start}–{comment.line_end}</p>
     {comment.status === "outdated" && <p role="status">{t("Stale anchor: the candidate changed. Original lines are retained.")}</p>}
     <details><summary>{t("Original anchor")}</summary><p>{comment.snapshot_id} · {snapshot?.head} · {snapshot?.hash}</p><pre tabIndex={0}>{comment.context}</pre></details>
-    {editing ? <form className="factory-form" onSubmit={event => { event.preventDefault(); void perform(async () => { await factoryRequest(`${prefix}/edit`, { content: text }); setEditing(false); }); }}>
+    {editing ? <form className="factory-form" onSubmit={event => { event.preventDefault(); void perform(async () => { await factoryRequest(`${prefix}/edit`, { content: text }); setEditing(false); editingChanged(comment.id, false); }); }}>
       <label>{t("Review finding")}<textarea className="input factory-input" maxLength={10000} required value={text} onChange={event => setText(event.target.value)} /></label>
       <button className="btn factory-button" disabled={busy || !text.trim()}>{t("Save draft finding")}</button>
-      <button type="button" className="btn factory-button" onClick={() => setEditing(false)}>{t("Cancel")}</button>
+      <button type="button" className="btn factory-button" onClick={() => { setEditing(false); editingChanged(comment.id, false); }}>{t("Cancel")}</button>
     </form> : <p>{comment.content}</p>}
-    {draft && <div className="factory-actions"><button className="btn factory-button" disabled={busy || editing} onClick={() => { setText(comment.content); setEditing(true); }}>{t("Edit draft")}</button><button className="btn factory-button" disabled={busy} onClick={() => void perform(async () => { await factoryRequest(`${prefix}/delete`, {}); })}>{t("Remove draft")}</button></div>}
+    {draft && <div className="factory-actions"><button className="btn factory-button" disabled={busy || editing} onClick={() => { setText(comment.content); setEditing(true); editingChanged(comment.id, true); }}>{t("Edit draft")}</button><button className="btn factory-button" disabled={busy} onClick={() => void perform(async () => { await factoryRequest(`${prefix}/delete`, {}); editingChanged(comment.id, false); })}>{t("Remove draft")}</button></div>}
   </article>;
 }
 
-export function ReviewDrafts({ detail, busy, perform }: { detail: FactoryDetail; busy: boolean; perform: Perform }) {
+export function ReviewDrafts({ detail, busy, perform, editingChanged }: { detail: FactoryDetail; busy: boolean; perform: Perform; editingChanged: (id: string, editing: boolean) => void }) {
   const t = useT();
   const drafts = detail.comments.filter(c => c.batch_id === null && !c.resolution && ["draft", "outdated"].includes(c.status));
   const submitted = detail.comments.filter(c => !drafts.includes(c));
   return <>
-    <section aria-label={t("Draft comments")}><h5>{t("Draft comments")}</h5><p>{t("Saved drafts do not start repairs or authorize a merge.")}</p>{drafts.map(comment => <Comment key={comment.id} comment={comment} snapshot={detail.snapshots.find(s => s.id === comment.snapshot_id)} busy={busy} perform={perform} />)}</section>
-    {submitted.length > 0 && <section aria-label={t("Submitted comments")}><h5>{t("Submitted comments")}</h5>{submitted.map(comment => <Comment key={comment.id} comment={comment} snapshot={detail.snapshots.find(s => s.id === comment.snapshot_id)} busy={busy} perform={perform} />)}</section>}
+    <section aria-label={t("Draft comments")}><h5>{t("Draft comments")}</h5><p>{t("Saved drafts do not start repairs or authorize a merge.")}</p>{drafts.map(comment => <Comment key={comment.id} comment={comment} snapshot={detail.snapshots.find(s => s.id === comment.snapshot_id)} busy={busy} perform={perform} editingChanged={editingChanged} />)}</section>
+    {submitted.length > 0 && <section aria-label={t("Submitted comments")}><h5>{t("Submitted comments")}</h5>{submitted.map(comment => <Comment key={comment.id} comment={comment} snapshot={detail.snapshots.find(s => s.id === comment.snapshot_id)} busy={busy} perform={perform} editingChanged={editingChanged} />)}</section>}
   </>;
 }

@@ -49,9 +49,13 @@ try {
       }
       assert.equal(await review.getByRole("region", { name: "Draft comments", exact: true }).locator("article").count(), 0);
       assert.equal(await review.getByRole("region", { name: "Submitted comments", exact: true }).locator("article").count(), 2);
+      await review.getByRole("button", { name: "Approve and merge", exact: true }).click();
+      await review.getByText("Merge verified", { exact: true }).waitFor();
+      assert.equal((await detail()).implementation.outcome, "merged");
+      assert.equal(f.mergeEffects.length, 1);
       assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       assert.deepEqual(errors, []);
     } finally { await context.close(); f.close(); }
   }
-  console.log("PASS Human Review decline, fresh repairs and return awaiting approval on desktop/mobile");
+  console.log("PASS Human Review decline, fresh repairs, return awaiting approval and explicit reapproval on desktop/mobile");
 } finally { await browser.close(); }

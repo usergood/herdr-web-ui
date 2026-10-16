@@ -92,6 +92,7 @@ export interface FactoryAutomaticReview extends FactoryRecord {
 }
 /** Original reports are immutable; repaired-revision evidence is retained separately. */
 export interface FactoryAutomaticReviewBatch extends FactoryRecord {
+  human_batch_id?: string;
   implementation_id: string; run_id: string; origin: "automatic"; status: "sent";
   head: string; round: number; reports: FactoryReviewEvidence[]; ticket_ids: string[];
   resolution?: { head: string; check_id: string; evidence_ids: string[] };
@@ -188,14 +189,15 @@ export interface FactoryMergeResult {
 }
 export interface FactoryHumanApproval extends FactoryRecord {
   observations?: number; next_observation_at?: number;
+  repair_batch_id?: string; repair_scope?: string; repair_signature?: string; original_candidate?: { head: string; snapshot_id: string };
   implementation_id: string; review_id: string; run_id: string; snapshot_id: string; head: string;
   idempotency_key: string; provenance: { kind: "owner_button"; origin: string };
-  condition: "pending" | "blocked" | FactoryMergeResult["condition"];
+  condition: "repairing" | "pending" | "blocked" | FactoryMergeResult["condition"];
   reason: string | null; merge_sha: string | null; release_tag: string | null;
 }
 export interface FactoryHumanFeedbackBatch extends FactoryRecord {
   implementation_id: string; run_id: string; review_id: string; snapshot_id: string; head: string;
-  origin: "human"; disposition: "decline"; merge_authorized: false;
+  origin: "human"; disposition: "decline" | "approve"; merge_authorized: boolean;
   key: string; signature: string; status: "sent"; comment_ids: string[]; ticket_ids: string[];
   resolution?: { head: string; check_id: string; evidence_ids: string[] };
 }

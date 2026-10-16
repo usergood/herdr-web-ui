@@ -1,7 +1,7 @@
 import type { capacityFixture } from "./factory-capacity-fixture.ts";
 
-export async function until(read: () => Promise<any>, ready: (d: any) => boolean): Promise<any> {
-  const deadline = Date.now() + 12000;
+export async function until(read: () => Promise<any>, ready: (d: any) => boolean, timeoutMs = 12000): Promise<any> {
+  const deadline = Date.now() + timeoutMs;
   for (;;) {
     const d = await read(); if (ready(d)) return d;
     if (Date.now() > deadline) throw new Error(`Human Review stalled: ${JSON.stringify(d.human_reviews)}`);

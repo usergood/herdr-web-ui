@@ -6,16 +6,16 @@ import type { FactoryStore } from "./factory-store.ts";
 
 /** Reading a captured candidate is independent of native agent admission. */
 export class FactoryHumanReview {
-  constructor(private readonly store: FactoryStore, private readonly runtime: FactoryRuntime, private readonly review: FactoryReview, private readonly retain: (id: string) => Promise<unknown>) {
+  constructor(private readonly store: FactoryStore, private readonly runtime: FactoryRuntime, private readonly review: FactoryReview, private readonly retain: (id: string) => Promise<unknown>, private readonly approval: import("./factory-human-approval.ts").FactoryHumanApprovalService) {
     for (const request of store.list<import("../shared/factory.ts").FactoryHumanReviewDelivery>("human_review_messages")) if (request.condition === "sending") {
       const message = store.get<FactoryMessage>("messages", request.id);
       if (message) store.put("human_review_messages", { ...request, condition: "uncertain", reason: "Discussion delivery was not confirmed; inspect the retained native conversation before sending again" }, message.implementation_id);
     }
     runtime.queue.discuss = (id, body) => this.deliver(id, String(body.message_id));
   }
-  async submit(id: string, body: Record<string, unknown>): Promise<import("../shared/factory.ts").FactoryHumanFeedbackBatch> {
+  async submit(id: string, body: Record<string, unknown>, origin: string): Promise<import("../shared/factory.ts").FactoryHumanFeedbackBatch> {
     this.runtime.assertExecuting(id);
-    if (body.disposition !== "decline" || typeof body.review_id !== "string" || typeof body.snapshot_id !== "string" || typeof body.head !== "string" || typeof body.idempotency_key !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.idempotency_key) || !Array.isArray(body.comment_ids) || body.comment_ids.length > 100 || body.comment_ids.some(c => typeof c !== "string") || new Set(body.comment_ids).size !== body.comment_ids.length) throw new FactoryError("invalid_review_submission", "Select Decline, its exact candidate and the complete draft batch");
+    if ((body.disposition !== "decline" && body.disposition !== "approve") || typeof body.review_id !== "string" || typeof body.snapshot_id !== "string" || typeof body.head !== "string" || typeof body.idempotency_key !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.idempotency_key) || !Array.isArray(body.comment_ids) || body.comment_ids.length > 100 || body.comment_ids.some(c => typeof c !== "string") || new Set(body.comment_ids).size !== body.comment_ids.length) throw new FactoryError("invalid_review_submission", "Select Approve or Decline, its exact candidate and the complete draft batch");
     const signature = hash(JSON.stringify({ review_id: body.review_id, snapshot_id: body.snapshot_id, head: body.head, disposition: body.disposition, comment_ids: [...body.comment_ids].sort() }));
     const receipt = () => {
       const previous = this.store.list<import("../shared/factory.ts").FactoryHumanFeedbackBatch>("review_batches", id).find(b => b.key === body.idempotency_key);
@@ -38,12 +38,13 @@ export class FactoryHumanReview {
       if (live.condition !== "ready" || live.snapshot_id !== entry.snapshot_id || live.head !== entry.head || state?.condition !== "published" || state.head !== entry.head || !plan) throw new FactoryError("review_stale", "The current review is already submitted or changed", 409);
       const comments = this.store.list<import("../shared/factory.ts").ReviewComment>("comments", id).filter(c => c.batch_id === null && !c.resolution && ["draft", "outdated"].includes(c.status));
       if (comments.length !== (body.comment_ids as string[]).length || comments.some(c => !(body.comment_ids as string[]).includes(c.id) || c.snapshot_id !== entry.snapshot_id || c.status !== "draft")) throw new FactoryError("draft_batch_changed", "Submit every current draft from this exact snapshot; reconcile stale drafts first", 409);
-      const batch: import("../shared/factory.ts").FactoryHumanFeedbackBatch = { ...this.store.record(), implementation_id: id, run_id: run.id, review_id: entry.id, snapshot_id: snapshot.id, head: entry.head, origin: "human", disposition: "decline", merge_authorized: false, key: body.idempotency_key as string, signature, status: "sent", comment_ids: comments.map(c => c.id), ticket_ids: plan.tickets.map(t => t.id) };
+      const batch: import("../shared/factory.ts").FactoryHumanFeedbackBatch = { ...this.store.record(), implementation_id: id, run_id: run.id, review_id: entry.id, snapshot_id: snapshot.id, head: entry.head, origin: "human", disposition: body.disposition as "decline" | "approve", merge_authorized: body.disposition === "approve", key: body.idempotency_key as string, signature, status: "sent", comment_ids: comments.map(c => c.id), ticket_ids: plan.tickets.map(t => t.id) };
+      if (batch.merge_authorized) this.approval.authorizeRepairs(id, entry, batch, origin);
       this.store.put("review_batches", batch, id);
       for (const c of comments) this.store.put("comments", { ...c, status: "submitted", batch_id: batch.id }, id);
       this.store.put("human_reviews", { ...live, condition: "repairing", reason: null }, id);
       this.store.put("automatic_review", { ...state, condition: "repairing", human_batch_id: batch.id, batch_id: batch.id, generation: (state.generation ?? 0) + 1, round: 0, evidence_ids: [], attempts: 0, next_attempt_at: 0, reason: null }, id);
-      this.store.event(id, "human_review_declined", { batch_id: batch.id, snapshot_id: snapshot.id, head: entry.head, comment_ids: batch.comment_ids, merge_authorized: false });
+      this.store.event(id, batch.merge_authorized ? "human_review_approved_with_comments" : "human_review_declined", { batch_id: batch.id, snapshot_id: snapshot.id, head: entry.head, comment_ids: batch.comment_ids, merge_authorized: batch.merge_authorized });
       return batch;
     }).immediate();
   }

@@ -12,6 +12,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
   const token = "owned-capacity-fixture";
   const checks = new Map<string, FactoryCheck>();
   const executedChecks: string[] = [];
+  let afterIntegrationHead: string | null = null;
   let loseIntegration = false; let failCheck = false; let conflict = false;
   const runs = new Map<string, FactoryRun>(); const workers = new Map<string, FactoryWorker>();
   let allocationGate: { worker: boolean; entered: (id: string) => void; wait: Promise<void> } | null = null;
@@ -147,7 +148,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
         worker.integration_tip = tips.get(run.id) ?? "1".repeat(40);
         worker.head ??= scenario.advancingHeads ? (++candidate).toString(16).padStart(40, "0") : "1".repeat(40);
         return Response.json(worker); }
-      if (action === "operations/integrate") { const worker = workers.get(body.worker_id)!; worker.condition = "completed"; if (scenario.advancingHeads) tips.set(run.id, worker.head!); if (loseIntegration) { loseIntegration = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost merger acknowledgment" } }, { status: 503 }); } return Response.json(worker); }
+      if (action === "operations/integrate") { const worker = workers.get(body.worker_id)!; worker.condition = "completed"; if (scenario.advancingHeads) tips.set(run.id, worker.head!); if (afterIntegrationHead) { tips.set(run.id, afterIntegrationHead); afterIntegrationHead = null; } if (loseIntegration) { loseIntegration = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost merger acknowledgment" } }, { status: 503 }); } return Response.json(worker); }
       if (action === "operations/reconcile-worker") return Response.json(workers.get(body.worker_id));
       if (action === "operations/stop-worker") { const worker = workers.get(body.worker_id)!; if (worker.condition !== "completed") worker.condition = "cancelled"; if (loseStop) { loseStop = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost shutdown acknowledgment" } }, { status: 503 }); } return Response.json(worker); }
     }
@@ -185,6 +186,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
     loseNextPublication: () => { losePublication = true; },
     denyPublication: () => { denyPublication = true; },
     changeHead: (runId: string, head: string) => { tips.set(runId, head); },
+    changeAfterNextIntegration: (head: string) => { afterIntegrationHead = head; },
     loseNextStop: () => { loseStop = true; },
     holdNextAdmission: () => {
       let entered!: () => void; let release!: () => void;

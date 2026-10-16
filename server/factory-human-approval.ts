@@ -1,5 +1,5 @@
-import type { FactoryCheck, FactoryDetail, FactoryHumanApproval, FactoryHumanReview, FactoryMergeResult, FactoryProject, FactoryPullRequest, FactoryReviewEvidence, FactoryRun, Implementation, ReviewSnapshot } from "../shared/factory.ts";
-import { FactoryError } from "./factory-host.ts";
+import type { FactoryCheck, FactoryDetail, FactoryHumanApproval, FactoryHumanFeedbackBatch, FactoryHumanReview, FactoryMergeResult, FactoryProject, FactoryPullRequest, FactoryReviewEvidence, FactoryRun, Implementation, ReviewSnapshot } from "../shared/factory.ts";
+import { FactoryError, hash } from "./factory-host.ts";
 import type { FactoryRuntime } from "./factory-runtime.ts";
 import type { FactoryStore } from "./factory-store.ts";
 
@@ -8,8 +8,8 @@ export class FactoryHumanApprovalService {
   private stopped = false;
   stop(): void { this.stopped = true; }
   private readonly busy = new Set<string>();
-  constructor(private readonly store: FactoryStore, private readonly runtime: FactoryRuntime) {}
-  private candidate(id: string, review: FactoryHumanReview) {
+  constructor(private readonly store: FactoryStore, private readonly runtime: FactoryRuntime, private readonly workflow: import("./factory-workflow.ts").FactoryWorkflow) {}
+  private candidate(id: string, review: FactoryHumanReview, submitting = false) {
     if (this.stopped) throw new FactoryError("stopping", "The bridge is stopping", 409);
     this.runtime.assertExecuting(id);
     const run = this.store.get<FactoryRun>("runs", review.run_id);
@@ -18,13 +18,40 @@ export class FactoryHumanApprovalService {
     const frozen = run?.manifest as { project?: FactoryProject } | undefined;
     if (!run || run.implementation_id !== id || run.action !== "implement-spec" || review.condition !== "ready" || !snapshot || snapshot.head !== review.head || !pr || pr.head !== review.head || frozen?.project?.pull_request?.repository !== pr.repository || frozen.project.pull_request.base_branch !== pr.base_branch) throw new FactoryError("review_stale", "Select the current captured and published Human Review candidate", 409);
     if (this.store.list<FactoryRun>("runs", id).filter(r => r.action === "implement-spec").at(-1)?.id !== run.id) throw new FactoryError("review_stale", "A newer implementation attempt supersedes this review", 409);
-    if (this.store.list<FactoryDetail["comments"][number]>("comments", id).some(c => c.status !== "resolved")) throw new FactoryError("review_comments_pending", "Submit or resolve all retained review comments before approving without comments", 409);
+    if (!submitting && this.store.list<FactoryDetail["comments"][number]>("comments", id).some(c => c.status !== "resolved")) throw new FactoryError("review_comments_pending", "Submit or resolve all retained review comments before approving without comments", 409);
     const check = this.store.list<FactoryCheck>("checks", run.id).filter(c => c.worker_id === null).at(-1);
     const reports = pr.evidence_ids.map(key => this.store.get<FactoryReviewEvidence>("review_evidence", key));
     const latestReports = this.store.list<FactoryReviewEvidence>("review_evidence", run.id);
     const recipes = [...frozen.project.setup ?? [], ...frozen.project.checks ?? []];
     if (!check || check.id !== pr.check_id || check.run_id !== run.id || check.worker_id !== null || check.condition !== "passed" || check.head !== pr.head || !recipes.length || JSON.stringify(check.commands.map(c => c.args)) !== JSON.stringify(recipes) || check.commands.some(c => c.exit_code !== 0) || reports.length !== 2 || !["standards", "spec"].every(axis => reports.some(r => r?.id === latestReports.filter(latest => latest.axis === axis).at(-1)?.id && r?.run_id === run.id && r.axis === axis && r.head === pr.head && r.outcome === "passed"))) throw new FactoryError("fresh_evidence_required", "Retain passing configured checks and independent Standards and Spec reports for this candidate", 409);
     return { run, pr, check, reports: reports as FactoryReviewEvidence[] };
+  }
+  private repairScope(id: string, runId: string): string {
+    const pr = this.store.get<FactoryPullRequest>("pull_requests", runId);
+    return hash(JSON.stringify({ manifest: this.store.get<FactoryRun>("runs", runId)?.manifest, plan: this.store.get("execution_plans", runId), context: this.workflow.questionRevision(id, runId), target: pr && { repository: pr.repository, base_branch: pr.base_branch, branch: pr.branch, number: pr.number } }));
+  }
+  /** Called inside the same transaction that claims the complete comment batch. */
+  authorizeRepairs(id: string, review: FactoryHumanReview, batch: FactoryHumanFeedbackBatch, origin: string): void {
+    this.candidate(id, review, true);
+    if (!batch.comment_ids.length || this.store.list<FactoryHumanApproval>("human_review_approvals", id).some(a => a.review_id === review.id)) throw new FactoryError("approval_conflict", "This review already has merge authority or has no comments to repair", 409);
+    const receipt: FactoryHumanApproval = { ...this.store.record(), implementation_id: id, review_id: review.id, run_id: review.run_id, snapshot_id: review.snapshot_id!, head: review.head, original_candidate: { head: review.head, snapshot_id: review.snapshot_id! }, repair_batch_id: batch.id, repair_scope: this.repairScope(id, review.run_id), repair_signature: batch.signature, idempotency_key: batch.key, provenance: { kind: "owner_button", origin }, condition: "repairing", reason: null, merge_sha: null, release_tag: null };
+    this.store.put("human_review_approvals", receipt, id);
+  }
+  private assertRepairLineage(receipt: FactoryHumanApproval, batch: FactoryHumanFeedbackBatch, finalHead: string): void {
+    if (batch.signature !== receipt.repair_signature || !receipt.original_candidate || batch.run_id !== receipt.run_id || batch.head !== receipt.original_candidate.head || batch.snapshot_id !== receipt.original_candidate.snapshot_id || batch.disposition !== "approve" || !batch.merge_authorized) throw new FactoryError("review_stale", "Conditional authority no longer matches the submitted review and comments", 409);
+    const batches = new Set([batch.id, ...this.store.list<import("../shared/factory.ts").FactoryAutomaticReviewBatch>("automatic_review_batches", receipt.implementation_id).filter(b => b.run_id === receipt.run_id && b.human_batch_id === batch.id).map(b => b.id)]);
+    const workers = this.store.list<import("../shared/factory.ts").FactoryWorker>("workers", receipt.run_id).filter(w => w.rework_batch_id && batches.has(w.rework_batch_id) && w.condition === "completed");
+    let tip = batch.head;
+    const remaining = [...workers];
+    // Completed Machine integration receipts are durable authority. Events are
+    // display history and can be absent after a crash between retained writes.
+    while (remaining.length) {
+      const index = remaining.findIndex(w => w.integration_tip === tip && w.head === tip);
+      const next = index >= 0 ? index : remaining.findIndex(w => w.integration_tip === tip && w.head);
+      if (next < 0) throw new FactoryError("review_stale", "The candidate changed outside the submitted Human Review repair lineage", 409);
+      tip = remaining.splice(next, 1)[0]!.head!;
+    }
+    if (!batch.ticket_ids.every(id => workers.some(w => w.ticket_id === id && w.rework_batch_id === batch.id)) || tip !== finalHead) throw new FactoryError("review_stale", "The candidate changed outside the submitted Human Review repair lineage", 409);
   }
   async approve(id: string, body: Record<string, unknown>, origin: string): Promise<FactoryHumanApproval> {
     if (typeof body.idempotency_key !== "string" || !/^[\w-]{1,128}$/.test(body.idempotency_key)) throw new FactoryError("invalid_approval", "Send the displayed candidate and a stable approval identity");
@@ -44,17 +71,32 @@ export class FactoryHumanApprovalService {
   }
   async maintain(): Promise<void> {
     if (this.stopped) return;
-    for (const receipt of this.store.list<FactoryHumanApproval>("human_review_approvals")) if (["pending", "uncertain", "awaiting_release"].includes(receipt.condition) && (receipt.next_observation_at ?? 0) <= Date.now()) await this.reconcile(receipt);
+    for (const receipt of this.store.list<FactoryHumanApproval>("human_review_approvals")) if (!this.store.get<Implementation>("implementations", receipt.implementation_id)?.pause && ["repairing", "pending", "uncertain", "awaiting_release"].includes(receipt.condition) && (receipt.next_observation_at ?? 0) <= Date.now()) await this.reconcile(receipt);
   }
   private async reconcile(receipt: FactoryHumanApproval): Promise<void> {
     if (this.stopped || this.busy.has(receipt.id) || ["merged", "released"].includes(receipt.condition)) return;
     this.busy.add(receipt.id);
     try {
       const review = this.store.get<FactoryHumanReview>("human_reviews", receipt.review_id)!;
+      if (receipt.repair_batch_id && receipt.repair_scope !== this.repairScope(receipt.implementation_id, receipt.run_id)) throw new FactoryError("repair_scope_changed", "The owner context changed; review the repair scope before granting new merge authority", 409);
+      if (receipt.condition === "repairing") {
+        const batch = this.store.get<FactoryHumanFeedbackBatch>("review_batches", receipt.repair_batch_id!);
+        const progress = this.store.get<import("../shared/factory.ts").FactoryAutomaticReview>("automatic_review", receipt.run_id);
+        if (progress?.condition === "blocked") throw new FactoryError("repair_blocked", progress.reason ?? "Submitted repairs require an owner decision", 409);
+        if (!batch?.resolution || review.condition !== "ready") return;
+        this.assertRepairLineage(receipt, batch, review.head);
+        if (!batch.merge_authorized || batch.review_id !== review.id || batch.resolution.head !== review.head) throw new FactoryError("review_stale", "Conditional authority requires this submitted repair batch's final candidate", 409);
+        receipt = { ...receipt, head: review.head, snapshot_id: review.snapshot_id!, condition: "pending" };
+        this.store.put("human_review_approvals", receipt, receipt.implementation_id);
+      }
       const { run, pr, check, reports } = this.candidate(receipt.implementation_id, review);
       const head = await this.runtime.operation<{ head: string; workspace_hash: string }>(run, "head");
       if (head.head !== receipt.head || head.workspace_hash !== check.workspace_hash) throw new FactoryError("review_stale", "The checked workspace changed after Human Review capture", 409);
       this.candidate(receipt.implementation_id, review);
+      if (receipt.repair_batch_id) {
+        if (receipt.repair_scope !== this.repairScope(receipt.implementation_id, receipt.run_id)) throw new FactoryError("repair_scope_changed", "The owner context changed; review the repair scope before granting new merge authority", 409);
+        this.assertRepairLineage(receipt, this.store.get<FactoryHumanFeedbackBatch>("review_batches", receipt.repair_batch_id)!, receipt.head);
+      }
       const result = await this.runtime.operation<FactoryMergeResult>(run, "merge", { approval: receipt, pull_request: pr, head: pr.head, workspace_hash: check.workspace_hash, check_id: check.id, evidence_ids: pr.evidence_ids, reports: reports.map(r => ({ worker_id: r.worker_id, source_id: r.source_id })) } satisfies import("../shared/factory.ts").FactoryMergeRequest);
       this.runtime.assertExecuting(receipt.implementation_id);
       if (result.run_id !== run.id || result.head !== receipt.head || result.repository !== pr.repository || result.base_branch !== pr.base_branch || result.number !== pr.number || !["merged", "awaiting_release", "released", "uncertain"].includes(result.condition) || result.condition !== "uncertain" && !/^[a-f0-9]{40}$/.test(result.merge_sha ?? "")) throw new FactoryError("merge_uncertain", "The Machine did not verify this exact merge and target", 409);
@@ -65,7 +107,7 @@ export class FactoryHumanApprovalService {
         if (result.condition !== "uncertain") this.store.put("implementations", { ...idea, stage: result.condition === "awaiting_release" ? "review" : "done", outcome: result.condition === "released" ? "released" : "merged" });
       }).immediate();
     } catch (error) {
-      if (this.stopped) return;
+      if (this.stopped || error instanceof FactoryError && error.code === "assignment_paused") return;
       const retry = !(error instanceof FactoryError) || ["machine_offline", "machine_disconnected", "remote_factory_unavailable", "merge_uncertain", "merge_busy"].includes(error.code);
       const observations = (receipt.observations ?? 0) + 1;
       this.store.put("human_review_approvals", { ...receipt, observations, next_observation_at: Date.now() + Math.min(30000, 1000 * 2 ** observations), condition: retry && observations < 6 ? "uncertain" : "blocked", reason: error instanceof FactoryError ? error.message : "Merge outcome is unknown; reconcile the retained approval before further action" }, receipt.implementation_id);

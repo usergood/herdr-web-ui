@@ -81,8 +81,8 @@ export class FactoryService {
       const latest = (kinds: string[]) => events.filter(event => kinds.includes(event.kind)).at(-1)?.kind;
       if (latest(["native_snapshot_unavailable", "planning_handoff_retained"]) === "native_snapshot_unavailable" || latest(["planning_documents_unavailable", "planning_documents_retained"]) === "planning_documents_unavailable") throw new FactoryError("handoff_incomplete", "The accepted Specification is retained, but some native planning evidence is unavailable; inspect the preserved conversation before continuing", 409);
     });
-    this.humanApproval = new FactoryHumanApprovalService(this.store, this.runtime);
-    this.humanReview = new FactoryHumanReview(this.store, this.runtime, this.review, id => this.retainNative(id));
+    this.humanApproval = new FactoryHumanApprovalService(this.store, this.runtime, this.workflow);
+    this.humanReview = new FactoryHumanReview(this.store, this.runtime, this.review, id => this.retainNative(id), this.humanApproval);
     const maintenance = this.runtime.queue.maintenance;
     this.runtime.queue.maintenance = async () => { await maintenance?.(); await this.humanApproval.maintain(); for (const run of this.store.list<FactoryRun>("runs")) { try { await this.humanReview.retainAssistant(run); } catch { /* Machine unavailability preserves retained history. */ } } };
     this.execution = new FactoryExecution(this.store, this.workflow, this.runtime, this.pipeline, run => this.humanReview.handoff(run));
@@ -592,7 +592,10 @@ export class FactoryService {
         return jsonResponse(await this.humanApproval.approve(humanApproval[1]!, await this.body(request), url.origin));
       }
       const submission = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/human-review\/submit$/.exec(url.pathname);
-      if (submission && request.method === "POST") return jsonResponse(await this.humanReview.submit(submission[1]!, await this.body(request)), 202);
+      if (submission && request.method === "POST") {
+        if (!sameOrigin(request)) return httpError(403, "invalid_origin", "Use Human Review submission from this app");
+        return jsonResponse(await this.humanReview.submit(submission[1]!, await this.body(request), url.origin), 202);
+      }
       const discussion = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/human-review\/messages$/.exec(url.pathname);
       if (discussion && request.method === "POST") return jsonResponse(await this.humanReview.discuss(discussion[1]!, await this.body(request), url.origin), 202);
       const reviewRoute = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/(snapshots|comments)$/.exec(url.pathname);
