@@ -1,10 +1,13 @@
 import { execFile } from "node:child_process";
 import type { AgentPermissionMode } from "../shared/agent-permissions.ts";
 import { promisify } from "node:util";
-import { dirname, join } from "node:path";
-import type { FactoryProvider, HerdrPane } from "../shared/protocol.ts";
+import { dirname, join, relative, isAbsolute, resolve } from "node:path";
+import { realpathSync } from "node:fs";
+import type { FactoryProvider, FactoryRun, HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 import { agentManifests, agentPrompt, agentStart, HerdrError, sessionSnapshot, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 import { readAgentModelCatalog } from "./agent-model-catalog.ts";
+import { currentAccountEnvironment } from "./account-execution.ts";
+import { FactoryError } from "./factory-host.ts";
 import type { AgentExecutionPreset } from "../shared/agent-models.ts";
 
 export interface FactoryNative {
@@ -17,11 +20,30 @@ export interface FactoryNative {
   paneState?: (paneId: string) => Promise<HerdrPane | null>;
   closeWorkspace: typeof workspaceClose;
   prompt: typeof agentPrompt;
+  pushBranch: (scope: { cwd: string; repository: string; branch: string; head: string }) => Promise<void>;
 }
 const execute = promisify(execFile);
+/** Only a complete observation can release a closed native context's ownership. */
+export function factoryWorkspaceGone(snapshot: SessionSnapshot, owned: Pick<FactoryRun, "worktree" | "workspace_id" | "pane_id">, label: string): boolean {
+  if (!owned.worktree || !owned.workspace_id || !owned.pane_id) return false;
+  try { if (realpathSync(owned.worktree) !== owned.worktree) return false; } catch { return false; }
+  const couldOwn = (cwd: string | null | undefined): boolean => {
+    if (!cwd) return false;
+    const within = (path: string) => { const offset = relative(owned.worktree!, path); return !offset || offset !== ".." && !offset.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) && !isAbsolute(offset); };
+    if (within(resolve(cwd))) return true;
+    try { return within(realpathSync(cwd)); } catch { return true; }
+  };
+  return !snapshot.workspaces.some(entry => entry.workspace_id === owned.workspace_id || entry.label === label)
+    && !snapshot.panes.some(entry => entry.pane_id === owned.pane_id || entry.workspace_id === owned.workspace_id || !entry.cwd && !entry.foreground_cwd || couldOwn(entry.cwd) || couldOwn(entry.foreground_cwd));
+}
 export const factoryNative: FactoryNative = {
   modelCatalog: readAgentModelCatalog,
   createWorkspace: workspaceCreate, snapshot: sessionSnapshot, closeWorkspace: workspaceClose, prompt: agentPrompt,
+  pushBranch: async ({ cwd, repository, branch, head }) => {
+    try {
+      await execute("git", ["-C", cwd, "-c", "push.followTags=false", "-c", "core.hooksPath=/dev/null", "push", "--porcelain", `https://github.com/${repository}.git`, `${head}:refs/heads/${branch}`], { env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_") && !/^(GH_|GITHUB_)/.test(key))), ...currentAccountEnvironment(), GIT_TERMINAL_PROMPT: "0" }, timeout: 10000, maxBuffer: 128 * 1024 });
+    } catch { throw new FactoryError("publication_upload_uncertain", "Branch publication is unconfirmed; reconcile before trying again", 409); }
+  },
   startAgent: async (options, socketPath) => {
     const deadline = Date.now() + 10_000;
     for (;;) {

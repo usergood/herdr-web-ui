@@ -1,0 +1,46 @@
+import "./test-herdr.ts";
+import assert from "node:assert/strict";
+import { chromium } from "playwright-core";
+import { factoryMergeFixture } from "../server/factory-merge.fixture.ts";
+import { checkReleaseDelivery } from "./factory-release-browser.ts";
+
+const f = await factoryMergeFixture();
+const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
+try {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  page.setDefaultTimeout(10_000);
+  const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
+  await page.goto(`http://localhost:${f.app.port}/#factory/${f.run.implementation_id}`);
+  const delivery = page.getByRole("region", { name: "Delivery evidence", exact: true });
+  await delivery.waitFor();
+  await delivery.getByRole("combobox", { name: "GitHub account", exact: true }).selectOption(f.profile.id);
+  await delivery.getByRole("textbox", { name: "Delivery PR numbers", exact: true }).fill("12");
+  const linked = page.waitForResponse(r => r.url().endsWith(f.prefix + "/delivery") && r.request().method() === "POST");
+  await delivery.getByRole("button", { name: "Save delivery links", exact: true }).click();
+  assert.equal((await linked).status(), 200);
+  await delivery.getByText("fictional/project · main", { exact: true }).waitFor();
+  await delivery.getByRole("link", { name: "PR #12", exact: true }).waitFor();
+  f.pull.base.ref = "other-branch"; f.respond();
+  const rejected = page.waitForResponse(r => r.url().endsWith(f.prefix + "/delivery/sync"));
+  await delivery.getByRole("button", { name: "Sync delivery evidence", exact: true }).click();
+  assert.equal((await rejected).status(), 200);
+  await delivery.getByRole("alert").getByText("PR #12 belongs to another repository or branch. Correct its delivery link.", { exact: true }).waitFor();
+  assert.equal((await f.request(f.prefix).then(r => r.json())).board.lane, "needs_you");
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert(await delivery.evaluate(el => el.scrollWidth <= el.clientWidth), "Delivery correction fits a phone");
+  f.data["repos/fictional/project/pulls/13"] = { ...f.pull, number: 13, base: { ref: "main", repo: { full_name: "fictional/project" } } };
+  f.data["repos/fictional/project/pulls/13/files?per_page=100&page=1"] = [{ filename: "findings.md", status: "added", sha: f.sha }]; f.respond();
+  await delivery.getByRole("textbox", { name: "Delivery PR numbers", exact: true }).fill("13");
+  await delivery.getByRole("button", { name: "Save delivery links", exact: true }).click();
+  await delivery.getByRole("button", { name: "Sync delivery evidence", exact: true }).click();
+  await delivery.getByRole("link", { name: "PR #13", exact: true }).waitFor();
+  await delivery.getByText("findings.md", { exact: true }).waitFor();
+  await delivery.getByText("Verified merge", { exact: true }).waitFor();
+  const detail = await f.request(f.prefix).then(r => r.json());
+  assert.equal(detail.board.lane, "done");
+  assert.equal(await delivery.getByRole("button", { name: "Save delivery links", exact: true }).count(), 0);
+  assert(f.calls().every(call => !call.args.includes("--method")), "Delivery observation sends no mutations");
+  assert.deepEqual(errors, []);
+  console.log("Merge delivery browser: desktop linkage, rejected target, phone correction, verified coverage and Done");
+  await checkReleaseDelivery(browser);
+} finally { await browser.close(); await f.close(); }

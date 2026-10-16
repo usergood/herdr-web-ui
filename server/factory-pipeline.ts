@@ -1,18 +1,23 @@
 import { factoryCapacity } from "./factory-capacity.ts";
 import { hasIssueSource } from "./issue-delivery.ts";
-import type { FactoryApproval, FactoryCheck, FactoryProject, FactoryReviewEvidence, FactoryRun, FactorySettings, FactoryTicket, FactoryWorker, Implementation } from "../shared/protocol.ts";
+import type { FactoryBatchReceipt, FactoryApproval, FactoryCheck, FactoryProject, FactoryReviewEvidence, FactoryRun, FactorySettings, FactoryTicket, FactoryWorker, Implementation } from "../shared/protocol.ts";
 import { CLEAN_WORKSPACE_HASH, FactoryError } from "./factory-host.ts";
 import { FactoryRuntime } from "./factory-runtime.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { FactoryWorkflow } from "./factory-workflow.ts";
+import { FactoryDelivery } from "./factory-delivery.ts";
 
 const owns = (condition: string): boolean => !["completed", "cancelled", "failed"].includes(condition);
 type CompletionCleanup = { id: string; machine_id: string; worktree: string; branch: string | null; completion: NonNullable<FactoryRun["implementation_completion"]> };
 /** Admission reservations cover all native contexts and builds, including uncertain remote work. */
 export class FactoryPipeline {
+  private stopped = false;
+  stop(): void { this.stopped = true; }
   constructor(private readonly store: FactoryStore, private readonly runtime: FactoryRuntime, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly retainBeforeStop: (id: string) => Promise<void>) {}
   private run(id: string, factoryRequired = true, completedAllowed = false): FactoryRun {
     const run = this.store.get<FactoryRun>("runs", id);
+    if (run && this.store.get<Implementation>("implementations", run.implementation_id)?.discard_requested_at) throw new FactoryError("assignment_discarded", "This Assignment is waiting for its owned work to stop", 409);
+    if (run?.scope_pause) throw new FactoryError("issue_scope_paused", run.scope_pause.reason, 409);
     if (run?.implementation_completion_pending) throw new FactoryError("execution_finishing", "Reconcile the retained implementation retirement before allocating more work", 409);
     if (!completedAllowed && (run?.implementation_completion || this.store.get("implementation_retirement", id))) throw new FactoryError("execution_retired", "This native lease is retired. Stop the invalidated attempt, then use explicit Retry to repair its retained work", 409);
     if (run?.issue_pause) throw new FactoryError("issue_pause_required", "Controlled pause requested; preserve work and reconcile owned workers before a new attempt", 409);
@@ -40,14 +45,16 @@ export class FactoryPipeline {
       if (raced) return { worker: raced, fresh: false };
       this.run(id, role === "implementer");
       const ticket = role === "implementer" ? this.frontier(run).find((entry) => entry.id === body.ticket_id) : null;
-      const batch = typeof body.review_batch_id === "string" ? this.store.get<{ id: string; run_id: string; status: string }>("review_batches", body.review_batch_id) : null;
+      const batch = typeof body.review_batch_id === "string" ? this.store.get<FactoryBatchReceipt>("review_batches", body.review_batch_id) : null;
       const rework = role === "implementer" && batch?.run_id === id && batch.status === "sent" ? (run.manifest as { tickets: FactoryTicket[] }).tickets.find((entry) => entry.id === body.ticket_id) : null;
+      if (role === "implementer" && body.review_batch_id !== undefined && (!rework || batch?.reports && (batch.head !== tip.head || this.store.list<FactoryWorker>("workers", id).some(worker => worker.rework_batch_id === batch.id || worker.role === "implementer" && owns(worker.condition))))) throw new FactoryError("rework_batch_unavailable", "Use a current delivered batch with no previous repair writer or active implementation", 409);
       if (role === "implementer" && !ticket && !rework) throw new FactoryError("ticket_not_ready", "Select a ready Ticket or an explicitly delivered rework batch", 409);
       if (rework && this.store.list<FactoryWorker>("workers", id).some((worker) => worker.ticket_id === rework.id && owns(worker.condition))) throw new FactoryError("ticket_owned", "This Ticket already has an active or uncertain writer", 409);
       if (role !== "implementer" && this.store.list<FactoryWorker>("workers", id).some((worker) => worker.role === "implementer" && owns(worker.condition))) throw new FactoryError("writers_active", "Quiesce repository writers before independent final reviews", 409);
       const capacity = factoryCapacity(this.store);
       capacity.implementations.add(run.implementation_id);
       if (capacity.implementations.size > this.settings().max_implementations || capacity.agents >= this.settings().max_agents) throw new FactoryError("capacity_exhausted", "Global native context capacity is in use", 409);
+      this.runtime.assertProjectCapacity(run);
       const shared = body.shared_paths ?? [];
       const configured = (run.manifest as { project: FactoryProject }).project.shared_paths ?? [];
       if (!Array.isArray(shared) || shared.some((path) => typeof path !== "string" || !configured.includes(path))) throw new FactoryError("invalid_shared_paths", "Claim only configured shared document paths");
@@ -56,8 +63,10 @@ export class FactoryPipeline {
       this.store.put("workers", worker, id); this.store.event(run.implementation_id, "worker_accepted", { worker_id: worker.id, role, ticket_id: worker.ticket_id }); return { worker, fresh: true };
     }).immediate();
     if (!claimed.fresh) return claimed.worker;
+    const retainedBatch = claimed.worker.rework_batch_id ? this.store.get<FactoryBatchReceipt>("review_batches", claimed.worker.rework_batch_id) : null;
+    const reviewBatch = retainedBatch ? { id: retainedBatch.id, run_id: retainedBatch.run_id, head: retainedBatch.head, report_ids: retainedBatch.report_ids, instructions: "Before repair, run bun .saurons-eye-tracker.mjs contract and read the exact review_batches entry matching this ID. Preserve its full reports and original findings." } : null;
     let worker: FactoryWorker;
-    try { worker = await this.runtime.operation(run, "worker", { worker: claimed.worker, context: { manifest: run.manifest, ticket: (run.manifest as { tickets: FactoryTicket[] }).tickets.find((ticket) => ticket.id === claimed.worker.ticket_id), questions: this.workflow.questions(run.implementation_id), findings: this.store.list<import("../shared/protocol.ts").ReviewComment>("comments", run.implementation_id).filter((comment) => comment.batch_id === claimed.worker.rework_batch_id && claimed.worker.rework_batch_id !== null) } }); }
+    try { worker = await this.runtime.operation(run, "worker", { worker: claimed.worker, context: { manifest: run.manifest, ticket: (run.manifest as { tickets: FactoryTicket[] }).tickets.find((ticket) => ticket.id === claimed.worker.ticket_id), questions: this.workflow.questions(run.implementation_id), review_batch: reviewBatch, findings: this.store.list<import("../shared/protocol.ts").ReviewComment>("comments", run.implementation_id).filter((comment) => comment.batch_id === claimed.worker.rework_batch_id && claimed.worker.rework_batch_id !== null) } }); }
     catch { worker = { ...claimed.worker, condition: "disconnected", waiting_reason: "Worker dispatch is uncertain; preserve its reservation and reconcile" }; }
     if (worker.id !== claimed.worker.id || worker.run_id !== run.id || worker.ticket_id !== claimed.worker.ticket_id || worker.role !== role || worker.base !== tip.head) throw new FactoryError("worker_identity_changed", "The Machine returned a different worker identity; preserve the accepted reservation", 409);
     const parent = this.store.get<FactoryRun>("runs", id)!;
@@ -108,6 +117,7 @@ export class FactoryPipeline {
     let result: FactoryCheck;
     try { result = await this.runtime.operation(run, "check", { worker_id: workerId, check }); }
     catch { result = { ...check, condition: "interrupted" }; }
+    if (this.stopped) return { ...check, condition: "interrupted" };
     if (result.id !== check.id || result.run_id !== id || result.worker_id !== workerId) throw new FactoryError("check_identity_changed", "The Machine returned unrelated check evidence; capacity remains reserved", 409);
     this.store.put("checks", result, id); this.store.event(run.implementation_id, "checks_retained", { check_id: result.id, condition: result.condition, head: result.head }); return result;
   }
@@ -148,7 +158,7 @@ export class FactoryPipeline {
     return ids;
   }
   private completionEvidence(run: FactoryRun, current: { head: string; workspace_hash: string }): FactoryRun["implementation_completion"] | null {
-    if (this.store.get<FactoryRun>("runs", run.id)?.issue_pause) return null;
+    if (this.store.get<FactoryRun>("runs", run.id)?.issue_pause || this.store.get<FactoryRun>("runs", run.id)?.scope_pause) return null;
     const check = this.store.list<FactoryCheck>("checks", run.id).filter(entry => entry.worker_id === null).at(-1);
     const reviews = this.store.list<FactoryReviewEvidence>("review_evidence", run.id);
     const standards = reviews.filter(entry => entry.axis === "standards").at(-1);
@@ -174,7 +184,7 @@ export class FactoryPipeline {
     const run = this.store.get<FactoryRun>("runs", id)!;
     let retired = this.store.get("implementation_retirement", id);
     if (!retired && run.implementation_completion_pending && ["completed", "cancelled"].includes(run.condition)) retired = this.store.put("implementation_retirement", { id }, run.implementation_id);
-    if (run.action !== "implement-spec" || run.issue_pause || !["ready", "completed"].includes(run.condition) && !run.implementation_completion_pending && !retired) return run;
+    if (run.action !== "implement-spec" || run.issue_pause || run.scope_pause || !["ready", "completed"].includes(run.condition) && !run.implementation_completion_pending && !retired) return run;
     let current: { head: string; workspace_hash: string } | null = null;
     try { current = await this.runtime.operation(run, "head"); } catch { /* Unobservable evidence retains capacity. */ }
     const cleaned = this.store.get<CompletionCleanup>("implementation_cleanup", id);
@@ -229,7 +239,7 @@ export class FactoryPipeline {
     const live = this.store.get<FactoryRun>("runs", run.id)!;
     const retired = this.store.get("implementation_retirement", run.id);
     if (!live.implementation_completion_pending && !retired && !["ready", "completed"].includes(live.condition)) throw new FactoryError("execution_changed", "The implementation changed before retirement; reconcile its current ownership", 409);
-    if (live.issue_pause || this.workflow.questions(run.implementation_id).some(question => question.answer === null)) throw new FactoryError("answers_unready", "Resolve current owner decisions before finishing implementation", 409);
+    if (live.issue_pause || live.scope_pause || this.workflow.questions(run.implementation_id).some(question => question.answer === null)) throw new FactoryError("answers_unready", "Resolve current owner decisions before finishing implementation", 409);
     if (this.store.list<{ run_id: string | null; status: string }>("comments", run.implementation_id).some(comment => comment.run_id !== null && this.findingRuns(run).has(comment.run_id) && comment.status !== "resolved")) throw new FactoryError("findings_open", "Resolve retained findings before finishing implementation", 409);
     if (JSON.stringify(this.completionEvidence(run, expected)) !== JSON.stringify(expected)) throw new FactoryError("fresh_evidence_required", "Implementation ownership or evidence changed before retirement", 409);
     this.store.put("runs", { ...live, implementation_completion_pending: true }, run.implementation_id);
@@ -249,7 +259,7 @@ export class FactoryPipeline {
     })();
     return finished;
   }
-  async accept(id: string, body: Record<string, unknown>): Promise<FactoryRun> {
+  async accept(id: string, body: Record<string, unknown>, issueApprovalId?: string): Promise<FactoryRun> {
     let run = this.run(id, false, true);
     await this.retainBeforeStop(id);
     this.run(id, false, true); // Capture may overlap an owner action; validate the live scope afterwards.
@@ -267,17 +277,18 @@ export class FactoryPipeline {
     const done = this.store.list<FactoryWorker>("workers", id).filter((entry) => entry.role === "implementer" && entry.condition === "completed");
     if (run.action === "implement-spec" && tickets.some((ticket) => !done.some((entry) => entry.ticket_id === ticket.id))) throw new FactoryError("tickets_incomplete", "Integrate every accepted Ticket before completion", 409);
     if (this.store.list<{ run_id: string | null; status: string }>("comments", run.implementation_id).some((entry) => entry.run_id !== null && this.findingRuns(run).has(entry.run_id) && entry.status !== "resolved")) throw new FactoryError("findings_open", "Resolve this Run's retained findings with fresh evidence before acceptance", 409);
-    const approval = { ...this.store.record(), implementation_id: run.implementation_id, kind: "review", revision: current.head, scope: `Run ${id}; checks ${check.id}; independent Standards and Spec reports` };
+    if (this.workflow.questions(run.implementation_id).some(question => question.answer === null)) throw new FactoryError("answers_unready", "Answer pending owner questions before accepting the prepared implementation", 409);
+    const approval = { ...this.store.record(), implementation_id: run.implementation_id, kind: "review", revision: current.head, scope: `Run ${id}; checks ${check.id}; independent Standards and Spec reports`, ...(issueApprovalId ? { source_approval_id: issueApprovalId } : {}) };
     // Release native ownership explicitly, while retaining Git and all evidence.
     const stopped = run.action === "implement-spec" ? await this.retireImplementation(run, this.completionEvidence(run, current)!) : await this.runtime.stopRun(id, { summary: `Owner accepted implementation at ${current.head}` });
     if (!["completed", "cancelled"].includes(stopped.condition)) throw new FactoryError("execution_owned", "Native execution did not confirm termination; retain its reservation", 409);
     this.store.put("approvals", approval, run.implementation_id);
-    const completed: FactoryRun = { ...stopped, condition: "completed", ...(run.action === "implement-spec" ? { implementation_completion: this.completionEvidence(run, current) ?? undefined } : {}) };
+    const completed: FactoryRun = { ...stopped, condition: "completed", accepted_result: { head: current.head, workspace_hash: current.workspace_hash, check_id: check.id, review_ids: ["standards", "spec"].map(axis => reviews.filter(entry => entry.axis === axis).at(-1)!.id), question_revision: this.workflow.questionRevision(run.implementation_id) }, ...(run.action === "implement-spec" ? { implementation_completion: this.completionEvidence(run, current) ?? undefined } : {}) };
     this.store.put("runs", completed, run.implementation_id);
     const implementation = this.store.get<Implementation>("implementations", run.implementation_id)!;
-    if (run.action === "implement-spec" && !["merged", "released"].includes(implementation.outcome)) {
-      const issueSourced = hasIssueSource(this.store, run.implementation_id);
-      this.store.put("implementations", { ...implementation, stage: issueSourced ? "review" : "done", activity: issueSourced ? "awaiting_merge" : undefined, outcome: "implementation_complete" });
+    if (["work", "implement-spec"].includes(run.action) && !["merged", "released"].includes(implementation.outcome)) {
+      this.store.put("implementations", { ...implementation, stage: "review", activity: "awaiting_merge", outcome: "implementation_complete" });
+      await new FactoryDelivery(this.store, this.runtime).inspect(run.implementation_id);
     }
     if (run.action === "apply-retro") {
       const scoped = (run.manifest as { retrospective: import("../shared/protocol.ts").FactoryRetrospective }).retrospective;
@@ -285,6 +296,20 @@ export class FactoryPipeline {
       if (proposal) this.store.put("retrospectives", { ...proposal, applied_run_id: run.id, updated_at: completed.updated_at }, proposal.project_id);
     }
     this.store.event(run.implementation_id, "implementation_accepted", { run_id: id, head: current.head, publication_authorized: false }); return completed;
+  }
+  /** Trusted issue scope already authorizes implementation. Only resting, verified
+   * work can release its slot; merge and delivery retain their separate owner gate. */
+  async completeReadyIssue(id: string): Promise<void> {
+    const run = this.store.get<FactoryRun>("runs", id);
+    if (run?.action !== "implement-spec" || run.condition !== "ready" || run.scope_pause || !(run.manifest as { issue_scope?: unknown }).issue_scope) return;
+    if (this.workflow.questions(run.implementation_id).some(question => question.answer === null)
+      || this.store.list<FactoryWorker>("workers", id).some(worker => owns(worker.condition))
+      || this.store.list<FactoryCheck>("checks", id).some(check => ["working", "interrupted"].includes(check.condition))) return;
+    const check = this.store.list<FactoryCheck>("checks", id).filter(check => check.worker_id === null).at(-1);
+    const reviews = this.store.list<FactoryReviewEvidence>("review_evidence", id);
+    if (!check || check.condition !== "passed" || !["standards", "spec"].every(axis => reviews.filter(review => review.axis === axis).at(-1)?.head === check.head && reviews.filter(review => review.axis === axis).at(-1)?.outcome === "passed")) return;
+    const scope = (run.manifest as { issue_scope: import("../shared/github-project.ts").ProjectIssueExecutionScope }).issue_scope;
+    await this.accept(id, { head: check.head }, scope.approval.id);
   }
   async resolveFinding(id: string, commentId: string, body: Record<string, unknown>): Promise<unknown> {
     const comment = this.store.get<import("../shared/protocol.ts").ReviewComment>("comments", commentId);

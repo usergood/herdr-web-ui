@@ -18,8 +18,9 @@ export function readinessReason(code: ReadinessBlocker, t: ReturnType<typeof use
     }
 }
 
-export function IssueReadiness({ readiness }: { readiness?: Readiness }) {
+export function IssueReadiness({ readiness }: { readiness?: Readiness | import("../../shared/github-project.ts").ProjectIssueReadiness }) {
   const t = useT();
+  readiness = readiness && "blockers" in readiness ? readiness : undefined;
   return <div role="status">
     <p>{readiness?.eligible ? t("Current issue scope has trusted readiness.") : t("Issue readiness is blocked.")}</p>
     {readiness && <ul>{readiness.blockers.map(code => <li key={code}>{readinessReason(code, t)}</li>)}</ul>}

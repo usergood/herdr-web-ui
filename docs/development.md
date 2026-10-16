@@ -367,12 +367,12 @@ after changing the staged session. Files, images, push and remote PCs are not pa
 1. Open a release PR that bumps `version` in `package.json` and `herdr-plugin.toml`,
    moves the `Unreleased` notes in [CHANGELOG.md](../CHANGELOG.md) under the new version,
    and tells the release in [release-summaries.json](../release-summaries.json) the way a
-   game's patch notes do: under the version, for each of `en`, `ko`, `ja` and `zh`, the lists
+   game's patch notes do: under the version, for each of `en`, `ko`, `ja`, `zh` and `tr`, the lists
    `new`, `improved` and `fixed` (a list with nothing to say is left out), each a few lines of
    plain text, 90 characters at most, the same number of lines in every language. It is what
    an install shows before and after the update, with the changelog section folded under it,
    so a line names what changes for the people who use the app and leaves out PR numbers and
-   internals. The unit suite and the release workflow fail without all four languages.
+   internals. The unit suite and the release workflow fail without all five languages.
    The GitHub release is written from the same files by `scripts/release-notes.ts`: the
    English lists under New features, Improvements and Bug fixes, then the version's whole
    changelog section folded under **Full changelog**.
@@ -520,8 +520,8 @@ consume private-repository Free-plan minutes; artifact/cache storage has separat
 Failure artifacts expire after one day, and superseded CI runs are cancelled. Do not raise
 paid storage limits or inject production account/provider secrets into test jobs.
 
-Release, Website, Remote PC bundles and Windows install remain disabled. They are manual
-workflows; no weekly installer job or tag-triggered publication is scheduled. Publishing
+Release is enabled for owner-dispatched application updates. Website, Remote PC bundles
+and Windows install remain disabled. These are manual workflows; no weekly installer job or tag-triggered publication is scheduled. Publishing
 uses the owner's protected `release` environment. Website redesign is documented in
 [site-redesign.md](factory/site-redesign.md); GitHub Pages remains unconfigured.
 
@@ -549,3 +549,25 @@ Full decisions, accepted test seams and immutable dependency pins are in
 | [`docs/`](.) | Remote PCs, updates, flow control, chat audit, brand assets and README media (`docs/media/`) |
 | [`site/`](../site/) | The website, built by `scripts/build-site.ts` and deployed by GitHub Pages |
 | [`DESIGN.md`](../DESIGN.md) | Design tokens and UI conventions |
+
+### Workflow and board loading measurements
+
+The deterministic `server/factory-loading.fixture.ts` contains eight Assignments with four
+retained attempts each. Each attempt includes a 435,447-character frozen-context field,
+100 KB of check output, 50 KB of review text, a 100 KB diff, a 100 KB transcript, and notes/events.
+It contains fictional data and does not read the owner's factory state. `server/factory-loading.test.ts`
+measures UTF-8 response-body bytes from the HTTP handler (uncompressed, not latency).
+
+| Read | Before (`bf368e6`) | After | Reduction |
+| --- | ---: | ---: | ---: |
+| Board/navigation overview | 92,609 B | 12,473 B | 86.5% |
+| Workflow selected Assignment poll | 3,600,229 B | 53,869 B | 98.5% |
+
+The legacy full-detail response remains 3,600,229 B. The review index is 15,033 B; individual
+reports and snapshot bodies load when opened/selected. Current decisions retain the latest
+Specification, current Ticket graph and scoped questions. Current Run summaries retain model
+selection and status, not frozen context. History is loaded only while Advanced controls is open,
+and is reused until the process-scoped retained-data revision changes. No persisted data changes.
+The app and board share one overview poll; concurrent identical reads share an in-flight request,
+and successful mutations invalidate those reads. These figures describe this fixture, not
+production latency or a universal response-size bound.

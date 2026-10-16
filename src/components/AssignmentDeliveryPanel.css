@@ -1,0 +1,6 @@
+.assignment-delivery { min-width: 0; }
+.assignment-delivery p, .assignment-delivery li { overflow-wrap: anywhere; }
+.assignment-delivery .factory-form { min-width: 0; }
+.assignment-delivery label { display: grid; gap: var(--space-2); min-width: 0; }
+.assignment-delivery input, .assignment-delivery select { min-width: 0; width: 100%; }
+.assignment-delivery ul { padding-inline-start: var(--space-5); }

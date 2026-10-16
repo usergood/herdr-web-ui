@@ -92,8 +92,9 @@ export function reconcileIssuePlan(store: FactoryStore, source: ProjectGitHubSou
 /** Selected planning only: this operation never launches a Run. */
 export function prepareIssuePlan(store: FactoryStore, source: ProjectGitHubSource, questionRevision?: unknown): IssuePlanning {
   return store.db.transaction(() => {
-    const approval = source.readiness?.approval;
-    if (!source.readiness?.eligible || !approval || !source.current) throw new FactoryError("issue_not_ready", "Resolve current issue readiness before reusing planning", 409);
+    const readiness = source.readiness && "blockers" in source.readiness ? source.readiness : undefined;
+    const approval = readiness?.approval;
+    if (!readiness?.eligible || !approval || !source.current) throw new FactoryError("issue_not_ready", "Resolve current issue readiness before reusing planning", 409);
     const workflow = new FactoryWorkflow(store);
     const prior = store.get<IssuePlanning>("github_plans", source.id);
     const questions = workflow.questions(source.implementation_id);

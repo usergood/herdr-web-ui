@@ -22,14 +22,16 @@ export function issueQueueEntry(store: FactoryStore, source: ProjectGitHubSource
   const workflow = new FactoryWorkflow(store);
   const reasons: IssueQueueEntry["reasons"] = [];
   const reason = (code: string, detail = "") => reasons.push({ code, detail });
+  if (source.publication_batch_id && store.get<{ dispatch_ready: boolean }>("github_issue_batches", source.publication_batch_id)?.dispatch_ready !== true) reason("planning_needs_you", "The whole issue batch awaits confirmed publication and dependency links.");
   if (!idea || idea.project_id !== source.project_id) reason("assignment_moved");
   if (idea?.archived_at) reason("assignment_archived");
+  if (idea?.discard_requested_at || idea?.outcome === "discarded") reason("assignment_discarded");
   if (idea?.outcome !== "none" || idea?.stage === "done") reason("assignment_finished");
   const attempts = issueExecutionAttempts(store, source.implementation_id).filter(run => !(run.id === planningRunId && readyIssuePlanningStep(run)));
   const latest = latestImplementationAttempt(attempts);
   if (attempts.some(run => run.action !== "implement-spec") || latest && !(latest.id === retryRunId && issueRetryAvailable(store, latest))) reason("attempt_exists");
   if (!accountReady) reason("account_unavailable");
-  for (const blocker of source.readiness?.blockers ?? ["sync_required"]) reason("readiness_" + blocker);
+  for (const blocker of (source.readiness && "blockers" in source.readiness ? source.readiness.blockers : ["sync_required"])) reason("readiness_" + blocker);
   if (!source.planning) reason("planning_required");
   else if (source.planning.condition !== "prepared") reason(source.planning.condition === "needs_you" ? "planning_needs_you" : "planning_changed");
   const pending = workflow.questions(source.implementation_id).some(question => question.answer === null);

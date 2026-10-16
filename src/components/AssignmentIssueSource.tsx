@@ -91,7 +91,7 @@ export function AssignmentIssueSource({ sources, problem, busy, perform, tickets
       {source.intake && <IssueQueueStatus entry={source.intake} showReasons={false} />}
       <IssueReadiness readiness={source.readiness} />
       {source.readiness_evidence?.problem && <p role="alert">{source.readiness_evidence.problem}</p>}
-      {source.readiness && !source.readiness.eligible && source.readiness.blockers.every(reason => ["evidence_missing", "untrusted", "stale"].includes(reason)) && <>
+      {source.readiness && "blockers" in source.readiness && !source.readiness.eligible && source.readiness.blockers.every(reason => ["evidence_missing", "untrusted", "stale"].includes(reason)) && <>
         <p>{t("Approval covers only the displayed source revision, including its plan, acceptance, dependencies and testing seams.")}</p>
         <button className="btn" disabled={busy} onClick={() => void perform(async () => { await accountRequest(`/projects/${source.project_id}/github/issues/${source.number}/approve`, { source_revision: source.revision, policy_revision: source.readiness_evidence!.policy_revision }); })}>{t("Approve this issue revision")}</button>
       </>}

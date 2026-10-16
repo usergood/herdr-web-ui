@@ -19,6 +19,90 @@ import { handleMachineRequest } from "./machine-api.ts";
 import type { MachineManager } from "./machines.ts";
 import { TailnetIdentitySource } from "./tailscale.ts";
 import { forgetTranscriptState } from "./conversation.ts";
+import type { FactoryAction, FactoryRun } from "../shared/factory.ts";
+import type { FactoryNative } from "./factory-native.ts";
+import { githubScheduleFixture } from "./github-schedules.fixture.ts";
+import { batchProposal, githubIssueBatchFixture } from "./github-issue-batches.fixture.ts";
+import { factoryLoadingFixture } from "./factory-loading.fixture.ts";
+import { factoryDeliveryFixture } from "./factory-delivery.fixture.ts";
+import { factoryMergeFixture } from "./factory-merge.fixture.ts";
+
+describe("factory loading HTTP contract", () => {
+  it("authenticates compact reads and scopes lazy report/snapshot bodies to their Assignment", async () => {
+    const fixture = factoryLoadingFixture(); fixture.service.stop();
+    const app = createServer({ port: 0, token: "owned-loading-token", stateDir: fixture.root, machines: false, factory: { accountDiscoveryHome: fixture.root } });
+    const origin = `http://localhost:${app.port}/api/factory`;
+    const headers = { authorization: "Bearer owned-loading-token" };
+    try {
+      expect((await fetch(`${origin}/implementations/${fixture.id}?view=current`)).status).toBe(401);
+      const read = (path: string) => fetch(origin + path, { headers });
+      const current = await read(`/implementations/${fixture.id}?view=current`);
+      expect(current.status).toBe(200);
+      const summary = await current.json(); expect(summary.revision).toBeString();
+      expect(summary.messages).toBeUndefined(); expect(summary.native_snapshots).toBeUndefined();
+      const report = await read(`/implementations/${fixture.id}?view=report&record_id=report-0-0`);
+      expect(report.status).toBe(200); expect((await report.json()).content.length).toBeGreaterThan(40_000);
+      const wrong = await read("/implementations/assignment-1?view=snapshot&record_id=snapshot-0-0");
+      expect(wrong.status).toBe(404); expect(await wrong.json()).toMatchObject({ error: { code: "not_found" } });
+      const full = await (await read(`/implementations/${fixture.id}`)).json();
+      expect(full.native_snapshots).toHaveLength(4);
+      const nav = await (await read("?navigation=1")).json();
+      expect(nav.implementations[0].description).toBeUndefined();
+    } finally { app.stop(); fixture.close(); }
+  });
+});
+
+describe("implementation PR publication HTTP contract", () => {
+  it("requires the explicit mutation header and same origin for automatic publication settings", async () => {
+    const f = await factoryDeliveryFixture();
+    try {
+      const url = `http://localhost:${f.app.port}/api/factory/projects/${f.project.id}/configure`;
+      const headers = { "content-type": "application/json", "x-herdr-factory": "1" };
+      expect((await fetch(url, { method: "POST", headers, body: '{"auto_publish_pr":true}' })).status).toBe(403);
+      expect((await fetch(url, { method: "POST", headers: { ...headers, "x-herdr-machine": "1", origin: "https://unrelated.invalid" }, body: '{"auto_publish_pr":true}' })).status).toBe(403);
+      expect((await f.request("").then(r => r.json())).projects[0].auto_publish_pr).toBe(false);
+    } finally { await f.close(); }
+  });
+  it("requires owner authentication and mutation guards, and rejects malformed host publication", async () => {
+    const root = mkdtempSync(join(tmpdir(), "saurons-pr-http-"));
+    const app = createServer({ port: 0, stateDir: root, token: "owned-publication-owner", machines: false });
+    const origin = `http://localhost:${app.port}`;
+    const path = "/api/factory/runs/unknown-owned-run/publication/publish";
+    const headers = { authorization: "Bearer owned-publication-owner", "content-type": "application/json", "x-herdr-factory": "1", "x-herdr-machine": "1" };
+    try {
+      expect((await fetch(origin + path, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status).toBe(401);
+      expect((await fetch(origin + path, { method: "POST", headers: { ...headers, "x-herdr-machine": "0" }, body: "{}" })).status).toBe(403);
+      expect((await fetch(origin + path, { method: "POST", headers: { ...headers, origin: "https://unrelated.invalid" }, body: "{}" })).status).toBe(403);
+      const missing = await fetch(origin + path.replace("/publish", ""), { headers });
+      expect(missing.status).toBe(404);
+      expect((await missing.json()).error.code).toBe("not_found");
+      const malformed = await fetch(origin + "/api/factory-host/publication", { method: "POST", headers, body: "{}" });
+      expect(malformed.status).toBe(400);
+      expect((await malformed.json()).error.code).toBe("invalid_publication");
+    } finally { app.stop(); rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+async function factoryBoardFixture(native: Partial<FactoryNative> = {}) {
+  const state = mkdtempSync(join(tmpdir(), "saurons-eye-board-live-")); const repo = join(state, "repo");
+  mkdirSync(repo); writeFileSync(join(repo, "README.md"), "Owned board fixture\n");
+  for (const args of [["init", "-b", "main"], ["add", "."], ["-c", "user.name=Board fixture", "-c", "user.email=board@example.invalid", "commit", "-m", "initial"]]) expect(Bun.spawnSync(["git", ...args], { cwd: repo }).exitCode).toBe(0);
+  const workspaces: string[] = [];
+  const app = createServer({ port: 0, token: "", stateDir: state, machines: false, factory: { accountDiscoveryHome: state, native: {
+    version: async () => "owned-board-fixture",
+    createWorkspace: async options => { const result = await herdrRpc<import("./herdr/client.ts").WorkspaceCreateResult>("workspace.create", { ...options, focus: false }); workspaces.push(result.workspace.workspace_id); return result; },
+    startAgent: async options => { await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "working" }); },
+    ...native,
+  } } });
+  const request = async (path: string, body?: unknown) => {
+    const response = await fetch(`http://localhost:${app.port}/api/factory${path}`, { method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const result = await response.json(); if (!response.ok) throw new Error(`${path}: ${response.status} ${JSON.stringify(result)}`); return result;
+  };
+  const project = await request("/projects", { name: "Board Project", path: repo, provider: "codex", machine_id: "local", tracker: "app" });
+  const idea = await request("/implementations", { title: "Observable board activity", description: "", project_id: project.id });
+  const prefix = `/implementations/${idea.id}`;
+  return { app, request, prefix, start: (action: FactoryAction = "work") => request(`${prefix}/runs`, { action, idempotency_key: `board-${action}` }) as Promise<FactoryRun>, close: async () => { app.stop(); for (const id of workspaces) await workspaceClose(id).catch(() => {}); rmSync(state, { recursive: true, force: true }); } };
+}
 
 /**
  * Contract test for herdr-web-ui's HTTP + WS surface.
@@ -41,6 +125,741 @@ afterAll(() => {
 });
 
 const base = () => `http://localhost:${server.port}`;
+
+describe("Project queue contract", () => {
+  it("reports capacity and rejects foreign or unmarked queue mutations without changing its revision", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      const route = f.route.replace(/\/github$/, "/queue");
+      const original = await f.request(route);
+      expect(original.status).toBe(200);
+      expect(original.body.capacity).toMatchObject({ project_implementations: 0, agents: 0, builds: 0 });
+      const body = { expected_revision: original.body.revision, max_implementations: 1, paused: true };
+      for (const headers of [{ ...f.headers, origin: "https://fictional-foreign.invalid" }, { "content-type": "application/json" }]) {
+        const response = await fetch(f.origin() + "/api/factory" + route + "/configure", { method: "POST", headers, body: JSON.stringify(body) });
+        expect(response.status).toBe(403); expect((await response.json()).error.code).toBe("invalid_origin");
+      }
+      expect((await f.request(route)).body.revision).toBe(original.body.revision);
+      expect((await f.request(route + "/configure", body)).body.paused).toBe(true);
+    } finally { f.close(); }
+  });
+});
+
+describe("Assignment discard", () => {
+  it("does not let an in-flight research acceptance replace the owner's explicit Discard outcome", async () => {
+    const f = await factoryDeliveryFixture(true);
+    try {
+      const run = await f.start();
+      f.changeDuringHandoff(async () => {
+        expect((await f.request(`${f.prefix}/discard`, {}).then(r => r.json())).outcome).toBe("discarded");
+      });
+      const response = await f.request(`${f.prefix}/complete-work`, { run_id: run.id });
+      expect(response.status).toBe(409);
+      expect((await f.request(f.prefix).then(r => r.json())).implementation.outcome).toBe("discarded");
+    } finally { await f.close(); }
+  }, 30_000);
+  it("can discard after a child fails before any native workspace is allocated", async () => {
+    const f = await factoryDeliveryFixture();
+    try {
+      const run = await f.start();
+      const hook = join(f.repo, ".git", "hooks", "post-checkout");
+      writeFileSync(hook, "#!/bin/sh\nexit 1\n", { mode: 0o700 });
+      const worker = await f.request(`/runs/${run.id}/workers`, { role: "standards", idempotency_key: "provisioning-failed" }).then(r => r.json());
+      expect(worker).toMatchObject({ condition: "failed", workspace_id: null, pane_id: null });
+      const response = await f.request(`${f.prefix}/discard`, {});
+      expect(await response.json()).toMatchObject({ stage: "done", outcome: "discarded" });
+      expect((await f.request(f.prefix).then(r => r.json())).workers[0].condition).toBe("failed");
+    } finally { await f.close(); }
+  }, 30_000);
+  it("keeps capacity reserved while a pending Discard observes a resting but still owned remote Run", async () => {
+    const f = await factoryDeliveryFixture(true);
+    try {
+      await f.request("/settings", { max_agents: 1 });
+      await f.start();
+      f.disconnect();
+      await f.request(`${f.prefix}/discard`, {});
+      f.reconnect();
+      const next = await f.request("/implementations", { title: "Wait for owned stop", description: "", project_id: f.project.id }).then(r => r.json());
+      const response = await f.request(`/implementations/${next.id}/runs`, { action: "work", idempotency_key: "reserved-until-stopped" });
+      expect(response.status).toBe(409);
+      expect((await response.json()).error.code).toBe("capacity_exhausted");
+      expect((await f.request(`${f.prefix}/discard`, {}).then(r => r.json())).outcome).toBe("discarded");
+      expect((await f.request(`/implementations/${next.id}/runs`, { action: "work", idempotency_key: "capacity-after-stop" })).status).toBe(202);
+    } finally { await f.close(); }
+  }, 30_000);
+  it("continues stopping other owned contexts when one child's stop is uncertain", async () => {
+    let heldWorkspace = "";
+    const f = await factoryDeliveryFixture(false, false, { closeWorkspace: async id => { if (id !== heldWorkspace) await workspaceClose(id); } });
+    try {
+      const run = await f.start();
+      const held = await f.request(`/runs/${run.id}/workers`, { role: "spec", idempotency_key: "held-child" }).then(r => r.json());
+      heldWorkspace = held.workspace_id;
+      const other = await f.request(`/runs/${run.id}/workers`, { role: "standards", idempotency_key: "other-child" }).then(r => r.json());
+      expect((await f.request(`${f.prefix}/discard`, {}).then(r => r.json())).outcome).toBe("none");
+      const snapshot = await sessionSnapshot();
+      expect(snapshot.panes.some(pane => pane.pane_id === held.pane_id)).toBe(true);
+      expect(snapshot.panes.some(pane => pane.pane_id === other.pane_id || pane.pane_id === run.pane_id)).toBe(false);
+      heldWorkspace = "";
+      expect((await f.request(`${f.prefix}/discard`, {}).then(r => r.json())).outcome).toBe("discarded");
+    } finally { await f.close(); }
+  }, 30_000);
+  it("cancels an owned build and reconciles a lost check response before completing Discard", async () => {
+    const started = Promise.withResolvers<void>();
+    const observed = Bun.serve({ port: 0, fetch() { started.resolve(); return new Response("Observed owned build"); } });
+    const f = await factoryDeliveryFixture(true);
+    let checkResponse: Promise<Response> | undefined;
+    try {
+      await f.request(`/projects/${f.project.id}/configure`, { checks: [[process.execPath, "-e", `await fetch('http://localhost:${observed.port}'); setInterval(() => {}, 1000);`]] });
+      const run = await f.start();
+      f.loseCheckResponse();
+      checkResponse = f.request(`/runs/${run.id}/checks`, {});
+      await Promise.race([started.promise, new Promise((_, reject) => setTimeout(() => reject(new Error("Owned build did not start")), 5000))]);
+      await f.request(`${f.prefix}/discard`, {});
+      const interrupted = await (await checkResponse).json();
+      expect(interrupted.condition).toBe("interrupted");
+      const reconciled = await f.request(`${f.prefix}/discard`, {});
+      expect(await reconciled.json()).toMatchObject({ stage: "done", outcome: "discarded" });
+      const detail = await f.request(f.prefix).then(r => r.json());
+      expect(detail.checks).toHaveLength(1);
+      expect(detail.checks[0]).toMatchObject({ id: interrupted.id, condition: "failed" });
+      expect(detail.checks[0].commands[0].exit_code).not.toBe(0);
+      expect(detail.board).toMatchObject({ lane: "done", sidebar_hidden: true });
+    } finally { await f.close(); observed.stop(); await checkResponse?.catch(() => {}); }
+  }, 30_000);
+  it("requires a fresh observation of closed native identities instead of trusting a stop acknowledgement", async () => {
+    let closeConfirmed = false;
+    const f = await factoryDeliveryFixture(false, false, { closeWorkspace: async id => { if (closeConfirmed) await workspaceClose(id); } });
+    try {
+      const run = await f.start();
+      const worker = await f.request(`/runs/${run.id}/workers`, { role: "standards", idempotency_key: "unconfirmed-stop" }).then(r => r.json());
+      const response = await f.request(`${f.prefix}/discard`, {});
+      expect(response.status).toBe(200);
+      expect((await response.json()).outcome).toBe("none");
+      const pending = await f.request(f.prefix).then(r => r.json());
+      expect(pending.board).toMatchObject({ lane: "needs_you", activity: "discard_pending", sidebar_hidden: false });
+      expect(pending.workers[0].condition).toBe("disconnected");
+      expect((await sessionSnapshot()).panes.some(pane => pane.pane_id === worker.pane_id)).toBe(true);
+      expect((await f.request(`/runs/${run.id}/workers`, { role: "spec", idempotency_key: "no-work-during-discard" })).status).toBe(409);
+      closeConfirmed = true;
+      expect((await f.request(`${f.prefix}/discard`, {}).then(r => r.json())).outcome).toBe("discarded");
+      expect((await sessionSnapshot()).panes.some(pane => pane.pane_id === worker.pane_id || pane.pane_id === run.pane_id)).toBe(false);
+    } finally { await f.close(); }
+  }, 30_000);
+  it("retains an unreachable Run and child as Discard pending until the owner reconciles them", async () => {
+    const f = await factoryDeliveryFixture(true);
+    try {
+      const run = await f.start();
+      const worker = await f.request(`/runs/${run.id}/workers`, { role: "spec", idempotency_key: "remote-discard-child" }).then(r => r.json());
+      f.disconnect();
+      const pending = await f.request(`${f.prefix}/discard`, {});
+      expect(pending.status).toBe(200);
+      expect(await pending.json()).toMatchObject({ outcome: "none", discard_requested_at: expect.any(String) });
+      const detail = await f.request(f.prefix).then(r => r.json());
+      expect(detail.board).toMatchObject({ lane: "needs_you", activity: "discard_pending", sidebar_hidden: false });
+      expect(detail.runs[0].condition).toBe("disconnected");
+      expect(detail.workers.find((entry: { id: string }) => entry.id === worker.id).condition).toBe("disconnected");
+      expect((await f.start("discard-must-not-restart") as any).error.code).toBe("assignment_discarded");
+      f.reconnect();
+      const reconciled = await f.request(`${f.prefix}/discard`, {});
+      expect(reconciled.status).toBe(200);
+      expect(await reconciled.json()).toMatchObject({ stage: "done", outcome: "discarded" });
+      const finished = await f.request(f.prefix).then(r => r.json());
+      expect(finished.board).toMatchObject({ lane: "done", sidebar_hidden: true });
+      expect(finished.runs[0].condition).toBe("cancelled");
+      expect(finished.workers[0].condition).toBe("cancelled");
+    } finally { await f.close(); }
+  }, 30_000);
+  it("stops owned native work and retains the Assignment's evidence without archiving or deleting its branch", async () => {
+    const f = await factoryDeliveryFixture();
+    try {
+      const run = await f.start();
+      const worker = await f.request(`/runs/${run.id}/workers`, { role: "standards", idempotency_key: "discard-child" }).then(r => r.json());
+      const before = await f.request(f.prefix).then(r => r.json());
+      const artifact = await f.request(`${f.prefix}/artifacts`, { chat_id: before.chats[0].id, name: "findings.md", media_type: "text/markdown", content_base64: Buffer.from("Retained findings\n").toString("base64") }).then(r => r.json());
+      writeFileSync(join(run.worktree!, "unfinished.md"), "Retained repository work\n");
+      const snapshot = await f.request(`${f.prefix}/snapshots`, { run_id: run.id, mode: "workspace" }).then(r => r.json());
+      const response = await f.request(`${f.prefix}/discard`, {});
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ stage: "done", outcome: "discarded" });
+      const detail = await f.request(f.prefix).then(r => r.json());
+      expect(detail.board).toMatchObject({ lane: "done", busy: false });
+      expect(detail.implementation.archived_at ?? null).toBeNull();
+      expect(detail.runs[0].condition).toBe("cancelled");
+      expect(detail.workers.find((entry: { id: string }) => entry.id === worker.id).condition).toBe("cancelled");
+      expect(detail.chats).toEqual(before.chats);
+      expect(detail.artifacts.some((entry: { id: string }) => entry.id === artifact.id)).toBe(true);
+      expect(detail.snapshots.some((entry: { id: string }) => entry.id === snapshot.id)).toBe(true);
+      expect(f.git(["branch", "--show-current"], run.worktree! ).trim()).toBe(run.branch!);
+      expect(readFileSync(join(run.worktree!, "unfinished.md"), "utf8")).toBe("Retained repository work\n");
+      expect((await f.request(`${f.prefix}/discard`, {})).status).toBe(200);
+    } finally { await f.close(); }
+  }, 30_000);
+});
+
+describe("GitHub planned issue batch publication", () => {
+  it("retains a scoped planning Run's whole issue proposal without granting remote publication", async () => {
+    let proposalStatus: number | undefined;
+    const f = await factoryBoardFixture({ startAgent: async options => {
+      const cwd = options.args![1]!;
+      const access = JSON.parse(readFileSync(join(cwd, ".saurons-eye-access.json"), "utf8"));
+      const response = await fetch(access.url + "/issue-batch", { method: "POST", headers: { authorization: `Bearer ${access.token}`, "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(batchProposal) });
+      proposalStatus = response.status;
+      expect((await fetch(access.url + "/issue-batch/publish", { method: "POST", headers: { authorization: `Bearer ${access.token}`, "content-type": "application/json", "x-herdr-factory": "1" }, body: "{}" })).status).toBe(404);
+      await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "working" });
+    } });
+    try {
+      const run = await f.start("grill-with-docs");
+      expect(proposalStatus).toBe(201); expect(run.condition).toBe("working");
+      const proposed = await f.request(f.prefix + "/issue-batches");
+      expect(proposed.batches).toHaveLength(1);
+      expect(proposed.batches[0]).toMatchObject({ run_id: run.id, condition: "proposed", dispatch_ready: false, items: batchProposal.items });
+    } finally { await f.close(); }
+  });
+
+  it("requires origin and owner mutation headers for reviewing, publishing and resuming the exact batch", async () => {
+    const f = await githubIssueBatchFixture();
+    try {
+      const policy = (await f.request(f.githubRoute + "/configure", f.policy)).body;
+      const batch = (await f.request(f.route, batchProposal)).body;
+      const proof = { revision: batch.revision, policy_revision: policy.revision };
+      const endpoint = f.origin() + "/api/factory" + f.route + "/" + batch.id;
+      for (const action of ["review", "publish", "resume"]) {
+        for (const headers of [{ "content-type": "application/json", "x-herdr-factory": "1" }, { ...f.headers, origin: "https://fictional-other.invalid" }]) {
+          const response = await fetch(`${endpoint}/${action}`, { method: "POST", headers, body: JSON.stringify(proof) });
+          expect(response.status).toBe(403); expect((await response.json()).error.code).toBe("invalid_origin");
+        }
+      }
+      expect((await f.request(`${f.route}/${batch.id}/publish`, proof)).body.error.code).toBe("issue_batch_review_required");
+      expect((await f.request(`${f.route}/${batch.id}/resume`, proof)).body.error.code).toBe("issue_batch_review_required");
+      expect(f.calls().some(args => args.includes("POST") || args.includes("PATCH"))).toBe(false);
+      expect((await f.request(`${f.route}/${batch.id}/review`, proof)).status).toBe(200);
+      const published = await f.request(`${f.route}/${batch.id}/publish`, proof);
+      expect(published.status).toBe(200); expect(published.body.condition).toBe("confirmed");
+      const before = f.calls().length;
+      const resumed = await f.request(`${f.route}/${batch.id}/resume`, proof);
+      expect(resumed.status).toBe(200); expect(resumed.body).toEqual(published.body);
+      expect(f.calls()).toHaveLength(before);
+    } finally { f.close(); }
+  });
+});
+
+describe("Assignment delivery policy", () => {
+  it("rejects invalid delivery branches instead of freezing an undeliverable Assignment scope", async () => {
+    const f = await factoryDeliveryFixture();
+    try {
+      const response = await f.request(`/projects/${f.project.id}/configure`, { delivery_branch: "delivery/.hidden" });
+      expect(response.status).toBe(400);
+      expect((await response.json()).error.code).toBe("invalid_delivery_branch");
+      expect((await f.request("").then(r => r.json())).projects.find((project: { id: string }) => project.id === f.project.id).delivery_branch).toBe("main");
+    } finally { await f.close(); }
+  }, 30_000);
+  it("retains repository-change evidence from an earlier review even if the current worktree is reset clean", async () => {
+    const f = await factoryDeliveryFixture();
+    try {
+      const run = await f.start();
+      writeFileSync(join(run.worktree!, "findings.md"), "Retained intended repository change\n");
+      f.git(["add", "findings.md"], run.worktree!);
+      f.git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "retained findings"], run.worktree!);
+      const review = await f.request(`${f.prefix}/snapshots`, { run_id: run.id, mode: "branch" }).then(r => r.json());
+      expect(review.files.some((entry: { path: string }) => entry.path === "findings.md")).toBe(true);
+      f.git(["reset", "--hard", run.base!], run.worktree!);
+      const response = await f.request(`${f.prefix}/complete-work`, { run_id: run.id });
+      expect(response.status).toBe(409);
+      expect((await response.json()).error.code).toBe("repository_delivery_required");
+      expect((await f.request(f.prefix).then(r => r.json())).snapshots.some((entry: { id: string }) => entry.id === review.id)).toBe(true);
+    } finally { await f.close(); }
+  }, 30_000);
+  it("keeps inspected no-change research in Needs you until the owner explicitly accepts it", async () => {
+    const f = await factoryDeliveryFixture();
+    try {
+      const run = await f.start();
+      await f.request(`/runs/${run.id}/stop`, {});
+      expect((await f.request(`${f.prefix}/completion-evidence`).then(r => r.json())).repository_changes).toBe("none");
+      const detail = await f.request(f.prefix).then(r => r.json());
+      expect(detail.board).toMatchObject({ lane: "needs_you", activity: "researching", busy: false });
+      expect(detail.board.waiting_reason).toContain("Accept");
+      expect(detail.implementation.stage).not.toBe("done");
+      expect((await f.request(`${f.prefix}/complete-work`, { run_id: run.id })).status).toBe(200);
+    } finally { await f.close(); }
+  }, 30_000);
+  it("rejects research acceptance when repository changes arrive during native handoff capture", async () => {
+    const f = await factoryDeliveryFixture(true);
+    try {
+      const run = await f.start();
+      f.changeDuringHandoff(() => writeFileSync(join(run.worktree!, "late-findings.md"), "Late repository documentation\n"));
+      const response = await f.request(`${f.prefix}/complete-work`, { run_id: run.id });
+      expect(response.status).toBe(409);
+      expect((await response.json()).error.code).toBe("repository_delivery_required");
+      expect((await f.request(f.prefix).then(r => r.json())).board.lane).toBe("needs_you");
+    } finally { await f.close(); }
+  }, 30_000);
+  it("accepts reviewed repository work while keeping the Assignment awaiting delivery", async () => {
+    const f = await factoryDeliveryFixture(true, true);
+    try {
+      await f.request(`/projects/${f.project.id}/configure`, { checks: [["git", "status", "--porcelain"]] });
+      const run = await f.start();
+      writeFileSync(join(run.worktree!, "findings.md"), "Reviewed repository change\n");
+      f.git(["add", "findings.md"], run.worktree!);
+      f.git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "reviewed findings"], run.worktree!);
+      const head = f.git(["rev-parse", "HEAD"], run.worktree!).trim(); f.setReviewHead(head);
+      expect((await f.request(`/runs/${run.id}/checks`, {})).status).toBe(200);
+      for (const role of ["standards", "spec"]) {
+        const worker = await f.request(`/runs/${run.id}/workers`, { role, idempotency_key: `delivery-${role}` }).then(r => r.json());
+        expect((await f.request(`/runs/${run.id}/workers/${worker.id}/review-evidence`, {})).status).toBe(200);
+      }
+      expect((await f.request(`/runs/${run.id}/accept`, { head })).status).toBe(200);
+      const detail = await f.request(f.prefix).then(r => r.json());
+      expect(detail.implementation).toMatchObject({ stage: "review", outcome: "implementation_complete" });
+      expect(detail.board).toMatchObject({ lane: "needs_you", activity: "awaiting_merge", busy: false });
+      expect(detail.runs[0].condition).toBe("completed");
+    } finally { await f.close(); }
+  }, 30_000);
+  it("reports an unavailable Machine as unknown and requires owner attention instead of accepting research", async () => {
+    const f = await factoryDeliveryFixture(true);
+    try {
+      const run = await f.start();
+      expect(run.condition).toBe("working");
+      f.disconnect();
+      const inspection = await f.request(`${f.prefix}/completion-evidence`);
+      expect(inspection.status).toBe(200);
+      expect(await inspection.json()).toMatchObject({ repository_changes: "unknown", quiescent: false });
+      expect((await f.request(`${f.prefix}/complete-work`, { run_id: run.id })).status).toBe(409);
+      const detail = await f.request(f.prefix).then(r => r.json());
+      expect(detail.board).toMatchObject({ lane: "needs_you" });
+      expect(detail.board.waiting_reason).toContain("Reconnect");
+      expect(detail.implementation.stage).not.toBe("done");
+    } finally { await f.close(); }
+  }, 30_000);
+  it("requires delivery for changes retained in a stopped child even when the parent has no changes", async () => {
+    const f = await factoryDeliveryFixture();
+    try {
+      const run = await f.start();
+      const workerResponse = await f.request(`/runs/${run.id}/workers`, { role: "standards", idempotency_key: "research-child" });
+      expect(workerResponse.status).toBe(200);
+      const worker = await workerResponse.json();
+      writeFileSync(join(worker.worktree, "child-findings.md"), "Retained child documentation\n");
+      expect((await f.request(`/runs/${run.id}/workers/${worker.id}/stop`, {})).status).toBe(200);
+      const response = await f.request(`${f.prefix}/complete-work`, { run_id: run.id });
+      expect(response.status).toBe(409);
+      expect((await response.json()).error.code).toBe("repository_delivery_required");
+      expect((await f.request(f.prefix).then(r => r.json())).implementation.completion_evidence.repository_changes).toBe("changes");
+    } finally { await f.close(); }
+  }, 30_000);
+  it("accepts app-held research only after verifying no repository changes and resting owned work", async () => {
+    const f = await factoryDeliveryFixture();
+    try {
+      const run = await f.start();
+      const detail = await f.request(f.prefix).then(r => r.json());
+      const artifact = await f.request(`${f.prefix}/artifacts`, { chat_id: detail.chats[0].id, name: "research.md", media_type: "text/markdown", content_base64: Buffer.from("App-held research\n").toString("base64") }).then(r => r.json());
+      const response = await f.request(`${f.prefix}/complete-work`, { run_id: run.id });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ stage: "done", outcome: "research_accepted", completion_evidence: { repository_changes: "none", quiescent: true } });
+      const completed = await f.request(f.prefix).then(r => r.json());
+      expect(completed.artifacts.some((entry: { id: string }) => entry.id === artifact.id)).toBe(true);
+      expect(completed.board.lane).toBe("done");
+      expect((await f.request(`${f.prefix}/complete-work`, { run_id: run.id })).status).toBe(200);
+    } finally { await f.close(); }
+  }, 30_000);
+  it("rejects manual completion of committed documentation despite a clean worktree", async () => {
+    const f = await factoryDeliveryFixture();
+    try {
+      const run = await f.start();
+      writeFileSync(join(run.worktree!, "findings.md"), "Research intended for repository delivery\n");
+      f.git(["add", "findings.md"], run.worktree!);
+      f.git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "retain findings"], run.worktree!);
+      const response = await f.request(`${f.prefix}/complete-work`, { run_id: run.id });
+      expect(response.status).toBe(409);
+      expect((await response.json()).error.code).toBe("repository_delivery_required");
+      const detail = await f.request(f.prefix).then(r => r.json());
+      expect(detail.implementation.stage).not.toBe("done");
+      expect(detail.board).toMatchObject({ lane: "needs_you", activity: "awaiting_merge", busy: false });
+      expect(detail.board.waiting_reason).toContain("delivery");
+    } finally { await f.close(); }
+  }, 30_000);
+  it("defaults to verified merge and freezes the repository, branch and milestone on first start", async () => {
+    const f = await factoryDeliveryFixture();
+    try {
+      expect(f.project).toMatchObject({ delivery_policy: "merge", delivery_branch: "main" });
+      expect((await f.request(`/projects/${f.project.id}/configure`, { delivery_policy: "release", delivery_branch: "stable" })).status).toBe(200);
+      const run = await f.start();
+      const scope = { milestone: "release", repository: f.project.repository, branch: "stable", base: run.base, github_repository: null };
+      expect((await f.request(f.prefix).then(r => r.json())).implementation.delivery_scope).toEqual(scope);
+      await f.request(`/projects/${f.project.id}/configure`, { delivery_policy: "merge", delivery_branch: "main" });
+      await f.request(`/runs/${run.id}/stop`, {});
+      const next = await f.start("delivery-successor");
+      expect((await f.request(f.prefix).then(r => r.json())).implementation.delivery_scope).toEqual(scope);
+      expect((next.manifest as any).implementation.delivery_scope).toEqual(scope);
+    } finally { await f.close(); }
+  }, 30_000);
+});
+
+describe("PR delivery contract", () => {
+  it("requires same-origin owner controls, a Machine header and the displayed delivery revision", async () => {
+    const f = await factoryMergeFixture();
+    try {
+      const url = `http://localhost:${f.app.port}/api/factory${f.prefix}/delivery`;
+      expect(await f.request(f.prefix + "/delivery").then(r => r.json())).toBeNull();
+      const headers = { "content-type": "application/json", "x-herdr-factory": "1" };
+      let response = await fetch(url, { method: "POST", headers, body: JSON.stringify(f.links) });
+      expect(response.status).toBe(403);
+      expect((await response.json()).error.code).toBe("invalid_origin");
+      response = await fetch(url, { method: "POST", headers: { ...headers, "x-herdr-machine": "1", origin: "https://unrelated.invalid" }, body: JSON.stringify(f.links) });
+      expect(response.status).toBe(403);
+      response = await f.request(f.prefix + "/delivery", { ...f.links, pull_numbers: [12, 12] });
+      expect(response.status).toBe(400); expect((await response.json()).error.code).toBe("invalid_delivery");
+      const linked = await f.request(f.prefix + "/delivery", f.links).then(r => r.json());
+      response = await f.request(f.prefix + "/delivery/sync", { expected_revision: "outdated" });
+      expect(response.status).toBe(409); expect((await response.json()).error.code).toBe("delivery_changed");
+      expect((await f.request(f.prefix + "/delivery").then(r => r.json())).revision).toBe(linked.revision);
+    } finally { await f.close(); }
+  }, 30_000);
+});
+
+describe("GitHub issue readiness", () => {
+  it("binds issue readiness to the owner-approved revision and current Project scope across restart", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      const issue = { number: 12, node_id: "fictional-ready-12", title: "Retain decisions", body: "Keep local notes", html_url: "https://github.com/fictional/schedules/issues/12", state: "open", labels: [{ name: "ready-for-agent" }] };
+      writeFileSync(f.responses, JSON.stringify({ issues: [issue] }));
+      const policy = (await f.request(f.route + "/configure", { ...f.policy, auto_implement: true })).body;
+      const source = (await f.request(f.route + "/sync", {})).body.sources[0];
+      const proof = { policy_revision: policy.revision, issue_revision: source.revision, plan: { acceptance_criteria: "Keep local notes", dependencies: [], testing_seams: ["Public HTTP"], planning_decisions: [] } };
+      const endpoint = f.origin() + "/api/factory" + f.route + "/issues/12/approve";
+      const foreign = await fetch(endpoint, { method: "POST", headers: { ...f.headers, origin: "https://foreign.invalid" }, body: JSON.stringify(proof) });
+      expect(foreign.status).toBe(403); expect((await foreign.json()).error.code).toBe("invalid_origin");
+      const missingHeader = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(proof) });
+      expect(missingHeader.status).toBe(403);
+      const incomplete = await f.request(f.route + "/issues/12/approve", { ...proof, plan: { ...proof.plan, testing_seams: [] } });
+      expect(incomplete.status).toBe(400); expect(incomplete.body.error.code).toBe("github_plan_required");
+      const approved = await f.request(f.route + "/issues/12/approve", proof);
+      expect(approved.status).toBe(200); expect(approved.body.sources[0].readiness.eligible).toBe(true);
+      f.restart();
+      expect((await f.request(f.route)).body.sources[0].readiness.eligible).toBe(true);
+      const projectId = f.route.split("/")[2];
+      expect((await f.request(`/projects/${projectId}/configure`, { account_bindings: { local: { github: f.policy.account_profile_id } } })).status).toBe(200);
+      expect((await f.request(f.route)).body.sources[0].readiness.eligible).toBe(false);
+    } finally { f.close(); }
+  });
+});
+
+describe("Upstream release discovery", () => {
+  it("creates one planning Assignment per release and no work for empty or repeated checks", async () => {
+    const f = await githubScheduleFixture({ startAgent: async () => { throw new Error("Discovery must not start an agent"); } });
+    try {
+      expect((await f.request(f.route + "/configure", { ...f.policy, upstream_repository: "fictional/upstream" })).status).toBe(200);
+      const check = () => f.request(f.route + "/schedules/run", { job: "upstream_sync" });
+      expect((await check()).status).toBe(200);
+      expect((await f.request("")).body.implementations).toEqual([]);
+      const release = { id: 101, tag_name: "v1.0.0", published_at: "2026-10-12T09:00:00Z", draft: false, prerelease: false, html_url: "https://github.com/fictional/upstream/releases/tag/v1.0.0" };
+      writeFileSync(f.responses, JSON.stringify({ releases: [release], release_heads: { "v1.0.0": "a".repeat(40) } }));
+      const discovered = await check();
+      expect(discovered.status).toBe(200);
+      expect(discovered.body.upstream).toMatchObject({ repository: "fictional/upstream", detected: { release_id: "101", tag: "v1.0.0", revision: "a".repeat(40) }, active: { release: { release_id: "101", revision: "a".repeat(40) } }, candidate: null });
+      f.restart();
+      expect((await check()).body.upstream).toEqual(discovered.body.upstream);
+      const overview = (await f.request("")).body;
+      expect(overview.implementations).toHaveLength(1);
+      const detail = (await f.request(`/implementations/${overview.implementations[0].id}`)).body;
+      expect(detail.implementation).toMatchObject({ stage: "inbox", outcome: "none", upstream_update: { repository: "fictional/upstream", release_id: "101", tag: "v1.0.0", revision: "a".repeat(40) } });
+      expect(detail.runs).toEqual([]);
+      expect(f.calls().every(args => !args.includes("--method") && !args.includes("-X") && !args.some(arg => arg.includes("mutation")))).toBe(true);
+    } finally { f.close(); }
+  });
+  it("keeps the active release fixed and coalesces successive releases to the newest candidate", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      await f.request(f.route + "/configure", { ...f.policy, upstream_repository: "fictional/upstream" });
+      const check = async (id: number) => {
+        writeFileSync(f.responses, JSON.stringify({ releases: [{ id, tag_name: `v${id}`, published_at: `2026-10-${id}T09:00:00Z`, draft: false }], release_heads: { [`v${id}`]: id.toString(16).repeat(40) } }));
+        const response = await f.request(f.route + "/schedules/run", { job: "upstream_sync" });
+        expect(response.status).toBe(200); return response.body.upstream;
+      };
+      const initial = await check(11);
+      const original = (await f.request(`/implementations/${initial.active.implementation_id}`)).body.implementation;
+      expect((await check(12)).candidate).toMatchObject({ release_id: "12", tag: "v12" });
+      const newest = await check(13);
+      expect(newest).toMatchObject({ active: initial.active, candidate: { release_id: "13", tag: "v13" }, detected: { release_id: "13" } });
+      f.restart();
+      // A temporarily older remote listing must not regress the retained candidate.
+      expect((await check(12)).candidate).toMatchObject({ release_id: "13" });
+      expect((await f.request(`/implementations/${initial.active.implementation_id}`)).body.implementation).toEqual(original);
+      expect((await f.request("")).body.implementations).toHaveLength(1);
+    } finally { f.close(); }
+  });
+  it("offers one newest follow-up after Discard and never requeues discarded or superseded releases", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      await f.request(f.route + "/configure", { ...f.policy, upstream_repository: "fictional/upstream" });
+      const check = async (id: number) => {
+        writeFileSync(f.responses, JSON.stringify({ releases: [{ id, tag_name: `v${id}`, published_at: `2026-10-${id}T09:00:00Z`, draft: false }], release_heads: { [`v${id}`]: id.toString(16).repeat(40) } }));
+        return (await f.request(f.route + "/schedules/run", { job: "upstream_sync" })).body.upstream;
+      };
+      const first = (await check(11)).active;
+      await check(12); await check(13);
+      expect((await f.request(`/implementations/${first.implementation_id}/discard`, {})).body.outcome).toBe("discarded");
+      const next = (await f.request(f.route + "/schedules")).body.upstream;
+      expect(next.active).toMatchObject({ release: { release_id: "13" } });
+      expect(next.candidate).toBeNull();
+      expect((await f.request("")).body.implementations).toHaveLength(2);
+      expect((await f.request(`/implementations/${next.active.implementation_id}`)).body.runs).toEqual([]);
+      await f.request(`/implementations/${next.active.implementation_id}/discard`, {});
+      f.restart();
+      expect((await check(13)).active).toBeNull();
+      expect((await check(12)).active).toBeNull();
+      expect((await f.request("")).body.implementations).toHaveLength(2);
+      expect((await f.request(`/implementations/${first.implementation_id}`)).body.implementation.outcome).toBe("discarded");
+    } finally { f.close(); }
+  });
+  it("offers the candidate after verified merge while a release milestone remains pending", async () => {
+    const f = await factoryMergeFixture(false, "release", true, {}, true);
+    try {
+      const route = `/projects/${f.project.id}/github`;
+      f.data["repos/fictional/upstream/releases?per_page=30&page=1"] = [{ id: 102, tag_name: "v2", draft: false, published_at: "2026-10-13T09:00:00Z" }];
+      f.data["repos/fictional/upstream/commits/v2"] = { sha: "e".repeat(40) }; f.respond();
+      const check = await f.request(route + "/schedules/run", { job: "upstream_sync" }).then(r => r.json());
+      expect(check.upstream.candidate.release_id).toBe("102");
+      f.pull.merged = false; f.pull.state = "open"; f.respond();
+      const linked = await f.request(f.prefix + "/delivery", f.links).then(r => r.json());
+      expect((await f.request(f.prefix + "/delivery/sync", { expected_revision: linked.revision }).then(r => r.json())).condition).toBe("needs_you");
+      expect((await f.request(route + "/schedules").then(r => r.json())).upstream.active.release.release_id).toBe("101");
+      f.pull.merged = true; f.pull.state = "closed"; f.respond();
+      expect((await f.request(f.prefix + "/delivery/sync", { expected_revision: linked.revision }).then(r => r.json())).condition).toBe("merged");
+      expect((await f.request(route + "/schedules").then(r => r.json())).upstream).toMatchObject({ active: { release: { release_id: "102" } }, candidate: null });
+      expect((await f.request(f.prefix).then(r => r.json())).implementation.outcome).toBe("none");
+      const overview = await f.request("").then(r => r.json());
+      expect(overview.implementations.filter((idea: { upstream_update?: unknown }) => idea.upstream_update)).toHaveLength(2);
+      expect(f.calls().every(call => !call.args.includes("--method") && !call.args.some(arg => arg.endsWith("/merge")))).toBe(true);
+    } finally { await f.close(); }
+  });
+  it("reads complete published release inventory and leaves moving main commits outside intake", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      await f.request(f.route + "/configure", { ...f.policy, upstream_repository: "fictional/upstream" });
+      const drafts = Array.from({ length: 30 }, (_, index) => ({ id: index + 200, draft: true, published_at: null }));
+      writeFileSync(f.responses, JSON.stringify({ release_pages: { "1": drafts, "2": [{ id: 101, tag_name: "v1", draft: false, published_at: "2026-10-12T09:00:00Z", target_commitish: "main" }] }, release_heads: { v1: "a".repeat(40), main: "b".repeat(40) } }));
+      const result = await f.request(f.route + "/schedules/run", { job: "upstream_sync" });
+      expect(result.status).toBe(200);
+      expect(result.body.upstream.active.release).toMatchObject({ release_id: "101", revision: "a".repeat(40) });
+      expect(f.calls().some(args => args.some(arg => arg.endsWith("/commits/main")))).toBe(false);
+    } finally { f.close(); }
+  });
+  it("keeps pending release identity when settings change and permits a new upstream after Discard", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      let policy = (await f.request(f.route + "/configure", { ...f.policy, upstream_repository: "fictional/upstream" })).body;
+      writeFileSync(f.responses, JSON.stringify({ releases: [{ id: 101, tag_name: "v1", draft: false, published_at: "2026-10-12T09:00:00Z" }], release_heads: { v1: "a".repeat(40) } }));
+      const state = (await f.request(f.route + "/schedules/run", { job: "upstream_sync" })).body.upstream;
+      const changed = await f.request(f.route + "/configure", { ...policy, expected_revision: policy.revision, upstream_repository: "fictional/other" });
+      expect(changed.status).toBe(409); expect(changed.body.error.code).toBe("upstream_update_pending");
+      expect((await f.request(f.route + "/schedules")).body.upstream).toEqual(state);
+      await f.request(`/implementations/${state.active.implementation_id}/discard`, {});
+      policy = (await f.request(f.route + "/configure", { ...policy, expected_revision: policy.revision, upstream_repository: "fictional/other" })).body;
+      expect(policy.upstream_repository).toBe("fictional/other");
+      const next = await f.request(f.route + "/schedules/run", { job: "upstream_sync" });
+      expect(next.status).toBe(200);
+      expect(next.body.upstream.active.release).toMatchObject({ repository: "fictional/other", release_id: "101" });
+    } finally { f.close(); }
+  });
+  it("retains upstream discovery failures and recovers through the scheduled retry without duplicate work", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      await f.request(f.route + "/configure", { ...f.policy, upstream_repository: "fictional/upstream" });
+      await f.request(f.route + "/schedules/configure", { job: "upstream_sync", expected_revision: null, enabled: true, cadence: "daily", interval_minutes: 1440, local_time: "03:00", time_zone: "America/Mexico_City" });
+      const release = { id: 101, tag_name: "v1", draft: false, published_at: "2026-10-12T09:00:00Z" };
+      writeFileSync(f.responses, JSON.stringify({ releases: [release] }));
+      const failed = await f.request(f.route + "/schedules/run", { job: "upstream_sync" });
+      expect(failed.status).toBe(409); expect(failed.body.error.code).toBe("github_invalid_response");
+      const state = (await f.request(f.route + "/schedules")).body;
+      expect(state.results).toMatchObject([{ job: "upstream_sync", condition: "failed", problem: "GitHub did not resolve the upstream release commit" }]);
+      expect(state.schedules[1]).toMatchObject({ condition: "failed", retry_at: "2026-10-14T09:00:00.000Z" });
+      expect((await f.request("")).body.implementations).toEqual([]);
+      f.restart();
+      writeFileSync(f.responses, JSON.stringify({ releases: [release], release_heads: { v1: "a".repeat(40) } }));
+      f.advance("2026-10-14T09:00:00Z"); await f.tick(); await f.tick();
+      expect((await f.request(f.route + "/schedules")).body.results).toMatchObject([{ condition: "failed" }, { job: "upstream_sync", trigger: "scheduled", condition: "succeeded" }]);
+      expect((await f.request("")).body.implementations).toHaveLength(1);
+    } finally { f.close(); }
+  });
+  it("retains a follow-up without creating work inside a removed Project", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      await f.request(f.route + "/configure", { ...f.policy, upstream_repository: "fictional/upstream" });
+      const check = async (id: number) => {
+        writeFileSync(f.responses, JSON.stringify({ releases: [{ id, tag_name: `v${id}`, draft: false, published_at: `2026-10-${id}T09:00:00Z` }], release_heads: { [`v${id}`]: id.toString(16).repeat(40) } }));
+        return (await f.request(f.route + "/schedules/run", { job: "upstream_sync" })).body.upstream;
+      };
+      const first = (await check(11)).active;
+      await check(12);
+      const projectRoute = `/projects/${f.route.split("/")[2]}`;
+      expect((await f.request(projectRoute + "/remove", {})).status).toBe(200);
+      await f.request(`/implementations/${first.implementation_id}/discard`, {});
+      f.restart();
+      expect((await f.request("")).body.implementations).toHaveLength(1);
+      expect((await f.request(projectRoute + "/restore", {})).status).toBe(200);
+      f.restart(); f.restart();
+      expect((await f.request(f.route + "/schedules")).body.upstream.active.release.release_id).toBe("12");
+      expect((await f.request("")).body.implementations).toHaveLength(2);
+    } finally { f.close(); }
+  });
+});
+
+describe("Project schedules", () => {
+  it("offers disabled built-in defaults without enabling GitHub policy", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      const response = await f.request(f.route + "/schedules");
+      expect(response.status).toBe(200);
+      expect(response.body.schedules).toMatchObject([
+        { job: "github_sync", enabled: false, cadence: "interval", interval_minutes: 15, time_zone: "America/Mexico_City", next_execution: null },
+        { job: "upstream_sync", enabled: false, cadence: "daily", local_time: "03:00", time_zone: "America/Mexico_City", next_execution: null },
+      ]);
+      expect((await f.request(f.route)).body.policy).toBeNull();
+    } finally { f.close(); }
+  });
+  it("preserves existing polling and saves a daily due time in the selected time zone across restart", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      expect((await f.request(f.route + "/configure", { ...f.policy, poll_minutes: 30 })).status).toBe(200);
+      expect((await f.request(f.route + "/schedules")).body.schedules[0].interval_minutes).toBe(30);
+      const saved = await f.request(f.route + "/schedules/configure", { job: "upstream_sync", expected_revision: null, enabled: true, cadence: "daily", interval_minutes: 1440, local_time: "03:00", time_zone: "America/Mexico_City" });
+      expect(saved.status).toBe(200);
+      expect(saved.body.schedules[1]).toMatchObject({ enabled: true, time_zone: "America/Mexico_City", next_execution: "2026-10-14T09:00:00.000Z" });
+      f.restart();
+      expect((await f.request(f.route + "/schedules")).body).toEqual(saved.body);
+      expect((await f.request(f.route)).body.policy).toMatchObject({ sync_enabled: false, poll_minutes: 30 });
+    } finally { f.close(); }
+  });
+  it("performs one overdue catch-up and shares result ownership with Run now", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      await f.request(f.route + "/configure", f.policy);
+      const configured = await f.request(f.route + "/schedules/configure", { job: "github_sync", expected_revision: null, enabled: true, cadence: "interval", interval_minutes: 15, local_time: "03:00", time_zone: "America/Mexico_City" });
+      expect(configured.status).toBe(200);
+      f.advance("2026-10-17T08:59:00Z"); f.restart();
+      await f.tick(); await f.tick();
+      const caughtUp = (await f.request(f.route + "/schedules")).body;
+      expect(caughtUp.results).toMatchObject([{ job: "github_sync", trigger: "scheduled", condition: "succeeded" }]);
+      expect(caughtUp.schedules[0].next_execution).toBe("2026-10-17T09:14:00.000Z");
+      expect(f.calls().filter(args => args[1] === "graphql")).toHaveLength(1);
+      expect((await f.request(f.route + "/sync", {})).status).toBe(200);
+      expect((await f.request(f.route + "/schedules")).body.results).toMatchObject([
+        { trigger: "scheduled", condition: "succeeded" }, { trigger: "manual", condition: "succeeded" },
+      ]);
+    } finally { f.close(); }
+  });
+  it("shows bounded retry backoff and requires an explicit sync after retries are exhausted", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      await f.request(f.route + "/configure", f.policy);
+      await f.request(f.route + "/schedules/configure", { job: "github_sync", expected_revision: null, enabled: true, cadence: "interval", interval_minutes: 15, local_time: "03:00", time_zone: "America/Mexico_City" });
+      writeFileSync(f.responses, JSON.stringify({ fail: true }));
+      f.advance("2026-10-14T09:14:00Z"); await f.tick();
+      const failed = (await f.request(f.route + "/schedules")).body;
+      expect(failed.schedules[0]).toMatchObject({ condition: "failed", failure_count: 1, retry_at: "2026-10-14T09:15:00.000Z", next_execution: "2026-10-14T09:15:00.000Z" });
+      expect(failed.results[0]).toMatchObject({ condition: "failed", problem: expect.any(String) });
+      await f.tick(); expect(f.calls().filter(args => args[1] === "graphql")).toHaveLength(1);
+      for (const time of ["09:15", "09:17", "09:21"]) { f.advance(`2026-10-14T${time}:00Z`); await f.tick(); }
+      expect((await f.request(f.route + "/schedules")).body.schedules[0]).toMatchObject({ failure_count: 4, retry_at: null, next_execution: null });
+      f.advance("2026-10-15T09:22:00Z"); f.restart(); await f.tick();
+      expect(f.calls().filter(args => args[1] === "graphql")).toHaveLength(4);
+      writeFileSync(f.responses, "{}"); expect((await f.request(f.route + "/sync", {})).status).toBe(200);
+      expect((await f.request(f.route + "/schedules")).body.schedules[0]).toMatchObject({ condition: "idle", failure_count: 0, retry_at: null, next_execution: "2026-10-15T09:37:00.000Z" });
+    } finally { f.close(); }
+  });
+  it("retains an interrupted sync's ownership until explicit reconciliation and never overlaps Run now", async () => {
+    const f = await githubScheduleFixture(); let pending: Promise<void> | undefined;
+    try {
+      await f.request(f.route + "/configure", f.policy);
+      await f.request(f.route + "/schedules/configure", { job: "github_sync", expected_revision: null, enabled: true, cadence: "interval", interval_minutes: 15, local_time: "03:00", time_zone: "America/Mexico_City" });
+      writeFileSync(f.responses, JSON.stringify({ pause: true }));
+      f.advance("2026-10-14T09:14:00Z"); pending = f.tick();
+      const deadline = Date.now() + 5000;
+      while (!existsSync(join(f.root, "reading")) && Date.now() < deadline) await Bun.sleep(10);
+      expect(existsSync(join(f.root, "reading"))).toBe(true);
+      const running = (await f.request(f.route + "/schedules")).body;
+      expect(running.schedules[0].condition).toBe("running");
+      expect((await f.request(f.route + "/sync", {})).status).toBe(409);
+      await f.tick(); expect(f.calls().filter(args => args[1] === "graphql")).toHaveLength(1);
+      f.restart(); writeFileSync(join(f.root, "continue"), "continue"); await pending;
+      const interrupted = (await f.request(f.route + "/schedules")).body;
+      expect(interrupted.schedules[0]).toMatchObject({ condition: "uncertain", next_execution: null });
+      expect(interrupted.results[0].condition).toBe("uncertain");
+      f.advance("2026-10-15T09:14:00Z"); await f.tick();
+      expect((await f.request(f.route + "/sync", {})).status).toBe(409);
+      expect(f.calls().filter(args => args[1] === "graphql")).toHaveLength(1);
+      const reconciled = await f.request(f.route + "/schedules/reconcile", { job: "github_sync", result_id: running.results[0].id });
+      expect(reconciled.status).toBe(200);
+      expect(reconciled.body.schedules[0]).toMatchObject({ condition: "idle", next_execution: "2026-10-15T09:29:00.000Z" });
+      expect(reconciled.body.results).toMatchObject([{ condition: "reconciled" }, { trigger: "reconcile", condition: "succeeded" }]);
+    } finally { writeFileSync(join(f.root, "continue"), "continue"); await pending; f.close(); }
+  });
+  it("keeps legacy GitHub controls and saved schedules consistent when the owner explicitly disables polling", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      await f.request(f.route + "/configure", f.policy);
+      await f.request(f.route + "/schedules/configure", { job: "github_sync", expected_revision: null, enabled: true, cadence: "interval", interval_minutes: 15, local_time: "03:00", time_zone: "America/Mexico_City" });
+      const policy = (await f.request(f.route)).body.policy;
+      expect((await f.request(f.route + "/configure", { ...f.policy, expected_revision: policy.revision, poll_minutes: 60, sync_enabled: false })).status).toBe(200);
+      expect((await f.request(f.route + "/schedules")).body.schedules[0]).toMatchObject({ enabled: false, interval_minutes: 60, next_execution: null });
+      f.advance("2026-10-17T08:59:00Z"); await f.tick();
+      expect(f.calls().filter(args => args[1] === "graphql")).toHaveLength(0);
+    } finally { f.close(); }
+  });
+  it("runs daily sync once per local date across a daylight-saving repeated hour", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      await f.request(f.route + "/configure", f.policy); f.advance("2026-11-01T05:29:00Z");
+      const response = await f.request(f.route + "/schedules/configure", { job: "github_sync", expected_revision: null, enabled: true, cadence: "daily", interval_minutes: 15, local_time: "01:30", time_zone: "America/New_York" });
+      expect(response.body.schedules[0].next_execution).toBe("2026-11-01T05:30:00.000Z");
+      f.advance("2026-11-01T05:30:00Z"); await f.tick();
+      expect((await f.request(f.route + "/schedules")).body.schedules[0].next_execution).toBe("2026-11-02T06:30:00.000Z");
+      f.advance("2026-11-01T06:30:00Z"); await f.tick();
+      expect(f.calls().filter(args => args[1] === "graphql")).toHaveLength(1);
+    } finally { f.close(); }
+  });
+  it("rejects stale, invalid and foreign-origin schedule changes without enabling any job", async () => {
+    const f = await githubScheduleFixture();
+    try {
+      const value = { job: "upstream_sync", expected_revision: null, enabled: false, cadence: "daily", interval_minutes: 1440, local_time: "03:00", time_zone: "America/Mexico_City" };
+      for (const invalid of [{ time_zone: "fictional/invalid" }, { local_time: "24:00" }, { interval_minutes: 0 }, { job: "shell" }, { enabled: "true" }]) {
+        const response = await f.request(f.route + "/schedules/configure", { ...value, ...invalid });
+        expect(response.status).toBe(400); expect(response.body.error.code).toBe("invalid_schedule");
+      }
+      expect((await f.request(f.route + "/schedules/configure", value)).status).toBe(200);
+      expect((await f.request(f.route + "/schedules/configure", { ...value, enabled: true })).status).toBe(409);
+      for (const action of ["configure", "run", "reconcile"]) {
+        const response = await fetch(f.origin() + "/api/factory" + f.route + "/schedules/" + action, { method: "POST", headers: { ...f.headers, origin: "https://fictional-foreign.invalid" }, body: JSON.stringify(value) });
+        expect(response.status).toBe(403); expect((await response.json()).error.code).toBe("invalid_origin");
+      }
+      expect((await f.request(f.route + "/schedules")).body.schedules.every((schedule: { enabled: boolean }) => !schedule.enabled)).toBe(true);
+    } finally { f.close(); }
+  });
+  it("keeps failed reconciliation uncertain through settings edits and clears only verified recovery", async () => {
+    const f = await githubScheduleFixture(); let pending: Promise<void> | undefined;
+    try {
+      await f.request(f.route + "/configure", { ...f.policy, sync_enabled: true });
+      writeFileSync(f.responses, JSON.stringify({ pause: true })); f.advance("2026-10-14T09:04:00Z"); pending = f.tick();
+      const deadline = Date.now() + 5000;
+      while (!existsSync(join(f.root, "reading")) && Date.now() < deadline) await Bun.sleep(10);
+      expect(existsSync(join(f.root, "reading"))).toBe(true);
+      f.restart(); writeFileSync(join(f.root, "continue"), "continue"); await pending;
+      const first = (await f.request(f.route + "/schedules")).body;
+      const oldResult = first.results.at(-1).id;
+      writeFileSync(f.responses, JSON.stringify({ fail: true }));
+      expect((await f.request(f.route + "/schedules/reconcile", { job: "github_sync", result_id: oldResult })).status).toBe(409);
+      const schedule = (await f.request(f.route + "/schedules")).body.schedules[0];
+      expect((await f.request(f.route + "/schedules/configure", { ...schedule, expected_revision: schedule.revision, enabled: false })).status).toBe(200);
+      expect((await f.request(f.route + "/schedules")).body.schedules[0]).toMatchObject({ condition: "uncertain", retry_at: null, next_execution: null });
+      expect((await f.request(f.route + "/schedules/reconcile", { job: "github_sync", result_id: oldResult })).status).toBe(409);
+      writeFileSync(f.responses, "{}");
+      const latestResult = (await f.request(f.route + "/schedules")).body.results.at(-1).id;
+      const recovered = await f.request(f.route + "/schedules/reconcile", { job: "github_sync", result_id: latestResult });
+      expect(recovered.status).toBe(200);
+      expect(recovered.body.results.map((result: { condition: string }) => result.condition)).toEqual(["reconciled", "reconciled", "succeeded"]);
+    } finally { writeFileSync(join(f.root, "continue"), "continue"); await pending; f.close(); }
+  });
+
+});
 
 describe("shared browser preferences", () => {
   it("requires owner controls and a scoped request for workflow continuation", async () => {
@@ -171,6 +990,130 @@ describe("factory records", () => {
     } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
   });
 
+  it("projects an untouched Assignment into Inbox without empty Ticket progress", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-eye-board-"));
+    const app = createServer({ port: 0, token: "", stateDir: state, machines: false, factory: { accountDiscoveryHome: state } });
+    try {
+      const idea = await fetch(`http://localhost:${app.port}/api/factory/implementations`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify({ title: "Unselected idea", description: "Retain the owner's idea" }) }).then(r => r.json());
+      const overview = await fetch(`http://localhost:${app.port}/api/factory?navigation=1`).then(r => r.json());
+      expect(overview.board).toEqual([{ implementation_id: idea.id, lane: "inbox", activity: null, condition: null, run_id: null, busy: false, waiting_reason: null, ticket_progress: null }]);
+      const detail = await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then(r => r.json());
+      expect(detail.board).toEqual(overview.board[0]);
+      expect(detail.implementation.stage).toBe("inbox");
+      expect(detail.messages[0].content).toBe("Retain the owner's idea");
+      await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}/questions`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify({ question: "Choose the public behavior before starting" }) });
+      const asked = await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then(r => r.json());
+      expect(asked.board).toMatchObject({ lane: "needs_you", condition: "needs_you", busy: false, waiting_reason: "Choose the public behavior before starting", run_id: null });
+    } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+  it("queues an approved Ticket graph with meaningful zero-completed progress", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-eye-board-plan-"));
+    const app = createServer({ port: 0, token: "", stateDir: state, machines: false, factory: { accountDiscoveryHome: state } });
+    const request = (path: string, body?: unknown) => fetch(`http://localhost:${app.port}/api/factory${path}`, { method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }).then(r => r.json());
+    try {
+      const idea = await request("/implementations", { title: "Approved bounded work", description: "" });
+      const prefix = `/implementations/${idea.id}`;
+      const specification = await request(`${prefix}/specifications`, { content: "Two independently observable behaviors" });
+      expect((await request(prefix)).board).toMatchObject({ lane: "needs_you", activity: "specifying", busy: false, run_id: null });
+      await request(`${prefix}/approvals`, { kind: "specification", revision: specification.id, scope: "Owned fixture scope" });
+      const graph = await request(`${prefix}/tickets`, { specification_id: specification.id, tickets: [{ key: "first", title: "First behavior", acceptance: "First public outcome", dependencies: [] }, { key: "second", title: "Second behavior", acceptance: "Second public outcome", dependencies: [] }] });
+      await request(`${prefix}/approvals`, { kind: "ticket_graph", revision: graph.hash, scope: "Owned fixture graph" });
+      const detail = await request(prefix);
+      expect(detail.board).toMatchObject({ lane: "queued", activity: null, busy: false, ticket_progress: { completed: 0, total: 2 } });
+      expect((await request("")).board.find((entry: { implementation_id: string }) => entry.implementation_id === idea.id)).toEqual(detail.board);
+      expect(detail.implementation.stage).toBe("ready");
+      expect(detail.events.some((event: { kind: string }) => event.kind === "specification_created")).toBe(true);
+    } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+  it.each([["to-spec", "specifying"], ["work", "implementing"], ["verify-provider", "validating"]] as const)("shows %s as Running with readable %s activity", async (action, activity) => {
+    const f = await factoryBoardFixture();
+    try {
+      const run = await f.start(action);
+      expect((await f.request(f.prefix)).board).toMatchObject({ lane: "running", activity, condition: "working", run_id: run.id, busy: true, ticket_progress: null });
+    } finally { await f.close(); }
+  }, 30_000);
+  it("keeps connection recovery Running and exposes unresolved interruption as Needs you", async () => {
+    let unavailable = false;
+    const f = await factoryBoardFixture({ snapshot: async () => { if (unavailable) throw new Error("Owned connection is recovering"); return sessionSnapshot(); } });
+    try {
+      const run = await f.start();
+      unavailable = true;
+      await f.request(`/runs/${run.id}/reconcile`, {});
+      expect((await f.request(f.prefix)).board).toMatchObject({ lane: "running", activity: "implementing", condition: "disconnected", busy: true });
+      unavailable = false;
+      await herdrRpc("pane.report_agent", { pane_id: run.pane_id, source: "manual", agent: "claude", state: "idle" });
+      await f.request(`/runs/${run.id}/reconcile`, {});
+      expect((await f.request(f.prefix)).board).toMatchObject({ lane: "needs_you", activity: "implementing", condition: "interrupted", busy: false, waiting_reason: expect.any(String) });
+    } finally { await f.close(); }
+  }, 30_000);
+  it("keeps Reviewing visible in Needs you while another independent worker continues", async () => {
+    const f = await factoryBoardFixture();
+    try {
+      const run = await f.start();
+      const first = await f.request(`/runs/${run.id}/workers`, { role: "standards", idempotency_key: "board-standards" });
+      await f.request(`/runs/${run.id}/workers`, { role: "spec", idempotency_key: "board-spec" });
+      await herdrRpc("pane.report_agent", { pane_id: first.pane_id, source: "manual", agent: "codex", state: "blocked" });
+      await f.request(`/runs/${run.id}/workers/${first.id}/reconcile`, {});
+      const detail = await f.request(f.prefix);
+      expect(detail.board).toMatchObject({ lane: "needs_you", activity: "reviewing", condition: "needs_you", busy: true, waiting_reason: expect.any(String) });
+      expect(detail.workers.some((worker: { role: string; condition: string }) => worker.role === "spec" && worker.condition === "working")).toBe(true);
+      expect((await f.request("")).board.find((entry: { implementation_id: string }) => entry.implementation_id === detail.implementation.id)).toEqual(detail.board);
+    } finally { await f.close(); }
+  }, 30_000);
+  it("shows a resting planning checkpoint in Needs you and retains earlier attempts after continuing", async () => {
+    const f = await factoryBoardFixture();
+    try {
+      const first = await f.start("grill-with-docs");
+      await herdrRpc("pane.report_agent", { pane_id: first.pane_id, source: "manual", agent: "codex", state: "idle" });
+      await f.request(`/runs/${first.id}/reconcile`, {});
+      expect((await f.request(f.prefix)).board).toMatchObject({ lane: "needs_you", activity: "specifying", condition: "ready", busy: false });
+      await f.request(`${f.prefix}/continue`, { action: "to-spec", run_id: first.id, idempotency_key: "board-continue", allow_partial_handoff: true });
+      const detail = await f.request(f.prefix);
+      expect(detail.board).toMatchObject({ lane: "running", activity: "specifying", busy: true });
+      expect(detail.runs).toHaveLength(2);
+      expect(detail.runs[0]).toMatchObject({ id: first.id, action: "grill-with-docs", condition: "completed" });
+    } finally { await f.close(); }
+  }, 30_000);
+  it("projects completed work into Done while retaining its Run and completion history", async () => {
+    const f = await factoryBoardFixture();
+    try {
+      const run = await f.start();
+      await herdrRpc("pane.report_agent", { pane_id: run.pane_id, source: "manual", agent: "codex", state: "idle" });
+      await f.request(`${f.prefix}/complete-work`, { run_id: run.id });
+      const detail = await f.request(f.prefix);
+      expect(detail.board).toMatchObject({ lane: "done", activity: null, busy: false, run_id: run.id });
+      expect(detail.runs[0].id).toBe(run.id);
+      expect(detail.events.some((event: { kind: string }) => event.kind === "direct_work_completed")).toBe(true);
+    } finally { await f.close(); }
+  }, 30_000);
+  it("shows resting implementation as Awaiting checks without busy activity", async () => {
+    const f = await factoryBoardFixture();
+    try {
+      const run = await f.start();
+      await herdrRpc("pane.report_agent", { pane_id: run.pane_id, source: "manual", agent: "codex", state: "idle" });
+      await f.request(`/runs/${run.id}/reconcile`, {});
+      expect((await f.request(f.prefix)).board).toMatchObject({ lane: "running", activity: "awaiting_checks", busy: false, condition: "ready" });
+    } finally { await f.close(); }
+  }, 30_000);
+  it("shows Validating while owned checks execute and needs attention when they fail", async () => {
+    let release!: () => void; let entered!: () => void;
+    const reached = new Promise<void>(resolve => entered = resolve);
+    const gate = new Promise<void>(resolve => release = resolve);
+    const tool = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch() { entered(); await gate; return new Response("Owned failing check", { status: 500 }); } });
+    const f = await factoryBoardFixture(); let pending: Promise<unknown> | undefined;
+    try {
+      const detail = await f.request(f.prefix);
+      await f.request(`/projects/${detail.implementation.project_id}/configure`, { checks: [[process.execPath, "-e", `const response = await fetch('http://127.0.0.1:${tool.port}'); process.exit(response.ok ? 0 : 1);`]] });
+      const run = await f.start();
+      await herdrRpc("pane.report_agent", { pane_id: run.pane_id, source: "manual", agent: "codex", state: "idle" });
+      await f.request(`/runs/${run.id}/reconcile`, {});
+      pending = f.request(`/runs/${run.id}/checks`, {});
+      await Promise.race([reached, new Promise((_, reject) => setTimeout(() => reject(new Error("Owned check never reached the fixture")), 5000))]);
+      expect((await f.request(f.prefix)).board).toMatchObject({ lane: "running", activity: "validating", busy: true });
+      release(); await pending;
+      expect((await f.request(f.prefix)).board).toMatchObject({ lane: "needs_you", activity: "validating", busy: false, condition: "failed" });
+    } finally { release(); await pending?.catch(() => {}); tool.stop(true); await f.close(); }
+  }, 30_000);
   it("persists a global six-task limit and validates its supported range", async () => {
     const state = mkdtempSync(join(tmpdir(), "saurons-capacity-settings-"));
     let app = createServer({ port: 0, stateDir: state, machines: false });
@@ -3830,6 +4773,167 @@ describe("terminal lens of a bridge without the PTY sidecar", () => {
   });
 });
 
+describe("changed GitHub issue scope", () => {
+  it("a fresh owner-approved attempt uses the new issue scope while the paused attempt stays frozen", async () => {
+    const owned: string[] = []; const prompts: string[] = [];
+    const f = await githubScheduleFixture({ version: async () => "owned-readiness-fixture", createWorkspace: async options => { const result = await herdrRpc<import("./herdr/client.ts").WorkspaceCreateResult>("workspace.create", { ...options, focus: false }); owned.push(result.workspace.workspace_id); return result; }, startAgent: async options => { prompts.push(readFileSync(join(options.args![1]!, ".saurons-eye-prompt.md"), "utf8")); await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "working" }); } });
+    try {
+      const issue = { number: 12, node_id: "owned-renewal-12", title: "First scope", body: "First approved requirements", html_url: "https://github.com/fictional/schedules/issues/12", state: "open", labels: [{ name: "ready-for-agent" }] };
+      writeFileSync(f.responses, JSON.stringify({ issues: [issue] }));
+      const policy = (await f.request(f.route + "/configure", { ...f.policy, auto_implement: true })).body;
+      let source = (await f.request(f.route + "/sync", {})).body.sources[0];
+      const plan = { acceptance_criteria: "Approved acceptance", dependencies: [], testing_seams: ["Public HTTP"], planning_decisions: [] };
+      await f.request(f.route + "/issues/12/approve", { policy_revision: policy.revision, issue_revision: source.revision, plan });
+      const prefix = `/implementations/${source.implementation_id}`;
+      const first = (await f.request(prefix + "/runs", { action: "work", idempotency_key: "first-scope" })).body;
+      expect(first.manifest.issue_scope.issue).toMatchObject({ title: "First scope", body: "First approved requirements" });
+      issue.title = "Renewed scope"; issue.body = "New owner-approved requirements"; writeFileSync(f.responses, JSON.stringify({ issues: [issue] }));
+      source = (await f.request(f.route + "/sync", {})).body.sources[0];
+      await f.request(f.route + "/issues/12/approve", { policy_revision: policy.revision, issue_revision: source.revision, plan });
+      const renewed = await f.request(prefix + "/runs", { action: "work", idempotency_key: "renewed-scope" });
+      expect(renewed.status).toBe(202);
+      expect(renewed.body.manifest.issue_scope.issue).toMatchObject({ title: "Renewed scope", body: "New owner-approved requirements" });
+      expect(prompts[1]).toContain("New owner-approved requirements");
+      expect(prompts[1]).toContain("Approved acceptance");
+      expect(prompts[1]).toContain("Public HTTP");
+      const detail = (await f.request(prefix)).body;
+      expect(detail.runs).toHaveLength(2);
+      expect(detail.runs[0]).toMatchObject({ condition: "cancelled", manifest: first.manifest });
+    } finally { for (const id of owned) await workspaceClose(id).catch(() => {}); f.close(); }
+  }, 60_000);
+
+  it("keeps the revocation visible when scope changes during native allocation without launching an agent", async () => {
+    const owned: string[] = []; let launched = 0; let release!: () => void; let reached!: () => void;
+    const gate = new Promise<void>(resolve => release = resolve), waiting = new Promise<void>(resolve => reached = resolve);
+    const f = await githubScheduleFixture({ version: async () => "owned-readiness-fixture", createWorkspace: async options => { const result = await herdrRpc<import("./herdr/client.ts").WorkspaceCreateResult>("workspace.create", { ...options, focus: false }); owned.push(result.workspace.workspace_id); reached(); await gate; return result; }, startAgent: async () => { launched++; } });
+    try {
+      const issue = { number: 12, node_id: "owned-allocation-12", title: "Pause before native launch", body: "Preserve notes", html_url: "https://github.com/fictional/schedules/issues/12", state: "open", labels: [{ name: "ready-for-agent" }] };
+      writeFileSync(f.responses, JSON.stringify({ issues: [issue] }));
+      const policy = (await f.request(f.route + "/configure", { ...f.policy, auto_implement: true })).body;
+      const source = (await f.request(f.route + "/sync", {})).body.sources[0];
+      await f.request(f.route + "/issues/12/approve", { policy_revision: policy.revision, issue_revision: source.revision, plan: { acceptance_criteria: "Preserve notes", dependencies: [], testing_seams: ["Public HTTP"], planning_decisions: [] } });
+      const prefix = `/implementations/${source.implementation_id}`;
+      const pending = f.request(prefix + "/runs", { action: "work", idempotency_key: "allocation-drift" });
+      await Promise.race([waiting, new Promise((_, reject) => setTimeout(() => reject(new Error("Owned allocation did not reach the gate")), 5000))]);
+      issue.body = "New scope during allocation"; writeFileSync(f.responses, JSON.stringify({ issues: [issue] }));
+      await f.request(f.route + "/sync", {}); release(); await pending;
+      const detail = (await f.request(prefix)).body;
+      expect(detail.board.lane).toBe("needs_you");
+      expect(detail.runs[0]).toMatchObject({ condition: "cancelled", scope_pause: { condition: "paused" } });
+      expect(launched).toBe(0);
+      expect(detail.runs).toHaveLength(1);
+    } finally { release(); for (const id of owned) await workspaceClose(id).catch(() => {}); f.close(); }
+  }, 60_000);
+
+  it("rechecks native issue scope before launch and requires a fresh complete planning approval", async () => {
+    let allocated = 0;
+    const f = await githubScheduleFixture({ version: async () => "owned-readiness-fixture", createWorkspace: async () => { allocated++; throw new Error("This revoked issue must never allocate native work"); } });
+    try {
+      const issue = { number: 12, node_id: "owned-before-launch-12", title: "Frozen requirements", body: "Approved requirements", html_url: "https://github.com/fictional/schedules/issues/12", state: "open", labels: [{ name: "ready-for-agent" }] };
+      writeFileSync(f.responses, JSON.stringify({ issues: [issue] }));
+      const policy = (await f.request(f.route + "/configure", { ...f.policy, auto_implement: true })).body;
+      const source = (await f.request(f.route + "/sync", {})).body.sources[0];
+      const plan = { acceptance_criteria: "Preserve notes", dependencies: [], testing_seams: ["Public HTTP"], planning_decisions: [] };
+      const proof = { policy_revision: policy.revision, issue_revision: source.revision, plan };
+      expect((await f.request(f.route + "/issues/12/approve", { ...proof, plan: { ...plan, testing_seams: [] } })).status).toBe(400);
+      expect((await f.request(f.route + "/issues/12/approve", proof)).status).toBe(200);
+      issue.body = "New testing choice"; writeFileSync(f.responses, JSON.stringify({ issues: [issue] }));
+      const started = await f.request(`/implementations/${source.implementation_id}/runs`, { action: "work", idempotency_key: "drift-before-launch" });
+      expect(started.status).toBe(409);
+      expect((await f.request(f.route)).body.sources[0].readiness.eligible).toBe(false);
+      expect((await f.request(`/implementations/${source.implementation_id}`)).body.runs).toHaveLength(0);
+      expect(allocated).toBe(0);
+    } finally { f.close(); }
+  }, 60_000);
+
+  it.each([false, true])("retains uncertain child reservations, fences further work and reconciles a controlled pause after repair (resting child: %s)", async restingChild => {
+    const owned: string[] = []; let reachable = true;
+    const f = await githubScheduleFixture({ version: async () => "owned-readiness-fixture", createWorkspace: async options => { const result = await herdrRpc<import("./herdr/client.ts").WorkspaceCreateResult>("workspace.create", { ...options, focus: false }); owned.push(result.workspace.workspace_id); return result; }, startAgent: async options => { await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "working" }); }, closeWorkspace: async id => { if (!reachable) throw new Error("Owned fixture lost its stop receipt"); return workspaceClose(id); } });
+    try {
+      const issue = { number: 12, node_id: "owned-uncertain-12", title: "Pause uncertain work", body: "Preserve notes", html_url: "https://github.com/fictional/schedules/issues/12", state: "open", labels: [{ name: "ready-for-agent" }] };
+      writeFileSync(f.responses, JSON.stringify({ issues: [issue] }));
+      const policy = (await f.request(f.route + "/configure", { ...f.policy, auto_implement: true })).body;
+      let source = (await f.request(f.route + "/sync", {})).body.sources[0];
+      const plan = { acceptance_criteria: "Preserve notes", dependencies: [], testing_seams: ["Public HTTP"], planning_decisions: [] };
+      await f.request(f.route + "/issues/12/approve", { policy_revision: policy.revision, issue_revision: source.revision, plan });
+      const prefix = `/implementations/${source.implementation_id}`;
+      const run = (await f.request(prefix + "/runs", { action: "work", idempotency_key: "uncertain-scope" })).body as FactoryRun;
+      expect(run.condition).toBe("working");
+      const child = (await f.request(`/runs/${run.id}/workers`, { role: "standards", idempotency_key: "owned-review" })).body;
+      expect(child.condition).toBe("working");
+      if (restingChild) {
+        await herdrRpc("pane.report_agent", { pane_id: child.pane_id, source: "manual", agent: "codex", state: "idle" });
+        expect((await f.request(`/runs/${run.id}/workers/${child.id}/reconcile`, {})).body.condition).toBe("ready");
+      }
+      reachable = false; issue.labels = []; writeFileSync(f.responses, JSON.stringify({ issues: [issue] }));
+      await f.request(f.route + "/sync", {});
+      let detail = (await f.request(prefix)).body;
+      expect(detail.runs[0]).toMatchObject({ condition: "needs_you", scope_pause: { condition: "uncertain" }, manifest: run.manifest });
+      expect(detail.workers[0]).toMatchObject({ id: child.id, condition: restingChild ? "ready" : "working", worktree: child.worktree });
+      await f.request("/settings", { max_implementations: 4, max_agents: 2 });
+      const created = await f.request("/implementations", { title: "Independent capacity fixture", description: "Owned capacity check", project_id: f.route.split("/")[2] });
+      expect(created.status).toBe(201); const other = created.body;
+      const blocked = await f.request(`/implementations/${other.id}/runs`, { action: "work", idempotency_key: "unrelated-scope" });
+      expect(blocked.status).toBe(409); expect(blocked.body.error.code).toBe("capacity_exhausted");
+      const more = await f.request(`/runs/${run.id}/workers`, { role: "spec", idempotency_key: "must-not-launch" });
+      expect(more.status).toBe(409);
+      await f.request(`/runs/${run.id}/reconcile`, {});
+      detail = (await f.request(prefix)).body;
+      expect(detail.board.lane).toBe("needs_you");
+      expect(detail.runs[0].condition).toBe("needs_you");
+      expect(detail.workers).toHaveLength(1);
+      f.restart();
+      expect((await f.request(prefix)).body.runs[0].scope_pause.condition).toBe("uncertain");
+      issue.labels = [{ name: "ready-for-agent" }]; writeFileSync(f.responses, JSON.stringify({ issues: [issue] }));
+      source = (await f.request(f.route + "/sync", {})).body.sources[0];
+      await f.request(f.route + "/issues/12/approve", { policy_revision: policy.revision, issue_revision: source.revision, plan });
+      expect((await f.request(prefix + "/runs", { action: "work", idempotency_key: "renewed-but-owned" })).status).toBe(409);
+      reachable = true;
+      const reconciled = await f.request(`/runs/${run.id}/reconcile`, {});
+      expect(reconciled.status).toBe(200);
+      detail = (await f.request(prefix)).body;
+      expect(detail.runs[0]).toMatchObject({ condition: "cancelled", scope_pause: { condition: "paused" }, manifest: run.manifest });
+      expect(detail.workers[0].condition).toBe("cancelled");
+      expect(detail.runs).toHaveLength(1);
+      expect((await f.request(`/implementations/${other.id}/runs`, { action: "work", idempotency_key: "unrelated-scope" })).status).toBe(202);
+    } finally { for (const id of owned) await workspaceClose(id).catch(() => {}); f.close(); }
+  }, 60_000);
+
+  it("pauses owned work and preserves the accepted issue contract and produced evidence", async () => {
+    const owned: string[] = [];
+    const f = await githubScheduleFixture({ version: async () => "owned-readiness-fixture", createWorkspace: async options => { const result = await herdrRpc<import("./herdr/client.ts").WorkspaceCreateResult>("workspace.create", { ...options, focus: false }); owned.push(result.workspace.workspace_id); return result; }, startAgent: async options => { writeFileSync(join(options.args![1]!, "scope-work.md"), "Produced before scope changed\n"); await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "working" }); } });
+    try {
+      const issue = { number: 12, node_id: "owned-scope-12", title: "Retain the approved scope", body: "Preserve my notes", html_url: "https://github.com/fictional/schedules/issues/12", state: "open", labels: [{ name: "ready-for-agent" }] };
+      writeFileSync(f.responses, JSON.stringify({ issues: [issue] }));
+      const policy = (await f.request(f.route + "/configure", { ...f.policy, auto_implement: true })).body;
+      const source = (await f.request(f.route + "/sync", {})).body.sources[0];
+      const plan = { acceptance_criteria: "Preserve notes", dependencies: [], testing_seams: ["Public HTTP", "Real browser journeys"], planning_decisions: [] };
+      await f.request(f.route + "/issues/12/approve", { policy_revision: policy.revision, issue_revision: source.revision, plan });
+      const prefix = `/implementations/${source.implementation_id}`;
+      const started = await f.request(prefix + "/runs", { action: "work", idempotency_key: "approved-issue" });
+      expect(started.status).toBe(202); const run = started.body as FactoryRun;
+      expect(run.condition).toBe("working");
+      const detail = (await f.request(prefix)).body;
+      const artifact = (await f.request(prefix + "/artifacts", { chat_id: detail.chats[0].id, name: "retained.md", media_type: "text/markdown", content_base64: Buffer.from("Produced before scope changed").toString("base64") })).body;
+      issue.body = "Different acceptance"; writeFileSync(f.responses, JSON.stringify({ issues: [issue] }));
+      expect((await f.request(f.route + "/sync", {})).status).toBe(200);
+      const paused = (await f.request(prefix)).body;
+      expect(paused.board.lane).toBe("needs_you");
+      expect(paused.runs[0]).toMatchObject({ condition: "cancelled", scope_pause: { condition: "paused" }, worktree: run.worktree, branch: run.branch, manifest: run.manifest });
+      expect(paused.artifacts.map((entry: { id: string }) => entry.id)).toContain(artifact.id);
+      const evidence = await f.request(prefix + "/completion-evidence");
+      expect(evidence.body.repository_changes).toBe("changes");
+      const inspected = (await f.request(prefix)).body;
+      expect(inspected.board.waiting_reason).toBe(paused.runs[0].scope_pause.reason);
+      const retained = await f.request(prefix + "/snapshots", { mode: "workspace", run_id: run.id });
+      expect(retained.body.files.find((file: { path: string }) => file.path === "scope-work.md").diff).toContain("Produced before scope changed");
+      expect((await sessionSnapshot()).workspaces.some(workspace => workspace.workspace_id === run.workspace_id)).toBe(false);
+      expect((await f.request(prefix + "/runs", { action: "work", idempotency_key: "duplicate-revoked" })).status).toBe(409);
+      expect((await f.request(prefix)).body.runs).toHaveLength(1);
+    } finally { for (const id of owned) await workspaceClose(id).catch(() => {}); f.close(); }
+  }, 60_000);
+});
+
 it("refuses cross-origin changes while allowing same-origin and CLI requests", async () => {
   const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-origin-"));
   const instance = createServer({ port: 0, stateDir: root, token: "", tailscaleOwner: null, machines: false });
@@ -3958,3 +5062,18 @@ it("issue source responses expose authoritative coverage applicability without r
     expect(changed.delivery).toEqual(linked.delivery);
   } finally { fixture.close(); }
 });
+// Report-only repair uses the same authenticated owner endpoint as inline findings.
+it("validates report-only request-changes ownership and rejects mixed batch shapes", async () => {
+  const { reviewReworkFixture } = await import("./factory-review-rework.fixture.ts");
+  const f = await reviewReworkFixture();
+  try {
+    const mixed = await f.request(f.prefix + "/request-changes", { ...f.submission, snapshot_id: "other", comment_ids: [] });
+    expect(mixed.status).toBe(400); expect(mixed.body.error.code).toBe("invalid_batch");
+    const other = (await f.request("/implementations", { title: "Other owned Assignment", description: "", project_id: f.project.id })).body;
+    expect((await f.request(`/implementations/${other.id}/request-changes`, f.submission)).body.error.code).toBe("batch_target_changed");
+    const sent = await f.request(f.prefix + "/request-changes", f.submission);
+    expect(sent.status).toBe(200); expect(sent.body.status).toBe("sent");
+    expect(sent.body.report_ids).toEqual([...f.submission.report_ids].sort());
+    expect((await f.request(f.prefix)).body.review_batches[0].id).toBe(sent.body.id);
+  } finally { f.close(); }
+}, 30_000);

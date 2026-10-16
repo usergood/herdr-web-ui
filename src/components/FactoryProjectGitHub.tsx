@@ -1,3 +1,4 @@
+import { SettingsGroup, SettingsRow } from "./SettingsControls.tsx";
 import { useEffect, useRef, useState } from "react";
 import type { FactoryProject, ProjectGitHubConfiguration, ProjectGitHubFiles, ProjectGitHubOverview } from "../../shared/protocol.ts";
 import type { ProjectGitHubSettings } from "../../shared/github-project.ts";
@@ -9,6 +10,8 @@ import { factoryRequest } from "../lib/factoryApi.ts";
 import { ProjectIssueQueue } from "./ProjectIssueQueue.tsx";
 import { ProjectReadinessSettings } from "./ProjectReadinessSettings.tsx";
 import { NativeAccountImport } from "./NativeAccountImport.tsx";
+import { ProjectIssuePolicy, ProjectIssueReadiness } from "./ProjectIssueReadiness.tsx";
+import { ProjectSyncSchedules } from "./ProjectSyncSchedules.tsx";
 import "./FactoryProjectGitHub.css";
 
 export function FactoryProjectGitHub({ project, busy, perform, checkoutPath, checkout, machineName }: { project: FactoryProject; busy: boolean; perform: (action: () => Promise<void>) => Promise<void>; checkoutPath?: string; checkout?: { machine_id: string; path: string }; machineName?: string }) {
@@ -20,7 +23,7 @@ export function FactoryProjectGitHub({ project, busy, perform, checkoutPath, che
   const [notice, setNotice] = useState("");
   const [diffs, setDiffs] = useState<Record<number, ProjectGitHubFiles>>({});
   const epoch = useRef(0);
-  const [form, setForm] = useState<ProjectGitHubConfiguration>({ expected_revision: null, repository: "", account_profile_id: "", sync_enabled: false, import_issues: false, import_fixes: false, auto_update: false, auto_merge: false, trusted_reviewers: [], required_checks: [], review_context: "Review against the repository's coding standards, domain language and accepted scope.", poll_minutes: 5 });
+  const [form, setForm] = useState<ProjectGitHubConfiguration>({ expected_revision: null, repository: "", account_profile_id: "", sync_enabled: false, import_issues: false, import_fixes: false, auto_update: false, auto_merge: false, trusted_reviewers: [], required_checks: [], review_context: "Review against the repository's coding standards, domain language and accepted scope.", poll_minutes: 15 });
   async function refresh() { const id = epoch.current; const next = await factoryRequest<ProjectGitHubOverview>(route); if (id === epoch.current) setView(next); return next; }
   async function reloadAccounts() { const id = epoch.current; const next = await accountRequest<AccountOverview>("/machines/local/accounts"); if (id === epoch.current) setAccounts(next); return next; }
   useEffect(() => {
@@ -30,7 +33,7 @@ export function FactoryProjectGitHub({ project, busy, perform, checkoutPath, che
     void Promise.all([factoryRequest<ProjectGitHubOverview>(route), accountRequest<AccountOverview>("/machines/local/accounts")]).then(async ([next, profiles]) => {
       if (id !== epoch.current) return;
       setView(next); setAccounts(profiles);
-      if (next.policy) { const policy = next.policy; setForm({ repository: policy.repository, account_profile_id: policy.account_profile_id, sync_enabled: policy.sync_enabled, import_issues: policy.import_issues, import_fixes: policy.import_fixes, auto_update: policy.auto_update, auto_merge: policy.auto_merge, trusted_reviewers: policy.trusted_reviewers, required_checks: policy.required_checks, review_context: policy.review_context, poll_minutes: policy.poll_minutes, expected_revision: policy.revision }); }
+      if (next.policy) { const policy = next.policy; setForm({ upstream_repository: policy.upstream_repository ?? null, repository: policy.repository, account_profile_id: policy.account_profile_id, sync_enabled: policy.sync_enabled, import_issues: policy.import_issues, import_fixes: policy.import_fixes, auto_update: policy.auto_update, auto_merge: policy.auto_merge, triage_labels: policy.triage_labels, auto_implement: policy.auto_implement ?? false, trusted_issue_approvers: policy.trusted_issue_approvers ?? [], trusted_reviewers: policy.trusted_reviewers, required_checks: policy.required_checks, review_context: policy.review_context, poll_minutes: policy.poll_minutes, expected_revision: policy.revision }); }
       else {
         const repository = await metadata;
         if (id !== epoch.current) return;
@@ -55,14 +58,16 @@ export function FactoryProjectGitHub({ project, busy, perform, checkoutPath, che
     <form className="factory-form" onSubmit={event => { event.preventDefault(); void perform(async () => {
       const id = epoch.current;
       if (checkoutPath) await accountRequest(`/projects/${project.id}/configure`, { account_bindings: { ...project.account_bindings, local: { ...project.account_bindings?.local, github: form.account_profile_id } } });
-      const policy = await accountRequest<{ revision: string }>(route + "/configure", form); if (id !== epoch.current) return; setForm(current => ({ ...current, expected_revision: policy.revision })); await refresh();
+      const policy = await accountRequest<{ revision: string }>(route + "/configure", { ...form, trusted_issue_approvers: form.trusted_issue_approvers?.map(login => login.trim()).filter(Boolean) }); if (id !== epoch.current) return; setForm(current => ({ ...current, expected_revision: policy.revision })); await refresh();
     }); }}>
       <label>{t("Repository (owner/name)")}<input className="input" readOnly value={form.repository} /></label>
+      <SettingsGroup><SettingsRow wide label={t("Upstream repository (owner/name)")}><input aria-label={t("Upstream repository (owner/name)")} className="input" maxLength={200} value={form.upstream_repository ?? ""} onChange={event => setForm({ ...form, upstream_repository: event.target.value.trim() || null })} /></SettingsRow></SettingsGroup>
       {!form.repository && <p role="status">{t("No GitHub remote detected for this checkout.")}</p>}
       <label>{t("GitHub account")}<select className="select" value={form.account_profile_id} onChange={event => { setProblem(""); setDefaults(null); setForm(current => ({ ...current, account_profile_id: event.target.value })); }}><option value="">{t("Select account")}</option>{accounts?.profiles.filter(p => p.service === "github" && p.state !== "disabled").map(p => <option key={p.id} value={p.id} disabled={p.state !== "ready"}>{p.name} · {p.expected_login} · {p.state === "ready" ? t("Ready") : t("Needs sign-in")}</option>)}</select></label>
       {!ready && <p className="field-hint">{t("Import a saved login below or finish sign-in in Accounts. Created accounts remain visible until ready.")}</p>}
       <label><input type="checkbox" checked={form.sync_enabled} onChange={event => setForm({ ...form, sync_enabled: event.target.checked })} />{t("Automatic sync")}</label>
       <label><input type="checkbox" checked={form.import_issues} onChange={event => setForm({ ...form, import_issues: event.target.checked })} />{t("Import GitHub issues")}</label>
+      {!view?.readiness_policy && <ProjectIssuePolicy form={form} change={setForm} />}
       <details><summary>{t("Advanced GitHub automation")}</summary>
         <p>{t("Repository standards provide review guidance. Automation stays off until you choose its rules.")}</p>
         <label><input type="checkbox" checked={form.import_fixes} onChange={event => setForm({ ...form, import_fixes: event.target.checked })} />{t("Import requested changes")}</label>
@@ -77,9 +82,11 @@ export function FactoryProjectGitHub({ project, busy, perform, checkoutPath, che
     {view?.policy && <ProjectReadinessSettings key={view.readiness_policy?.revision ?? "unset"} projectId={project.id} policy={view.readiness_policy ?? null} accounts={accounts} busy={busy} perform={perform} refresh={refresh} />}
     {view?.policy && <ProjectIssueQueue key={project.id} projectId={project.id} busy={busy} perform={perform} />}
     <NativeAccountImport machineId="local" path={checkoutPath} busy={busy} perform={perform} onImported={profile => { const id = epoch.current; setForm(current => ({ ...current, account_profile_id: profile.id })); void reloadAccounts().catch(error => { if (id === epoch.current) setProblem(error.message); }); }} />
+    <ProjectSyncSchedules projectId={project.id} configured={!!view?.policy} busy={busy} perform={perform} onSaved={async () => { const next = await refresh(); if (next.policy) setForm(current => ({ ...current, expected_revision: next.policy!.revision, sync_enabled: next.policy!.sync_enabled, poll_minutes: next.policy!.poll_minutes })); }} />
     <button type="button" className="btn" disabled={busy || !view?.policy} onClick={() => void perform(async () => { setView(await accountRequest<ProjectGitHubOverview>(route + "/sync", {})); })}>{t("Sync GitHub")}</button>
     {view?.problem && <p role="alert">{view.problem}</p>}
     {view?.last_sync && <p>{new Date(view.last_sync).toLocaleString()}</p>}
+    {view?.sources.filter(source => source.kind === "issue" && source.readiness && "reasons" in source.readiness).map(source => <ProjectIssueReadiness key={`${source.id}:${source.revision}`} source={source} policyRevision={view.policy!.revision} route={route} busy={busy} perform={perform} onChanged={setView} />)}
     {view?.pulls.map((item) => <article className="factory-section" key={item.id}>
       <a href={item.pull.url} target="_blank" rel="noreferrer">#{item.pull.number} · {item.pull.title}</a>
       <p>{item.pull.author?.login} · {item.pull.headRefName} → {item.pull.baseRefName}</p>

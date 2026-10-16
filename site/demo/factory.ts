@@ -4,12 +4,15 @@ import { MATT_PROJECT_WORKFLOW } from "../../shared/project-setup.ts";
 /** Fictional browser-owned records. No server or filesystem imports. */
 import type { FactoryDetail, FactoryOverview, FactoryProject, FactoryRecord, Implementation, ProjectCheckout, ProjectReference } from "../../shared/factory.ts";
 import { projectReferenceTemplate } from "../../shared/project-references.ts";
+import { projectFactoryBoard } from "../../shared/factory-board.ts";
 import type { Machine } from "../../shared/machines.ts";
 import type { AccountProfile, AccountService } from "../../shared/accounts.ts";
 import type { IssueQueue, ProjectQueuePolicy } from "../../shared/issue-queue.ts";
 import type { ProjectGitHubIssueRevision, ProjectGitHubOverview, ProjectGitHubPolicy } from "../../shared/github-project.ts";
 import { issueReadiness, TRIAGE_ROLES, type ProjectReadinessPolicy, type TriageLabels } from "../../shared/github-readiness.ts";
 import { fictionalGitHubPull } from "./github-fixtures.ts";
+import type { ProjectSchedulesOverview } from "../../shared/project-schedules.ts";
+import type { ProjectQueueOverview } from "../../shared/project-queue.ts";
 
 const storageKey = "saurons-eye:demo-factory";
 const details = new Map<string, FactoryDetail>();
@@ -22,17 +25,19 @@ const accountProfiles: AccountProfile[] = [];
 const queuePolicies = new Map<string, ProjectQueuePolicy>();
 const queuePreviews = new Map<string, NonNullable<IssueQueue["preview"]>>();
 const githubViews = new Map<string, ProjectGitHubOverview>();
-function readinessView(view: ProjectGitHubOverview): ProjectGitHubOverview {
+function readinessView(view: ProjectGitHubOverview): ProjectGitHubOverview<import("../../shared/github-readiness.ts").IssueReadiness> {
   // The demo cannot establish real coverage provenance; linking remains unavailable.
-  return { ...view, readiness_policy: view.readiness_policy ?? null, sources: view.sources.map(source => source.kind === "issue" ? { ...source, delivery_scope_current: false, readiness: issueReadiness(view.readiness_policy ?? null, source) } : source) };
+  return { ...view, readiness_policy: view.readiness_policy ?? null, sources: view.sources.map(source => source.kind === "issue" ? { ...source, delivery_scope_current: false, readiness: issueReadiness(view.readiness_policy ?? null, source) } : { ...source, readiness: undefined }) };
 }
 function record(): FactoryRecord { const now = new Date().toISOString(); return { id: crypto.randomUUID(), created_at: now, updated_at: now }; }
 function json(body: unknown, status = 200): Response { return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } }); }
 function failure(code: string, message: string, status = 409): Response { return json({ error: { code, message } }, status); }
-function save(): void { try { localStorage.setItem(storageKey, JSON.stringify({ details: [...details], queuePolicies: [...queuePolicies], queuePreviews: [...queuePreviews], githubViews: [...githubViews], projects, checkouts, settings, blobs: [...blobs], referenceVersions, referenceHeads, paneArchives })); } catch { /* demo storage can be blocked or full; records remain in this page */ } }
+let readRevision = 0;
+const projectQueuePolicies = new Map<string, { revision: string; max_implementations: number; paused: boolean }>();
+function save(): void { readRevision++; try { localStorage.setItem(storageKey, JSON.stringify({ details: [...details], projectQueuePolicies: [...projectQueuePolicies], queuePolicies: [...queuePolicies], queuePreviews: [...queuePreviews], githubViews: [...githubViews], projects, checkouts, settings, blobs: [...blobs], referenceVersions, referenceHeads, paneArchives })); } catch { /* demo storage can be blocked or full; records remain in this page */ } }
 try {
   const raw = localStorage.getItem(storageKey);
-  if (raw) { const saved = JSON.parse(raw); if (Array.isArray(saved.queuePolicies)) for (const [id, policy] of saved.queuePolicies) queuePolicies.set(id, policy); if (Array.isArray(saved.queuePreviews)) for (const [id, preview] of saved.queuePreviews) queuePreviews.set(id, preview); if (Array.isArray(saved.githubViews)) for (const [id, view] of saved.githubViews) githubViews.set(id, view); if (Array.isArray(saved.details)) for (const [id, detail] of saved.details) details.set(id, { workers: [], checks: [], review_evidence: [], frontier: [], retrospectives: [], native_snapshots: [], ...detail }); referenceVersions = saved.referenceVersions ?? []; referenceHeads = saved.referenceHeads ?? []; paneArchives = saved.paneArchives ?? []; projects = saved.projects ?? []; checkouts = saved.checkouts ?? []; settings = saved.settings ?? settings; if (Array.isArray(saved.blobs)) for (const [id, content] of saved.blobs) blobs.set(id, content); }
+  if (raw) { const saved = JSON.parse(raw); for (const [id, policy] of saved.projectQueuePolicies ?? []) projectQueuePolicies.set(id, policy); if (Array.isArray(saved.queuePolicies)) for (const [id, policy] of saved.queuePolicies) queuePolicies.set(id, policy); if (Array.isArray(saved.queuePreviews)) for (const [id, preview] of saved.queuePreviews) queuePreviews.set(id, preview); if (Array.isArray(saved.githubViews)) for (const [id, view] of saved.githubViews) githubViews.set(id, view); if (Array.isArray(saved.details)) for (const [id, detail] of saved.details) details.set(id, { workers: [], checks: [], review_evidence: [], frontier: [], retrospectives: [], native_snapshots: [], ...detail }); referenceVersions = saved.referenceVersions ?? []; referenceHeads = saved.referenceHeads ?? []; paneArchives = saved.paneArchives ?? []; projects = saved.projects ?? []; checkouts = saved.checkouts ?? []; settings = saved.settings ?? settings; if (Array.isArray(saved.blobs)) for (const [id, content] of saved.blobs) blobs.set(id, content); }
 } catch { /* fictional fixtures do not depend on persistent storage */ }
 function capture(title: string, description: string): Implementation {
   const implementation: Implementation = { ...record(), title, description, project_id: null, provider: null, machine_id: null, stage: "inbox", position: details.size, outcome: "none" };
@@ -47,6 +52,37 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
   const path = url.pathname;
   if (method === "POST" && /^\/api\/factory\/implementations\/[^/]+\/runs$/.test(path)) return failure("demo_unavailable", "Guarded issue admission needs a real execution Machine; the demo keeps fictional records only");
   if (method === "POST" && /^\/api\/factory\/runs\/[^/]+\/retry$/.test(path)) return failure("demo_unavailable", "Retry and retired-work recovery need a real execution Machine; the demo retains fictional attempts only");
+  if (path === "/api/factory-host/publication") return failure("demo_unavailable", "Native PR publication is unavailable in the fictional demo");
+  const publication = /^\/api\/factory\/runs\/([^/]+)\/publication(?:\/(publish|reconcile))?$/.exec(path);
+  if (publication) {
+    const detail = [...details.values()].find(d => d.runs.some(r => r.id === publication[1]));
+    const run = detail?.runs.find(r => r.id === publication[1]);
+    if (!run) return failure("not_found", "Run not found", 404);
+    if (method === "GET" && !publication[2]) return json({ run_id: run.id, head: run.accepted_result?.head ?? null, repository: detail!.implementation.delivery_scope?.github_repository ?? null, branch: run.branch, target_branch: detail!.implementation.delivery_scope?.branch ?? null, eligible: false, publication: null, problem: "The fictional demo cannot publish a GitHub PR." } satisfies import("../../shared/factory-publication.ts").PublicationOverview);
+    return failure("demo_unavailable", "PR publication requires a real Machine, current checks and independent reviews");
+  }
+  if (/^\/api\/factory\/implementations\/[^/]+\/delivery(?:\/sync)?$/.test(path)) {
+    const id = path.split("/")[4]!;
+    return method === "GET" ? json(details.get(id)?.implementation.delivery ?? null) : failure("demo_unavailable", "Verifying PR and release delivery requires a real repository and selected GitHub account", 409);
+  }
+  if (path === "/api/factory-host/delivery-read") return failure("demo_unavailable", "GitHub delivery evidence is unavailable in the fictional demo", 409);
+  if (/^\/api\/factory\/implementations\/[^/]+\/retry$/.test(path)) return failure("demo_only", "Retry requires an observed failed attempt on a real connection server.");
+  const queueRoute = /^\/api\/factory\/projects\/([^/]+)\/queue(?:\/(configure))?$/.exec(path);
+  if (queueRoute) {
+    const id = queueRoute[1]!;
+    if (!projects.some(project => project.id === id)) return failure("not_found", "Fictional Project not found", 404);
+    let policy = projectQueuePolicies.get(id);
+    const maximum = Math.min(settings.max_implementations, settings.max_agents, settings.max_builds);
+    if (method === "POST" && queueRoute[2] === "configure") {
+      if (body.expected_revision !== (policy?.revision ?? null)) return failure("queue_changed", "Refresh the fictional queue");
+      if (!Number.isSafeInteger(body.max_implementations) || Number(body.max_implementations) < 1 || Number(body.max_implementations) > maximum && body.max_implementations !== (policy?.max_implementations ?? 1) || typeof body.paused !== "boolean") return failure("invalid_queue", "Select a Project limit within the global limits", 400);
+      policy = { revision: crypto.randomUUID(), max_implementations: Number(body.max_implementations), paused: body.paused };
+      projectQueuePolicies.set(id, policy); save();
+    } else if (method !== "GET" || queueRoute[2]) return failure("invalid_operation", "Select a fictional queue operation", 400);
+    const view: ProjectQueueOverview = { project_id: id, revision: policy?.revision ?? null, max_implementations: policy?.max_implementations ?? 1, effective_limit: Math.min(policy?.max_implementations ?? 1, maximum), paused: policy?.paused ?? false, next_implementation_id: null, capacity: { project_implementations: 0, implementations: 0, agents: 0, builds: 0, max_implementations: settings.max_implementations, max_agents: settings.max_agents, max_builds: settings.max_builds }, items: [...details.values()].map(detail => detail.implementation).filter(idea => idea.project_id === id && !idea.archived_at && idea.stage !== "done").sort((a, b) => a.position - b.position).map(idea => ({ implementation_id: idea.id, title: idea.title, priority: idea.position, eligible: false, reasons: ["planning_required", ...(policy?.paused ? ["queue_paused"] : [])], failed_run_id: null, problem: null })) };
+    return json(view);
+  }
+  if (/^\/api\/factory\/implementations\/[^/]+\/completion-evidence$/.test(path)) return json({ repository_changes: "unknown", quiescent: false, reason: "The fictional demo cannot verify repository changes or native ownership.", checked_at: new Date().toISOString() });
   if (/^\/api\/factory-agent\/[^/]+\/sync-answers$/.test(path)) return failure("demo_unavailable", "Native answer synchronization needs a real agent conversation");
   if (method === "POST" && (/^\/api\/factory\/implementations\/[^/]+\/continue$/.test(path) || /^\/api\/factory-host\/runs\/[^/]+\/finish$/.test(path))) return failure("demo_unavailable", "Workflow continuation needs a real execution Machine; the demo keeps fictional records only");
   if (path === "/api/factory/project-discovery" || path === "/api/factory-host/project-discovery") return json({ protocol: 1, path: String(body.path), name: String(body.path).split("/").filter(Boolean).at(-1) ?? "Demo Project", repository: "fictional-demo-repository", head: "0000000000000000000000000000000000000000", checks: [{ id: "script:test", name: "test", args: ["bun", "run", "test"] }], guidance: ["AGENTS.md"], providers: ["codex", "claude", "opencode"].map(provider=>({provider,installed:true,version:"0.162.1"})), permission_modes: AGENT_PERMISSION_MODES, github: { repository: "fictional/project", account_hint: null, directory_scoped: false }, warnings: [] });
@@ -64,6 +100,29 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
     const next = { ...(previous ?? record()), ...(body.archived && pane ? { terminal_id: pane.terminal_id, session_ref: nativeSessionRef(pane), title: pane.label || pane.title || pane.pane_id } : {}), machine_id: String(body.machine_id), pane_id: String(body.pane_id), archived_at: body.archived ? new Date().toISOString() : null };
     paneArchives = [...paneArchives.filter((a) => a.id !== previous?.id), next]; save(); return json(next);
   }
+  const schedulesRoute = /^\/api\/factory\/projects\/([^/]+)\/github\/schedules(?:\/(configure|run|reconcile))?$/.exec(path);
+  if (schedulesRoute) {
+    const id = schedulesRoute[1]!;
+    if (!projects.some(project => project.id === id)) return failure("not_found", "Fictional Project not found", 404);
+    if (method !== "GET" || schedulesRoute[2]) return failure("demo_only", "Scheduled synchronization needs a real connection server. The demo enables no recurring jobs.");
+    const policy = githubViews.get(id)?.policy;
+    const overview: ProjectSchedulesOverview = { schedules: [
+      { job: "github_sync", enabled: false, cadence: "interval", interval_minutes: policy?.poll_minutes ?? 15, local_time: "03:00", time_zone: "America/Mexico_City", revision: null, next_execution: null, condition: "idle", failure_count: 0, retry_at: null },
+      { job: "upstream_sync", enabled: false, cadence: "daily", interval_minutes: 1440, local_time: "03:00", time_zone: "America/Mexico_City", revision: null, next_execution: null, condition: "idle", failure_count: 0, retry_at: null },
+    ], results: [], upstream: { repository: policy?.upstream_repository ?? null, detected: null, active: null, candidate: null } };
+    return json(overview);
+  }
+  if (body.issue_revision !== undefined && /^\/api\/factory\/projects\/[^/]+\/github\/issues\/\d+\/approve$/.test(path)) return failure("demo_only", "Issue readiness needs verified GitHub evidence on a real connection server.");
+  if (/^\/api\/factory\/implementations\/[^/]+\/request-changes$/.test(path) && method === "POST") return failure("demo_only", "Review delivery requires a real app-owned Run. The demo sends no reports or inline findings.");
+  const issueBatchesRoute = /^\/api\/factory\/implementations\/([^/]+)\/issue-batches(?:\/([^/]+)\/(review|publish|resume))?$/.exec(path);
+  if (issueBatchesRoute) {
+    const detail = details.get(issueBatchesRoute[1]!);
+    if (!detail?.implementation.project_id) return failure("project_required", "Select a fictional Project for the plan");
+    // Public reads have an answer on the demo; owner publication needs real scoped GitHub evidence.
+    if (method === "GET" && !issueBatchesRoute[2]) return json({ batches: [] } satisfies import("../../shared/issue-batches.ts").IssueBatchesOverview);
+    return failure("demo_only", "Issue batch proposals, review and publication need a real connection server. The demo publishes no GitHub issues.");
+  }
+  if (/^\/api\/factory-agent\/[^/]+\/issue-batch$/.test(path)) return failure("demo_only", "Planning proposals need a real app-owned Run. The demo grants no publication authority.");
   const githubRoute = /^\/api\/factory\/projects\/([^/]+)\/github(?:\/(configure|sync|readiness|queue|preview)|\/pulls\/(\d+)\/(merge|update|rerequest|import|files)|\/issues\/(\d+)\/(approve|prepare|delivery))?$/.exec(path);
   if (githubRoute) {
     const id = githubRoute[1]!; if (!projects.some((project) => project.id === id)) return failure("not_found", "Fictional Project not found", 404);
@@ -178,13 +237,13 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
     }
     return failure("unsupported", "This reference action is unavailable in the demo.");
   }
-  if (path === "/api/factory" && method === "GET") return json({ implementations: [...details.values()].map((detail) => detail.implementation).sort((a, b) => a.position - b.position), projects, checkouts, settings, activity: [], pane_links: [...details.values()].flatMap((d) => d.runs.flatMap((run) => [...(run.pane_id ? [{ project_id: d.implementation.project_id, implementation_id: d.implementation.id, run_id: run.id, worker_id: null, worktree: run.worktree, workspace_id: run.workspace_id, machine_id: run.machine_id, pane_id: run.pane_id, provider: run.provider, title: run.action, condition: run.condition }] : []), ...d.workers.filter((w) => w.run_id === run.id && w.pane_id).map((w) => ({ project_id: d.implementation.project_id, implementation_id: d.implementation.id, run_id: run.id, worker_id: w.id, worktree: w.worktree, workspace_id: w.workspace_id, machine_id: run.machine_id, pane_id: w.pane_id!, provider: run.provider, title: w.role, condition: w.condition }))])), pane_archives: paneArchives } satisfies FactoryOverview);
+  if (path === "/api/factory" && method === "GET") return json({ board: [...details.values()].map(d => projectFactoryBoard(d.implementation, d)), implementations: [...details.values()].map((detail) => detail.implementation).sort((a, b) => a.position - b.position).map(idea => { if (url.searchParams.get("navigation") !== "1") return idea; const { description, delivery, upstream_update, ...summary } = idea; return summary; }), projects, checkouts, settings, activity: [], pane_links: [...details.values()].flatMap((d) => d.runs.flatMap((run) => [...(run.pane_id ? [{ project_id: d.implementation.project_id, implementation_id: d.implementation.id, run_id: run.id, worker_id: null, worktree: run.worktree, workspace_id: run.workspace_id, machine_id: run.machine_id, pane_id: run.pane_id, provider: run.provider, title: run.action, condition: run.condition }] : []), ...d.workers.filter((w) => w.run_id === run.id && w.pane_id).map((w) => ({ project_id: d.implementation.project_id, implementation_id: d.implementation.id, run_id: run.id, worker_id: w.id, worktree: w.worktree, workspace_id: w.workspace_id, machine_id: run.machine_id, pane_id: w.pane_id!, provider: run.provider, title: w.role, condition: w.condition }))])), pane_archives: paneArchives } satisfies FactoryOverview);
   if (path === "/api/factory/settings" && method === "POST") { settings = { ...settings, ...body } as typeof settings; save(); return json(settings); }
   if ((path === "/api/factory/model-catalog" || path === "/api/factory-host/model-catalog") && method === "POST") return json({ protocol: 1, provider: body.provider, models: [{ id: "fictional-demo-model", name: "Fictional demo model", reasoning: [{ id: "medium", name: "Medium" }, { id: "xhigh", name: "Extra high" }], default_reasoning: "medium" }], problem: null });
   if (path === "/api/factory/providers" || /\/machines\/[^/]+\/prepare$/.test(path)) return json({ factory_host_protocol: 1, implementation_rework_protocol: 1, skill_manifest: null, providers: ["codex", "claude", "opencode"].map((provider) => ({ provider, version: "demo", installed: false, skills_verified: false, factory_ready: false, reasons: ["Native agents and SSH preparation require a real execution Machine. The demo retains fictional records only."] })) });
   if (path === "/api/factory/implementations" && method === "POST") { if (typeof body.title !== "string" || !body.title.trim()) return failure("invalid_implementation", "Enter an idea title", 400); const project = projects.find((p) => p.id === body.project_id && !p.removed_at); if (body.project_id != null && !project) return failure("invalid_project", "Select a registered Project", 400); const idea = capture(body.title, typeof body.description === "string" ? body.description : ""); idea.project_id = project?.id ?? null; save(); return json(idea, 201); }
   if (path === "/api/factory/projects" && method === "POST") {
-    const project: FactoryProject = { ...record(), name: String(body.name), repository: "fictional-demo-repository", provider: body.provider as FactoryProject["provider"], machine_id: String(body.machine_id ?? "local"), tracker: "app", tracker_reference: "demo" };
+    const project: FactoryProject = { ...record(), name: String(body.name), repository: "fictional-demo-repository", provider: body.provider as FactoryProject["provider"], machine_id: String(body.machine_id ?? "local"), tracker: "app", tracker_reference: "demo", auto_publish_pr: false };
     if (body.guided_setup) { project.permission_mode = body.permission_mode as FactoryProject["permission_mode"]; project.permissions = permissionDescription(project.permission_mode ?? "ask"); project.checks = [["bun", "run", "test"]]; project.workflow_instructions = MATT_PROJECT_WORKFLOW; project.context_target_tokens = Number(body.context_target_tokens ?? 150000); if(body.guidance_task){const idea=capture(`Set up ${project.name} guidance`,MATT_PROJECT_WORKFLOW);idea.project_id=project.id;project.guidance_assignment_id=idea.id;} }
     projects.push(project); checkouts.push({ ...record(), project_id: project.id, machine_id: project.machine_id, path: String(body.path), repository: project.repository, head: "0000000000000000000000000000000000000000", branch: "demo", instructions: [] }); save(); return json(project, 201);
   }
@@ -220,11 +279,23 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
     if (!action && method === "GET") {
       const sources = [...githubViews.values()].flatMap(view => readinessView(view).sources).filter(source => source.implementation_id === detail.implementation.id);
       const sync = sources[0] ? githubViews.get(sources[0].project_id) : null;
-      return json({ ...detail, github_sources: sources, github_sync: sync ? { last_sync: sync.last_sync, problem: sync.problem } : null });
+      const view = url.searchParams.get("view");
+      if (view === "report") { const report = detail.review_evidence.find(record => record.id === url.searchParams.get("record_id")); return report ? json(report) : failure("not_found", "Review report not found", 404); }
+      if (view === "snapshot") { const snapshot = detail.snapshots.find(record => record.id === url.searchParams.get("record_id")); return snapshot ? json(snapshot) : failure("not_found", "Review snapshot not found", 404); }
+      const runs = detail.runs.map(run => ({ ...run, manifest: { execution_preset: (run.manifest as { execution_preset?: unknown })?.execution_preset } }));
+      const checks = detail.checks.map(({ commands, ...check }) => check);
+      const review_evidence = detail.review_evidence.map(({ content, ...report }) => report);
+      if (view === "review") return json({ implementation: detail.implementation, runs, checks, review_evidence, review_batches: (detail.review_batches ?? []).map(({ reports, ...batch }) => batch), snapshots: detail.snapshots.map(({ files, ...snapshot }) => snapshot), comments: detail.comments } satisfies import("../../shared/factory.ts").FactoryReviewDetail);
+      if (view === "current") return json({ revision: String(readRevision), github_sources: sources.map(({ history, delivery_history, readiness_approvals, ...current }) => current), github_sync: sync ? { last_sync: sync.last_sync, problem: sync.problem } : null, implementation: detail.implementation, board: projectFactoryBoard(detail.implementation, detail), graph_hash: detail.graph_hash, question_revision: detail.question_revision, question_context: detail.question_context, questions: detail.question_context?.questions ?? detail.questions, specifications: detail.specifications.slice(-1), tickets: detail.tickets, approvals: detail.approvals, runs, checks, review_evidence, events: detail.events.filter(event => ["continuation_waiting", "native_snapshot_unavailable", "planning_handoff_retained", "planning_documents_unavailable", "planning_documents_retained"].includes(event.kind)) } satisfies import("../../shared/factory.ts").FactoryCurrent);
+      return json({ ...detail, github_sources: sources, github_sync: sync ? { last_sync: sync.last_sync, problem: sync.problem } : null, board: projectFactoryBoard(detail.implementation, detail) });
     }
     if (method === "POST") {
       let result: unknown;
       if (action === "configure") { detail.implementation = { ...detail.implementation, ...body } as Implementation; result = detail.implementation; }
+      else if (action === "discard") {
+        if (detail.runs.some(run => !["completed", "cancelled", "failed"].includes(run.condition)) || detail.workers.some(worker => !["completed", "cancelled", "failed"].includes(worker.condition)) || detail.checks.some(check => ["working", "interrupted"].includes(check.condition))) return failure("demo_unavailable", "Confirming native stops requires a real Machine; the demo retains the owned work");
+        detail.implementation = { ...detail.implementation, stage: "done", outcome: "discarded", discard_requested_at: detail.implementation.discard_requested_at ?? new Date().toISOString(), updated_at: new Date().toISOString() }; result = detail.implementation;
+      }
       else if (action === "messages") { const message = { ...record(), implementation_id: detail.implementation.id, chat_id: String(body.chat_id), role: body.role as "owner" | "agent" | "system", content: String(body.content), source_id: null, sequence: null }; detail.messages.push(message); result = message; }
       else if (action === "chats") { const chat = { ...record(), implementation_id: detail.implementation.id, title: String(body.title) }; detail.chats.push(chat); result = chat; }
       else if (action === "artifacts") {
@@ -234,7 +305,7 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
         const item = { ...record(), implementation_id: detail.implementation.id, chat_id: String(body.chat_id), name: String(body.name), media_type: String(body.media_type), hash: digest, size: bytes.length, version: detail.artifacts.filter((entry) => entry.name === body.name).length + 1, origin: "demo upload", note: "" };
         detail.artifacts.push(item); blobs.set(item.id, String(body.content_base64)); result = item;
       }
-      else if (action === "specifications") { const specification = { ...record(), implementation_id: detail.implementation.id, revision: detail.specifications.length + 1, content: String(body.content), hash: crypto.randomUUID() }; detail.specifications.push(specification); detail.tickets = []; detail.implementation.stage = "specifying"; result = specification; }
+      else if (action === "specifications") { const specification = { ...record(), implementation_id: detail.implementation.id, revision: detail.specifications.length + 1, content: String(body.content), hash: crypto.randomUUID(), ...(detail.implementation.upstream_update ? { upstream_update: detail.implementation.upstream_update } : {}) }; detail.specifications.push(specification); detail.tickets = []; detail.implementation.stage = "specifying"; result = specification; }
       else if (action === "tickets") {
         const spec = detail.specifications.at(-1); if (!spec || body.specification_id !== spec.id) return failure("stale_specification", "Select the latest specification", 409);
         const planned = Array.isArray(body.tickets) ? body.tickets as { key: string; title: string; acceptance: string; dependencies: string[] }[] : [];

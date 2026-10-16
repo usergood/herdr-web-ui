@@ -11,6 +11,23 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 
 - Add default-off automatic implementation of trusted GitHub issues after an explicit readiness identity and current backlog review. Existing and future eligible plans use queue priority, pause and capacity limits, guarded frozen-scope starts, durable recovery and owner Retry. Missing decisions and dependency/sync problems stay visible; current checks and independent reviews free capacity while reviewed work awaits separately approved delivery. Issue/PR publication, merge, release and deployment remain separate actions.
 
+## [0.5.1] - 2026-10-15
+
+### Changed
+- Load Workflow and board current state without retained transcripts, frozen Run context or diffs.
+  Read history and review evidence when opened, and share the board overview with navigation. ([#29](https://github.com/usergood/saurons-eye/pull/29) by @usergood)
+
+## [0.5.0] - 2026-10-15
+
+### Added
+- Five Assignment board lanes, trusted issue readiness, Project queues, reviewed issue batches,
+  explicit PR publication, synchronization schedules and upstream release intake. Repository work
+  finishes only after verified merge or release delivery; pending owner decisions remain visible.
+  ([#27](https://github.com/usergood/saurons-eye/pull/27) by @usergood)
+- Send retained failed review reports to an owned repair worker with exact-head validation and
+  durable delivery receipts, preserving uncertain outcomes across reloads.
+  ([#27](https://github.com/usergood/saurons-eye/pull/27) by @usergood)
+
 ### Fixed
 - Continue approved planning from the native chat, retain finished chats, and run
   required verification before implementation. Scope native probe questions separately
