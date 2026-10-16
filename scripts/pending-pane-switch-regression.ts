@@ -114,8 +114,13 @@ try {
     assert.equal(await rows().filter({ hasText: text }).getAttribute("data-state"), state);
     return result.pending;
   };
-  const heldReceipt = (pending: PendingMessage, after: number) => until(() => received.slice(after).some(({ frame }) => frame.type === "pending-messages" && frame.pane_id === pane
-    && frame.messages.some((item) => item.id === pending.id && item.state === "held")), "the original connection receives the held receipt while away");
+  const heldReceipt = (pending: PendingMessage): void => {
+    // Already held at acceptance: detaching cannot produce another queued-to-held transition.
+    const receipt = received.findLast(({ frame }) => frame.type === "pending-messages" && frame.pane_id === pane);
+    assert.ok(receipt?.frame.type === "pending-messages", "the original connection retains its pending receipt");
+    assert.equal(receipt.socket, originalSocket, "the held receipt belongs to the original connection");
+    assert.equal(receipt.frame.messages.find((item) => item.id === pending.id)?.state, "held", "the latest receipt keeps the same pending ID held while away");
+  };
   await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(pane)}`);
   await page.locator(".conn-live").waitFor();
   await current(pane).waitFor(); await inputReady(pane);
@@ -166,14 +171,14 @@ try {
   for (const destination of ["tab", "workspace"] as const) {
     await report("working");
     const pending = await queue(`pending across ${destination}`, "held");
-    const leaveAt = received.length;
     const sentAt = sent.length;
     if (destination === "tab") {
       await page.getByRole("tab", { name: "Other tab", exact: true }).click();
       await current(tab.root_pane.pane_id).waitFor();
       await inputReady(tab.root_pane.pane_id);
     } else await selectWorkspace(away.workspace.workspace_id, away.root_pane.pane_id);
-    await heldReceipt(pending, leaveAt);
+    await until(() => sent.slice(sentAt).some(({ socket, frame }) => socket === originalSocket && frame.type === "detach" && frame.pane_id === pane), "navigation releases the original pane's input lease");
+    heldReceipt(pending);
     assert.ok(sent.slice(sentAt).some(({ socket, frame }) => socket === originalSocket && frame.type === "detach" && frame.pane_id === pane), "navigation gives up the old pane's input lease");
     assert.equal(originalSocket.isClosed(), false, "navigation keeps the receipt-owning connection alive");
     assert.equal(sockets.length, 1, "changing tabs and workspaces does not open another PC connection");

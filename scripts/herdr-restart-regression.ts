@@ -1,6 +1,6 @@
 /** A restored pane keeps its ID but gets a new terminal: the open browser must attach to it. */
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Browser, type WebSocket as BrowserSocket } from "playwright-core";
@@ -8,7 +8,8 @@ import type { ServerMessage } from "../shared/protocol.ts";
 import { chromePath } from "./chrome-path.ts";
 
 // This script stops its herdr, so it must not share even the browser lane's test session.
-const root = mkdtempSync(join(tmpdir(), "herdr-restart-"));
+// CI can place TMPDIR under a checkout whose socket path exceeds sun_path.
+const root = mkdtempSync(join(existsSync("/tmp") ? "/tmp" : tmpdir(), "hwc-restart-"));
 const session = "herdr-web-ui-test-restart";
 const config = join(root, "config");
 const state = join(root, "state");
