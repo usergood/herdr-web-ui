@@ -1154,6 +1154,8 @@ export const DEFAULT_PORT = 7317;
  * POST /api/factory/implementations/:id/configure (configure) -> Implementation; future defaults only.
  * POST /api/factory/implementations/:id/human-review/messages (human_review_message) -> FactoryMessage, 202;
  * repeat-safe explicit discussion, queued on normal capacity; no fixes or merge authority.
+ * FactoryCapabilities.human_review_protocol: 1 is required on the execution bridge;
+ * older bridges cannot launch discussion as ordinary editing work.
  * FactoryDetail.human_reviews retains the automatic checked-PR handoff and captured snapshot.
  * POST .../chats (chat) -> FactoryChat, 201; POST .../messages (message) -> FactoryMessage, 201.
  * Native messages use source_id/sequence for idempotency; conflicting imports fail 409.

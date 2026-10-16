@@ -10,6 +10,19 @@ import { tmpdir } from "node:os";
 import { createServer } from "./index.ts";
 
 describe("Human Review through authenticated HTTP", () => {
+  it("explains an older Machine bridge without launching the discussion as unrestricted direct work", async () => {
+    const f = await capacityFixture({ advancingHeads: true });
+    try {
+      const { prefix, detail } = await published(f);
+      const d = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
+      f.legacyHumanReview();
+      await f.api(`${prefix}/human-review/messages`, { review_id: d.human_reviews[0].id, content: "Discuss the result", idempotency_key: "older-machine" });
+      const blocked = await until(detail, d => d.capacity_waiting.some((w: any) => w.condition === "blocked"));
+      expect(blocked.capacity_waiting[0].reason).toContain("Human Review bridge support");
+      expect(blocked.runs).toHaveLength(1);
+      expect(f.launches).toHaveLength(1);
+    } finally { f.close(); }
+  }, 20000);
   it("parks an assistant's owner question and resumes through normal capacity with the exact answered revision", async () => {
     const f = await capacityFixture({ advancingHeads: true });
     try {

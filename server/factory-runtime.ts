@@ -467,6 +467,8 @@ export class FactoryRuntime {
   }
   async discussReview(parent: FactoryRun, review: import("../shared/factory.ts").FactoryHumanReview, message: FactoryMessage, origin: string, claim: () => void): Promise<FactoryRun> {
     this.assertExecuting(parent.implementation_id);
+    const capabilities = await this.capabilities(parent.machine_id, (parent.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot);
+    if (capabilities.human_review_protocol !== 1) throw new FactoryError("human_review_bridge_required", "The selected Machine needs Human Review bridge support before its assistant can execute", 409);
     const reviewRuns = this.store.list<FactoryRun>("runs", parent.implementation_id).filter(r => r.conversation_kind === "human_review");
     const key = `human-review-${review.id}-${message.id}`;
     const existing = reviewRuns.find(r => r.id === review.assistant_run_id && !["completed", "cancelled", "failed"].includes(r.condition)) ?? reviewRuns.find(r => r.idempotency_key === key);
