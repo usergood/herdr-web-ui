@@ -405,13 +405,13 @@ describe("Assignment discard", () => {
       await f.start();
       f.disconnect();
       await f.request(`${f.prefix}/discard`, {});
-      f.reconnect();
       const next = await f.request("/implementations", { title: "Wait for owned stop", description: "", project_id: f.project.id }).then(r => r.json());
       const response = await f.request(`/implementations/${next.id}/runs`, { action: "work", idempotency_key: "reserved-until-stopped" });
       expect(response.status).toBe(202);
       expect(await response.json()).toMatchObject({ condition: "queued", run_id: null, purpose: "execution" });
       expect((await f.request("").then(r => r.json())).capacity.normal.used).toBe(1);
       expect((await f.request(`/implementations/${next.id}`).then(r => r.json())).runs).toEqual([]);
+      f.reconnect();
       expect((await f.request(`${f.prefix}/discard`, {}).then(r => r.json())).outcome).toBe("discarded");
       const admitted = await f.request(`/implementations/${next.id}/runs`, { action: "work", idempotency_key: "reserved-until-stopped" });
       expect(admitted.status).toBe(202);
@@ -5551,8 +5551,17 @@ describe("changed GitHub issue scope", () => {
       expect(created.status).toBe(201); const other = created.body;
       const blocked = await f.request(`/implementations/${other.id}/runs`, { action: "work", idempotency_key: "unrelated-scope" });
       expect(blocked.status).toBe(202);
-      expect(blocked.body).toMatchObject({ condition: "queued", run_id: null, purpose: "execution" });
-      expect((await f.request(`/implementations/${other.id}`)).body.runs).toEqual([]);
+      if (restingChild) {
+        // Native ready proof releases this child's execution slot while its ownership remains.
+        expect(blocked.body).toMatchObject({ condition: "working", implementation_id: other.id });
+        expect((await f.request(`/implementations/${other.id}`)).body.runs).toHaveLength(1);
+      } else {
+        expect(blocked.body).toMatchObject({ condition: "queued", run_id: null, purpose: "execution" });
+        expect((await f.request(`/implementations/${other.id}`)).body.runs).toEqual([]);
+      }
+      const capacity = (await f.request("")).body.capacity;
+      expect(capacity.normal.used).toBe(2);
+      expect(capacity.contexts.some((context: { worker_id: string | null }) => context.worker_id === child.id)).toBe(!restingChild);
       const more = await f.request(`/runs/${run.id}/workers`, { role: "spec", idempotency_key: "must-not-launch" });
       expect(more.status).toBe(409);
       await f.request(`/runs/${run.id}/reconcile`, {});
