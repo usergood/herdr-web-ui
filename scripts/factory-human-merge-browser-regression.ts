@@ -8,7 +8,7 @@ import { published, until } from "./factory-human-review-fixture.ts";
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
-    for (const scenario of ["frozen_release", "merge", "release", "stale", "failing", "protected", "denied", "lost", "pending"] as const) {
+    for (const scenario of ["scope_question", "frozen_release", "merge", "release", "stale", "failing", "protected", "denied", "lost", "pending"] as const) {
       const f = await capacityFixture({ advancingHeads: true });
       f.setTranscript({ source_id: "owned-delivery-history", version: "one", cursor: null, turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: "Retained implementation delivery history." }] }] });
       const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
@@ -25,6 +25,13 @@ try {
           assert.equal((await f.api(`/projects/${frozen.implementation.project_id}/configure`, { delivery_policy: "merge" })).status, 200);
           assert.equal((await f.api("").then(response => response.json())).projects.find((project: { id: string }) => project.id === frozen.implementation.project_id).delivery_policy, "merge");
           assert.equal((await detail()).implementation.delivery_scope.milestone, "release", "Future Project policy preserves the Assignment's frozen release requirement");
+        }
+        let scopeQuestion: { id: string; answer: string | null } | null = null;
+        if (scenario === "scope_question") {
+          const response = await f.api(`/implementations/${id}/questions`, { run_id: run.id, question: "Should this review add another external delivery target?" });
+          assert(response.ok);
+          scopeQuestion = await response.json();
+          assert.equal(scopeQuestion!.answer, null);
         }
         const occupied = await f.assignment("Occupied approval capacity");
         const occupiedRun = await f.api(`/implementations/${occupied}/runs`, { action: "work", idempotency_key: "occupy" }).then(r => r.json());
@@ -64,6 +71,7 @@ try {
           await draft.fill("Unfinished review feedback"); assert(await approve.isDisabled()); await draft.fill("");
         }
         assert.equal(await page.getByRole("button", { name: "Accept reviewed head", exact: true }).count(), 0);
+        const approvalResponse = scenario === "scope_question" ? page.waitForResponse(response => response.url().endsWith(`/implementations/${id}/human-review/approve`) && response.request().method() === "POST") : null;
         if (scenario === "frozen_release") {
           // The owned fictional Machine emulates an older merge-only response; durable connection scope stays frozen.
           const nativeProject = (f.runs.get(run.id)!.manifest as { project: { delivery_policy: string } }).project;
@@ -76,7 +84,18 @@ try {
             assert.equal(f.mergeEffects.length, 1, "The old Machine's merge-only receipt precedes restoring its native manifest");
           } finally { nativeProject.delivery_policy = nativeMilestone; }
         } else await approve.click();
-        if (scenario === "failing") {
+        if (scenario === "scope_question") {
+          const blockedResponse = await approvalResponse!;
+          assert.equal(blockedResponse.status(), 409, "An unanswered scope question must block approval before authority is retained");
+          const blocked = await blockedResponse.json();
+          assert.match(blocked.error.message, /question|scope|context/i);
+          await page.getByRole("alert").filter({ hasText: blocked.error.message }).waitFor();
+          const retained = await detail();
+          assert.equal(retained.questions.find((q: { id: string }) => q.id === scopeQuestion!.id).answer, null);
+          assert.equal(retained.human_review_approvals.length, 0);
+          assert.notEqual(retained.implementation.stage, "done");
+          assert.equal(f.mergeEffects.length, 0);
+        } else if (scenario === "failing") {
           await page.getByText("Retain passing configured checks and independent Standards and Spec reports for this candidate", { exact: true }).waitFor();
           assert.notEqual((await detail()).implementation.stage, "done"); assert.equal(f.mergeEffects.length, 0);
         } else if (["protected", "denied", "stale"].includes(scenario)) {
@@ -136,7 +155,7 @@ try {
           assert.equal((await detail()).implementation.stage, "done");
         }
         await page.reload();
-        assert.equal((await detail()).human_review_approvals.length, scenario === "failing" ? 0 : 1);
+        assert.equal((await detail()).human_review_approvals.length, scenario === "failing" || scenario === "scope_question" ? 0 : 1);
         if (["merge", "lost", "release", "frozen_release", "pending"].includes(scenario)) assert.equal(f.mergeEffects.length, 1);
         assert.equal(f.launches.length, scenario === "merge" ? 3 : 2);
         assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
