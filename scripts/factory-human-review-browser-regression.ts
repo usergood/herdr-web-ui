@@ -38,6 +38,11 @@ try {
       await review.getByText("Binary file: a text diff is unavailable.", { exact: true }).waitFor();
       await review.getByRole("button", { name: "large.txt · branch:M", exact: true }).click();
       await review.getByText("This file exceeds the review size limit.", { exact: true }).waitFor();
+      const diffBox = await review.getByRole("region", { name: "Captured diff", exact: true }).boundingBox();
+      const discussionBox = await review.getByRole("region", { name: "Review discussion", exact: true }).boundingBox();
+      assert(diffBox && discussionBox);
+      if (viewport.width > 640) assert(discussionBox.x >= diffBox.x + diffBox.width && discussionBox.y < diffBox.y + diffBox.height, "Desktop discussion must sit beside the captured files");
+      else assert(discussionBox.y >= diffBox.y + diffBox.height, "Mobile discussion must remain reachable below the captured files");
       const other = await f.assignment("Occupied browser capacity");
       await f.api(`/implementations/${other}/runs`, { action: "work", idempotency_key: "occupy" });
       await review.getByRole("textbox", { name: "Discuss this review", exact: true }).fill("Explain this change");

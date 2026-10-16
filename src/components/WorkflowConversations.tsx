@@ -37,29 +37,30 @@ export function WorkflowConversations({ detail, machines, selectedId, onSelect, 
   if (!selected) return null;
   const snapshots = new Map(detail.native_snapshots.map(s => [s.id, s]));
   const specification = detail.specifications.at(-1);
+  const history = selected.contexts.map(context => {
+    const pane = machines.find(m => m.id === context.machine_id && m.state === "connected")?.snapshot?.panes.find(p => p.pane_id === context.pane_id && p.workspace_id === context.workspace_id && p.cwd === context.worktree);
+    return <article className="factory-message" key={`${context.run_id}:${context.worker_id ?? "coordinator"}`}>
+      <p>{context.action} · {context.condition} · {context.machine_id} · {context.provider}</p>
+      <details><summary>{t("Native context")}</summary><p>{context.run_id}{context.worker_id && ` · ${context.worker_id}`}</p><p>{context.workspace_id} · {context.pane_id}</p><p>{context.worktree}</p></details>
+      {context.pane_id && <button className="btn factory-button" disabled={!pane} onClick={() => onOpenPane(context.machine_id, context.pane_id!)}>{t("Open agent")}</button>}
+      {!context.snapshot_ids.length && <p role="status">{t("Native history has not been retained.")}</p>}
+      {context.snapshot_ids.map(id => {
+        const snapshot = snapshots.get(id);
+        return snapshot && <details key={id} open><summary>{snapshot.source_id} · {snapshot.sequence} · {new Date(snapshot.created_at).toLocaleString()}</summary>
+          {snapshot.turns.map((turn, index) => <RetainedNativeTurn key={index} turn={turn} />)}
+        </details>;
+      })}
+    </article>;
+  });
   return <section className="factory-section workflow-conversations" aria-label={t("Workflow conversations")}>
     <h3>{t("Workflow conversations")}</h3>
     <nav aria-label={t("Workflow history")}><WorkflowConversationTree conversations={conversations} selectedId={selected.id} onSelect={onSelect} /></nav>
     <section className="workflow-conversation-history" aria-label={conversationLabel(selected.kind, selected.title, t)}>
       <h4>{conversationLabel(selected.kind, selected.title, t)}</h4>
-      {selected.kind === "human_review" && <HumanReviewConversation detail={detail} busy={busy} perform={perform} />}
+      {selected.kind === "human_review" && <HumanReviewConversation detail={detail} busy={busy} perform={perform} history={history} />}
       {selected.kind === "specifications" && specification && <SpecificationConversation key={specification.id} detail={detail} specification={specification} busy={busy} perform={perform} />}
       {!selected.contexts.length && <p role="status">{t("No native context yet.")}</p>}
-      {selected.contexts.map(context => {
-        const pane = machines.find(m => m.id === context.machine_id && m.state === "connected")?.snapshot?.panes.find(p => p.pane_id === context.pane_id && p.workspace_id === context.workspace_id && p.cwd === context.worktree);
-        return <article className="factory-message" key={`${context.run_id}:${context.worker_id ?? "coordinator"}`}>
-          <p>{context.action} · {context.condition} · {context.machine_id} · {context.provider}</p>
-          <details><summary>{t("Native context")}</summary><p>{context.run_id}{context.worker_id && ` · ${context.worker_id}`}</p><p>{context.workspace_id} · {context.pane_id}</p><p>{context.worktree}</p></details>
-          {context.pane_id && <button className="btn factory-button" disabled={!pane} onClick={() => onOpenPane(context.machine_id, context.pane_id!)}>{t("Open agent")}</button>}
-          {!context.snapshot_ids.length && <p role="status">{t("Native history has not been retained.")}</p>}
-          {context.snapshot_ids.map(id => {
-            const snapshot = snapshots.get(id);
-            return snapshot && <details key={id} open><summary>{snapshot.source_id} · {snapshot.sequence} · {new Date(snapshot.created_at).toLocaleString()}</summary>
-              {snapshot.turns.map((turn, index) => <RetainedNativeTurn key={index} turn={turn} />)}
-            </details>;
-          })}
-        </article>;
-      })}
+      {selected.kind !== "human_review" && history}
     </section>
   </section>;
 }
