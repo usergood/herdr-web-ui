@@ -359,7 +359,7 @@ describe("Project queue contract", () => {
       const original = await f.request(route);
       expect(original.status).toBe(200);
       expect(original.body.capacity).toMatchObject({ project_implementations: 0, agents: 0, builds: 0 });
-      const body = { expected_revision: original.body.revision, max_implementations: 1, paused: true };
+      const body = { expected_revision: original.body.revision, paused: true };
       for (const headers of [{ ...f.headers, origin: "https://fictional-foreign.invalid" }, { "content-type": "application/json" }]) {
         const response = await fetch(f.origin() + "/api/factory" + route + "/configure", { method: "POST", headers, body: JSON.stringify(body) });
         expect(response.status).toBe(403); expect((await response.json()).error.code).toBe("invalid_origin");
@@ -5285,8 +5285,8 @@ it("Project issue queue endpoints expose revision-bound previews without creatin
     const response = await fixture.post(route + "/preview", {});
     expect(response.status).toBe(200);
     const preview = await response.json() as import("../shared/issue-queue.ts").IssueQueue;
-    expect(preview).toMatchObject({ policy: { project_id: project.id, automatic_implementation: false, max_implementations: 1 }, global_limit: 6, effective_limit: 1, eligible_count: 0, preview_current: true, preview: { revision: preview.revision, eligible_count: 0 } });
-    const stale = await fixture.post(route + "/queue", { expected_revision: "stale", automatic_implementation: false, paused: true, max_implementations: 1 });
+    expect(preview).toMatchObject({ policy: { project_id: project.id, automatic_implementation: false }, eligible_count: 0, preview_current: true, preview: { revision: preview.revision, eligible_count: 0 } });
+    const stale = await fixture.post(route + "/queue", { expected_revision: "stale", automatic_implementation: false, paused: true });
     expect(stale.status).toBe(409);
     expect(await stale.json()).toEqual({ error: { code: "queue_policy_changed", message: "Refresh the Project queue settings" } });
     expect((await fixture.json("")).activity).toEqual([]);
@@ -5332,7 +5332,7 @@ it("automatic issue policy requires an exact preview and retains a separate paus
   try {
     const { route, configuration } = await fixture.setup();
     await fixture.json(route + "/configure", { ...configuration, expected_revision: (await fixture.json(route)).policy.revision, sync_enabled: true });
-    const config: import("../shared/protocol.ts").QueueConfiguration = { expected_revision: null, automatic_implementation: true, paused: true, max_implementations: 1 };
+    const config: import("../shared/protocol.ts").QueueConfiguration = { expected_revision: null, automatic_implementation: true, paused: true };
     const missing = await fixture.post(route + "/queue", config);
     expect(missing.status).toBe(409);
     expect(await missing.json()).toEqual({ error: { code: "queue_preview_required", message: "Review the current eligible backlog before enabling automatic implementation" } });
