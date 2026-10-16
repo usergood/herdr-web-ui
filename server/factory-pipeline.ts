@@ -1,5 +1,6 @@
 import { agentCapacityPool, factoryCapacity } from "./factory-capacity.ts";
 import type { FactoryCheck, FactoryProject, FactoryReviewEvidence, FactoryRun, FactorySettings, FactoryTicket, FactoryWorker, Implementation } from "../shared/protocol.ts";
+import type { FactoryAutomaticReview, FactoryHumanFeedbackBatch, ReviewComment } from "../shared/factory.ts";
 import { FactoryError } from "./factory-host.ts";
 import { FactoryRuntime } from "./factory-runtime.ts";
 import { FactoryStore } from "./factory-store.ts";
@@ -63,8 +64,11 @@ export class FactoryPipeline {
       this.store.put("workers", worker, id); this.store.event(run.implementation_id, "worker_accepted", { worker_id: worker.id, role, ticket_id: worker.ticket_id }); return { worker, fresh: true };
     }).immediate();
     if (!claimed.fresh) return claimed.worker;
+    const feedbackId = role === "implementer" ? null : this.store.get<FactoryAutomaticReview>("automatic_review", id)?.human_batch_id;
+    const feedbackBatch = feedbackId ? this.store.get<FactoryHumanFeedbackBatch>("review_batches", feedbackId) : null;
+    const humanFeedback = feedbackBatch ? { batch: feedbackBatch, comments: this.store.list<ReviewComment>("comments", run.implementation_id).filter(c => c.batch_id === feedbackBatch.id) } : null;
     let worker: FactoryWorker;
-    try { worker = await this.runtime.operation(run, "worker", { worker: claimed.worker, context: { review_batch: claimed.worker.rework_batch_id ? this.store.get("automatic_review_batches", claimed.worker.rework_batch_id) ?? this.store.get("review_batches", claimed.worker.rework_batch_id) : null, manifest: { ...(run.manifest as object), tickets: this.workflow.executionTickets(run) }, execution_plan: this.store.get("execution_plans", run.id), ticket: this.workflow.executionTickets(run).find((ticket) => ticket.id === claimed.worker.ticket_id), questions: this.workflow.questions(run.implementation_id), findings: this.store.list<import("../shared/protocol.ts").ReviewComment>("comments", run.implementation_id).filter((comment) => comment.batch_id === claimed.worker.rework_batch_id && claimed.worker.rework_batch_id !== null) } }); }
+    try { worker = await this.runtime.operation(run, "worker", { worker: claimed.worker, context: { human_feedback: humanFeedback, review_batch: claimed.worker.rework_batch_id ? this.store.get("automatic_review_batches", claimed.worker.rework_batch_id) ?? this.store.get("review_batches", claimed.worker.rework_batch_id) : null, manifest: { ...(run.manifest as object), tickets: this.workflow.executionTickets(run) }, execution_plan: this.store.get("execution_plans", run.id), ticket: this.workflow.executionTickets(run).find((ticket) => ticket.id === claimed.worker.ticket_id), questions: this.workflow.questions(run.implementation_id), findings: this.store.list<import("../shared/protocol.ts").ReviewComment>("comments", run.implementation_id).filter((comment) => comment.batch_id === claimed.worker.rework_batch_id && claimed.worker.rework_batch_id !== null) } }); }
     catch { worker = { ...claimed.worker, condition: "disconnected", waiting_reason: "Worker dispatch is uncertain; preserve its reservation and reconcile" }; }
     if (worker.id !== claimed.worker.id || worker.run_id !== run.id || worker.ticket_id !== claimed.worker.ticket_id || worker.role !== role || worker.base !== tip.head) throw new FactoryError("worker_identity_changed", "The Machine returned a different worker identity; preserve the accepted reservation", 409);
     const parent = this.store.get<FactoryRun>("runs", id);

@@ -118,7 +118,11 @@ describe("Human Review Decline through authenticated HTTP", () => {
       f.workers.get(fix.id)!.condition = "ready";
       for (const role of ["standards", "spec"]) {
         const d = await until(detail, d => d.workers.some((w: any) => w.role === role && w.condition === "working"));
-        f.workers.get(d.workers.find((w: any) => w.role === role && w.condition === "working").id)!.condition = "ready";
+        const reviewer = d.workers.find((w: any) => w.role === role && w.condition === "working");
+        const feedback = f.workerContexts.get(reviewer.id).human_feedback;
+        expect(feedback?.batch.id).toBe(batch.id);
+        expect(feedback.comments[0]).toMatchObject({ id: comment.id, snapshot_id: review.snapshot_id, content: comment.content });
+        f.workers.get(reviewer.id)!.condition = "ready";
       }
       const returned = await until(detail, d => d.human_reviews?.[0]?.condition === "ready" && d.human_reviews[0].head !== review.head);
       expect(returned.human_reviews[0]).toMatchObject({ id: review.id, conversation_id: review.conversation_id });
