@@ -8,7 +8,7 @@ export async function until(read: () => Promise<any>, ready: (d: any) => boolean
     await Bun.sleep(20);
   }
 }
-export async function published(f: Awaited<ReturnType<typeof capacityFixture>>, milestone: "merge" | "release" = "merge") {
+export async function published(f: Awaited<ReturnType<typeof capacityFixture>>, milestone: "merge" | "release" = "merge", waitForPublication = true) {
   await f.api("/settings", { max_agents: 1 });
   const id = await f.assignment("Human Review result"); const prefix = `/implementations/${id}`;
   const detail = () => f.api(prefix).then(r => r.json());
@@ -22,6 +22,6 @@ export async function published(f: Awaited<ReturnType<typeof capacityFixture>>, 
     const d = await until(detail, d => d.workers.some((w: any) => w.role === role && w.condition === "working"));
     f.workers.get(d.workers.find((w: any) => w.role === role).id)!.condition = "ready";
   }
-  await until(detail, d => d.automatic_review?.[0]?.condition === "published");
+  if (waitForPublication) await until(detail, d => d.automatic_review?.[0]?.condition === "published");
   return { id, prefix, detail, run };
 }

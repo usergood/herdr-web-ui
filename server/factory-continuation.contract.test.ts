@@ -95,10 +95,27 @@ describe("continuing approved workflow steps", () => {
       await checking;
       const paused = await f.request(f.prefix).then(r => r.json());
       expect(paused.workers[0]).toMatchObject({ id: worker.id, suspension: { condition: "stopped" } });
-      expect(paused.checks[0].condition).toBe("failed");
+      expect(paused.checks[0]).toMatchObject({ condition: "cancelled", pause_id: paused.implementation.pause.id });
       expect((await f.request("").then(r => r.json())).capacity.builds.used).toBe(0);
     } finally { await f.close(); }
   }, 60_000);
+  it("preserves a genuine configured validation failure when the owner later pauses and resumes", async () => {
+    const f = await fixture("owned-failed-check-pause");
+    try {
+      const detail = await f.request(f.prefix).then(r => r.json());
+      await f.request(`/projects/${detail.implementation.project_id}/configure`, { checks: [["bun", "-e", "process.exit(3)"]], permissions: "Owned unpaid test fixtures only" });
+      const run = await f.start("work", "genuine-validation-failure");
+      const failed = await f.request(`/runs/${run.id}/checks`, {}).then(r => r.json());
+      expect(failed.condition).toBe("failed"); expect(failed.commands[0].exit_code).toBe(3);
+      expect((await f.request(`${f.prefix}/pause`, {}).then(r => r.json())).pause.condition).toBe("paused");
+      await f.request(`${f.prefix}/resume`, {});
+      const retained = await f.request(f.prefix).then(r => r.json());
+      expect(retained.checks).toHaveLength(1);
+      expect(retained.checks[0]).toMatchObject({ id: failed.id, condition: "failed", head: failed.head });
+      expect(retained.checks[0].pause_id).toBeUndefined();
+      expect(retained.checks[0].commands[0]).not.toHaveProperty("cancelled");
+    } finally { await f.close(); }
+  }, 60000);
   it("replays the confirmed Machine shutdown acknowledgment after a lost response without stopping the child twice", async () => {
     const f = await fixture("owned-pause-replay");
     try {

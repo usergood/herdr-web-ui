@@ -35,7 +35,7 @@ export function HumanReviewConversation({ detail, busy, perform, history }: { de
   return <div className="human-review-conversation">
     {!review ? <p role="status">{t("Human Review opens automatically after checks, independent reviews and PR publication.")}</p> : <>
       {repairing && progress?.condition !== "blocked" && approval?.condition !== "blocked" ? <p role="status">{batch?.merge_authorized ? t("Approved fixes are running. Merge follows passing checks and independent reviews.") : t("Fixes are running. A later approval is required to merge.")}</p> : batch?.resolution && review.head === batch.resolution.head && !batch.merge_authorized ? <p role="status">{t("Fixes passed checks and independent reviews. Awaiting your approval.")}</p> : null}
-      {repairing && progress?.reason && <p role="status">{progress.reason}</p>}
+      {repairing && progress?.reason && <p role={progress.condition === "blocked" ? "alert" : "status"}>{progress.reason}</p>}
       <div className="factory-actions"><button className="btn factory-button" disabled={!feedbackReady} onClick={() => void perform(async () => {
         await factoryRequest(`/implementations/${detail.implementation.id}/human-review/submit`, { review_id: review.id, snapshot_id: review.snapshot_id!, head: review.head, disposition: "decline", comment_ids: drafts.map(c => c.id), idempotency_key: `decline-${review.snapshot_id}` });
       })}>{t("Decline")}</button><p>{t("Decline submits all saved drafts for repair and grants no merge authority.")}</p></div>
@@ -44,7 +44,7 @@ export function HumanReviewConversation({ detail, busy, perform, history }: { de
       })}>{t("Approve with comments")}</button><p>{t("Approval submits all saved comments for repair, then merges after passing checks and independent reviews. No further approval is required.")}</p></div>}
       <p role="status">{review.reason ?? t("Review the captured result and discuss it with the assistant.")}</p>
       <p className="field-hint">{t("Approval merges this checked and independently reviewed candidate into its authorized target.")}</p>
-      {approval && <p role="status">{approval.reason ?? (approval.condition === "released" ? t("Release verified") : approval.condition === "merged" ? t("Merge verified") : t("Merge approval retained"))}</p>}
+      {approval && <p role={approval.condition === "blocked" ? "alert" : "status"}>{approval.reason ?? (approval.condition === "released" ? t("Release verified") : approval.condition === "merged" ? t("Merge verified") : t("Merge approval retained"))}</p>}
       {(retainedComments || composing || text.trim()) && <p role="status">{t("Finish your draft comments before approving without comments.")}</p>}
       <button className="btn factory-button" disabled={busy || review.condition !== "ready" || !review.snapshot_id || retainedComments || composing || !!text.trim() || !!approval && approval.condition !== "blocked"} onClick={() => void perform(async () => {
         if (!review.snapshot_id) return;

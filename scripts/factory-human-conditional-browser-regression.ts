@@ -8,6 +8,7 @@ import { published, until } from "./factory-human-review-fixture.ts";
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    for (const scenario of ["pending-ci", "failed-repair"] as const) {
     const f = await capacityFixture({ advancingHeads: true });
     const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
     try {
@@ -37,12 +38,24 @@ try {
       await approve.click();
       await review.getByText("Approved fixes are running. Merge follows passing checks and independent reviews.", { exact: true }).waitFor();
       const fixing = await until(detail, d => d.workers.some((w: any) => w.review_origin === "human" && w.condition === "working"));
+      if (scenario === "failed-repair") f.failNextCheck();
+      else f.mergeFailure("merge_waiting");
       f.workers.get(fixing.workers.find((w: any) => w.review_origin === "human" && w.condition === "working").id)!.condition = "ready";
+      if (scenario === "failed-repair") {
+        await review.getByRole("alert").filter({ hasText: "failed: bun test" }).first().waitFor();
+        assert.equal(f.mergeEffects.length, 0);
+        assert.equal((await detail()).human_review_approvals.length, 1);
+        assert.deepEqual(errors, []);
+        continue;
+      }
       for (const axis of ["standards", "spec"]) {
         const d = await until(detail, d => d.workers.some((w: any) => w.role === axis && w.condition === "working"));
         assert.equal(f.mergeEffects.length, 0);
         f.workers.get(d.workers.find((w: any) => w.role === axis && w.condition === "working").id)!.condition = "ready";
       }
+      await review.getByRole("status").filter({ hasText: "Waiting for required GitHub checks or reviews; retained approval will be observed automatically" }).waitFor();
+      assert.equal(f.mergeEffects.length, 0);
+      f.mergeFailure(null);
       await review.getByText("Merge verified", { exact: true }).waitFor();
       await page.reload();
       await review.getByText("Merge verified", { exact: true }).waitFor();
@@ -53,6 +66,7 @@ try {
       assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       assert.deepEqual(errors, []);
     } finally { await context.close(); f.close(); }
+    }
   }
   console.log("PASS Approve with comments repairs, reviews and merges without reapproval on desktop/mobile");
 } finally { await browser.close(); }

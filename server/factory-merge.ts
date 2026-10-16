@@ -91,17 +91,21 @@ export class FactoryMerge {
       const complete = <T>(c: Connection<T> | undefined) => Array.isArray(c?.nodes) && c.pageInfo?.hasNextPage === false;
       const contexts = pull.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts;
       if (!complete(pull.reviews) || !complete(pull.reviewThreads) || !complete(pull.reviewRequests) || !complete(pull.commits) || contexts && !complete(contexts)) throw new FactoryError("merge_blocked", "GitHub review and check inventory is incomplete", 409);
-      if (pull.state !== "OPEN" || pull.isDraft || pull.mergeStateStatus !== "CLEAN" || pull.reviewDecision && pull.reviewDecision !== "APPROVED" || pull.reviewRequests.nodes.length || pull.reviewThreads.nodes.some(t => !t.isResolved) || pull.baseRef?.branchProtectionRule?.isAdminEnforced === false) throw new FactoryError("merge_blocked", "GitHub protection, pending reviews, unresolved conversations or conflicts block this target", 409);
+      if (pull.state !== "OPEN" || pull.isDraft || !["CLEAN", "BLOCKED", "UNSTABLE", "UNKNOWN"].includes(pull.mergeStateStatus) || pull.reviewDecision && !["APPROVED", "REVIEW_REQUIRED"].includes(pull.reviewDecision) || pull.reviewThreads.nodes.some(t => !t.isResolved) || pull.baseRef?.branchProtectionRule?.isAdminEnforced === false) throw new FactoryError("merge_blocked", "GitHub protection, pending reviews, unresolved conversations or conflicts block this target", 409);
       const opinions = new Map<string, Pull["reviews"]["nodes"][number]>();
       for (const r of [...pull.reviews.nodes].sort((a, b) => (a.submittedAt ?? "").localeCompare(b.submittedAt ?? ""))) if (r.author && ["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(r.state)) opinions.set(r.author.login.toLowerCase(), r);
       if ([...opinions.values()].some(r => r.state === "CHANGES_REQUESTED")) throw new FactoryError("merge_blocked", "GitHub still has requested changes", 409);
       const githubPolicy = frozen.github_policy;
       const trustedApprovals = [...opinions.values()].filter(r => r.state === "APPROVED" && r.commit?.oid === pr.head && r.author?.login.toLowerCase() !== pull.author?.login.toLowerCase() && githubPolicy?.trusted_reviewers.some(login => login.toLowerCase() === r.author?.login.toLowerCase()));
-      if (githubPolicy && (githubPolicy.repository !== pr.repository || githubPolicy.trusted_reviewers.length && trustedApprovals.length < Math.max(1, pull.baseRef?.branchProtectionRule?.requiredApprovingReviewCount ?? 1))) throw new FactoryError("merge_blocked", "The frozen Project requires a trusted approval at this head", 409);
+      if (githubPolicy && githubPolicy.repository !== pr.repository) throw new FactoryError("merge_blocked", "The frozen Project repository differs from this candidate", 409);
+      let waiting = pull.mergeStateStatus === "UNKNOWN" || pull.reviewDecision === "REVIEW_REQUIRED" || pull.reviewRequests.nodes.length > 0 || !!(githubPolicy?.trusted_reviewers.length && trustedApprovals.length < Math.max(1, pull.baseRef?.branchProtectionRule?.requiredApprovingReviewCount ?? 1));
       for (const name of githubPolicy?.required_checks ?? []) {
         const matching = contexts?.nodes.filter(c => (c.name ?? c.context) === name) ?? [];
-        if (!matching.length || matching.some(c => c.context ? c.state !== "SUCCESS" : c.status !== "COMPLETED" || c.conclusion !== "SUCCESS")) throw new FactoryError("merge_blocked", `Required Project check is not successful: ${name}`, 409);
+        if (matching.some(c => c.context ? !["SUCCESS", "PENDING", "EXPECTED"].includes(c.state ?? "") : c.status === "COMPLETED" && c.conclusion !== "SUCCESS")) throw new FactoryError("merge_blocked", `Required Project check failed: ${name}`, 409);
+        if (!matching.length || matching.some(c => c.context ? c.state !== "SUCCESS" : c.status !== "COMPLETED")) waiting = true;
       }
+      if (waiting) throw new FactoryError("merge_waiting", "Waiting for required GitHub checks or reviews; retained approval will be observed automatically", 409);
+      if (pull.mergeStateStatus !== "CLEAN") throw new FactoryError("merge_blocked", "GitHub protection or conflicts block this target", 409);
       await assertCurrent();
       intent = { ...intent, condition: "sending" };
       // The final account/native permission check precedes retaining the irreversible send intent.

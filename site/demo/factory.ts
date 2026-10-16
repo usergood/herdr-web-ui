@@ -48,7 +48,11 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
   if (suspension && method === "POST") {
     const detail = details.get(suspension[1]!);
     if (!detail) return failure("not_found", "Fictional Assignment not found", 404);
-    if (suspension[2] === "pause") detail.implementation.pause ??= { id: crypto.randomUUID(), condition: "paused", reasons: [] };
+    if (suspension[2] === "pause") {
+      detail.implementation.pause ??= { id: crypto.randomUUID(), condition: "paused", reasons: [] };
+      // Fictional records have no executing processes; preserve the public cancellation shape.
+      for (const check of detail.checks) if (check.condition === "working") Object.assign(check, { condition: "cancelled", pause_id: detail.implementation.pause.id });
+    }
     else delete detail.implementation.pause;
     save(); return json(detail.implementation);
   }

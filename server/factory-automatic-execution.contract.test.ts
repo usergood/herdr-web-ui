@@ -222,3 +222,40 @@ describe("Automatic Ticket execution through authenticated HTTP", () => {
   });
 
 });
+
+
+for (const scope of ["worker", "integration"] as const) it(`Resume reruns the unchanged ${scope} check cancelled by Pause without repeating completed Tickets`, async () => {
+  const f = await capacityFixture({ advancingHeads: true });
+  const gate = f.holdNextCheck(scope);
+  try {
+    const { id, detail, run } = await acceptedPlan(f, 3);
+    f.runs.get(run.id)!.condition = "ready";
+    const first = await until(detail, d => d.workers.some((w: any) => w.role === "implementer" && w.condition === "working"));
+    f.workers.get(first.workers[0].id)!.condition = "ready";
+    if (scope === "integration") {
+      const second = await until(detail, d => d.workers.filter((w: any) => w.role === "implementer").length === 2);
+      f.workers.get(second.workers[1].id)!.condition = "ready";
+    }
+    await gate.started;
+    const before = await detail();
+    const stoppedId = before.checks.at(-1).id;
+    expect((await f.api(`/implementations/${id}/pause`, {}).then(r => r.json())).pause.condition).toBe("paused");
+    const paused = await until(detail, d => d.checks.find((c: any) => c.id === stoppedId)?.condition === "cancelled");
+    const cancelled = paused.checks.find((c: any) => c.id === stoppedId);
+    expect(cancelled.pause_id).toBe(paused.implementation.pause.id);
+    f.restart();
+    await f.api(`/implementations/${id}/resume`, {});
+    await until(detail, d => !d.runs[0].suspension && d.workers.every((w: any) => !w.suspension));
+    f.runs.get(run.id)!.condition = "ready";
+    for (const worker of f.workers.values()) if (worker.run_id === run.id && worker.condition === "working") worker.condition = "ready";
+    if (scope === "worker") {
+      const second = await until(detail, d => d.workers.filter((w: any) => w.role === "implementer").length === 2);
+      f.workers.get(second.workers[1].id)!.condition = "ready";
+    }
+    const done = await until(detail, d => d.automatic_execution?.[0]?.condition === "checked");
+    expect(done.tickets.map((t: any) => t.status)).toEqual(["done", "done"]);
+    expect(done.checks.filter((c: any) => c.worker_id === cancelled.worker_id).at(-1)).toMatchObject({ condition: "passed", head: cancelled.head, workspace_hash: cancelled.workspace_hash });
+    expect(f.workerLaunches).toHaveLength(2);
+    expect(done.approvals.map((a: any) => a.kind)).toEqual(["specification"]);
+  } finally { gate.release(); f.close(); }
+}, 20000);

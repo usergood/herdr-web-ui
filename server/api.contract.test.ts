@@ -34,6 +34,24 @@ import { forgetTranscriptState } from "./conversation.ts";
  */
 let server: { port: number; stop: () => void };
 
+it("retains the confirmed Pause cancellation identity in public check responses", async () => {
+  const f = await capacityFixture(); const gate = f.holdNextCheck();
+  let checking: Promise<Response> | undefined;
+  try {
+    const id = await f.assignment("Public Pause check shape");
+    const run = await f.api(`/implementations/${id}/runs`, { action: "work", idempotency_key: "check-shape" }).then(r => r.json());
+    checking = f.api(`/runs/${run.id}/checks`, {});
+    await gate.started;
+    const paused = await f.api(`/implementations/${id}/pause`, {}).then(r => r.json());
+    expect(paused.pause.condition).toBe("paused");
+    const check = await checking.then(r => r.json());
+    expect(check).toMatchObject({ condition: "cancelled", pause_id: paused.pause.id, run_id: run.id, worker_id: null });
+    f.restart();
+    expect(await f.api(`/runs/${run.id}/checks/${check.id}/reconcile`, {}).then(r => r.json())).toMatchObject({ id: check.id, condition: "cancelled", pause_id: paused.pause.id });
+    expect((await f.api("").then(r => r.json())).capacity.builds.used).toBe(0);
+  } finally { gate.release(); await checking?.catch(() => {}); f.close(); }
+});
+
 for (const operation of ["discussion", "feedback submission", "approval"] as const) it(`authenticates Human Review ${operation}, enforces origin/header controls and rejects an unrelated review`, async () => {
   const f = await capacityFixture();
   try {

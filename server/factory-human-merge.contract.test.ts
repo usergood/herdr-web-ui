@@ -205,7 +205,7 @@ it("preserves the frozen Project's trusted-reviewer count under repository prote
     ] } });
     const response = await f.post(f.route + "merge", f.body);
     expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({ error: { code: "merge_blocked" } });
+    expect(await response.json()).toMatchObject({ error: { code: "merge_waiting" } });
     expect(f.git(["rev-parse", "main"])).toBe(f.base);
   } finally { f.close(); }
 }, 20000);
@@ -240,4 +240,61 @@ it("blocks a pending merge when its checked evidence is superseded during GitHub
     expect(f.git(["rev-parse", "refs/heads/main"])).toBe(f.base);
     expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(0);
   } finally { f.change({ hold_graphql: false }); await pending?.catch(() => {}); f.close(); }
+}, 20000);
+
+
+it("retains approval while GitHub CI or reviews are pending and merges automatically when they pass", async () => {
+  const f = await capacityFixture({ advancingHeads: true });
+  try {
+    const { prefix, detail } = await published(f);
+    const d = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
+    const review = d.human_reviews[0];
+    f.mergeFailure("merge_waiting");
+    const response = await f.api(`${prefix}/human-review/approve`, { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, idempotency_key: "pending-ci" });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ condition: "pending", observations: 0 });
+    expect(f.mergeEffects).toHaveLength(0);
+    f.restart();
+    await until(detail, () => f.mergeObservations.length >= 7, 20000);
+    expect((await detail()).human_review_approvals[0]).toMatchObject({ condition: "pending", observations: 0 });
+    f.mergeFailure(null);
+    const done = await until(detail, d => d.implementation.stage === "done");
+    expect(done.human_review_approvals).toHaveLength(1);
+    expect(done.human_review_approvals[0]).toMatchObject({ head: review.head, condition: "merged" });
+    expect(f.mergeEffects).toHaveLength(1);
+  } finally { f.close(); }
+}, 30000);
+
+
+it("the owned Machine distinguishes pending GitHub checks and reviews from failed checks", async () => {
+  for (const waiting of ["ci", "review"] as const) {
+    const f = await mergeFixture();
+    try {
+      if (waiting === "ci") f.pull({ mergeStateStatus: "BLOCKED", commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ name: "Required CI", status: "IN_PROGRESS", conclusion: null }], pageInfo: { hasNextPage: false } } } } }], pageInfo: { hasNextPage: false } } });
+      else f.pull({ mergeStateStatus: "BLOCKED", reviewDecision: "REVIEW_REQUIRED", reviewRequests: { nodes: [{ __typename: "User" }], pageInfo: { hasNextPage: false } } });
+      const response = await f.post(f.route + "merge", f.body);
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ error: { code: "merge_waiting" } });
+      expect(f.git(["rev-parse", "main"])).toBe(f.base);
+      if (waiting === "ci") {
+        f.pull({ commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ name: "Required CI", status: "COMPLETED", conclusion: "FAILURE" }], pageInfo: { hasNextPage: false } } } } }], pageInfo: { hasNextPage: false } } });
+        expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ error: { code: "merge_blocked" } });
+      }
+      f.pull({ mergeStateStatus: "CLEAN", reviewDecision: "APPROVED", reviewRequests: { nodes: [], pageInfo: { hasNextPage: false } }, commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ name: "Required CI", status: "COMPLETED", conclusion: "SUCCESS" }], pageInfo: { hasNextPage: false } } } } }], pageInfo: { hasNextPage: false } } });
+      expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "merged" });
+      expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+    } finally { f.close(); }
+  }
+}, 20000);
+
+
+it("pending required CI remains recoverable while GitHub reports unstable or unknown mergeability", async () => {
+  for (const state of ["UNSTABLE", "UNKNOWN"]) {
+    const f = await mergeFixture();
+    try {
+      f.pull({ mergeStateStatus: state, commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ name: "Required CI", status: "IN_PROGRESS", conclusion: null }], pageInfo: { hasNextPage: false } } } } }], pageInfo: { hasNextPage: false } } });
+      expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ error: { code: "merge_waiting" } });
+      expect(f.git(["rev-parse", "main"])).toBe(f.base);
+    } finally { f.close(); }
+  }
 }, 20000);

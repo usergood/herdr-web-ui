@@ -17,7 +17,8 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
   const runs = new Map<string, FactoryRun>(); const workers = new Map<string, FactoryWorker>();
   let allocationGate: { worker: boolean; entered: (id: string) => void; wait: Promise<void> } | null = null;
   let admissionGate: { entered: () => void; wait: Promise<void> } | null = null;
-  let checkGate: { entered: () => void; wait: Promise<void> } | null = null;
+  let checkGate: { entered: () => void; wait: Promise<void>; release: () => void; scope?: "worker" | "integration" } | null = null;
+  const activeChecks = new Map<string, () => void>();
   let rejectSend = false;
   let loseResume = false;
   let loseDelete = false;
@@ -39,6 +40,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
   let loseStop = false;
   let denyPublication = false;
   let mergeFailure: string | null = null; let loseMerge = false;
+  const mergeObservations: string[] = [];
   const mergeEffects: string[] = []; const mergeResults = new Map<string, any>();
   let capabilities: Record<string, any> | null = null;
   let transcript: Pick<NativeConversationSnapshot, "source_id" | "version" | "cursor" | "turns"> = { source_id: "owned-transcript", version: "v1", cursor: null, turns: [] };
@@ -83,7 +85,12 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
         run.condition = "ready";
         const children = [...workers.values()].filter(w => w.run_id === run.id && !["completed", "cancelled", "failed"].includes(w.condition));
         for (const worker of children) { worker.suspension ??= { ...suspension, previous_condition: worker.condition }; worker.condition = "ready"; }
-        return Response.json({ run, workers: children, checks: [] });
+        const stoppedChecks = [...checks.values()].filter(c => c.run_id === run.id);
+        for (const check of stoppedChecks) if (activeChecks.has(check.id)) {
+          Object.assign(check, { condition: "cancelled", pause_id: body.pause_id });
+          activeChecks.get(check.id)!();
+        }
+        return Response.json({ run, workers: children, checks: stoppedChecks });
       }
       if (action === "operations/resume-context") {
         const target = body.worker_id ? workers.get(body.worker_id)! : run;
@@ -104,7 +111,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
         const checked = { ...body.check, head: scenario.advancingHeads ? (body.worker_id ? workers.get(body.worker_id)?.head : tips.get(run.id)) ?? "1".repeat(40) : "1".repeat(40), workspace_hash: "owned-check", commands: [{ args: ["bun", "test"], exit_code: 0, output: "Owned checks passed" }], condition: "passed" } as FactoryCheck;
         if (failCheck) { failCheck = false; checked.condition = "failed"; checked.commands[0]!.exit_code = 1; checked.commands[0]!.output = "Owned check failure"; }
         checks.set(checked.id, checked); executedChecks.push(checked.id);
-        if (checkGate) { const gate = checkGate; checkGate = null; gate.entered(); await gate.wait; }
+        if (checkGate && (!checkGate.scope || checkGate.scope === (body.worker_id ? "worker" : "integration"))) { const gate = checkGate; checkGate = null; activeChecks.set(checked.id, gate.release); gate.entered(); await gate.wait; activeChecks.delete(checked.id); }
         if (loseCheck) { loseCheck = false; return Response.json({ error: { code: "lost_ack", message: "Owned uncertain check" } }, { status: 503 }); }
         return Response.json(checked);
       }
@@ -116,6 +123,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
         return Response.json({ head: worker.base, source_id: `owned-report-${worker.id}`, content: outcome === "passed" ? "FACTORY_REVIEW: PASS\nOwned independent review passed" : "FACTORY_REVIEW: FAIL\nThe accepted result loses the owner's draft on reload", outcome });
       }
       if (action === "operations/merge") {
+        mergeObservations.push(run.id);
         if (mergeFailure) return Response.json({ error: { code: mergeFailure, message: "Unsafe remote diagnostic must not be copied" } }, { status: 409 });
         if (!mergeResults.has(run.id)) {
           mergeEffects.push(run.id);
@@ -169,7 +177,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
     return fetch(`http://localhost:${app.port}${new URL(credential.url).pathname}/${path}`, { method: body === undefined ? "GET" : "POST", headers: { authorization: `Bearer ${credential.token}`, "content-type": "application/json", "x-herdr-factory": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   };
   return { api, agent, assignment, runs, workers, launches, workerLaunches, workerContexts, reviewOutcomes, publications, executedChecks, resumptions, resumeHistories, prompts, state, token, get app() { return app; },
-    mergeEffects,
+    mergeEffects, mergeObservations,
     mergeFailure: (code: string | null) => { mergeFailure = code; },
     loseNextMerge: () => { loseMerge = true; },
     releaseMerged: () => { for (const result of mergeResults.values()) Object.assign(result, { condition: "released", release_tag: "fixture-release", reason: null }); },
@@ -214,11 +222,11 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
     loseNextIntegration: () => { loseIntegration = true; },
     failNextCheck: () => { failCheck = true; },
     integrationConflict: (value: boolean) => { conflict = value; },
-    holdNextCheck: () => {
+    holdNextCheck: (scope?: "worker" | "integration") => {
       let entered!: () => void; let release!: () => void;
       const started = new Promise<void>(resolve => { entered = resolve; });
       const wait = new Promise<void>(resolve => { release = resolve; });
-      checkGate = { entered, wait }; return { started, release };
+      checkGate = { entered, wait, release, scope }; return { started, release };
     },
     restart: () => { app.stop(); app = createServer(options); },
     close: () => { app.stop(); machine.stop(true); rmSync(state, { recursive: true, force: true }); },

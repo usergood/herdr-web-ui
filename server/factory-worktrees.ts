@@ -200,21 +200,27 @@ export class FactoryWorktrees {
     const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))), ...factoryEnvironment(root, id, project.environment, workerId ?? undefined) };
     Object.assign(env, await this.accounts?.environment((run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot, true, path));
     const deadline = Date.now() + 300_000;
-    for (const args of [...project.setup ?? [], ...project.checks ?? []]) {
-      const result = await runFactoryCommand(args, path, env, signal, deadline - Date.now());
+    let pauseId: string | null = null;
+    const recipes = [...project.setup ?? [], ...project.checks ?? []];
+    for (const args of recipes) {
+      const { cancelled, ...result } = await runFactoryCommand(args, path, env, signal, deadline - Date.now());
+      if (cancelled && typeof signal.reason?.pause_id === "string") pauseId = signal.reason.pause_id;
       results.push(this.accounts?.sanitize({ args, ...result }) ?? { args, ...result }); if (result.exit_code || signal.aborted) break;
     }
+    // A Pause between commands has no live child left to kill, but its remaining
+    // recipes still have to run on Resume. A settled validation failure stays failed.
+    if (!pauseId && signal.aborted && typeof signal.reason?.pause_id === "string" && results.length < recipes.length && results.every(entry => entry.exit_code === 0)) pauseId = signal.reason.pause_id;
     const unchanged = head === (await git(path, ["rev-parse", "HEAD"])).trim() && before === await this.workspaceHash(path);
-    return { ...check, head, workspace_hash: before, commands: results, condition: unchanged && results.length > 0 && results.every((entry) => entry.exit_code === 0) ? "passed" : "failed", updated_at: new Date().toISOString() };
+    return { ...check, head, workspace_hash: before, commands: results, ...(pauseId ? { pause_id: pauseId } : {}), condition: pauseId ? "cancelled" : unchanged && results.length === recipes.length && results.length > 0 && results.every((entry) => entry.exit_code === 0) ? "passed" : "failed", updated_at: new Date().toISOString() };
   }
   reconcileCheck(id: string, checkId: string): FactoryCheck {
     const check = this.store.get<FactoryCheck>("host_checks", checkId);
     if (!check || check.run_id !== id) throw new FactoryError("not_found", "Owned check not found", 404);
     return check.condition === "working" && !this.builds.has(checkId) ? { ...check, condition: "interrupted" } : check;
   }
-  async stopChecks(id: string): Promise<void> {
+  async stopChecks(id: string, pauseId?: string): Promise<void> {
     const builds = [...this.builds.values()].filter((build) => build.run_id === id);
-    for (const build of builds) build.controller.abort();
+    for (const build of builds) build.controller.abort(pauseId ? { pause_id: pauseId } : undefined);
     await Promise.allSettled(builds.map((build) => build.promise));
     const unknown = this.store.list<FactoryCheck>("host_checks", id).find(check => ["working", "interrupted"].includes(check.condition) && !this.builds.has(check.id));
     if (unknown) throw new FactoryError("build_identity_uncertain", `Retained build ${unknown.id} has no live cancellation handle; its shutdown remains unconfirmed`, 409);

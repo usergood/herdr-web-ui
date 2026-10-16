@@ -243,6 +243,7 @@ export class FactoryRuntime {
         if (response.status === 409 && /\/operations\/(publish|review-evidence|merge)$/.test(path)) {
           const failure = await response.json().catch(() => null) as { error?: { code?: string } } | null;
           const reasons: Record<string, string> = {
+            merge_waiting: "Waiting for required GitHub checks or reviews; retained approval will be observed automatically",
             merge_blocked: "GitHub protection, pending reviews, required checks or conflicts block this target",
             merge_denied: "GitHub refused this merge under its repository permissions, protection or conflict rules; inspect the PR before further action",
             merge_unconfigured: "Merge requires a resting owned Run, frozen destination and verified GitHub account",

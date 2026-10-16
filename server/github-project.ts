@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { githubDirectory } from "./project-discovery.ts";
 import type { AccountBindingSnapshot } from "../shared/accounts.ts";
-import type { FactoryChat, FactoryMessage, FactoryProject, Implementation, ProjectCheckout } from "../shared/factory.ts";
+import type { FactoryChat, FactoryMessage, FactoryProject, FactoryPullRequest, FactoryRun, Implementation, ProjectCheckout } from "../shared/factory.ts";
 import type { ProjectGitHubConfiguration, ProjectGitHubFiles, ProjectGitHubMutation, ProjectGitHubOverview, ProjectGitHubPolicy, ProjectGitHubPull, ProjectGitHubSource, ProjectPullRequest } from "../shared/github-project.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { FactoryError, hash } from "./factory-host.ts";
@@ -216,6 +216,14 @@ export class ProjectGitHub {
     if (result.errors || !pull || pull.number !== number || !/^[a-f0-9]{40}$/.test(pull.headRefOid) || !/^[a-f0-9]{40}$/.test(pull.baseRefOid) || !this.complete(pull)) throw new FactoryError("github_snapshot_incomplete", "Collect a complete current PR snapshot before changing GitHub", 409);
     return pull;
   }
+  private factoryPull(repository: string, pull: ProjectPullRequest): boolean {
+    const sameRepository = (value: string | undefined) => value?.toLowerCase() === repository.toLowerCase();
+    const ownedBranch = sameRepository(pull.headRepository?.nameWithOwner);
+    // A publication can reach GitHub before its receipt reaches this bridge.
+    // The frozen Run branch fences that interval, across Projects sharing a repo.
+    return this.store.list<FactoryRun>("runs").some(run => ownedBranch && run.action === "implement-spec" && run.branch === pull.headRefName && sameRepository((run.manifest as { project?: FactoryProject }).project?.pull_request?.repository))
+      || ["pull_requests", "host_publications"].some(kind => this.store.list<FactoryPullRequest>(kind).some(pr => sameRepository(pr.repository) && (pr.number === pull.number || ownedBranch && pr.branch === pull.headRefName)));
+  }
   private async mutate(policy: ProjectGitHubPolicy, scope: AccountBindingSnapshot, number: number, action: ProjectGitHubMutation["action"], proof: { head?: unknown; base?: unknown; policy_revision?: unknown }, automatic = false): Promise<void> {
     if (proof.policy_revision !== policy.revision) throw new FactoryError("github_policy_changed", "Refresh the Project policy before changing GitHub", 409);
     const prior = this.store.list<ProjectGitHubMutation>("github_mutations", policy.id).find((item) => item.repository === policy.repository && item.number === number && item.action === action && item.head === proof.head && (item.condition !== "confirmed" || action !== "update" || item.base === proof.base));
@@ -227,6 +235,7 @@ export class ProjectGitHub {
     if (pull.headRefOid !== proof.head || pull.baseRefOid !== proof.base) throw new FactoryError("github_head_changed", "The PR head or target changed; inspect it again", 409);
     if (pull.state !== "OPEN" || pull.isDraft) throw new FactoryError("github_pr_unready", "Select an open non-draft PR", 409);
     if (action === "merge") {
+      if (this.factoryPull(policy.repository, pull)) throw new FactoryError("human_review_required", "Factory PRs merge only through revision-bound Human Review approval", 409);
       const blockers = this.blockers(pull, policy);
       if (blockers.length) throw new FactoryError("github_merge_blocked", blockers.join("; "), 409);
     } else if (!pull.viewerCanUpdate || pull.author?.login.toLowerCase() !== scope.profiles[0]!.identity.login?.toLowerCase()) throw new FactoryError("github_pr_not_owned", "Branch updates and re-review require the selected account's PR", 409);
@@ -239,6 +248,7 @@ export class ProjectGitHub {
     try {
       const path = `repos/${policy.repository}/pulls/${number}`;
       const result = await this.api(policy, scope, path + (action === "merge" ? "/merge" : action === "update" ? "/update-branch" : "/requested_reviewers/rerequest"), action === "merge" ? ["--method", "PUT", "-f", "sha=" + pull.headRefOid, "-f", "merge_method=squash"] : action === "update" ? ["--method", "PUT", "-f", "expected_head_sha=" + pull.headRefOid] : ["--method", "POST", ...reviewers.flatMap((login) => ["-f", "reviewers[]=" + login])], () => {
+        if (action === "merge" && this.factoryPull(policy.repository, pull)) throw new FactoryError("human_review_required", "Factory PRs merge only through revision-bound Human Review approval", 409);
         if (automatic && githubSuppressed(this.store, policy.repository, pull.id, pull.number, "fix", pull.headRefName)) throw new FactoryError("github_source_deleted", "Delete disabled automation for this retained PR", 409);
       }) as { merged?: boolean; message?: string; url?: string; requested_reviewers?: unknown[] };
       if (action === "merge" && result.merged !== true || action === "update" && typeof result.message !== "string" || action === "rerequest" && !Array.isArray(result.requested_reviewers)) throw new FactoryError("github_mutation_unconfirmed", "GitHub did not confirm the mutation receipt", 409);
@@ -308,7 +318,7 @@ export class ProjectGitHub {
           const proof = { head: pull.headRefOid, base: pull.baseRefOid, policy_revision: policy.revision };
           const own = pull.author?.login.toLowerCase() === scope.profiles[0]!.identity.login?.toLowerCase();
           if (policy.auto_update && own && pull.mergeStateStatus === "BEHIND") await this.mutate(policy, scope, pull.number, "update", proof, true);
-          else if (policy.auto_merge && !this.blockers(pull, policy).length) await this.mutate(policy, scope, pull.number, "merge", proof, true);
+          else if (policy.auto_merge && !this.factoryPull(policy.repository, pull) && !this.blockers(pull, policy).length) await this.mutate(policy, scope, pull.number, "merge", proof, true);
           else if (own && previous?.fix_implementation_id && previous.pull.headRefOid !== pull.headRefOid && this.store.get<Implementation>("implementations", previous.fix_implementation_id)?.outcome === "implementation_complete" && this.opinions(pull).some((review) => review.state === "CHANGES_REQUESTED" && review.commit?.oid !== pull.headRefOid) && !pull.reviewRequests.nodes.length) await this.mutate(policy, scope, pull.number, "rerequest", proof, true);
         }
         for (const item of this.store.list<ProjectGitHubPull>("github_pulls", id)) if (!pulls.some((pull) => pull.id === item.pull.id)) this.store.remove("github_pulls", item.id);

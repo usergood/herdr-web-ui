@@ -270,7 +270,9 @@ export interface FactoryPauseResult { run: FactoryRun; workers: FactoryWorker[];
 export interface FactoryCheck extends FactoryRecord {
   run_id: string; worker_id: string | null; head: string; workspace_hash: string;
   commands: { args: string[]; exit_code: number; output: string }[];
-  condition: "working" | "passed" | "failed" | "interrupted";
+  condition: "working" | "passed" | "failed" | "interrupted" | "cancelled";
+  /** Confirmed build shutdown by this Pause; unfinished validation is rerun on Resume. */
+  pause_id?: string;
 }
 export interface FactoryReviewEvidence extends FactoryRecord {
   run_id: string; worker_id: string; axis: "standards" | "spec"; head: string;

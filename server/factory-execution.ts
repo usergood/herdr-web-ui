@@ -245,7 +245,7 @@ export class FactoryExecution {
       if (check.condition === "working") return null;
       if (check.condition === "interrupted") throw new FactoryError("check_interrupted", `Check ${check.id} remains interrupted; its build reservation is retained`, 409);
     }
-    if (!check || check.head !== current.head || current.workspace_hash !== undefined && check.workspace_hash !== current.workspace_hash) check = await this.pipeline.check(run.id, worker?.id ?? null);
+    if (!check || check.condition === "cancelled" && check.pause_id || check.head !== current.head || current.workspace_hash !== undefined && check.workspace_hash !== current.workspace_hash) check = await this.pipeline.check(run.id, worker?.id ?? null);
     if (!this.live(plan)) return null;
     if (["working", "interrupted"].includes(check.condition)) return null;
     if (check.condition !== "passed") throw new FactoryError("checks_failed", `Check ${check.id} failed: ${check.commands.filter(c => c.exit_code !== 0).map(c => c.args.join(" ")).join(", ") || "the checked workspace changed"}`, 409);

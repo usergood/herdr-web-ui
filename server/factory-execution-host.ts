@@ -136,7 +136,7 @@ export class FactoryExecutionHost {
     if (!lease) throw new FactoryError("native_identity_uncertain", "No owned execution lease is available for shutdown", 409);
     this.store.put("host_leases", { ...lease, closing: true });
     let buildFailure: unknown;
-    try { await this.worktrees.stopChecks(id); } catch (error) { buildFailure = error; }
+    try { await this.worktrees.stopChecks(id, pauseId); } catch (error) { buildFailure = error; }
     await this.launches.get(id);
     await Promise.allSettled([...(this.operations.get(id) ?? [])]);
     lease = this.store.get<typeof lease>("host_leases", id)!;

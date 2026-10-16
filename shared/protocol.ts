@@ -1252,7 +1252,7 @@ export const DEFAULT_PORT = 7317;
  * POST .../workers/:worker/refresh|reconcile|integrate (empty) -> FactoryWorker;
  * POST .../workers/:worker/check (empty) -> FactoryCheck; stop (empty) -> {ok:true};
  * POST .../workers/:worker/review-evidence (empty) -> FactoryReviewEvidence; independent current-head report.
- * POST .../checks (empty), POST .../checks/:check/reconcile (empty) -> FactoryCheck; owned build reservation.
+ * POST .../checks (empty), POST .../checks/:check/reconcile (empty) -> FactoryCheck; owned build reservation. Confirmed Pause cancellation is cancelled with pause_id; Resume reruns unfinished validation.
  * POST .../accept (accept) -> FactoryRun; exact head, fresh checks/reviews, resolved findings; no publication.
  * GET /api/factory/tickets/:id -> FactoryTicket; stable app-native tracker identity.
  * POST /api/factory/implementations/:id/snapshots (snapshot) -> ReviewSnapshot, 201;

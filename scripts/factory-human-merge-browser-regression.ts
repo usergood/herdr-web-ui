@@ -61,7 +61,7 @@ try {
           assert.notEqual((await detail()).implementation.stage, "done"); assert.equal(f.mergeEffects.length, 0);
         } else if (["protected", "denied", "stale"].includes(scenario)) {
           const reason = scenario === "protected" ? "GitHub protection, pending reviews, required checks or conflicts block this target" : scenario === "denied" ? "GitHub refused this merge under its repository permissions, protection or conflict rules; inspect the PR before further action" : "The checked workspace changed after Human Review capture";
-          await review.getByText(reason, { exact: true }).waitFor();
+          await review.getByRole("alert").filter({ hasText: reason }).waitFor();
           assert.notEqual((await detail()).implementation.stage, "done");
           assert.equal(f.mergeEffects.length, 0);
         } else if (scenario === "release") {
