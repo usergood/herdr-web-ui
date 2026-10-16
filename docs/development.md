@@ -118,6 +118,7 @@ bun scripts/shortcut-exact-modifiers-demo-regression.ts # recording exact-modifi
 bun scripts/output-browser-qa.ts # terminal output flow control end to end
 bun scripts/math-browser-qa.ts  # chat math: KaTeX loads with the first expression
 bun scripts/recent-folders-regression.ts # owned workspaces: PC-scoped history, reload, three chips on one row that fill Directory, pending and failures
+bun scripts/phone-worktree-sheet-regression.ts # a phone's New worktree sheet: the agent list's own stroke, and a Shell checkout's terminal opening
 bun run test:ssh                # remote-PC integration over SSH
 bun scripts/fresh-install-docker.ts [owner/repo] [ref]  # a new user's install in a bare Ubuntu (Docker)
 ```

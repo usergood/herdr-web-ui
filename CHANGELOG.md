@@ -74,6 +74,12 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   ([#1237](https://github.com/devswha/herdr-web-ui/pull/1237))
 
 ### Fixed
+- On a phone, a New worktree made with Shell opens its terminal: closing the sheet no longer sent
+  the app back to the pane it was opened on before the new pane was listed.
+  ([#1241](https://github.com/devswha/herdr-web-ui/pull/1241))
+- On a phone, a downward stroke on an open agent list scrolls the list instead of pulling down the
+  dialog under it.
+  ([#1241](https://github.com/devswha/herdr-web-ui/pull/1241))
 - Approve all saved Human Review comments together, repair and independently validate their exact lineage, then merge without another approval; retain authorization across restart and Pause while blocking unrelated changes and unsafe delivery.
   ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
 - Approve checked Human Review candidates with an explicit, repeat-safe merge control, preserve stale/protected/denied outcomes, and verify merge or containing-release delivery before Done.

@@ -20,6 +20,7 @@ import { usePreferencesSync } from "./lib/preferencesSync.ts";
 import { TabStrip } from "./components/TabStrip.tsx";
 import { SettingsDialog } from "./components/SettingsDialog.tsx";
 import { loadedOnSettingsEntry, onSettingsHistory, recordSettings, settingsEntry } from "./lib/settingsHistory.ts";
+import { sheetSteppedOff } from "./lib/sheetHistory.ts";
 import { projectSettingsHistory } from "./lib/projectSettingsHistory.ts";
 import { fileFromLink, followMoved, isNavigation, linkSearch, linksSomewhere, NAV_KEY, readLink, resolveLink, slugOf, type AppLink, type CreateDraft, type LinkNote } from "./lib/deepLink.ts";
 import { copyText } from "./lib/clipboard.ts";
@@ -1225,6 +1226,9 @@ export function App() {
   useEffect(() => {
     const onPop = (event: PopStateEvent): void => {
       if (settingsEntry(event.state) !== null || projectSettingsHistory.settingsEntry(event.state) !== null) return;
+      // a phone's sheet closing itself steps off its entry: not a Back, and what its item opened (a
+      // worktree's shell, before the roster lists it) is written over the address once it is listed
+      if (sheetSteppedOff()) return;
       const link = readLink(window.location.search);
       // before the PCs are in, nothing can say the entry's PC is still set up: it waits as a link
       // opened with the page does, settled against its roster or answered with a note once they are

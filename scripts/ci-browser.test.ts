@@ -110,8 +110,8 @@ describe("browser lane", () => {
   it("summarizes every script and exits zero on success without enabling local evidence", async () => {
     const { text, code, evidence } = await lane();
     expect(code).toBe(0);
-    expect(rows(text)).toHaveLength(100);
-    expect(new Set(rows(text).map(row => row.script)).size).toBe(100);
+    expect(rows(text)).toHaveLength(101);
+    expect(new Set(rows(text).map(row => row.script)).size).toBe(101);
     expect(rows(text).map((row) => row.script)).toContain("scripts/issue-planning-browser-regression.ts");
     expect(rows(text).map((row) => row.script)).toContain("scripts/issue-queue-browser-regression.ts");
     expect(rows(text).map((row) => row.script)).toContain("scripts/upstream-releases-browser-regression.ts");
