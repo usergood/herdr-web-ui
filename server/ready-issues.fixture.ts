@@ -40,6 +40,16 @@ export async function readyIssuesFixture(behavior: { reviewOutcome?: "passed" | 
   let uncertainDelivery = false;
   let reviewOutcome = behavior.reviewOutcome ?? "passed";
   let failLaunch = false, offline = false;
+  let nextHeadHold: { observed: () => void; released: Promise<void>; skip: number } | null = null;
+  const releaseHeads = new Set<() => void>();
+  const holdHeadResponse = (skip = 0) => {
+    if (nextHeadHold) throw new Error("An owned head response is already held");
+    let observed!: () => void, release!: () => void;
+    const received = new Promise<void>(resolve => { observed = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    nextHeadHold = { observed, released, skip }; releaseHeads.add(release);
+    return { received, release: () => { releaseHeads.delete(release); release(); } };
+  };
   const host = Bun.serve({ port: 0, async fetch(request) {
     const url = new URL(request.url);
     const body = request.method === "POST" ? await request.json() as any : {};
@@ -73,7 +83,11 @@ export async function readyIssuesFixture(behavior: { reviewOutcome?: "passed" | 
       const run = runs.get(nativeOperation[1]!)!;
       const action = nativeOperation[2];
       const worker = workers.get(body.worker_id);
-      if (action === "head") return Response.json(head(run.worktree!));
+      if (action === "head") {
+        const result = head(run.worktree!), held = nextHeadHold;
+        if (held && held.skip-- === 0) { nextHeadHold = null; held.observed(); await held.released; }
+        return Response.json(result);
+      }
       if (action === "transcript") return Response.json({ ...(worker ? { worker_id: worker.id } : {}), source_id: `owned:${run.id}:${worker?.id ?? "parent"}`, version: body.before ? "earlier-v1" : "latest-v1", cursor: body.before ? null : "owned-earlier-page", turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: `${body.before ? "Earlier" : "Final"} owned ready-issue context retained before closure` }] }] });
       if (action === "worker") {
         if (new TextEncoder().encode(JSON.stringify(body)).length > 512 * 1024) return Response.json({ error: { code: "body_too_large", message: "Owned remote context limit" } }, { status: 413 });
@@ -140,7 +154,7 @@ export async function readyIssuesFixture(behavior: { reviewOutcome?: "passed" | 
   const plan = { acceptance_criteria: "Owner decisions survive automatic implementation", testing_seams: ["Public HTTP/API and browser journeys"], planning_decisions: ["One Assignment per deliverable"], dependencies: [] };
   const respond = (value: object) => writeFileSync(base.responses, JSON.stringify(value));
   return { ...base, origin, request, project, route, policy, issue, plan, respond, launches,
-    repo, agentContract: async (runId: string) => {
+    repo, holdHeadResponse, agentContract: async (runId: string) => {
       const access = accesses.get(runId)!;
       const response = await fetch(origin() + new URL(access.url).pathname + "/contract", { headers: { authorization: `Bearer ${access.token}` } });
       if (!response.ok) throw new Error(`Owned contract read failed: ${response.status}`);
@@ -150,6 +164,6 @@ export async function readyIssuesFixture(behavior: { reviewOutcome?: "passed" | 
     restWorker: (id: string) => { const worker = workers.get(id)!; workers.set(id, { ...worker, ...head(worker.worktree!), condition: "ready" }); },
     tick: () => poll(), restart: () => { app.stop(); app = createServer(options); },
     failLaunch: (value: boolean) => { failLaunch = value; }, offline: (value: boolean) => { offline = value; },
-    close: () => { app.stop(); host.stop(); base.close(); },
+    close: () => { for (const release of releaseHeads) release(); releaseHeads.clear(); app.stop(); host.stop(); base.close(); },
   };
 }

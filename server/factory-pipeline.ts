@@ -299,6 +299,8 @@ export class FactoryPipeline {
     if (run.action !== "implement-spec" || run.issue_pause || run.scope_pause || !["ready", "completed"].includes(run.condition) && !run.implementation_completion_pending && !retired) return run;
     let current: { head: string; workspace_hash: string } | null = null;
     try { current = await this.runtime.operation(run, "head"); } catch { /* Unobservable evidence retains capacity. */ }
+    const observed = this.store.get<FactoryRun>("runs", id)!;
+    if (JSON.stringify(observed) !== JSON.stringify(run)) return observed;
     const cleaned = this.store.get<CompletionCleanup>("implementation_cleanup", id);
     if (!current && run.condition === "completed" && !run.implementation_completion_pending && run.implementation_completion
       && cleaned?.machine_id === run.machine_id && cleaned.worktree === run.worktree && cleaned.branch === run.branch
@@ -317,6 +319,8 @@ export class FactoryPipeline {
     }
     if (run.implementation_completion && JSON.stringify(run.implementation_completion) === JSON.stringify(completion)) return run;
     await this.retainBeforeStop(id);
+    const retained = this.store.get<FactoryRun>("runs", id)!;
+    if (JSON.stringify(retained) !== JSON.stringify(run)) return retained;
     const finished = await this.retireImplementation(run, completion);
     const implementation = this.store.get<Implementation>("implementations", run.implementation_id)!;
     if (!["merged", "released"].includes(implementation.outcome)) this.store.put("implementations", { ...implementation, stage: "review", activity: hasIssueSource(this.store, run.implementation_id) ? "awaiting_merge" : undefined });
@@ -361,10 +365,13 @@ export class FactoryPipeline {
     // A crash or a changed head after Stop must not turn confirmed physical
     // termination into either lost logical ownership or an unrecoverable pending flag.
     this.store.put("implementation_retirement", { ...this.store.get<{ id: string; rework_requested?: boolean }>("implementation_retirement", run.id), id: run.id }, run.implementation_id);
+    const retiring = this.store.get<FactoryRun>("runs", run.id)!;
     const head = await this.runtime.operation<{ head: string; workspace_hash: string }>(run, "head");
+    const current = this.store.get<FactoryRun>("runs", run.id)!;
+    if (JSON.stringify(current) !== JSON.stringify(retiring)) throw new FactoryError("execution_changed", "The implementation changed while retirement was being verified; reconcile its current ownership", 409);
     const completion = this.completionEvidence(run, head);
     if (!completion || JSON.stringify(completion) !== JSON.stringify(expected)) throw new FactoryError("fresh_evidence_required", "Implementation changed while retiring execution; retain capacity and reconcile", 409);
-    const finished: FactoryRun = { ...stopped, condition: "completed", implementation_completion_pending: undefined, implementation_completion: completion };
+    const finished: FactoryRun = { ...stopped, ...current, condition: "completed", implementation_completion_pending: undefined, implementation_completion: completion };
     this.store.db.transaction(() => {
       this.store.put("runs", finished, run.implementation_id);
       this.store.remove("implementation_retirement", run.id);
