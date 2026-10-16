@@ -24,6 +24,26 @@ it("approves and verifies one checked Human Review merge without a spare agent s
 
 import { mergeFixture } from "../scripts/factory-merge-fixture.ts";
 
+it("the Machine replaces only a positively unsent intent for fresh approval at an unchanged repaired head", async () => {
+  for (const sent of [false, true]) {
+    const f = await mergeFixture();
+    try {
+      if (sent) f.change({ lose: true }); else f.pull({ mergeStateStatus: "DIRTY" });
+      const first = await f.post(f.route + "merge", f.body);
+      expect(first.status).toBe(sent ? 200 : 409);
+      const fresh = structuredClone(f.body);
+      fresh.approval.id = crypto.randomUUID(); fresh.approval.idempotency_key = "fresh-owner-approval";
+      fresh.approval.snapshot_id = crypto.randomUUID();
+      f.pull({ mergeStateStatus: "CLEAN" }); f.restart();
+      const response = await f.post(f.route + "merge", fresh);
+      expect(response.status).toBe(sent ? 409 : 200);
+      if (sent) expect((await response.json()).error.code).toBe("merge_authority_changed");
+      else expect(await response.json()).toMatchObject({ condition: "merged", head: f.head });
+      expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+    } finally { f.close(); }
+  }
+}, 20000);
+
 it("the owned Machine verifies a squash merge after a lost acknowledgment and restart without merging twice", async () => {
   const f = await mergeFixture();
   try {

@@ -115,7 +115,7 @@ describe("Assignment Pause and Resume through authenticated HTTP", () => {
     try {
       const id = await f.assignment("Uncertain build shutdown");
       const run = await f.api(`/implementations/${id}/runs`, { action: "work", idempotency_key: "active" }).then(r => r.json());
-      f.loseNextCheck();
+      f.loseNextCheck(); f.unconfirmedBuildShutdown(true);
       expect((await f.api(`/runs/${run.id}/checks`, {}).then(r => r.json())).condition).toBe("interrupted");
       const paused = await f.api(`/implementations/${id}/pause`, {}).then(r => r.json());
       expect(paused.pause.condition).toBe("pending");

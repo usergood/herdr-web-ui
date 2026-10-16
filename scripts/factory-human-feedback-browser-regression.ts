@@ -38,7 +38,7 @@ try {
       await githubPage.goto(`${origin}/#projects/${project.id}/settings`);
       await githubPage.getByRole("tab", { name: "GitHub", exact: true }).click();
       const github = githubPage.getByTestId("project-github");
-      const assertFactoryFence = async () => {
+      const assertFactoryFence = async (expectedApprovals = 1) => {
         const pr = (await detail()).pull_requests.at(-1);
         const pull = { ...structuredClone(fictionalGitHubPull), headRefOid: pr.head, headRefName: pr.branch, author: { login: "fictional-owner" }, viewerCanUpdate: true, mergeStateStatus: "CLEAN", reviewDecision: "APPROVED", reviewRequests: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } }, reviews: { nodes: [{ id: "owned-review", state: "APPROVED", body: "Owned review", submittedAt: "2026-10-16T00:00:00Z", author: { login: "fictional-reviewer" }, commit: { oid: pr.head } }], pageInfo: { hasNextPage: false, endCursor: null } } };
         writeFileSync(g.state, JSON.stringify({ issues: [], pulls: [pull] }));
@@ -49,12 +49,17 @@ try {
         await github.getByRole("button", { name: "Merge PR", exact: true }).click();
         await githubPage.getByRole("alert").filter({ hasText: "Factory PRs merge only through revision-bound Human Review approval" }).waitFor();
         assert(!readFileSync(g.log, "utf8").includes("/pulls/27/merge"));
-        assert.equal((await detail()).human_review_approvals.length, 0);
+        assert.equal((await detail()).human_review_approvals.length, expectedApprovals);
         assert.equal(f.mergeEffects.length, 0);
       };
-      await assertFactoryFence();
-
       const review = page.getByRole("region", { name: "Human Review", exact: true });
+      f.mergeFailure("merge_blocked");
+      await review.getByRole("button", { name: "Approve and merge", exact: true }).click();
+      await review.getByRole("alert").filter({ hasText: "GitHub protection, pending reviews, required checks or conflicts block this target" }).waitFor();
+      const oldApproval = (await detail()).human_review_approvals[0];
+      assert.equal(oldApproval.condition, "blocked"); assert.equal(oldApproval.merge_not_sent, true);
+      f.mergeFailure(null);
+      await assertFactoryFence();
       for (let round = 0; round < 2; round++) {
         const before = await detail(); const previous = before.human_reviews[0];
         await review.getByRole("button", { name: "After 1", exact: true }).click();
@@ -68,12 +73,15 @@ try {
         assert(await review.getByRole("button", { name: "Decline", exact: true }).isDisabled());
         const fixing = await until(detail, d => d.workers.some((w: any) => w.review_origin === "human" && w.condition === "working"));
         const fix = fixing.workers.find((w: any) => w.review_origin === "human" && w.condition === "working");
+        if (round === 0) f.workers.get(fix.id)!.head = previous.head; // Owned Machine reports a completed no-op repair.
         f.workers.get(fix.id)!.condition = "ready";
         for (const axis of ["standards", "spec"]) {
           const d = await until(detail, d => d.workers.some((w: any) => w.role === axis && w.condition === "working"));
           f.workers.get(d.workers.find((w: any) => w.role === axis && w.condition === "working").id)!.condition = "ready";
         }
-        const returned = await until(detail, d => d.human_reviews[0].condition === "ready" && d.human_reviews[0].head !== previous.head);
+        const returned = await until(detail, d => d.human_reviews[0].condition === "ready" && d.human_feedback_batches[round]?.resolution);
+        assert.equal(returned.human_reviews[0].head === previous.head, round === 0);
+        assert.notEqual(returned.human_reviews[0].snapshot_id, previous.snapshot_id);
         assert.equal(returned.human_reviews[0].id, previous.id);
         await review.getByText("Fixes passed checks and independent reviews. Awaiting your approval.", { exact: true }).waitFor();
         await page.reload();
@@ -81,7 +89,19 @@ try {
         assert.equal(returned.human_feedback_batches.length, round + 1);
         assert(returned.human_feedback_batches.every((b: any) => b.merge_authorized === false));
         assert.equal(returned.implementation.stage, "review");
-        await assertFactoryFence();
+        await assertFactoryFence(round + 1);
+        if (round === 0) {
+          f.mergeFailure("merge_blocked");
+          await review.getByRole("button", { name: "Approve and merge", exact: true }).click();
+          await review.getByRole("alert").filter({ hasText: "GitHub protection, pending reviews, required checks or conflicts block this target" }).waitFor();
+          const retried = (await detail()).human_review_approvals;
+          assert.equal(retried.length, 2);
+          assert.equal(retried[1].head, oldApproval.head);
+          assert.equal(retried[1].snapshot_id, returned.human_reviews[0].snapshot_id);
+          assert.notEqual(retried[1].idempotency_key, oldApproval.idempotency_key);
+          assert.equal(retried[1].merge_not_sent, true);
+          f.mergeFailure(null);
+        }
       }
       assert.equal(await review.getByRole("region", { name: "Draft comments", exact: true }).locator("article").count(), 0);
       assert.equal(await review.getByRole("region", { name: "Submitted comments", exact: true }).locator("article").count(), 2);
@@ -89,6 +109,13 @@ try {
       await review.getByText("Merge verified", { exact: true }).waitFor();
       assert.equal((await detail()).implementation.outcome, "merged");
       assert.equal(f.mergeEffects.length, 1);
+      const approvals = (await detail()).human_review_approvals;
+      assert.equal(approvals.length, 3);
+      assert.equal(approvals[0].id, oldApproval.id);
+      assert.equal(approvals[0].condition, "blocked");
+      assert.equal(approvals[0].superseded_by_batch_id, (await detail()).human_feedback_batches[0].id);
+      assert.equal(approvals[1].superseded_by_batch_id, (await detail()).human_feedback_batches[1].id);
+      assert.notEqual(approvals[2].snapshot_id, oldApproval.snapshot_id);
       assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       assert.deepEqual(errors, []);
     } finally { await context.close(); f.close(); g.close(); }

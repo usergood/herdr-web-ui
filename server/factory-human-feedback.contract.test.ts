@@ -3,6 +3,38 @@ import { capacityFixture } from "../scripts/factory-capacity-fixture.ts";
 import { published, until } from "../scripts/factory-human-review-fixture.ts";
 
 describe("Human Review Decline through authenticated HTTP", () => {
+  for (const noOp of [false, true]) it(`retains obsolete blocked authority while allowing explicit approval after ${noOp ? "unchanged-head" : "changed-head"} Decline repairs`, async () => {
+    const f = await capacityFixture({ advancingHeads: true });
+    try {
+      const { prefix, detail } = await published(f);
+      const original = (await until(detail, d => d.human_reviews?.[0]?.condition === "ready")).human_reviews[0];
+      const approve = (review: any, key: string) => f.api(`${prefix}/human-review/approve`, { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, idempotency_key: key });
+      f.mergeFailure("merge_blocked");
+      const old = await approve(original, "original-authority").then(r => r.json());
+      expect(old.condition).toBe("blocked");
+      const comment = await f.api(`${prefix}/comments`, { snapshot_id: original.snapshot_id, path: "progress.ts", side: "new", line_start: 1, line_end: 1, content: "Repair the blocked candidate" }).then(r => r.json());
+      const response = await f.api(`${prefix}/human-review/submit`, { review_id: original.id, snapshot_id: original.snapshot_id, head: original.head, disposition: "decline", comment_ids: [comment.id], idempotency_key: "decline-blocked" });
+      expect(response.status).toBe(202); const batch = await response.json();
+      for (const role of ["implementer", "standards", "spec"]) {
+        const d = await until(detail, d => d.workers.some((w: any) => w.role === role && w.condition === "working"));
+        const worker = f.workers.get(d.workers.find((w: any) => w.role === role && w.condition === "working").id)!;
+        if (noOp && role === "implementer") worker.head = original.head;
+        worker.condition = "ready";
+      }
+      const repaired = await until(detail, d => d.human_reviews[0].condition === "ready" && d.human_feedback_batches[0]?.resolution);
+      expect(repaired.human_reviews[0].head === original.head).toBe(noOp);
+      expect(repaired.human_reviews[0].snapshot_id).not.toBe(original.snapshot_id);
+      const current = repaired.human_reviews[0]; expect(current.id).toBe(original.id);
+      expect(f.mergeEffects).toHaveLength(0);
+      expect((await approve(current, "original-authority")).status).toBe(409);
+      f.restart(); f.mergeFailure(null);
+      const fresh = await approve(current, "repaired-authority"); expect(fresh.status).toBe(200);
+      expect(await fresh.json()).toMatchObject({ condition: "merged", head: current.head, snapshot_id: current.snapshot_id });
+      const final = await detail(); expect(final.human_review_approvals).toHaveLength(2);
+      expect(final.human_review_approvals.find((a: any) => a.id === old.id)).toMatchObject({ head: original.head, snapshot_id: original.snapshot_id, condition: "blocked", superseded_by_batch_id: batch.id });
+      expect(f.mergeEffects).toHaveLength(1);
+    } finally { f.close(); }
+  }, 30000);
   it("rejects incomplete or stale feedback atomically and claims concurrent retries only once", async () => {
     const f = await capacityFixture({ advancingHeads: true });
     try {

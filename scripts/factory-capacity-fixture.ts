@@ -20,7 +20,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
   let checkGate: { entered: () => void; wait: Promise<void>; release: () => void; scope?: "worker" | "integration" } | null = null;
   const activeChecks = new Map<string, () => void>();
   let rejectSend = false;
-  let loseResume = false;
+  let loseResume = false; let unconfirmedCheckShutdown = false;
   let loseDelete = false;
   const resumptions: string[] = [];
   const resumeHistories: unknown[] = [];
@@ -90,7 +90,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
           Object.assign(check, { condition: "cancelled", pause_id: body.pause_id });
           activeChecks.get(check.id)!();
         }
-        return Response.json({ run, workers: children, checks: stoppedChecks });
+        return Response.json({ run, workers: children, checks: unconfirmedCheckShutdown ? [] : stoppedChecks });
       }
       if (action === "operations/resume-context") {
         const target = body.worker_id ? workers.get(body.worker_id)! : run;
@@ -219,6 +219,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
     loseNextLaunch: () => { loseLaunch = true; },
     loseNextWorker: () => { loseWorker = true; },
     loseNextCheck: () => { loseCheck = true; },
+    unconfirmedBuildShutdown: (value: boolean) => { unconfirmedCheckShutdown = value; },
     loseNextIntegration: () => { loseIntegration = true; },
     failNextCheck: () => { failCheck = true; },
     integrationConflict: (value: boolean) => { conflict = value; },

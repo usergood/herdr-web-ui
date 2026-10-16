@@ -34,7 +34,13 @@ try {
       const other = await f.assignment("Capacity during Pause");
       const holder = await f.api(`/implementations/${other}/runs`, { action: "work", idempotency_key: "holder" }).then(r => r.json());
       await controls.getByRole("button", { name: "Resume Assignment", exact: true }).click();
-      await page.getByRole("region", { name: "Factory capacity", exact: true }).getByText("Waiting for capacity to continue unfinished work", { exact: true }).waitFor();
+      const capacity = page.getByRole("region", { name: "Factory capacity", exact: true });
+      const queued = capacity.getByRole("listitem").filter({ has: page.getByRole("link", { name: "Pause all owned work", exact: true }) });
+      await queued.getByText(/Waiting for (capacity to continue unfinished work|agent capacity: normal 1\/1)/).waitFor();
+      const waiting = await f.api(`/implementations/${id}`).then(r => r.json());
+      assert(waiting.capacity_waiting.some((w: any) => w.continuation && w.run_id === run.id && w.condition === "queued"));
+      assert.equal(waiting.runs[0].suspension.condition, "stopped");
+      assert.equal(f.resumptions.length, 0);
       await page.reload();
       await f.api(`/runs/${holder.id}/stop`, {});
       await controls.getByRole("button", { name: "Pause Assignment", exact: true }).waitFor();

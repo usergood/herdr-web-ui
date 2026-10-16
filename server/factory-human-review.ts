@@ -39,6 +39,7 @@ export class FactoryHumanReview {
       const comments = this.store.list<import("../shared/factory.ts").ReviewComment>("comments", id).filter(c => c.batch_id === null && !c.resolution && ["draft", "outdated"].includes(c.status));
       if (comments.length !== (body.comment_ids as string[]).length || comments.some(c => !(body.comment_ids as string[]).includes(c.id) || c.snapshot_id !== entry.snapshot_id || c.status !== "draft")) throw new FactoryError("draft_batch_changed", "Submit every current draft from this exact snapshot; reconcile stale drafts first", 409);
       const batch: import("../shared/factory.ts").FactoryHumanFeedbackBatch = { ...this.store.record(), implementation_id: id, run_id: run.id, review_id: entry.id, snapshot_id: snapshot.id, head: entry.head, origin: "human", disposition: body.disposition as "decline" | "approve", merge_authorized: body.disposition === "approve", key: body.idempotency_key as string, signature, status: "sent", comment_ids: comments.map(c => c.id), ticket_ids: plan.tickets.map(t => t.id) };
+      this.approval.supersedeForFeedback(id, entry, batch.id);
       if (batch.merge_authorized) this.approval.authorizeRepairs(id, entry, batch, origin);
       this.store.put("review_batches", batch, id);
       for (const c of comments) this.store.put("comments", { ...c, status: "submitted", batch_id: batch.id }, id);

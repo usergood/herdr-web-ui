@@ -1241,6 +1241,10 @@ export const DEFAULT_PORT = 7317;
  * FactoryHumanApproval. Same-origin authenticated owner control; no Agent context needed.
  * Exact snapshot/head plus fresh checks and both independent reports are required; retained
  * comments cannot be omitted. Detail.human_review_approvals retains the decision and result.
+ * merge_not_sent positively records a pre-send protection refusal; only that blocked authority
+ * may be superseded by explicit feedback (superseded_by_batch_id). Historical receipts persist;
+ * repaired candidates require a new snapshot-bound approval identity and fresh evidence.
+ * Unknown sent outcomes cannot be superseded or replayed.
  * Machine-only operations/merge requires x-herdr-machine: 1 and the exact retained owner
  * approval/publication identity. A sent merge is observed, never replayed. Done requires
  * verified target coverage and a containing published release if frozen delivery_policy=release.

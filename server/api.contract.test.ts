@@ -1,4 +1,5 @@
 import { FactoryStore } from "./factory-store.ts";
+import { published, until } from "../scripts/factory-human-review-fixture.ts";
 import { capacityFixture } from "../scripts/factory-capacity-fixture.ts";
 import { seedWorkflowConversations } from "../scripts/fixtures/workflow-conversations.ts";
 import type { FactoryDetail, FactoryRun } from "../shared/factory.ts";
@@ -51,6 +52,29 @@ it("retains the confirmed Pause cancellation identity in public check responses"
     expect((await f.api("").then(r => r.json())).capacity.builds.used).toBe(0);
   } finally { gate.release(); await checking?.catch(() => {}); f.close(); }
 });
+
+it("retains Human Review pre-send proof and superseded authority without replacing uncertain merges", async () => {
+  for (const code of ["merge_blocked", "merge_denied", "merge_uncertain"]) {
+    const f = await capacityFixture({ advancingHeads: true });
+    try {
+      const { prefix, detail } = await published(f);
+      const review = (await until(detail, d => d.human_reviews?.[0]?.condition === "ready")).human_reviews[0];
+      f.mergeFailure(code);
+      const approval = await f.api(`${prefix}/human-review/approve`, { review_id: review.id, head: review.head, snapshot_id: review.snapshot_id, idempotency_key: "wire-authority" }).then(r => r.json());
+      expect(approval.merge_not_sent).toBe(code === "merge_blocked");
+      const c = await f.api(`${prefix}/comments`, { snapshot_id: review.snapshot_id, path: "progress.ts", side: "new", line_start: 1, line_end: 1, content: "Explicit replacement feedback" }).then(r => r.json());
+      const response = await f.api(`${prefix}/human-review/submit`, { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, disposition: "decline", comment_ids: [c.id], idempotency_key: "wire-feedback" });
+      expect(response.status).toBe(code === "merge_blocked" ? 202 : 409);
+      const batch = await response.json();
+      if (code !== "merge_blocked") expect(batch.error.code).toBe("approval_conflict");
+      f.restart();
+      const retained = (await detail()).human_review_approvals;
+      expect(retained).toHaveLength(1); expect(retained[0].id).toBe(approval.id);
+      expect(retained[0].superseded_by_batch_id).toBe(code === "merge_blocked" ? batch.id : undefined);
+      expect(f.mergeEffects).toHaveLength(0);
+    } finally { f.close(); }
+  }
+}, 30000);
 
 for (const operation of ["discussion", "feedback submission", "approval"] as const) it(`authenticates Human Review ${operation}, enforces origin/header controls and rejects an unrelated review`, async () => {
   const f = await capacityFixture();

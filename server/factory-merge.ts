@@ -75,7 +75,12 @@ export class FactoryMerge {
     await assertCurrent();
     const key = `${id}:${pr.head}`;
     let intent = this.store.get<Intent>("host_merges", key);
-    if (intent && (intent.approval.id !== approval.id || JSON.stringify(intent.pr) !== JSON.stringify(pr))) throw new FactoryError("merge_authority_changed", "A different retained approval owns this merge", 409);
+    if (intent && (intent.approval.id !== approval.id || JSON.stringify(intent.pr) !== JSON.stringify(pr))) {
+      if (intent.condition !== "prepared") throw new FactoryError("merge_authority_changed", "A different retained approval owns this merge", 409);
+      // A checked no-op repair may retain the head while explicit owner authority
+      // changes. Only a positively unsent intent can adopt the validated request.
+      intent = { id: key, approval, pr, condition: "prepared" };
+    }
     intent ??= { id: key, approval, pr, condition: "prepared" };
     this.store.put("host_merges", intent, id);
     const api = async (path: string, args: string[] = [], guard = assertLive) => { const value = await this.accounts!.github(frozen.account_snapshot!, ["api", path, ...args], guard); assertLive(); return value; };

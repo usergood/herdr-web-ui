@@ -41,6 +41,7 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
   if (method === "POST" && /\/comments\/[^/]+\/(edit|delete)$/.test(url.pathname)) return failure("demo_unavailable", "Editing review drafts requires a captured repository review on a real Machine");
   const path = url.pathname;
   if (/^\/api\/factory-host\/runs\/[^/]+\/operations\/publish$/.test(path)) return failure("demo_unavailable", "PR publication requires an owned execution Machine and explicit Project destination");
+  // Real approval history, including pre-send refusal and supersession, is never fabricated here.
   if (/^\/api\/factory\/implementations\/[^/]+\/human-review\/approve$/.test(path)) return failure("demo_unavailable", "Merge approval requires a real checked candidate, owned execution Machine and verified GitHub account");
   if (/^\/api\/factory\/implementations\/[^/]+\/human-review\/messages$/.test(path)) return failure("demo_unavailable", "Human Review discussion requires a real execution Machine; retained fictional reviews remain readable");
   if (/^\/api\/factory\/implementations\/[^/]+\/human-review\/submit$/.test(path)) return failure("demo_unavailable", "Feedback repairs and conditional merge approval require a real checked candidate and execution Machine; Decline grants no merge authority");

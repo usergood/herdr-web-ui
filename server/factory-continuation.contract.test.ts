@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "./index.ts";
@@ -99,6 +99,29 @@ describe("continuing approved workflow steps", () => {
       expect((await f.request("").then(r => r.json())).capacity.builds.used).toBe(0);
     } finally { await f.close(); }
   }, 60_000);
+  for (const action of ["pause", "delete"] as const) it.skipIf(process.platform === "win32")(`${action} stops a SIGTERM-resistant owned build descendant after its leader exits`, async () => {
+    const f = await fixture(`owned-descendant-${action}`); let descendant = 0;
+    const ready = join(f.repo, "..", "descendant-ready");
+    const child = `process.on("SIGTERM", () => {}); require("node:fs").writeFileSync(${JSON.stringify(ready)}, String(process.pid)); setInterval(() => {}, 1000)`;
+    const parent = `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(child)}], { stdio: "ignore" }); setInterval(() => {}, 1000)`;
+    const running = () => { try { const state = readFileSync(`/proc/${descendant}/stat`, "utf8").split(") ")[1]?.[0]; return state !== "Z"; } catch { try { process.kill(descendant, 0); return true; } catch { return false; } } };
+    try {
+      const detail = await f.request(f.prefix).then(r => r.json());
+      await f.request(`/projects/${detail.implementation.project_id}/configure`, { checks: [["node", "-e", parent]], permissions: "Owned unpaid test fixtures only" });
+      const run = await f.start("work", `descendant-${action}`);
+      const checking = f.request(`/runs/${run.id}/checks`, {});
+      for (const deadline = Date.now() + 8000; !existsSync(ready) && Date.now() < deadline;) await Bun.sleep(20);
+      expect(existsSync(ready)).toBe(true); descendant = Number(readFileSync(ready, "utf8")); expect(running()).toBe(true);
+      const response = await f.request(`${f.prefix}/${action}`, {});
+      expect(response.ok).toBe(true);
+      const result = await response.json();
+      if (action === "pause") expect(result.pause.condition).toBe("paused");
+      else expect(result.condition).toBe("deleted");
+      expect(running()).toBe(false);
+      await checking;
+      expect((await f.request("").then(r => r.json())).capacity.builds.used).toBe(0);
+    } finally { if (descendant) { try { process.kill(descendant, "SIGKILL"); } catch {} } await f.close(); }
+  }, 60000);
   it("preserves a genuine configured validation failure when the owner later pauses and resumes", async () => {
     const f = await fixture("owned-failed-check-pause");
     try {

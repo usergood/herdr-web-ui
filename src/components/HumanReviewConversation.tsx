@@ -20,7 +20,7 @@ export function HumanReviewConversation({ detail, busy, perform, history }: { de
   const [editingDrafts, setEditingDrafts] = useState<string[]>([]);
   const [fileIndex, setFileIndex] = useState(0);
   const [text, setText] = useState(""); const [key, setKey] = useState(() => crypto.randomUUID());
-  const approval = detail.human_review_approvals?.find(a => a.review_id === review?.id);
+  const approval = detail.human_review_approvals?.filter(a => a.review_id === review?.id && !a.superseded_by_batch_id).at(-1);
   const retainedComments = detail.comments.some(c => c.status !== "resolved");
   const snapshot = detail.snapshots.find(s => s.id === review?.snapshot_id);
   const file = snapshot?.files[fileIndex];
@@ -30,7 +30,7 @@ export function HumanReviewConversation({ detail, busy, perform, history }: { de
   const batch = detail.human_feedback_batches?.filter(b => b.review_id === review?.id).at(-1);
   const progress = detail.automatic_review?.find(r => r.run_id === review?.run_id);
   const repairing = review?.condition === "repairing";
-  const feedbackReady = !busy && review?.condition === "ready" && drafts.length > 0 && drafts.every(c => c.status === "draft" && c.snapshot_id === review.snapshot_id) && !composing && !drafts.some(c => editingDrafts.includes(c.id)) && !text.trim() && !approval && !detail.implementation.pause && !detail.implementation.deletion;
+  const feedbackReady = !busy && review?.condition === "ready" && drafts.length > 0 && drafts.every(c => c.status === "draft" && c.snapshot_id === review.snapshot_id) && !composing && !drafts.some(c => editingDrafts.includes(c.id)) && !text.trim() && (!approval || approval.condition === "blocked" && approval.merge_not_sent) && !detail.implementation.pause && !detail.implementation.deletion;
   const waiting = detail.capacity_waiting?.filter(w => w.id.startsWith("discussion:"));
   return <div className="human-review-conversation">
     {!review ? <p role="status">{t("Human Review opens automatically after checks, independent reviews and PR publication.")}</p> : <>
@@ -48,7 +48,7 @@ export function HumanReviewConversation({ detail, busy, perform, history }: { de
       {(retainedComments || composing || text.trim()) && <p role="status">{t("Finish your draft comments before approving without comments.")}</p>}
       <button className="btn factory-button" disabled={busy || review.condition !== "ready" || !review.snapshot_id || retainedComments || composing || !!text.trim() || !!approval && approval.condition !== "blocked"} onClick={() => void perform(async () => {
         if (!review.snapshot_id) return;
-        await factoryRequest(`/implementations/${detail.implementation.id}/human-review/approve`, { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, idempotency_key: `approve-${review.id}` });
+        await factoryRequest(`/implementations/${detail.implementation.id}/human-review/approve`, { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, idempotency_key: `approve-${review.snapshot_id}` });
       })}>{t("Approve and merge")}</button>
       {assistant?.waiting_reason && <p role="status">{assistant.waiting_reason}</p>}
       {detail.human_review_deliveries?.filter(d => d.reason).map(d => <p role="status" key={d.id}>{d.reason}</p>)}

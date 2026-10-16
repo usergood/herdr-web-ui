@@ -188,6 +188,10 @@ export interface FactoryMergeResult {
   merge_sha: string | null; release_tag: string | null; reason: string | null;
 }
 export interface FactoryHumanApproval extends FactoryRecord {
+  /** Machine confirmed protection blocked before sending a merge mutation. */
+  merge_not_sent?: boolean;
+  /** Retained history, revoked only by an explicit owner feedback submission. */
+  superseded_by_batch_id?: string;
   observations?: number; next_observation_at?: number;
   repair_batch_id?: string; repair_scope?: string; repair_signature?: string; original_candidate?: { head: string; snapshot_id: string };
   implementation_id: string; review_id: string; run_id: string; snapshot_id: string; head: string;
