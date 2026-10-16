@@ -215,3 +215,31 @@ test("compact failed-check reasons retain command arguments and exit codes witho
     expect(full.body.checks[0].commands[1].output).toBe(output);
   } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
 });
+
+
+test("held native checks stay working through public reconciliation and preserve Pause cancellation", async () => {
+  const f = await capacityFixture();
+  let gate = f.holdNextCheck(); let pending: Promise<Response> | undefined;
+  const detail = (id: string) => f.api(`/implementations/${id}?view=current`).then(r => r.json());
+  try {
+    const id = await f.assignment("Observed held check");
+    const run = await f.api(`/implementations/${id}/runs`, { action: "work", idempotency_key: "held-check" }).then(r => r.json());
+    pending = f.api(`/runs/${run.id}/checks`, {}); await gate.started;
+    const check = (await detail(id)).checks.at(-1);
+    const observed = await f.api(`/runs/${run.id}/checks/${check.id}/reconcile`, {}).then(r => r.json());
+    expect(observed.condition).toBe("working");
+    expect((await f.api("?navigation=1").then(r => r.json())).progress.find((item: any) => item.implementation_id === id).activities).toContain("testing");
+    gate.release(); expect((await (await pending).json()).condition).toBe("passed");
+    gate = f.holdNextCheck(); f.failNextCheck();
+    pending = f.api(`/runs/${run.id}/checks`, {}); await gate.started;
+    const failure = (await detail(id)).checks.at(-1);
+    expect((await f.api(`/runs/${run.id}/checks/${failure.id}/reconcile`, {}).then(r => r.json())).condition).toBe("working");
+    gate.release(); expect((await (await pending).json()).condition).toBe("failed");
+    gate = f.holdNextCheck(); pending = f.api(`/runs/${run.id}/checks`, {}); await gate.started;
+    const cancelled = (await detail(id)).checks.at(-1);
+    const pause = await f.api(`/implementations/${id}/pause`, {}).then(r => r.json());
+    expect(pause.pause.condition).toBe("paused");
+    await pending;
+    expect((await detail(id)).checks.find((check: any) => check.id === cancelled.id)).toMatchObject({ condition: "cancelled", pause_id: pause.pause.id });
+  } finally { gate.release(); await pending; f.close(); }
+});

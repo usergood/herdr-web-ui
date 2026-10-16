@@ -128,9 +128,14 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
         const checked = { ...body.check, head: scenario.advancingHeads ? (body.worker_id ? workers.get(body.worker_id)?.head : tips.get(run.id)) ?? "1".repeat(40) : "1".repeat(40), workspace_hash: "owned-check", commands: [{ args: ["bun", "test"], exit_code: 0, output: "Owned checks passed" }], condition: "passed" } as FactoryCheck;
         if (failCheck) { failCheck = false; checked.condition = "failed"; checked.commands[0]!.exit_code = 1; checked.commands[0]!.output = "Owned check failure"; }
         checks.set(checked.id, checked); executedChecks.push(checked.id);
-        if (checkGate && (!checkGate.scope || checkGate.scope === (body.worker_id ? "worker" : "integration"))) { const gate = checkGate; checkGate = null; activeChecks.set(checked.id, gate.release); gate.entered(); await gate.wait; activeChecks.delete(checked.id); }
+        if (checkGate && (!checkGate.scope || checkGate.scope === (body.worker_id ? "worker" : "integration"))) {
+          const gate = checkGate; checkGate = null;
+          checks.set(checked.id, { ...checked, condition: "working", commands: [] });
+          activeChecks.set(checked.id, gate.release); gate.entered(); await gate.wait; activeChecks.delete(checked.id);
+          if (checks.get(checked.id)?.condition === "working") checks.set(checked.id, checked);
+        }
         if (loseCheck) { loseCheck = false; return Response.json({ error: { code: "lost_ack", message: "Owned uncertain check" } }, { status: 503 }); }
-        return Response.json(checked);
+        return Response.json(checks.get(checked.id));
       }
       if (action === "operations/check-reconcile") return Response.json(checks.get(body.check_id));
       if (action === "operations/head") return Response.json({ head: tips.get(run.id) ?? "1".repeat(40), workspace_hash: "owned-check" });

@@ -108,7 +108,7 @@ async function ticketProgressBoard(): Promise<void> {
 
 async function activityAndHistoryBoard(): Promise<void> {
 const state = mkdtempSync(join(tmpdir(), "saurons-eye-board-browser-"));
-const app = createServer({ port: 0, token: "", stateDir: state, machines: false, factory: { accountDiscoveryHome: state } });
+const app = createServer({ port: 0, token: "", stateDir: state, machines: false, factory: { accountDiscoveryHome: state, native: { version: async () => null } } });
 const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
 const errors: string[] = [];
 try {
@@ -132,6 +132,7 @@ try {
   await page.route("**/api/factory?navigation=1", async route => {
     const response = await route.fetch(); const overview: FactoryOverview = await response.json();
     overview.board = [...(overview.board ?? []).filter(entry => !board.some(fixture => fixture.implementation_id === entry.implementation_id)), ...board];
+    overview.activity = [...overview.activity.filter(entry => !board.some(fixture => fixture.implementation_id === entry.implementation_id)), ...board.flatMap((entry): FactoryOverview["activity"] => entry.run_id && entry.condition ? [{ implementation_id: entry.implementation_id, run_id: entry.run_id, condition: entry.condition, action: entry.activity === "specifying" ? "to-spec" : "work", waiting_reason: entry.waiting_reason, completed_tickets: entry.ticket_progress?.completed ?? 0, total_tickets: entry.ticket_progress?.total ?? 0 }] : [])];
     await route.fulfill({ response, json: overview });
   });
   await page.reload();
