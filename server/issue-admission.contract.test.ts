@@ -1661,15 +1661,23 @@ test.each(["app_owner", "github_label"])("a same-second historical revocation be
 
 test("owner acceptance of a prepared issue starts automatic planning under its exact current issue admission", async () => {
   const fixture = githubQueueFixture(true);
+  const launch = fixture.holdLaunch();
   try {
     const { path, source, start } = await prepared(fixture);
     const before = await fixture.json(path);
     const specification = before.specifications.at(-1);
     const approval = await fixture.json(path + "/specification-acceptance", { specification_id: specification.id, hash: specification.hash, source: "button" });
     expect(approval).toMatchObject({ automatic_execution: true, revision: specification.id, provenance: { kind: "button", specification_hash: specification.hash } });
-    const deadline = Date.now() + 8000;
+    await Promise.race([launch.waiting, new Promise((_, reject) => setTimeout(() => reject(new Error("Automatic admission did not reach the owned launch")), 8000))]);
     let detail = await fixture.json(path);
-    while (!detail.runs.length && !detail.automatic_planning.some((request: any) => request.condition === "blocked")) {
+    expect(detail.automatic_planning[0]).toMatchObject({ condition: "pending", approval_id: approval.id, specification_id: specification.id });
+    expect(detail.runs).toHaveLength(1);
+    expect(detail.runs[0]).toMatchObject({ condition: "accepted", manifest: { planning_authority: { id: approval.id }, issue_admission: { source: { id: source.id, revision: source.revision }, planning: { specification_id: specification.id, graph_hash: start.issue_scope.graph_hash } } } });
+    expect(fixture.launches).toEqual([detail.runs[0].id]);
+    launch.release();
+    const deadline = Date.now() + 8000;
+    // A reserved Run is visible before launch acknowledgement settles its planning request.
+    while (!detail.automatic_planning.some((request: any) => request.condition === "started" || request.condition === "blocked")) {
       if (Date.now() > deadline) throw new Error("Prepared issue automatic planning did not settle");
       await new Promise(resolve => setTimeout(resolve, 20));
       detail = await fixture.json(path);
@@ -1681,7 +1689,7 @@ test("owner acceptance of a prepared issue starts automatic planning under its e
     fixture.restart();
     expect((await fixture.json(path)).runs).toHaveLength(1);
     expect(fixture.launches).toHaveLength(1);
-  } finally { fixture.close(); }
+  } finally { launch.release(); fixture.close(); }
 }, 20_000);
 
 
