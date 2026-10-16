@@ -131,6 +131,7 @@ export class FactoryService {
     const runs = this.store.list<FactoryRun>("runs", implementation.id);
     return workflowConversations({
       implementation, runs, tickets: this.workflow.tickets(implementation.id),
+      execution_plans: this.store.list("execution_plans", implementation.id),
       workers: runs.flatMap(run => this.store.list<FactoryDetail["workers"][number]>("workers", run.id)),
       native_snapshots: runs.flatMap(run => this.store.list<FactoryDetail["native_snapshots"][number]>("native_snapshots", run.id)),
     });

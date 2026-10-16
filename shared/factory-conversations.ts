@@ -1,7 +1,7 @@
 import type { FactoryConversation, FactoryConversationContext, FactoryDetail, FactoryRun, FactoryWorker } from "./factory.ts";
 
 /** Read-only projection of durable provenance; never admits or starts native work. */
-export function workflowConversations(detail: Pick<FactoryDetail, "implementation" | "runs" | "workers" | "tickets" | "native_snapshots">): FactoryConversation[] {
+export function workflowConversations(detail: Pick<FactoryDetail, "implementation" | "runs" | "workers" | "tickets" | "native_snapshots" | "execution_plans">): FactoryConversation[] {
   const assignmentId = detail.implementation.id;
   const roots: FactoryConversation[] = (["specifications", "orchestrator", "human_review"] as const).map(kind => ({ id: `${assignmentId}:${kind}`, implementation_id: assignmentId, parent_id: null, kind, title: null, contexts: [] }));
   const conversations = [...roots];
@@ -30,8 +30,9 @@ export function workflowConversations(detail: Pick<FactoryDetail, "implementatio
         // distinguishes future automatic repairs without moving any old history.
         entry = child("review_fixes", worker.review_origin === "automatic" ? roots[1]! : roots[2]!, worker.id);
       } else {
+        const planned = detail.execution_plans?.find(plan => plan.run_id === run.id)?.tickets.find(ticket => ticket.id === worker.ticket_id);
         const frozen = (run.manifest as { tickets?: { id: string; title: string }[] } | null)?.tickets?.find(t => t.id === worker.ticket_id);
-        entry = child("implementation", roots[1]!, `ticket:${worker.ticket_id}`, frozen?.title ?? detail.tickets.find(t => t.id === worker.ticket_id)?.title ?? worker.ticket_id);
+        entry = child("implementation", roots[1]!, `ticket:${worker.ticket_id}`, planned?.title ?? frozen?.title ?? detail.tickets.find(t => t.id === worker.ticket_id)?.title ?? worker.ticket_id);
       }
       entry.contexts.push(context(run, worker));
     }

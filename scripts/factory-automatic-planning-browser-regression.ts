@@ -61,10 +61,46 @@ try {
         assert.equal((await detail()).approvals.length, 1);
         assert.equal((await detail()).frontier[0].title, "Build the accepted result");
         assert.equal(f.launches.length, 2);
+        if (source === "button") {
+          assert.deepEqual(run.manifest.tickets, []);
+          f.setTranscript({ source_id: "original-orchestrator-decisions", version: "v1", cursor: null, turns: [{ role: "assistant", ts: "2026-01-01T00:00:00Z", parts: [{ kind: "text", text: "Retained decisions for the original accepted plan" }] }] });
+          assert.equal((await f.api(`/runs/${run.id}/import-conversation`, {})).status, 200);
+          f.runs.get(run.id)!.condition = "ready";
+          await page.waitForFunction(async prefix => { const d = await fetch(`/api/factory${prefix}`).then(r => r.json()); return d.workers.some((w: { role: string; condition: string }) => w.role === "implementer" && w.condition === "working"); }, prefix);
+          const worker = (await detail()).workers.find((w: { role: string }) => w.role === "implementer");
+          f.workers.get(worker.id)!.condition = "ready";
+          await page.waitForFunction(async ({ prefix, workerId }) => { const d = await fetch(`/api/factory${prefix}`).then(r => r.json()); return d.workers.find((w: { id: string }) => w.id === workerId)?.condition === "completed"; }, { prefix, workerId: worker.id });
+          assert.equal((await f.api(`${prefix}/pause`, {})).status, 200);
+          const before = (await detail()).conversations.find((c: { kind: string }) => c.kind === "implementation");
+          const revision = await f.api(`${prefix}/specifications`, { content: "A later Specification must preserve the earlier execution history." }).then(r => r.json());
+          assert.deepEqual((await detail()).tickets, []);
+          await page.reload();
+          const panel = page.getByRole("region", { name: "Workflow conversations", exact: true });
+          const selectTicket = async () => {
+            await panel.getByRole("navigation", { name: "Workflow history", exact: true }).getByRole("button", { name: "Implementation: Build the accepted result", exact: true }).click();
+            const retained = panel.getByRole("region", { name: "Implementation: Build the accepted result", exact: true });
+            await retained.getByText("Native context", { exact: true }).click();
+            await retained.getByText(`${run.id} · ${worker.id}`, { exact: true }).waitFor();
+            assert.deepEqual((await detail()).conversations.find((c: { id: string }) => c.id === before.id), before);
+          };
+          await selectTicket();
+          await panel.getByRole("button", { name: "Specifications", exact: true }).click();
+          await history.getByText(revision.content, { exact: true }).waitFor();
+          await history.getByRole("button", { name: "Accept specification", exact: true }).click();
+          await history.getByText("Specification accepted", { exact: true }).waitFor();
+          await panel.getByRole("button", { name: "Orchestrator", exact: true }).click();
+          await panel.getByText("Retained decisions for the original accepted plan", { exact: true }).waitFor();
+          f.restart();
+          const restarted = `http://localhost:${f.app.port}`;
+          assert.equal((await context.request.post(`${restarted}/api/auth`, { data: { token: f.token } })).status(), 204);
+          await page.goto(`${restarted}/#factory/${id}`);
+          await selectTicket();
+        }
+
         assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
         assert.deepEqual(errors, []);
       } finally { await context.close(); f.close(); }
     }
   }
-  console.log("PASS button/chat acceptance, queued planning, inspectable plan and reload on desktop/mobile at cap one");
+  console.log("PASS button/chat acceptance, queued planning, retained Ticket names and execution history across later drafts, acceptance and restart on desktop/mobile at cap one");
 } finally { await browser.close(); }

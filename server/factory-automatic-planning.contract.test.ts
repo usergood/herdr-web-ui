@@ -49,6 +49,52 @@ describe("Automatic planning through authenticated HTTP", () => {
     } finally { f.close(); }
   });
 
+  it("retains automatically planned Ticket names and context ownership after later Specification revisions and restart", async () => {
+    const f = await capacityFixture({ advancingHeads: true });
+    try {
+      await f.api("/settings", { max_agents: 1 });
+      const id = await f.assignment("Retained automatic Ticket history"); const prefix = `/implementations/${id}`;
+      const detail = () => f.api(prefix).then(r => r.json());
+      await f.api(`/projects/${(await detail()).implementation.project_id}/configure`, { checks: [["bun", "test"]], permissions: "Owned history fixture only" });
+      const spec = await f.api(`${prefix}/specifications`, { content: "Retain the reviewed result" }).then(r => r.json());
+      await f.api(`${prefix}/specification-acceptance`, { source: "button", specification_id: spec.id, hash: spec.hash });
+      const run = (await until(detail, d => d.runs.length === 1)).runs[0];
+      expect(run.manifest.tickets).toEqual([]);
+      const plan = await f.agent(run.id, "tickets", { specification_id: spec.id, testing_plan: "Public HTTP retained history", tickets: [{ key: "result", title: "Reviewed result", acceptance: "Retain its name and ownership", dependencies: [] }] }).then(r => r.json());
+      f.setTranscript({ source_id: "retained-orchestrator-history", version: "v1", cursor: null, turns: [{ role: "assistant", ts: "2026-01-01T00:00:00Z", parts: [{ kind: "text", text: "Original execution decisions" }] }] });
+      expect((await f.api(`/runs/${run.id}/import-conversation`, {})).status).toBe(200);
+      f.runs.get(run.id)!.condition = "ready";
+      const started = await until(detail, d => d.workers.some((w: any) => w.role === "implementer" && w.condition === "working"));
+      const worker = started.workers.find((w: any) => w.role === "implementer");
+      f.workers.get(worker.id)!.condition = "ready";
+      const completed = await until(detail, d => d.workers.find((w: any) => w.id === worker.id)?.condition === "completed");
+      await f.api(`${prefix}/pause`, {});
+      const original = completed.conversations.find((c: any) => c.kind === "implementation");
+      expect(original.title).toBe("Reviewed result");
+      expect(original.contexts[0]).toMatchObject({ run_id: run.id, worker_id: worker.id });
+      const orchestrator = completed.conversations.find((c: any) => c.kind === "orchestrator");
+      expect(original.parent_id).toBe(orchestrator.id);
+      expect(orchestrator.contexts[0].snapshot_ids).toHaveLength(1);
+      const assertRetained = async () => {
+        const current = await detail();
+        expect(current.execution_plans.find((p: any) => p.run_id === run.id)).toEqual(plan);
+        expect(current.conversations.find((c: any) => c.id === original.id)).toEqual(original);
+        expect(current.conversations.find((c: any) => c.id === orchestrator.id)).toEqual(orchestrator);
+        expect((await f.api("").then(r => r.json())).conversations.find((c: any) => c.id === original.id)).toEqual(original);
+        expect(current.workers.find((w: any) => w.id === worker.id).condition).toBe("completed");
+      };
+      const next = await f.api(`${prefix}/specifications`, { content: "A later, separate scope" }).then(r => r.json());
+      expect((await detail()).tickets).toEqual([]);
+      await assertRetained();
+      await f.api(`${prefix}/tickets`, { specification_id: next.id, tickets: [{ key: "different", title: "Newest scope Ticket", acceptance: "Separate work", dependencies: [] }] });
+      await f.api(`${prefix}/specification-acceptance`, { source: "button", specification_id: next.id, hash: next.hash });
+      await assertRetained();
+      f.restart();
+      await assertRetained();
+      expect(f.workerLaunches.filter(value => value === worker.id)).toHaveLength(1);
+    } finally { f.close(); }
+  });
+
   it("blocks dependent planning and frontier work for genuine owner decisions and preserves the frozen plan", async () => {
     const f = await capacityFixture();
     try {
