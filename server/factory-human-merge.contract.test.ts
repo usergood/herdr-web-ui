@@ -373,3 +373,63 @@ it("the owned Machine merges a fully eligible protected candidate when administr
     expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
   } finally { f.close(); }
 }, 20000);
+
+// GitHub accepts these completed CheckRun conclusions as successful required checks.
+it("the Machine merges completed successful required-check conclusions exactly once under exact authority", async () => {
+  for (const conclusion of ["SUCCESS", "NEUTRAL", "SKIPPED"]) {
+    const f = await mergeFixture();
+    try {
+      f.pull({ commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ name: "Required CI", status: "COMPLETED", conclusion }], pageInfo: { hasNextPage: false } } } } }], pageInfo: { hasNextPage: false } } });
+      const stale = structuredClone(f.body); stale.approval.head = "f".repeat(40);
+      const refused = await f.post(f.route + "merge", stale);
+      expect(refused.status).toBe(409);
+      expect(await refused.json()).toMatchObject({ error: { code: "merge_authority_changed" } });
+      expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(0);
+      const response = await f.post(f.route + "merge", f.body);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ condition: "merged", head: f.head });
+      f.restart();
+      expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "merged", head: f.head });
+      expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+      expect(f.git(["show", "main:result.txt"])).toBe("after");
+    } finally { f.close(); }
+  }
+}, 20000);
+
+it("the Machine retains pending checks and blocks unsuccessful conclusions without broadening commit-status success", async () => {
+  const scenarios = [
+    { context: { name: "Required CI", status: "IN_PROGRESS", conclusion: "NEUTRAL" }, code: "merge_waiting" },
+    { context: { name: "Required CI", status: "QUEUED", conclusion: "SKIPPED" }, code: "merge_waiting" },
+    { context: { name: "Required CI", status: "COMPLETED", conclusion: "FAILURE" }, code: "merge_blocked" },
+    { context: { name: "Required CI", status: "COMPLETED", conclusion: "CANCELLED" }, code: "merge_blocked" },
+    { context: { name: "Required CI", status: "COMPLETED", conclusion: "TIMED_OUT" }, code: "merge_blocked" },
+    { context: { name: "Required CI", status: "COMPLETED", conclusion: "ACTION_REQUIRED" }, code: "merge_blocked" },
+    { context: { name: "Required CI", status: "COMPLETED", conclusion: null }, code: "merge_blocked" },
+    { context: { context: "Required CI", state: "PENDING" }, code: "merge_waiting" },
+    { context: { context: "Required CI", state: "EXPECTED" }, code: "merge_waiting" },
+    { context: { context: "Required CI", state: "FAILURE" }, code: "merge_blocked" },
+    { context: { context: "Required CI", state: "ERROR" }, code: "merge_blocked" },
+    { context: { context: "Required CI", state: "NEUTRAL" }, code: "merge_blocked" },
+    { context: { context: "Required CI", state: "SKIPPED" }, code: "merge_blocked" },
+  ];
+  for (const scenario of scenarios) {
+    const f = await mergeFixture();
+    try {
+      f.pull({ commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [scenario.context], pageInfo: { hasNextPage: false } } } } }], pageInfo: { hasNextPage: false } } });
+      const response = await f.post(f.route + "merge", f.body);
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ error: { code: scenario.code } });
+      expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(0);
+      expect(f.git(["rev-parse", "main"])).toBe(f.base);
+    } finally { f.close(); }
+  }
+}, 30000);
+
+it("the Machine continues to accept a successful required commit-status context", async () => {
+  const f = await mergeFixture();
+  try {
+    f.pull({ commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ context: "Required CI", state: "SUCCESS" }], pageInfo: { hasNextPage: false } } } } }], pageInfo: { hasNextPage: false } } });
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "merged", head: f.head });
+    expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { f.close(); }
+}, 20000);

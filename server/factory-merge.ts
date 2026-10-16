@@ -106,7 +106,7 @@ export class FactoryMerge {
       let waiting = pull.mergeStateStatus === "UNKNOWN" || pull.reviewDecision === "REVIEW_REQUIRED" || pull.reviewRequests.nodes.length > 0 || !!(githubPolicy?.trusted_reviewers.length && trustedApprovals.length < Math.max(1, pull.baseRef?.branchProtectionRule?.requiredApprovingReviewCount ?? 1));
       for (const name of new Set([...githubPolicy?.required_checks ?? [], ...pull.baseRef?.branchProtectionRule?.requiredStatusCheckContexts ?? []])) {
         const matching = contexts?.nodes.filter(c => (c.name ?? c.context) === name) ?? [];
-        if (matching.some(c => c.context ? !["SUCCESS", "PENDING", "EXPECTED"].includes(c.state ?? "") : c.status === "COMPLETED" && c.conclusion !== "SUCCESS")) throw new FactoryError("merge_blocked", `Required check failed: ${name}`, 409);
+        if (matching.some(c => c.context ? !["SUCCESS", "PENDING", "EXPECTED"].includes(c.state ?? "") : c.status === "COMPLETED" && !["SUCCESS", "NEUTRAL", "SKIPPED"].includes(c.conclusion ?? ""))) throw new FactoryError("merge_blocked", `Required check failed: ${name}`, 409);
         if (!matching.length || matching.some(c => c.context ? c.state !== "SUCCESS" : c.status !== "COMPLETED")) waiting = true;
       }
       if (waiting) throw new FactoryError("merge_waiting", "Waiting for required GitHub checks or reviews; retained approval will be observed automatically", 409);
