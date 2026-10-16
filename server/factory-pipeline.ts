@@ -301,7 +301,9 @@ export class FactoryPipeline {
    * work can release its slot; merge and delivery retain their separate owner gate. */
   async completeReadyIssue(id: string): Promise<void> {
     const run = this.store.get<FactoryRun>("runs", id);
-    if (run?.action !== "implement-spec" || run.condition !== "ready" || run.scope_pause || !(run.manifest as { issue_scope?: unknown }).issue_scope) return;
+    // Capacity reconciliation can retire verified execution before this legacy
+    // approved-plan handoff. Acceptance still revalidates the complete live proof.
+    if (run?.action !== "implement-spec" || run.condition !== "ready" && !(run.condition === "completed" && run.implementation_completion) || run.accepted_result || run.scope_pause || run.issue_pause || !(run.manifest as { issue_scope?: unknown }).issue_scope) return;
     if (this.workflow.questions(run.implementation_id).some(question => question.answer === null)
       || this.store.list<FactoryWorker>("workers", id).some(worker => owns(worker.condition))
       || this.store.list<FactoryCheck>("checks", id).some(check => ["working", "interrupted"].includes(check.condition))) return;

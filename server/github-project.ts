@@ -247,11 +247,11 @@ export class ProjectGitHub {
     const state = this.store.get<SyncState>("github_sync", id);
     return { readiness_policy: this.store.get("github_readiness_policies", id), policy: this.store.get("github_policies", id), pulls: this.store.list("github_pulls", id), sources: this.sources(id).map(source => this.store.get("github_readiness_policies", id) ? this.describeSource(source) : this.planReadiness(source, this.store.get<ProjectGitHubPolicy>("github_policies", id))), mutations: this.store.list("github_mutations", id), last_sync: state?.last_sync ?? null, problem: state?.problem ?? null };
   }
+  /** Historical projection; queue and mutation entrypoints require an active Project. */
   legacyOverview(id: string): ProjectGitHubOverview<ProjectIssueReadiness> {
-    this.project(id);
     const state = this.store.get<SyncState>("github_sync", id);
     const policy = this.store.get<ProjectGitHubPolicy>("github_policies", id);
-    return { policy, pulls: this.store.list("github_pulls", id), sources: this.store.list<ProjectGitHubSource>("github_sources", id).map(source => this.planReadiness(source, policy)), mutations: this.store.list("github_mutations", id), last_sync: state?.last_sync ?? null, problem: state?.problem ?? null };
+    return { policy, pulls: this.store.list("github_pulls", id), sources: this.sources(id).map(source => this.planReadiness(source, policy)), mutations: this.store.list("github_mutations", id), last_sync: state?.last_sync ?? null, problem: state?.problem ?? null };
   }
   describeSource(source: ProjectGitHubSource): ProjectGitHubSource<import("../shared/github-readiness.ts").IssueReadiness> {
     if (source.kind !== "issue") return { ...source, readiness: undefined };
@@ -762,7 +762,8 @@ export class ProjectGitHub {
     // Recompute against the live policy even between synchronizations: an old trust setting is never authority.
     const roles = source.issue ? PROJECT_TRIAGE_ROLES.filter(role => source.issue!.labels.some(label => label.toLowerCase() === (policy?.triage_labels?.[role] || role).toLowerCase())) : [];
     const approval = this.store.list<ProjectIssueApproval>("github_readiness", source.project_id).filter(item => item.source_id === source.id).at(-1) ?? null;
-    const valid = policy && policy.project_scope === this.projectScope(policy.id) && approval?.issue_revision === source.revision && !approval.revoked_at && approval.policy_revision === policy.revision && source.repository?.toLowerCase() === policy.repository.toLowerCase();
+    const project = this.store.get<FactoryProject>("projects", source.project_id);
+    const valid = policy && project && !project.removed_at && policy.project_scope === this.projectScope(policy.id) && approval?.issue_revision === source.revision && !approval.revoked_at && approval.policy_revision === policy.revision && source.repository?.toLowerCase() === policy.repository.toLowerCase();
     const reasons: IssueReadinessReason[] = source.state !== "open" ? ["issue_closed"] : roles.length > 1 ? ["conflicting_triage"] : roles[0] === "ready-for-human" ? ["human_only"] : roles[0] === "wontfix" ? ["wontfix"] : roles[0] !== "ready-for-agent" ? ["start_planning"] : !valid ? ["approval_required"] : !policy.auto_implement ? ["automatic_implementation_disabled"] : [];
     if (source.publication_batch_id && this.store.get<import("../shared/issue-batches.ts").IssueBatch>("github_issue_batches", source.publication_batch_id)?.dispatch_ready !== true) reasons.push("batch_incomplete");
     return { ...source, triage_roles: roles, readiness: { eligible: reasons.length === 0, reasons, approval } };
@@ -1011,7 +1012,10 @@ export class ProjectGitHub {
             if (item) { Object.assign(source, { publication_batch_id: batch.id, batch_item_key: item.key, originating_plan_id: batch.implementation_id }); this.store.put("github_sources", source, id); break; }
           }
           for (const approval of this.store.list<ProjectIssueApproval>("github_readiness", id)) if (approval.source_id === source.id && approval.issue_revision !== source.revision && !approval.revoked_at) this.store.put("github_readiness", { ...approval, revoked_at: new Date().toISOString() }, id);
-          if (!this.store.get("github_readiness_policies", id)) await this.trustedReadiness(policy, scope, source);
+          if (!this.store.get("github_readiness_policies", id)) {
+            await this.trustedReadiness(policy, scope, source);
+            await this.pauseIssueWork?.(this.planReadiness(source, policy));
+          }
           await this.collectReadiness(policy, scope, source);
           reconcileIssuePlan(this.store, source);
           const collected = this.store.get<ProjectGitHubSource>("github_sources", source.id)!;

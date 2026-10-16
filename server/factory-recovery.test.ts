@@ -18,6 +18,7 @@ test("accepted integration supersedes earlier worker content, while missing deli
       const reviewer = (await f.request(f.workerRoute, { role, idempotency_key: "fresh-" + role })).body;
       await f.request(`${f.workerRoute}/${reviewer.id}/review-evidence`, {});
     }
+    f.rest(f.run.id);
     expect((await f.request(`/runs/${f.run.id}/accept`, { head: check.head })).status).toBe(200);
     const oid = execFileSync("git", ["-C", f.run.worktree!, "rev-parse", "HEAD:ready.txt"], { encoding: "utf8" }).trim();
     const head = check.head;

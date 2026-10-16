@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { closeSync, constants, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createServer } from "./index.ts";
 import { githubScheduleFixture } from "./github-schedules.fixture.ts";
-import type { FactoryRun, FactoryWorker } from "../shared/factory.ts";
+import type { FactoryCheck, FactoryProject, FactoryRun, FactoryWorker } from "../shared/factory.ts";
 
 /** An owned external Machine speaks the public host protocol and creates real Git worktrees.
  * It models certified native responses; it cannot certify a production provider. */
@@ -14,8 +15,26 @@ export async function readyIssuesFixture(behavior: { reviewOutcome?: "passed" | 
   const accesses = new Map<string, { url: string; token: string }>();
   const launches: FactoryRun[] = [];
   const workers = new Map<string, FactoryWorker>();
-  const git = (path: string, args: string[]) => execFileSync("git", ["-C", path, ...args], { encoding: "utf8" }).trim();
-  const head = (path: string) => ({ head: git(path, ["rev-parse", "HEAD"]), workspace_hash: git(path, ["rev-parse", "HEAD"]) + ":" + git(path, ["status", "--porcelain"]) });
+  const gitOutput = (path: string, args: string[]) => execFileSync("git", ["-C", path, ...args], { encoding: "utf8" });
+  const git = (path: string, args: string[]) => gitOutput(path, args).trim();
+  const digest = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
+  const cleanWorkspaceHash = digest(JSON.stringify({ diff: "", files: [] }));
+  const head = (path: string) => {
+    const diff = gitOutput(path, ["diff", "--binary", "--no-ext-diff", "--no-textconv", "HEAD", "--"]);
+    const untracked = gitOutput(path, ["ls-files", "--others", "--exclude-standard", "-z"]).split("\0").filter(name => name && !name.startsWith(".saurons-eye-") && !/^(\.agents|\.claude|\.opencode)\/skills\//.test(name));
+    const files: ({ path: string; link: string } | { path: string; hash: string })[] = [];
+    let budget = 0;
+    for (const name of untracked) {
+      const file = join(path, name), info = lstatSync(file);
+      if (info.isSymbolicLink()) { files.push({ path: name, link: readlinkSync(file) }); continue; }
+      budget += info.size;
+      if (!info.isFile() || info.nlink > 1 || budget > 16 * 1024 * 1024) throw new Error("Owned workspace exceeds the native evidence budget");
+      const descriptor = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try { files.push({ path: name, hash: digest(readFileSync(descriptor)) }); }
+      finally { closeSync(descriptor); }
+    }
+    return { head: git(path, ["rev-parse", "HEAD"]), workspace_hash: digest(JSON.stringify({ diff, files })) };
+  };
   const deliveries: string[] = [];
   const workerContexts: unknown[] = [];
   let uncertainDelivery = false;
@@ -64,11 +83,15 @@ export async function readyIssuesFixture(behavior: { reviewOutcome?: "passed" | 
       if (action === "reconcile-worker" || action === "refresh") return Response.json({ ...worker, head: head(worker!.worktree!).head });
       if (action === "check") {
         const path = worker?.worktree ?? run.worktree!;
-        const commands = (run.manifest as { project: { checks: string[][] } }).project.checks.map(args => {
-          try { return { args, exit_code: 0, output: execFileSync(args[0]!, args.slice(1), { cwd: path, encoding: "utf8" }) }; }
-          catch { return { args, exit_code: 1, output: "Owned check failed" }; }
-        });
-        return Response.json({ ...body.check, ...head(path), commands, condition: commands.every(command => command.exit_code === 0) ? "passed" : "failed" });
+        const before = head(path), project = (run.manifest as { project: FactoryProject }).project;
+        const commands: FactoryCheck["commands"] = [];
+        for (const args of [...project.setup ?? [], ...project.checks ?? []]) {
+          try { commands.push({ args, exit_code: 0, output: execFileSync(args[0]!, args.slice(1), { cwd: path, encoding: "utf8" }) }); }
+          catch (error) { commands.push({ args, exit_code: (error as { status?: number }).status ?? 1, output: "Owned check failed" }); }
+          if (commands.at(-1)!.exit_code !== 0) break;
+        }
+        const after = head(path);
+        return Response.json({ ...body.check, ...before, commands, condition: before.head === after.head && before.workspace_hash === after.workspace_hash && before.workspace_hash === cleanWorkspaceHash && commands.length > 0 && commands.every(command => command.exit_code === 0) ? "passed" : "failed" });
       }
       if (action === "integrate") {
         git(run.worktree!, ["merge", "--ff-only", worker!.head!]);

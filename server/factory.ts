@@ -142,6 +142,7 @@ export class FactoryService {
   }
   private boardContext(id: string): Parameters<typeof projectFactoryBoard>[1] {
     const idea = this.store.get<Implementation>("implementations", id);
+    if (idea?.project_id && this.store.get<FactoryProject>("projects", idea.project_id)?.removed_at) return { selected: false, readiness_problem: null };
     if (!idea?.project_id || !this.store.get("github_readiness_policies", idea.project_id)) return { ...this.queue.boardContext(id), admission_problem: this.queue.admissionProblem(id) };
     const entry = this.github.queue(idea.project_id).entries.find(entry => entry.implementation_id === id);
     return { selected: entry?.eligible === true, readiness_problem: entry?.lane === "needs_you" ? entry.reasons.map(reason => reason.code).join(", ") : null };
