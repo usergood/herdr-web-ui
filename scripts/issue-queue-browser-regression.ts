@@ -97,15 +97,22 @@ try {
       await page.reload();
       await page.getByText("Advanced controls", { exact: true }).last().click();
       const execution = page.getByRole("heading", { name: "Execution evidence", exact: true }).locator("..");
-      const cleanup = page.waitForResponse(response => response.url().endsWith(`/runs/${followup.id}/cleanup`) && response.request().method() === "POST");
-      await page.getByRole("button", { name: "Remove clean checkout", exact: true }).last().click();
-      assert.equal((await cleanup).status(), 409);
+      const [cleanup] = await Promise.all([
+        page.waitForResponse(response => response.url().endsWith(`/runs/${followup.id}/cleanup`) && response.request().method() === "POST"),
+        page.getByRole("button", { name: "Remove clean checkout", exact: true }).last().click(),
+      ]);
+      assert.equal(cleanup.status(), 409);
       await page.getByRole("alert").filter({ hasText: "Choose Accept reviewed head before removing this implementation checkout" }).waitFor();
-      assert(await execution.getByRole("button", { name: "Accept reviewed head", exact: true }).isEnabled());
+      const acceptReviewedHead = execution.getByRole("button", { name: "Accept reviewed head", exact: true });
+      // The alert can render before perform's refresh clears the busy state.
+      await acceptReviewedHead.and(page.locator(":enabled")).waitFor();
+      assert(await acceptReviewedHead.isEnabled());
       await (viewport.width < 640 ? execution : actions).getByRole("button", { name: "Accept reviewed head", exact: true }).click();
-      const acceptedCleanup = page.waitForResponse(response => response.url().endsWith(`/runs/${followup.id}/cleanup`) && response.request().method() === "POST");
-      await page.getByRole("button", { name: "Remove clean checkout", exact: true }).last().click();
-      assert.equal((await acceptedCleanup).status(), 200);
+      const [acceptedCleanup] = await Promise.all([
+        page.waitForResponse(response => response.url().endsWith(`/runs/${followup.id}/cleanup`) && response.request().method() === "POST"),
+        page.getByRole("button", { name: "Remove clean checkout", exact: true }).last().click(),
+      ]);
+      assert.equal(acceptedCleanup.status(), 200);
       await page.getByRole("button", { name: "Archive task", exact: true }).click();
       await page.getByRole("button", { name: "Restore", exact: true }).waitFor();
       const detail = await manual.json(path);
