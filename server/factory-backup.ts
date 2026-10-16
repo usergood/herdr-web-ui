@@ -77,9 +77,9 @@ export class FactoryBackup {
     purgeAssignmentRecords(database, assignmentId);
     // Old snapshots predate Delete's source fences. Carry only content-free
     // identities into every sanitized copy so stale sync cannot recreate work.
-    for (const source of this.store.list<{ id: string; repository: string; external_id: string; number: number; kind: string }>("github_suppressions")) {
-      const { id, repository, external_id, number, kind } = source;
-      database.query("INSERT OR REPLACE INTO records(kind,id,parent,data) VALUES('github_suppressions',?,NULL,?)").run(id, JSON.stringify({ id, repository, external_id, number, kind }));
+    for (const source of this.store.list<{ id: string; repository: string; external_id?: string; number?: number; kind: string; branch?: string }>("github_suppressions")) {
+      const { id, repository, external_id, number, kind, branch } = source;
+      database.query("INSERT OR REPLACE INTO records(kind,id,parent,data) VALUES('github_suppressions',?,NULL,?)").run(id, JSON.stringify({ id, repository, external_id, number, kind, branch }));
     }
   }
   private assertDirectory(path: string): void {

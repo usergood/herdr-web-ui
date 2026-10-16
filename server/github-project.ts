@@ -239,7 +239,7 @@ export class ProjectGitHub {
     try {
       const path = `repos/${policy.repository}/pulls/${number}`;
       const result = await this.api(policy, scope, path + (action === "merge" ? "/merge" : action === "update" ? "/update-branch" : "/requested_reviewers/rerequest"), action === "merge" ? ["--method", "PUT", "-f", "sha=" + pull.headRefOid, "-f", "merge_method=squash"] : action === "update" ? ["--method", "PUT", "-f", "expected_head_sha=" + pull.headRefOid] : ["--method", "POST", ...reviewers.flatMap((login) => ["-f", "reviewers[]=" + login])], () => {
-        if (automatic && githubSuppressed(this.store, policy.repository, pull.id, pull.number, "fix")) throw new FactoryError("github_source_deleted", "Delete disabled automation for this retained PR", 409);
+        if (automatic && githubSuppressed(this.store, policy.repository, pull.id, pull.number, "fix", pull.headRefName)) throw new FactoryError("github_source_deleted", "Delete disabled automation for this retained PR", 409);
       }) as { merged?: boolean; message?: string; url?: string; requested_reviewers?: unknown[] };
       if (action === "merge" && result.merged !== true || action === "update" && typeof result.message !== "string" || action === "rerequest" && !Array.isArray(result.requested_reviewers)) throw new FactoryError("github_mutation_unconfirmed", "GitHub did not confirm the mutation receipt", 409);
       receipt.condition = "confirmed"; this.store.event(null, "github_mutation_confirmed", { project_id: policy.id, number, action, head: pull.headRefOid });
@@ -299,7 +299,7 @@ export class ProjectGitHub {
         }
         for (const pull of pulls) {
           const previous = this.store.list<ProjectGitHubPull>("github_pulls", id).find((item) => item.pull.id === pull.id);
-          if (githubSuppressed(this.store, policy.repository, pull.id, pull.number, "fix")) {
+          if (githubSuppressed(this.store, policy.repository, pull.id, pull.number, "fix", pull.headRefName)) {
             this.store.put<ProjectGitHubPull>("github_pulls", { ...(previous ?? this.store.record()), project_id: id, pull, blockers: this.blockers(pull, policy), observed_at: new Date().toISOString(), fix_implementation_id: null }, id);
             continue;
           }

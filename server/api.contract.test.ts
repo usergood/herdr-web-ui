@@ -34,12 +34,12 @@ import { forgetTranscriptState } from "./conversation.ts";
  */
 let server: { port: number; stop: () => void };
 
-it("authenticates Human Review discussion, enforces origin/header controls and rejects an unrelated review", async () => {
+for (const operation of ["discussion", "feedback submission"] as const) it(`authenticates Human Review ${operation}, enforces origin/header controls and rejects an unrelated review`, async () => {
   const f = await capacityFixture();
   try {
     const id = await f.assignment("Authenticated Human Review");
-    const path = `http://localhost:${f.app.port}/api/factory/implementations/${id}/human-review/messages`;
-    const body = { review_id: crypto.randomUUID(), content: "Discuss this result", idempotency_key: "owned-discussion" };
+    const path = `http://localhost:${f.app.port}/api/factory/implementations/${id}/human-review/${operation === "discussion" ? "messages" : "submit"}`;
+    const body = operation === "discussion" ? { review_id: crypto.randomUUID(), content: "Discuss this result", idempotency_key: "owned-discussion" } : { review_id: crypto.randomUUID(), snapshot_id: crypto.randomUUID(), head: "a".repeat(40), disposition: "decline", comment_ids: [], idempotency_key: "owned-feedback" };
     for (const [headers, status] of [
       [{ "x-herdr-factory": "1" }, 401],
       [{ authorization: `Bearer ${f.token}` }, 403],
