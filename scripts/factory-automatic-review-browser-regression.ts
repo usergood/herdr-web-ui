@@ -7,14 +7,15 @@ import { capacityFixture } from "./factory-capacity-fixture.ts";
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
-    const f = await capacityFixture({ advancingHeads: true, workerTranscript: (worker, before) => ({ source_id: `owned-browser-history:${worker.id}`, version: "fixture-v1", cursor: before ? null : "earlier", turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: `${before ? "Earlier" : "Final"} ${worker.role} reasoning for ${worker.id}` }] }] }) });
+    let historyAvailable = true;
+    const f = await capacityFixture({ advancingHeads: true, workerTranscript: (worker, before) => !historyAvailable && worker.role === "standards" ? null : ({ source_id: `owned-browser-history:${worker.id}`, version: "fixture-v1", cursor: before ? null : "earlier", turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: `${before ? "Earlier" : "Final"} ${worker.role} reasoning for ${worker.id}` }] }] }) });
     const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
     try {
       await f.api("/settings", { max_agents: 1 });
       const id = await f.assignment("Checked PR result"); const prefix = `/implementations/${id}`;
       const detail = () => f.api(prefix).then(r => r.json());
-      const until = async (ready: (d: any) => boolean) => {
-        const deadline = Date.now() + 15000;
+      const until = async (ready: (d: any) => boolean, timeout = 15000) => {
+        const deadline = Date.now() + timeout;
         for (;;) { const d = await detail(); if (ready(d)) return d; if (Date.now() > deadline) throw new Error(`Review stalled: ${JSON.stringify(d.automatic_review)}`); await Bun.sleep(20); }
       };
       await f.api(`/projects/${(await detail()).implementation.project_id}/configure`, { checks: [["bun", "test"]], permissions: "Owned fixtures only", pull_request: { repository: "fictional/project", base_branch: "main" } });
@@ -34,8 +35,26 @@ try {
       const review = page.getByRole("region", { name: "Automatic review and PR", exact: true });
       await review.waitFor();
       const standards = (await until(d => d.workers.some((w: any) => w.role === "standards" && w.condition === "working"))).workers.find((w: any) => w.role === "standards");
+      historyAvailable = false;
       f.reviewOutcomes.set(standards.id, "failed"); f.workers.get(standards.id)!.condition = "ready";
+      await review.getByRole("alert").filter({ hasText: "automatic recovery exhausted after six observations" }).waitFor({ timeout: 45_000 });
+      const exhausted = await detail();
+      assert.equal(exhausted.automatic_review[0].attempts, 6);
+      assert.equal(exhausted.review_evidence.length, 1);
+      const controls = page.getByRole("region", { name: "Assignment execution", exact: true });
+      f.offline(true);
+      await controls.getByRole("button", { name: "Pause Assignment", exact: true }).click();
+      await controls.getByText("Pause pending", { exact: true }).waitFor();
+      historyAvailable = true; f.offline(false);
+      await controls.getByText("Paused", { exact: true }).waitFor();
+      await page.reload();
+      await controls.getByRole("button", { name: "Resume Assignment", exact: true }).click();
+      await until(d => !d.workers.find((w: any) => w.id === standards.id).suspension);
+      f.workers.get(standards.id)!.condition = "ready";
+      await until(d => !d.runs[0].suspension);
+      f.runs.get(run.id)!.condition = "ready";
       const spec = (await until(d => d.workers.some((w: any) => w.role === "spec" && w.condition === "working"))).workers.find((w: any) => w.role === "spec");
+      assert.deepEqual((await detail()).review_evidence, exhausted.review_evidence);
       f.workers.get(spec.id)!.condition = "ready";
       const repair = (await until(d => d.workers.some((w: any) => w.rework_batch_id && w.condition === "working"))).workers.find((w: any) => w.rework_batch_id);
       await review.getByText("Fixing", { exact: true }).waitFor();
@@ -74,5 +93,5 @@ try {
       assert.deepEqual(errors, []);
     } finally { await context.close(); f.close(); }
   }
-  console.log("PASS approval, independent reviews, retained findings, repair and checked PR on desktop/mobile");
+  console.log("PASS approval, exhausted native review recovery through Pause/Resume, retained findings, repair and checked PR on desktop/mobile");
 } finally { await browser.close(); }

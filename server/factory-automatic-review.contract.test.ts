@@ -32,7 +32,7 @@ describe("Automatic independent review through authenticated HTTP", () => {
   it("names remote publication policy problems without copying remote diagnostics or retrying a missing permission", async () => {
     const f = await capacityFixture({ advancingHeads: true });
     try {
-      const { detail } = await candidate(f, true); f.denyPublication();
+      const { id, detail } = await candidate(f, true); f.denyPublication();
       for (const axis of ["standards", "spec"]) {
         const current = await until(detail, d => d.workers.some((w: any) => w.role === axis && w.condition === "working"));
         f.workers.get(current.workers.find((w: any) => w.role === axis).id)!.condition = "ready";
@@ -40,8 +40,62 @@ describe("Automatic independent review through authenticated HTTP", () => {
       const problem = await until(detail, d => d.automatic_review?.[0]?.reason);
       expect(problem.automatic_review[0]).toMatchObject({ condition: "blocked", reason: "Publication requires the frozen Project destination and a verified GitHub account on the execution Machine" });
       expect(f.publications.size).toBe(0);
+      expect((await f.api(`/implementations/${id}/pause`, {}).then(r => r.json())).pause.condition).toBe("paused");
+      expect((await f.api(`/implementations/${id}/resume`, {})).status).toBe(200);
+      const resumed = await detail();
+      expect(resumed.automatic_review[0]).toEqual(problem.automatic_review[0]);
+      expect(resumed.review_evidence).toEqual(problem.review_evidence);
+      expect(resumed.events.filter((e: any) => e.kind === "automatic_review_recovery_resumed")).toHaveLength(0);
     } finally { f.close(); }
   });
+  it("resumes exhausted native review recovery after confirmed Pause without repeating retained work", async () => {
+    let historyAvailable = true;
+    const f = await capacityFixture({ advancingHeads: true, workerTranscript: worker => !historyAvailable && worker.role === "standards" ? null : {
+      source_id: `owned-review-resume:${worker.id}`, version: "v1", cursor: null,
+      turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: "Owned retained review history" }] }],
+    } });
+    try {
+      const { id, detail, run } = await candidate(f, true);
+      const started = await until(detail, d => d.workers.some((w: any) => w.role === "standards" && w.condition === "working"));
+      const standards = started.workers.find((w: any) => w.role === "standards");
+      historyAvailable = false; f.workers.get(standards.id)!.condition = "ready";
+      const blocked = await until(detail, d => d.automatic_review?.[0]?.condition === "blocked", 40000);
+      expect(blocked.automatic_review[0]).toMatchObject({ attempts: 6, reason: expect.stringContaining("exhausted after six observations") });
+      expect(blocked.review_evidence).toHaveLength(1);
+      expect(blocked.workers[0].condition).toBe("completed");
+      expect(blocked.tickets[0].status).toBe("done");
+      expect(f.publications.size).toBe(0);
+      // Resume by itself does not grant another observation budget.
+      expect((await f.api(`/implementations/${id}/resume`, {})).status).toBe(200);
+      expect((await detail()).automatic_review[0]).toMatchObject({ condition: "blocked", attempts: 6 });
+      f.offline(true);
+      expect((await f.api(`/implementations/${id}/pause`, {}).then(r => r.json())).pause.condition).toBe("pending");
+      historyAvailable = true; f.offline(false);
+      await until(detail, d => d.implementation.pause?.condition === "paused");
+      f.restart();
+      expect((await f.api(`/implementations/${id}/resume`, {})).status).toBe(200);
+      await until(detail, d => !d.workers.find((w: any) => w.id === standards.id).suspension);
+      f.workers.get(standards.id)!.condition = "ready";
+      await until(detail, d => !d.runs[0].suspension);
+      f.runs.get(run.id)!.condition = "ready";
+      const next = await until(detail, d => d.workers.some((w: any) => w.role === "spec" && w.condition === "working"));
+      expect(next.review_evidence).toEqual(blocked.review_evidence);
+      expect(next.workers.find((w: any) => w.id === standards.id).condition).toBe("completed");
+      f.workers.get(next.workers.find((w: any) => w.role === "spec").id)!.condition = "ready";
+      const done = await until(detail, d => d.automatic_review[0].condition === "published" && d.human_reviews.length === 1);
+      expect(done.workers.map((w: any) => w.id).slice(0, 2)).toEqual(blocked.workers.map((w: any) => w.id));
+      expect(done.review_evidence).toHaveLength(2);
+      expect(done.review_evidence[0]).toEqual(blocked.review_evidence[0]);
+      expect(done.checks.map((c: any) => c.id)).toEqual(blocked.checks.map((c: any) => c.id));
+      expect(done.events.filter((e: any) => e.kind === "ticket_integrated")).toHaveLength(1);
+      expect(done.approvals.map((a: any) => a.kind)).toEqual(["specification"]);
+      expect(f.workerLaunches).toHaveLength(3); expect(f.publications.size).toBe(1);
+      expect((await f.api(`/implementations/${id}/resume`, {})).status).toBe(200);
+      const repeated = await detail();
+      expect(repeated.review_evidence).toEqual(done.review_evidence);
+      expect(repeated.events.filter((e: any) => e.kind === "automatic_review_recovery_resumed")).toHaveLength(1);
+    } finally { f.close(); }
+  }, 60000);
   it("retains an independent report across a lost reviewer shutdown reply and resumes without duplicate evidence", async () => {
     const f = await capacityFixture({ advancingHeads: true });
     try {
