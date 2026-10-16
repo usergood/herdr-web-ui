@@ -12,7 +12,7 @@ export function runFactoryCommand(args: string[], cwd: string, env: Record<strin
   return new Promise((resolve, reject) => {
     const child = spawn(args[0]!, args.slice(1), { cwd, env, shell: false, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     let bytes = 0; const chunks: Buffer[] = []; let stopped = false; let cancelled = false;
-    let shutdown: Promise<boolean> | undefined;
+    let shutdown: Promise<boolean> | undefined; let finishing = false;
     const kill = (signal: "SIGTERM" | "SIGKILL"): void => {
       try { if (child.pid) process.kill(-child.pid, signal); }
       catch { /* Only the subsequent empty-group observation proves shutdown. */ }
@@ -35,25 +35,25 @@ export function runFactoryCommand(args: string[], cwd: string, env: Record<strin
       return gone(2000);
     };
     const stop = (aborted = false): void => {
-      if (stopped || child.exitCode !== null || child.signalCode !== null) return;
-      stopped = true; cancelled = aborted;
-      if (child.pid) shutdown = endGroup();
+      // A reaped leader can leave executing descendants holding its pipes.
+      if (stopped || finishing && !groupLeft()) return;
+      stopped = true; cancelled = aborted && child.signalCode === null && (child.exitCode === null || child.exitCode === 0);
+      if (child.pid) shutdown ??= endGroup();
     };
     const timer = setTimeout(() => stop(), Math.max(1, timeout));
     const data = (chunk: Buffer): void => { bytes += chunk.length; if (bytes <= 2 * 1024 * 1024) chunks.push(chunk); else stop(); };
     child.stdout?.on("data", data); child.stderr?.on("data", data);
     const abort = () => stop(true);
     signal.addEventListener("abort", abort, { once: true }); if (signal.aborted) abort();
-    let finishing = false;
     const finish = async (code: number): Promise<void> => {
       if (finishing) return; finishing = true;
-      clearTimeout(timer); signal.removeEventListener("abort", abort);
       // The leader's close does not prove its descendants stopped. Keep owning
       // the group through the bounded forced shutdown, even with closed pipes.
       if (child.pid) shutdown ??= endGroup();
       const confirmed = !shutdown || await shutdown;
+      clearTimeout(timer); signal.removeEventListener("abort", abort);
       if (!confirmed) { reject(new Error("Owned build process group shutdown remains unconfirmed")); return; }
-      resolve({ exit_code: stopped ? 1 : code, cancelled, output: Buffer.concat(chunks).toString("utf8") });
+      resolve({ exit_code: stopped && code === 0 ? 1 : code, cancelled, output: Buffer.concat(chunks).toString("utf8") });
     };
     child.once("error", () => void finish(1)); child.once("close", code => void finish(code ?? 1));
   });

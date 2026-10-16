@@ -122,6 +122,67 @@ describe("continuing approved workflow steps", () => {
       expect((await f.request("").then(r => r.json())).capacity.builds.used).toBe(0);
     } finally { if (descendant) { try { process.kill(descendant, "SIGKILL"); } catch {} } await f.close(); }
   }, 60000);
+  for (const [action, stdio, exitCode] of [["pause", "inherit", 0], ["pause", "ignore", 0], ["delete", "inherit", 0], ["delete", "ignore", 0], ["pause", "ignore", 3]] as const) it.skipIf(process.platform === "win32")(`${action} stops an exited build leader’s ${stdio}-pipe descendant and preserves exit ${exitCode}`, async () => {
+    const f = await fixture(`owned-exited-leader-${action}-${stdio}-${exitCode}`); let descendant = 0;
+    const ready = join(f.repo, "..", "exited-leader-ready");
+    const child = `process.on("SIGTERM", () => {}); require("node:fs").writeFileSync(${JSON.stringify(ready)}, JSON.stringify({ leader: process.ppid, descendant: process.pid })); setTimeout(() => process.exit(0), 8000)`;
+    const parent = `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(child)}], { stdio: ["ignore", ${JSON.stringify(stdio)}, ${JSON.stringify(stdio)}] }).unref(); const ready = setInterval(() => { if (require("node:fs").existsSync(${JSON.stringify(ready)})) process.exit(${exitCode}); }, 10)`;
+    try {
+      const detail = await f.request(f.prefix).then(r => r.json());
+      await f.request(`/projects/${detail.implementation.project_id}/configure`, { checks: [["node", "-e", parent]], permissions: "Owned unpaid test fixtures only" });
+      const run = await f.start("work", "exited-leader-pause");
+      const checking = f.request(`/runs/${run.id}/checks`, {}).then(r => r.json());
+      for (const deadline = Date.now() + 4000; !existsSync(ready) && Date.now() < deadline;) await Bun.sleep(20);
+      expect(existsSync(ready)).toBe(true);
+      const identity = JSON.parse(readFileSync(ready, "utf8")); descendant = identity.descendant;
+      const leaderGone = () => { try { process.kill(identity.leader, 0); return false; } catch { return true; } };
+      for (const deadline = Date.now() + 2000; !leaderGone() && Date.now() < deadline;) await Bun.sleep(20);
+      expect(leaderGone()).toBe(true);
+      const started = Date.now();
+      const result = await f.request(`${f.prefix}/${action}`, {}).then(r => r.json());
+      expect(Date.now() - started).toBeLessThan(6000);
+      const check = await checking;
+      if (action === "pause") {
+        expect(result.pause.condition).toBe("paused");
+        if (exitCode) {
+          expect(check.condition).toBe("failed"); expect(check.pause_id).toBeUndefined();
+          expect(check.commands[0].exit_code).toBe(exitCode);
+        } else {
+          expect(check).toMatchObject({ condition: "cancelled", pause_id: result.pause.id });
+          expect(check.commands[0].exit_code).toBe(1);
+        }
+      } else {
+        expect(result.condition).toBe("deleted");
+        expect((await f.request(f.prefix)).status).toBe(404);
+      }
+      expect((await f.request("").then(r => r.json())).capacity.builds.used).toBe(0);
+    } finally { if (descendant) { try { process.kill(descendant, "SIGKILL"); } catch {} } await f.close(); }
+  }, 60_000);
+  it.skipIf(process.platform === "win32")("fails an output-limited check whose exited leader leaves a descendant writing inherited pipes", async () => {
+    const f = await fixture("owned-exited-leader-output-limit"); let descendant = 0;
+    const ready = join(f.repo, "..", "output-ready"); const release = join(f.repo, "..", "write-output");
+    const child = `const fs = require("node:fs"); process.on("SIGTERM", () => {}); fs.writeFileSync(${JSON.stringify(ready)}, JSON.stringify({ leader: process.ppid, descendant: process.pid })); const poll = setInterval(() => { if (fs.existsSync(${JSON.stringify(release)})) { clearInterval(poll); process.stdout.write(Buffer.alloc(2 * 1024 * 1024 + 1, "x")); } }, 10); setTimeout(() => process.exit(0), 8000)`;
+    const parent = `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(child)}], { stdio: ["ignore", "inherit", "inherit"] }).unref(); setInterval(() => { if (require("node:fs").existsSync(${JSON.stringify(ready)})) process.exit(0); }, 10)`;
+    try {
+      const detail = await f.request(f.prefix).then(r => r.json());
+      await f.request(`/projects/${detail.implementation.project_id}/configure`, { checks: [["node", "-e", parent]], permissions: "Owned unpaid test fixtures only" });
+      const run = await f.start("work", "exited-leader-output-limit");
+      const checking = f.request(`/runs/${run.id}/checks`, {}).then(r => r.json());
+      for (const deadline = Date.now() + 4000; !existsSync(ready) && Date.now() < deadline;) await Bun.sleep(20);
+      expect(existsSync(ready)).toBe(true);
+      const identity = JSON.parse(readFileSync(ready, "utf8")); descendant = identity.descendant;
+      const leaderGone = () => { try { process.kill(identity.leader, 0); return false; } catch { return true; } };
+      for (const deadline = Date.now() + 2000; !leaderGone() && Date.now() < deadline;) await Bun.sleep(20);
+      expect(leaderGone()).toBe(true);
+      const started = Date.now(); writeFileSync(release, "Write bounded fixture output");
+      const check = await checking;
+      expect(Date.now() - started).toBeLessThan(6000);
+      expect(check.condition).toBe("failed"); expect(check.pause_id).toBeUndefined();
+      expect(check.commands[0].exit_code).toBe(1);
+      expect(check.commands[0].output.length).toBeLessThanOrEqual(2 * 1024 * 1024);
+      expect((await f.request("").then(r => r.json())).capacity.builds.used).toBe(0);
+    } finally { if (descendant) { try { process.kill(descendant, "SIGKILL"); } catch {} } await f.close(); }
+  }, 60_000);
   it("preserves a genuine configured validation failure when the owner later pauses and resumes", async () => {
     const f = await fixture("owned-failed-check-pause");
     try {
