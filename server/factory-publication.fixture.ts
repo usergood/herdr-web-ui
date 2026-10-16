@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { factoryDeliveryFixture } from "./factory-delivery.fixture.ts";
 import { approveUpstreamPreparation } from "./upstream-preparation.fixture.ts";
+import type { FactoryRun, FactoryWorker } from "../shared/factory.ts";
 
 /** Owned GitHub and Git upload effects, observed through public requests. */
 export async function factoryPublicationFixture(options: { checks?: string[][]; upstream?: boolean; deferPreparation?: boolean } = {}) {
@@ -34,8 +35,10 @@ process.stdout.write(JSON.stringify(value));
 `);
   const uploads: { cwd: string; repository: string; branch: string; head: string }[] = [];
   let uploadEffect = async () => {};
+  let parentPane: string | null = null;
+  let parentPrompt: (() => Promise<void>) | null = null;
   const f = await factoryDeliveryFixture(true, true, { ...{
-    prompt: async () => {},
+    prompt: async paneId => { if (paneId === parentPane) await parentPrompt?.(); },
     pushBranch: async (upload: typeof uploads[number]) => {
       uploads.push(upload);
       const data = JSON.parse(readFileSync(state, "utf8")); data.head = upload.head;
@@ -67,6 +70,14 @@ process.stdout.write(JSON.stringify(value));
     await approveUpstreamPreparation(f.request, prefix);
   }
   const run = options.upstream ? await f.request(prefix + "/runs", { action: "work", idempotency_key: "approved-upstream-work" }).then(r => r.json()) : await f.start();
+  parentPane = run.pane_id;
+  const holdParentPrompt = () => {
+    let entered!: () => void; let release!: () => void;
+    const waiting = new Promise<void>(resolve => entered = resolve);
+    const held = new Promise<void>(resolve => release = resolve);
+    parentPrompt = async () => { entered(); await held; };
+    return { waiting, release: () => { parentPrompt = null; release(); } };
+  };
   const commit = () => {
     writeFileSync(join(run.worktree!, "feature.md"), "Approved Assignment change\n");
     f.git(["add", "feature.md"], run.worktree!);
@@ -76,11 +87,44 @@ process.stdout.write(JSON.stringify(value));
   if (upstreamRevision && !options.deferPreparation) f.git(["merge", "--ff-only", upstreamRevision], run.worktree!);
   const head = options.upstream ? f.git(["rev-parse", "HEAD"], run.worktree!).trim() : commit();
   f.setReviewHead(head);
+  const settledParent = async () => {
+    const observe = async () => {
+      const response = await f.request(prefix);
+      if (!response.ok) throw new Error(`Owned publication parent observation failed: ${response.status}`);
+      const detail = await response.json() as { runs: FactoryRun[] };
+      const current = detail.runs.find(candidate => candidate.id === run.id);
+      if (!current || current.pane_id !== run.pane_id || current.workspace_id !== run.workspace_id || current.worktree !== run.worktree || current.branch !== run.branch) throw new Error("Owned publication parent identity changed");
+      return current;
+    };
+    let current = await observe();
+    // Native delivery owns this reservation until its response settles. Observing it must not resend.
+    if (current.continuation?.condition !== "sending") {
+      const reconciled = await f.request(`/runs/${run.id}/reconcile`, {});
+      if (!reconciled.ok) throw new Error(`Owned publication parent reconciliation failed: ${reconciled.status}`);
+      current = await observe();
+    }
+    const deadline = Date.now() + 8000;
+    while (current.condition === "accepted" || ["queued", "sending"].includes(current.continuation?.condition ?? "")) {
+      if (Date.now() > deadline) throw new Error("Owned publication parent continuation did not settle");
+      await new Promise(resolve => setTimeout(resolve, 20));
+      current = await observe();
+    }
+    if (!["working", "ready", "needs_you", "blocked"].includes(current.condition) || ["blocked", "uncertain"].includes(current.continuation?.condition ?? "")) throw new Error("Owned publication parent requires reconciliation");
+  };
   const verify = async () => {
+    await settledParent();
     const checked = await f.request(`/runs/${run.id}/checks`, {});
     if (!checked.ok || (await checked.json()).condition !== "passed") throw new Error("Owned publication checks failed");
     for (const role of ["standards", "spec"]) {
-      const worker = await f.request(`/runs/${run.id}/workers`, { role, idempotency_key: `publication-${role}` }).then(r => r.json());
+      await settledParent();
+      const allocated = await f.request(`/runs/${run.id}/workers`, { role, idempotency_key: `publication-${role}` });
+      if (!allocated.ok) throw new Error(`Owned publication reviewer allocation failed: ${allocated.status} ${await allocated.text()}`);
+      const worker = await allocated.json() as FactoryWorker;
+      if (worker.run_id !== run.id || worker.role !== role || !worker.pane_id) throw new Error("Owned publication reviewer was not admitted");
+      const reconciled = await f.request(`/runs/${run.id}/workers/${worker.id}/reconcile`, {});
+      if (!reconciled.ok || (await reconciled.json()).condition !== "ready") throw new Error("Owned publication reviewer is not at verified native rest");
+      // A resting child can resume its parent; drain that observed transition before collecting evidence.
+      await settledParent();
       const evidence = await f.request(`/runs/${run.id}/workers/${worker.id}/review-evidence`, {});
       if (!evidence.ok) throw new Error(`Owned independent publication review failed: ${evidence.status} ${await evidence.text()}`);
     }
@@ -94,7 +138,7 @@ process.stdout.write(JSON.stringify(value));
     const access = JSON.parse(readFileSync(join(run.worktree!, ".saurons-eye-access.json"), "utf8"));
     return fetch(`http://localhost:${f.app.port}${new URL(access.url).pathname}/${action}`, { headers: { authorization: `Bearer ${access.token}`, "content-type": "application/json", "x-herdr-factory": "1" }, ...(body === undefined ? {} : { method: "POST", body: JSON.stringify(body) }) });
   };
-  return { ...f, prefix, get app() { return f.app; }, profile, run, head, upstreamRevision, uploads, verify, legacyPolicy, agent, route: `/runs/${run.id}/publication`, afterUpload: (effect: () => Promise<void>) => { uploadEffect = effect; },
+  return { ...f, prefix, get app() { return f.app; }, profile, run, head, upstreamRevision, uploads, verify, legacyPolicy, agent, holdParentPrompt, route: `/runs/${run.id}/publication`, afterUpload: (effect: () => Promise<void>) => { uploadEffect = effect; },
     github: (change: Record<string, unknown>) => { const data = JSON.parse(readFileSync(state, "utf8")); writeFileSync(state, JSON.stringify({ ...data, ...change })); },
     calls: () => readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line) as { args: string[]; scoped: boolean }),
     close: async () => { await f.close(); rmSync(root, { recursive: true, force: true }); },

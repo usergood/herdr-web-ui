@@ -255,9 +255,24 @@ test("implementation PR publication defaults off and requires its own explicit P
 
 test("only an explicitly published accepted head opens its scoped PR and retains Awaiting merge", async () => {
   const f = await factoryPublicationFixture();
+  const held = f.holdParentPrompt();
   try {
     const proof = { head: f.head, title: "fix(factory): retain the reviewed result", body: "Completed work previously remained ambiguous. Preserve the accepted final change and its evidence." };
     expect((await f.request(f.route + "/publish", proof)).status).toBe(409);
+    const reviewerResponse = await f.request(`/runs/${f.run.id}/workers`, { role: "standards", idempotency_key: "publication-standards" });
+    expect(reviewerResponse.ok).toBe(true);
+    const reviewer = await reviewerResponse.json();
+    expect(reviewer).toMatchObject({ run_id: f.run.id, role: "standards" });
+    expect((await f.request(`/runs/${f.run.id}/workers/${reviewer.id}/reconcile`, {})).ok).toBe(true);
+    expect((await f.request(`/runs/${f.run.id}/reconcile`, {})).ok).toBe(true);
+    await Promise.race([held.waiting, new Promise((_, reject) => setTimeout(() => reject(new Error("Owned parent continuation did not reach native prompt")), 8000))]);
+    const sending = await f.request(f.prefix).then(response => response.json());
+    expect(sending.runs.find((run: { id: string }) => run.id === f.run.id)).toMatchObject({ id: f.run.id, condition: "accepted", continuation: { kind: "children", condition: "sending" } });
+    expect((await f.request(`/runs/${f.run.id}/workers/${reviewer.id}/review-evidence`, {})).status).toBe(409);
+    expect((await f.request(f.route + "/publish", proof)).status).toBe(409);
+    expect(f.uploads).toHaveLength(0);
+    // Releasing native delivery does not immediately settle the coordinator's reservation.
+    held.release();
     await f.verify();
     expect((await f.request(`/runs/${f.run.id}/accept`, proof)).status).toBe(200);
     expect(f.uploads).toHaveLength(0);
@@ -278,7 +293,7 @@ test("only an explicitly published accepted head opens its scoped PR and retains
     expect((await f.request(f.route + "/publish", proof).then(r => r.json())).id).toBe(receipt.id);
     expect(f.calls().filter(call => call.args.includes("--method"))).toHaveLength(1);
     expect(f.calls().every(call => call.scoped && !call.args.some(arg => /\/(merge|releases|deployments)$/.test(arg)))).toBe(true);
-  } finally { await f.close(); }
+  } finally { held.release(); await f.close(); }
 }, 60_000);
 
 test("GitHub's canonical repository casing still identifies the approved publication receipt", async () => {
