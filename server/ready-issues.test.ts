@@ -101,7 +101,17 @@ test.each(["verified", "stale_head", "uncertain_check"])("only current verified 
     f.restWorker(worker.id);
     await f.request(`${workerRoute}/${worker.id}/reconcile`, {});
     expect((await f.request(`${workerRoute}/${worker.id}/check`, {})).body.condition).toBe("passed");
-    expect(await f.request(`${workerRoute}/${worker.id}/integrate`, {})).toMatchObject({ status: 200, body: { condition: "completed" } });
+    let integration = await f.request(`${workerRoute}/${worker.id}/integrate`, {});
+    const integrationDeadline = Date.now() + 5000;
+    // A parent resuming after its child wait briefly holds an accepted lease.
+    // This exact guard rejects before integration dispatch, so observation can settle it.
+    while (integration.status === 409 && integration.body.error?.code === "factory_run_required" && Date.now() < integrationDeadline) {
+      const parent = (await f.request(`/implementations/${a.implementation_id}`)).body.runs.find((entry: any) => entry.id === run.id);
+      expect(parent).toMatchObject({ action: "implement-spec", checkout: run.checkout, continuation: { kind: "children" } });
+      await f.tick(); await Bun.sleep(10);
+      integration = await f.request(`${workerRoute}/${worker.id}/integrate`, {});
+    }
+    expect(integration).toMatchObject({ status: 200, body: { condition: "completed" } });
     expect((await f.request(`/runs/${run.id}/checks`, {})).body.condition).toBe("passed");
     const standards = (await f.request(workerRoute, { role: "standards", idempotency_key: "independent-standards" })).body;
     await f.request(`${workerRoute}/${standards.id}/review-evidence`, {});
