@@ -169,6 +169,7 @@ it("the Machine refuses protected/conflicting targets, stale candidates, untrust
     const f = await mergeFixture();
     try {
       const body = structuredClone(f.body);
+      f.pull({ baseRef: { branchProtectionRule: { isAdminEnforced: false, requiredApprovingReviewCount: 1, requiredStatusCheckContexts: ["Required CI"] } } });
       if (scenario === "protected") f.pull({ mergeStateStatus: "BLOCKED" });
       if (scenario === "conflict") f.pull({ mergeStateStatus: "DIRTY" });
       if (scenario === "required-check") f.pull({ mergeStateStatus: "BLOCKED", reviewDecision: "REVIEW_REQUIRED" });
@@ -216,10 +217,10 @@ it("automatically observes a temporarily busy Machine merge without another appr
   } finally { f.close(); }
 }, 20000);
 
-it("preserves the frozen Project's trusted-reviewer count under repository protection", async () => {
+it("preserves the frozen Project's trusted-reviewer count when administrators are exempt", async () => {
   const f = await mergeFixture();
   try {
-    f.pull({ author: { login: "fixture" }, baseRef: { branchProtectionRule: { isAdminEnforced: true, requiredApprovingReviewCount: 2 } }, reviews: { pageInfo: { hasNextPage: false }, nodes: [
+    f.pull({ author: { login: "fixture" }, baseRef: { branchProtectionRule: { isAdminEnforced: false, requiredApprovingReviewCount: 2 } }, reviews: { pageInfo: { hasNextPage: false }, nodes: [
       { state: "APPROVED", author: { login: "reviewer" }, commit: { oid: f.head } },
       { state: "APPROVED", author: { login: "other-reviewer" }, commit: { oid: f.head } },
     ] } });
@@ -320,10 +321,10 @@ it("pending required CI remains recoverable while GitHub reports unstable or unk
 }, 20000);
 
 
-it("the owned Machine retains one approval while branch-only required CI is running", async () => {
+it("the owned Machine retains one approval while branch-only required CI is running with administrators exempt", async () => {
   const f = await mergeFixture();
   try {
-    const protection = { isAdminEnforced: true, requiredApprovingReviewCount: 1, requiredStatusCheckContexts: ["Repository CI"] };
+    const protection = { isAdminEnforced: false, requiredApprovingReviewCount: 1, requiredStatusCheckContexts: ["Repository CI"] };
     const commits = (status: string, conclusion: string | null) => ({ nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [
       { name: "Required CI", status: "COMPLETED", conclusion: "SUCCESS" },
       { name: "Repository CI", status, conclusion },
@@ -347,7 +348,7 @@ it("the owned Machine observes missing or pending branch checks and blocks genui
   for (const context of [null, { context: "Repository CI", state: "PENDING" }, { context: "Repository CI", state: "EXPECTED" }, { context: "Repository CI", state: "FAILURE" }, { name: "Repository CI", status: "COMPLETED", conclusion: "CANCELLED" }]) {
     const f = await mergeFixture();
     try {
-      f.pull({ mergeStateStatus: "BLOCKED", reviewDecision: "REVIEW_REQUIRED", baseRef: { branchProtectionRule: { isAdminEnforced: true, requiredApprovingReviewCount: 1, requiredStatusCheckContexts: ["Repository CI"] } }, commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [
+      f.pull({ mergeStateStatus: "BLOCKED", reviewDecision: "REVIEW_REQUIRED", baseRef: { branchProtectionRule: { isAdminEnforced: false, requiredApprovingReviewCount: 1, requiredStatusCheckContexts: ["Repository CI"] } }, commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [
         { name: "Required CI", status: "COMPLETED", conclusion: "SUCCESS" }, ...(context ? [context] : []),
       ], pageInfo: { hasNextPage: false } } } } }], pageInfo: { hasNextPage: false } } });
       const failed = context && ("state" in context && context.state === "FAILURE" || "conclusion" in context && context.conclusion === "CANCELLED");
@@ -356,4 +357,19 @@ it("the owned Machine observes missing or pending branch checks and blocks genui
       expect(f.git(["rev-parse", "main"])).toBe(f.base);
     } finally { f.close(); }
   }
+}, 20000);
+
+
+it("the owned Machine merges a fully eligible protected candidate when administrators are exempt", async () => {
+  const f = await mergeFixture();
+  try {
+    f.pull({ baseRef: { branchProtectionRule: { isAdminEnforced: false, requiredApprovingReviewCount: 1, requiredStatusCheckContexts: ["Required CI"] } } });
+    const response = await f.post(f.route + "merge", f.body);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ condition: "merged", head: f.head, merge_sha: f.git(["rev-parse", "refs/heads/main"]) });
+    expect(f.git(["show", "refs/heads/main:result.txt"])).toBe("after");
+    f.restart();
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "merged", head: f.head });
+    expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { f.close(); }
 }, 20000);
