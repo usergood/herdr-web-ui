@@ -436,7 +436,7 @@ try {
       await reopenGitHubSettings();
       assert(await region.getByLabel("Pause queue", { exact: true }).isChecked());
       assert.equal(await region.getByLabel("Implementing Assignment limit", { exact: true }).count(), 0, "Assignment quotas remain absent after reload");
-      assert.equal("max_implementing_assignments" in (await fixture.json(route + "/queue")).policy, false);
+      assert.equal("max_implementations" in (await fixture.json(route + "/queue")).policy, false);
       const refreshedPreview = page.waitForResponse(response => response.url().endsWith(route + "/preview") && response.request().method() === "POST");
       await region.getByRole("button", { name: "Preview eligible backlog", exact: true }).click();
       assert.equal((await refreshedPreview).status(), 200);

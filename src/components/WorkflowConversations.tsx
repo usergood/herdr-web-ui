@@ -41,6 +41,7 @@ export function WorkflowConversations({ detail, machines, selectedId, onSelect, 
   const [retry, setRetry] = useState(0);
   const id = selected?.id;
   const assignmentId = detail.implementation.id;
+  const preparedSpecificationId = detail.github_sources?.find(source => source.kind === "issue" && source.planning?.condition === "prepared" && source.planning.graph_hash === detail.graph_hash)?.planning?.specification_id;
   useEffect(() => {
     if (!id) return;
     let live = true; setError(null);
@@ -56,16 +57,16 @@ export function WorkflowConversations({ detail, machines, selectedId, onSelect, 
     <h3>{t("Workflow conversations")}</h3>
     <nav aria-label={t("Workflow history")}><WorkflowConversationTree conversations={conversations} selectedId={selected.id} onSelect={onSelect} /></nav>
     {error && <p role="alert">{error} <button className="btn factory-button" onClick={() => setRetry(value => value + 1)}>{t("Retry")}</button></p>}
-    {retained ? <ConversationHistory key={selected.id} detail={retained} selected={selectedHistory} machines={machines} busy={busy || !!error} perform={perform} onOpenPane={onOpenPane} /> : !error && <p role="status">{t("Loading…")}</p>}
+    {retained ? <ConversationHistory preparedSpecificationId={preparedSpecificationId} key={selected.id} detail={retained} selected={selectedHistory} machines={machines} busy={busy || !!error} perform={perform} onOpenPane={onOpenPane} /> : !error && <p role="status">{t("Loading…")}</p>}
   </section>;
 }
 
 /** A selected history body stays separate from the small pollable conversation tree. */
-function ConversationHistory({ detail, selected, machines, busy, perform, onOpenPane }: { detail: FactoryDetail; selected: FactoryConversation; machines: Machine[]; busy: boolean; perform: (work: () => Promise<void>) => Promise<void>; onOpenPane: (machineId: string, paneId: string) => void }) {
+function ConversationHistory({ detail, selected, machines, busy, perform, onOpenPane, preparedSpecificationId }: { preparedSpecificationId?: string | null; detail: FactoryDetail; selected: FactoryConversation; machines: Machine[]; busy: boolean; perform: (work: () => Promise<void>) => Promise<void>; onOpenPane: (machineId: string, paneId: string) => void }) {
   const t = useT();
   const snapshots = new Map(detail.native_snapshots.map(s => [s.id, s]));
   const specification = detail.specifications.at(-1);
-  const preparedIssuePlan = detail.github_sources?.some(source => source.kind === "issue" && source.planning?.condition === "prepared" && source.planning.specification_id === specification?.id && source.planning.graph_hash === detail.graph_hash);
+  const preparedIssuePlan = !!specification && preparedSpecificationId === specification.id;
   const history = selected.contexts.map(context => {
     const pane = machines.find(m => m.id === context.machine_id && m.state === "connected")?.snapshot?.panes.find(p => p.pane_id === context.pane_id && p.workspace_id === context.workspace_id && p.cwd === context.worktree);
     return <article className="factory-message" key={`${context.run_id}:${context.worker_id ?? "coordinator"}`}>
