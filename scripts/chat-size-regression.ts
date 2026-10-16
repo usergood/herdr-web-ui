@@ -783,7 +783,6 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
               await page.locator(`.pane-select[title^="${next} — "]`).evaluate((button: HTMLElement) => button.click());
               await waitWire("out", "watch");
               await page.locator(`.terminal-stack[data-pane-owner="${next}"]`).waitFor({ state: "attached" });
-              await waitWire("out", "detach", 1);
               await page.clock.runFor(0);
               assert.deepEqual(detachedPanes(await recorded()), [],
                 "navigation keeps pane A attached while its queued message waits");
