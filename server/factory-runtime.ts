@@ -145,7 +145,7 @@ export class FactoryRuntime {
     if (!(previous.manifest as { issue_admission?: unknown }).issue_admission || !issueRetryAvailable(this.store, previous) || body.issue_scope === undefined) throw new FactoryError("retry_unavailable", "Retry requires a failed issue attempt or a confirmed owner Stop of controlled-pause work, followed by current scope review", 409);
     return this.start(previous.implementation_id, { ...body, action: "implement-spec", retry_of: runId }, origin);
   }
-  async start(id: string, body: Record<string, unknown>, origin: string, continuation?: { runId?: string; finish?: () => Promise<void>; validateScope?: () => void }): Promise<FactoryRun> {
+  async start(id: string, body: Record<string, unknown>, origin: string, continuation?: { runId?: string; finish?: () => Promise<void>; validateScope?: () => void; automatic?: boolean }): Promise<FactoryRun> {
     const key = JSON.stringify([id, body.idempotency_key]);
     const scope = hash(JSON.stringify([body.action, issueScopeIdentity(body.issue_scope), body.retry_of ?? null]));
     const existing = this.starts.get(key);
@@ -157,7 +157,7 @@ export class FactoryRuntime {
     this.starts.set(key, { scope, pending });
     try { return await pending; } finally { this.starts.delete(key); }
   }
-  private async startOwned(id: string, body: Record<string, unknown>, origin: string, continuation?: { runId?: string; finish?: () => Promise<void>; validateScope?: () => void }): Promise<FactoryRun> {
+  private async startOwned(id: string, body: Record<string, unknown>, origin: string, continuation?: { runId?: string; finish?: () => Promise<void>; validateScope?: () => void; automatic?: boolean }): Promise<FactoryRun> {
     continuation?.validateScope?.();
     if (!actions.includes(body.action as FactoryAction) || typeof body.idempotency_key !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.idempotency_key)) throw new FactoryError("invalid_start", "Select an explicit action with an idempotency key");
     let implementation = this.store.get<Implementation>("implementations", id);
@@ -193,6 +193,15 @@ export class FactoryRuntime {
     if (action === "to-spec" && this.workflow.questions(id).length && (!this.workflow.approved(id, "shared_understanding", this.workflow.questionRevision(id)) || this.workflow.questions(id).some((question) => question.answer === null))) throw new FactoryError("understanding_unconfirmed", "Answer pending questions and confirm their shared understanding before specification", 409);
     const machineId = implementation.machine_id ?? project?.machine_id;
     if (!machineId) throw new FactoryError("machine_required", "Select an execution Machine explicitly", 409);
+    let api: URL | null = null;
+    try { api = new URL(this.publicUrl ?? origin); } catch { /* Report setup failure before admitting work. */ }
+    if (continuation?.automatic && machineId !== "local") {
+      const hostname = api?.hostname.replace(/\.$/, "") ?? "";
+      if (!this.publicUrl || !api || !["http:", "https:"].includes(api.protocol) || api.username || api.password
+        || hostname === "localhost" || hostname.endsWith(".localhost") || /^(?:127\.|0\.0\.0\.0$)/.test(hostname)
+        || ["[::]", "[::1]"].includes(hostname) || /^\[::ffff:(?:7f[0-9a-f]{2}:|0:0\])/.test(hostname)) throw new FactoryError("factory_public_url_required", "Configure HERDR_FACTORY_PUBLIC_URL with an owner-controlled HTTP(S) app address reachable from the remote Machine before automatic implementation", 409);
+    }
+    if (!api || !["http:", "https:"].includes(api.protocol) || api.username || api.password) throw new FactoryError("invalid_factory_url", "Use an authenticated HTTP(S) app address for the tracker");
     if (this.store.list<FactoryRun>("runs", id).some((run) => run.id !== continuation?.runId && activeConditions.has(run.condition))) throw new FactoryError("implementation_owned", "An existing or uncertain Run retains ownership; reconcile it before starting another", 409);
     const validateChildren = () => {
       const priorRuns = new Set(this.store.list<FactoryRun>("runs", id).map(run => run.id));
@@ -265,8 +274,6 @@ export class FactoryRuntime {
       if (!specification || !this.workflow.tickets(id).length || !issueAdmission && (!this.workflow.approved(id, "specification", specification.id) || !this.workflow.approved(id, "testing_seams", specification.id) || !this.workflow.approved(id, "ticket_graph", graphHash))) throw new FactoryError("scope_unaccepted", "Accept the current specification, testing seams and Ticket graph", 409);
       if (!project?.checks?.length || !project.permissions?.trim()) throw new FactoryError("project_setup_required", "Configure known Project checks and execution permissions before factory admission", 409);
     }
-    const api = new URL(this.publicUrl ?? origin);
-    if (!["http:", "https:"].includes(api.protocol) || api.username || api.password) throw new FactoryError("invalid_factory_url", "Use an authenticated HTTP(S) app address for the tracker");
     const contractHash = hash(JSON.stringify({ implementation, project, checkout, specification, graphHash, settings: this.settings(), skills: skills.hash, artifacts, messages, projectReferences }));
     await this.reconcileCapacity();
     const run = this.store.db.transaction(() => {

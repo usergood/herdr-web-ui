@@ -34,6 +34,86 @@ async function enable(fixture: ReturnType<typeof githubQueueFixture>, route: str
   return fixture.json(route + "/queue", { expected_revision: preview.policy.revision, automatic_implementation: true, preview_revision: preview.revision, paused, max_implementations: limit });
 }
 
+test("remote automation without an owner-configured callback fails before reserving or launching a Run", async () => {
+  const fixture = githubQueueFixture(true, null);
+  try {
+    const { route } = await synced(fixture);
+    const preview = await fixture.json(route + "/preview", {});
+    const response = await fixture.post(route + "/queue", { expected_revision: null, automatic_implementation: true, preview_revision: preview.revision, paused: false, max_implementations: 1 }, { ...fixture.headers, "x-forwarded-host": "untrusted.example", "x-forwarded-proto": "https" });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ dispatch_problem: { code: "factory_public_url_required" }, implementing_count: 0, available_slots: 1 });
+    expect(fixture.launches).toEqual([]);
+    const source = (await fixture.json(route)).sources[0];
+    expect((await fixture.json(`/implementations/${source.implementation_id}`)).runs).toEqual([]);
+    fixture.restart(); await fixture.json(route + "/sync", {});
+    expect((await fixture.json(route + "/queue")).dispatch_problem.code).toBe("factory_public_url_required");
+    expect(fixture.launches).toEqual([]);
+  } finally { fixture.close(); }
+}, 15_000);
+
+test("remote callback setup recovers automation after restart without changing the opt-in or duplicating work", async () => {
+  const fixture = githubQueueFixture(true, null);
+  try {
+    const { route } = await synced(fixture);
+    await enable(fixture, route);
+    const policy = (await fixture.json(route + "/queue")).policy;
+    expect(fixture.launches).toEqual([]);
+    fixture.restart(undefined, "https://owner.fixture.invalid");
+    await fixture.json(route + "/sync", {});
+    const source = (await fixture.json(route)).sources[0];
+    const path = `/implementations/${source.implementation_id}`;
+    const run = (await fixture.json(path)).runs[0];
+    expect(run.condition).toBe("working");
+    expect(fixture.trackerUrl(run.id)).toBe(`https://owner.fixture.invalid/api/factory-agent/${run.id}`);
+    expect((await fixture.json(route + "/queue")).policy).toEqual(policy);
+    fixture.restart(); await fixture.json(route + "/sync", {});
+    expect((await fixture.json(path)).runs).toHaveLength(1);
+    expect(fixture.launches).toEqual([run.id]);
+    expect((await fixture.json(route + "/queue")).dispatch_problem).toBeNull();
+  } finally { fixture.close(); }
+}, 15_000);
+
+test("configuring a remote callback does not enable automatic implementation", async () => {
+  const fixture = githubQueueFixture(true, null);
+  try {
+    const { route } = await synced(fixture);
+    fixture.restart(undefined, "https://owner.fixture.invalid");
+    await fixture.json(route + "/sync", {});
+    expect((await fixture.json(route + "/queue")).policy.automatic_implementation).toBe(false);
+    expect(fixture.launches).toEqual([]);
+    const source = (await fixture.json(route)).sources[0];
+    expect((await fixture.json(`/implementations/${source.implementation_id}`)).runs).toEqual([]);
+  } finally { fixture.close(); }
+}, 15_000);
+
+test.each(["http://localhost:7317", "http://127.2.3.4:7317", "http://[::1]:7317", "http://[::ffff:127.0.0.1]", "http://0.0.0.0:7317", "http://[::]:7317", "https://owner.localhost.", "not-a-url", "file:///tmp/owner", "https://user:secret@owner.fixture.invalid"])("remote automation rejects unusable configured callback %s before admission", async publicUrl => {
+  const fixture = githubQueueFixture(true, publicUrl);
+  try {
+    const { route } = await synced(fixture);
+    expect(await enable(fixture, route)).toMatchObject({ dispatch_problem: { code: "factory_public_url_required" }, implementing_count: 0 });
+    expect(fixture.launches).toEqual([]);
+    const source = (await fixture.json(route)).sources[0];
+    expect((await fixture.json(`/implementations/${source.implementation_id}`)).runs).toEqual([]);
+  } finally { fixture.close(); }
+}, 15_000);
+
+test("explicit remote Start retains the owner request origin when no public callback is configured", async () => {
+  const fixture = githubQueueFixture(true, null);
+  try {
+    const { route, readiness } = await fixture.setup();
+    const source = (await fixture.json(route + "/sync", {})).sources[0];
+    await fixture.json(route + "/issues/1/approve", { source_revision: source.revision, policy_revision: readiness.revision });
+    await fixture.json(route + "/issues/1/prepare", { source_revision: source.revision });
+    await fixture.json(route + "/sync", {});
+    const path = `/implementations/${source.implementation_id}`;
+    const detail = await fixture.json(path);
+    const run = await fixture.json(path + "/runs", { action: "implement-spec", idempotency_key: "explicit-remote-origin", issue_scope: { source_id: source.id, source_revision: source.revision, graph_hash: detail.graph_hash } });
+    expect(run.condition).toBe("working");
+    expect(fixture.trackerUrl(run.id)).toBe(`${fixture.origin}/api/factory-agent/${run.id}`);
+    expect((await fixture.json(route + "/queue")).policy.automatic_implementation).toBe(false);
+  } finally { fixture.close(); }
+}, 15_000);
+
 test("reviewed backlog and future trusted plans dispatch once through the existing sync path", async () => {
   const fixture = githubQueueFixture(true);
   try {

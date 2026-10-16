@@ -66,7 +66,7 @@ export class FactoryService {
       reconcile: async () => { await this.runtime.recover(); await this.runtime.reconcileCapacity(); },
       start: (id, scope, key, validate) => {
         if (!this.address) throw new FactoryError("factory_address_required", "Wait for the connection server address", 409);
-        return this.runtime.start(id, { action: "implement-spec", issue_scope: scope, idempotency_key: key }, this.address, { validateScope: validate });
+        return this.runtime.start(id, { action: "implement-spec", issue_scope: scope, idempotency_key: key }, this.address, { validateScope: validate, automatic: true });
       },
     });
   }

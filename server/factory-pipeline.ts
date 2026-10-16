@@ -1,6 +1,6 @@
 import { factoryCapacity } from "./factory-capacity.ts";
 import { hasIssueSource } from "./issue-delivery.ts";
-import type { FactoryCheck, FactoryProject, FactoryReviewEvidence, FactoryRun, FactorySettings, FactoryTicket, FactoryWorker, Implementation } from "../shared/protocol.ts";
+import type { FactoryApproval, FactoryCheck, FactoryProject, FactoryReviewEvidence, FactoryRun, FactorySettings, FactoryTicket, FactoryWorker, Implementation } from "../shared/protocol.ts";
 import { FactoryError } from "./factory-host.ts";
 import { FactoryRuntime } from "./factory-runtime.ts";
 import { FactoryStore } from "./factory-store.ts";
@@ -191,6 +191,7 @@ export class FactoryPipeline {
     // Verify the proof while the checkout still exists; cleanup cannot bless stale evidence.
     if (run.implementation_completion) run = await this.reconcileCompletion(id);
     if (!["completed", "cancelled", "failed"].includes(run.condition)) throw new FactoryError("run_owned", "Reconcile this Run's current evidence before cleanup", 409);
+    if (run.implementation_completion && !this.store.list<FactoryApproval>("approvals", run.implementation_id).some(approval => approval.kind === "review" && approval.revision === run.implementation_completion!.head && approval.scope.startsWith(`Run ${id};`))) throw new FactoryError("review_acceptance_required", "Choose Accept reviewed head before removing this implementation checkout", 409);
     const result = await this.runtime.operation<{ removed: string[]; branches_retained: boolean; notes_retained: boolean }>(run, "cleanup");
     const live = this.store.get<FactoryRun>("runs", id)!;
     if (run.implementation_completion && run.worktree && result?.branches_retained === true && result.notes_retained === true

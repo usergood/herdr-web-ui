@@ -39,7 +39,12 @@ export class FactoryWorktrees {
     return path;
   }
   async head(id: string): Promise<{ head: string; workspace_hash: string }> {
-    const run = this.run(id, false); const path = await this.identity(run);
+    // Observation must survive native retirement. Closing leases still forbid every
+    // mutation through run(); reading Git proves neither native termination nor delivery.
+    if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Worktree control is disabled on a restored copy", 409);
+    const lease = this.store.get<Lease>("host_leases", id); const run = lease?.run;
+    if (lease?.id !== id || run?.id !== id || !run.worktree || !run.branch || !run.checkout) throw new FactoryError("factory_run_required", "Use a recorded repository Run", 409);
+    const path = await this.identity(run);
     return { head: (await git(path, ["rev-parse", "HEAD"])).trim(), workspace_hash: await this.workspaceHash(path) };
   }
   private async workspaceHash(path: string): Promise<string> {

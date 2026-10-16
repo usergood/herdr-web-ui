@@ -319,6 +319,42 @@ test("verified owner cleanup preserves exact completion and released capacity ac
   } finally { fixture.close(); }
 }, 20_000);
 
+test("cleanup before owner acceptance preserves the checkout and explains how to accept first", async () => {
+  const fixture = githubReviewFixture();
+  try {
+    const { run, path } = await fixture.prepare();
+    await fixture.integrate(run); const check = await fixture.json(`/runs/${run.id}/checks`, {});
+    await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    await fixture.json(`/runs/${run.id}/reconcile`, {});
+    const cleanup = await fixture.post(`/runs/${run.id}/cleanup`, {});
+    expect(cleanup.status).toBe(409);
+    expect((await cleanup.json()).error).toMatchObject({ code: "review_acceptance_required", message: expect.stringContaining("Accept reviewed head") });
+    fixture.restart();
+    expect((await fixture.json(path)).approvals).toEqual([]);
+    expect((await fixture.post(`/runs/${run.id}/accept`, { head: check.head })).status).toBe(200);
+    expect(await fixture.json(`/runs/${run.id}/cleanup`, {})).toMatchObject({ removed: [run.worktree] });
+  } finally { fixture.close(); }
+}, 15_000);
+
+test("accepting an earlier Run at the same head does not authorize cleanup of its successor", async () => {
+  const fixture = githubReviewFixture();
+  try {
+    const { run, path } = await prepareManual(fixture);
+    await fixture.integrate(run); const check = await fixture.json(`/runs/${run.id}/checks`, {});
+    await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    await fixture.json(`/runs/${run.id}/accept`, { head: check.head });
+    const successor = await fixture.json(path + "/runs", { action: "implement-spec", idempotency_key: "unaccepted-successor" });
+    await fixture.integrate(successor); await fixture.json(`/runs/${successor.id}/checks`, {});
+    await fixture.review(successor, "standards"); await fixture.review(successor, "spec");
+    await fixture.json(`/runs/${successor.id}/reconcile`, {});
+    const cleanup = await fixture.post(`/runs/${successor.id}/cleanup`, {});
+    expect(cleanup.status).toBe(409); expect((await cleanup.json()).error.code).toBe("review_acceptance_required");
+    expect((await fixture.json(path)).approvals.filter((approval: any) => approval.kind === "review")).toHaveLength(1);
+    await fixture.json(`/runs/${successor.id}/accept`, { head: check.head });
+    expect((await fixture.post(`/runs/${successor.id}/cleanup`, {})).status).toBe(200);
+  } finally { fixture.close(); }
+}, 15_000);
+
 test.each(["unexpected", "lost", "unconfirmed", "other_checkout"] as const)("%s checkout loss cannot establish a completion cleanup receipt", async kind => {
   const fixture = githubReviewFixture();
   try {
@@ -343,9 +379,9 @@ test.each(["before", "after"])("a workspace changed %s cleanup cannot establish 
   const fixture = githubReviewFixture();
   try {
     const { run, path, route } = await fixture.prepare();
-    await fixture.integrate(run); await fixture.json(`/runs/${run.id}/checks`, {});
+    await fixture.integrate(run); const check = await fixture.json(`/runs/${run.id}/checks`, {});
     await fixture.review(run, "standards"); await fixture.review(run, "spec");
-    await fixture.json(`/runs/${run.id}/reconcile`, {});
+    await fixture.json(`/runs/${run.id}/accept`, { head: check.head });
     if (when === "after") await fixture.json(`/runs/${run.id}/cleanup`, {});
     fixture.setHeadUnavailable(false); fixture.setWorkspaceHash("changed-checkout");
     expect((await fixture.post(`/runs/${run.id}/cleanup`, {})).status).toBe(409);

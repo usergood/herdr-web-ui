@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "../../server/index.ts";
 
-export function githubQueueFixture(execution = false) {
+export function githubQueueFixture(execution = false, publicUrl: string | null = "https://owner.fixture.invalid") {
   const root = mkdtempSync(join(tmpdir(), "queue-fixture-"));
   const repo = join(root, "repo"); execFileSync("git", ["init", "-b", "main", repo], { stdio: "ignore" });
   writeFileSync(join(repo, "README.md"), "Fictional Project\n");
@@ -48,7 +48,7 @@ console.log(JSON.stringify(endpoint === "user" ? {login:"fictional-owner",id:104
   let checkout: unknown; let capabilities: unknown;
   let executionHandler: ((request: Request) => Promise<Response | null>) | null = null;
   let launchOutcome: "working" | "failed" | "lost" = "working";
-  const trackerAccess = new Map<string, { token: string }>();
+  const trackerAccess = new Map<string, { token: string; url: string }>();
   const nativeRuns = new Map<string, Record<string, unknown>>();
   const launches: string[] = [];
   let hostOffline = false;
@@ -63,7 +63,7 @@ console.log(JSON.stringify(endpoint === "user" ? {login:"fictional-owner",id:104
     if (path.endsWith("/inspect")) return Response.json(checkout);
     if (path.endsWith("/operations/head")) return Response.json({ head: (checkout as { head: string }).head });
     if (path.endsWith("/launch")) {
-      const { run, access } = await request.json() as { run: Record<string, unknown>; access: { token: string } };
+      const { run, access } = await request.json() as { run: Record<string, unknown>; access: { token: string; url: string } };
       trackerAccess.set(run.id as string, access);
       launches.push(run.id as string);
       const observed = { ...run, condition: launchOutcome === "failed" ? "failed" : "working", waiting_reason: launchOutcome === "failed" ? "Fictional failure before native allocation" : null, worktree: repo, branch: "fictional-run" };
@@ -75,7 +75,7 @@ console.log(JSON.stringify(endpoint === "user" ? {login:"fictional-owner",id:104
     if (reconcile && nativeRuns.has(reconcile[1]!)) return Response.json(nativeRuns.get(reconcile[1]!)!);
     return Response.json({ error: { code: "fixture_operation_unavailable", message: "No real native operation in this fixture" } }, { status: 409 });
   } }) : null;
-  const options = { accountDiscoveryHome: root, accountTools: { github: { executable: process.execPath, args: [cli] } }, ...(host ? { machineEndpoint: (id: string) => id === "fictional-host" ? { url: `http://localhost:${host.port}`, token: "fictional-host" } : undefined } : {}) };
+  const options = { publicUrl, accountDiscoveryHome: root, accountTools: { github: { executable: process.execPath, args: [cli] } }, ...(host ? { machineEndpoint: (id: string) => id === "fictional-host" ? { url: `http://localhost:${host.port}`, token: "fictional-host" } : undefined } : {}) };
   let app = createServer({ port: 0, stateDir: root, machines: false, token: "fixture-owner", factory: options });
   let origin = `http://localhost:${app.port}`;
   const headers = { authorization: "Bearer fixture-owner", "content-type": "application/json", "x-herdr-factory": "1", "x-herdr-machine": "1" };
@@ -128,7 +128,7 @@ console.log(JSON.stringify(endpoint === "user" ? {login:"fictional-owner",id:104
     data.labelEvents = labelEvents;
     writeFileSync(responses, JSON.stringify(data));
   }
-  function restart(beforeStart?: () => void) { app.stop(); beforeStart?.(); app = createServer({ port: 0, stateDir: root, machines: false, token: "fixture-owner", factory: options }); origin = `http://localhost:${app.port}`; }
+  function restart(beforeStart?: () => void, nextPublicUrl?: string | null) { app.stop(); beforeStart?.(); if (nextPublicUrl !== undefined) options.publicUrl = nextPublicUrl; app = createServer({ port: 0, stateDir: root, machines: false, token: "fixture-owner", factory: options }); origin = `http://localhost:${app.port}`; }
   function setApiResponses(apiResponses: Record<string, unknown>) {
     const data = JSON.parse(readFileSync(responses, "utf8"));
     writeFileSync(responses, JSON.stringify({ ...data, apiResponses }));
@@ -157,5 +157,5 @@ console.log(JSON.stringify(endpoint === "user" ? {login:"fictional-owner",id:104
     const response = await fetch(origin + `/api/factory-agent/${runId}/contract`, { headers: { authorization: `Bearer ${access.token}` } });
     if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<any>;
   };
-  return { setApiResponses, setExecutionHandler(handler: typeof executionHandler) { executionHandler = handler; }, tracker, failNativeRun: (id: string) => { const run = nativeRuns.get(id); if (!run) throw new Error("Unknown fictional Run"); nativeRuns.set(id, { ...run, condition: "failed", waiting_reason: "Fictional native failure" }); }, setHostOffline: (offline: boolean) => { hostOffline = offline; }, holdLaunch, setLaunchOutcome: (outcome: typeof launchOutcome) => { launchOutcome = outcome; }, launches, root, issue, save, renewLabels, post, get, json, setup, restart, headers, holdCapabilities, holdSync, get origin() { return origin; }, close() { app.stop(); host?.stop(true); rmSync(root, { recursive: true, force: true }); } };
+  return { trackerUrl: (id: string) => trackerAccess.get(id)?.url, setApiResponses, setExecutionHandler(handler: typeof executionHandler) { executionHandler = handler; }, tracker, failNativeRun: (id: string) => { const run = nativeRuns.get(id); if (!run) throw new Error("Unknown fictional Run"); nativeRuns.set(id, { ...run, condition: "failed", waiting_reason: "Fictional native failure" }); }, setHostOffline: (offline: boolean) => { hostOffline = offline; }, holdLaunch, setLaunchOutcome: (outcome: typeof launchOutcome) => { launchOutcome = outcome; }, launches, root, issue, save, renewLabels, post, get, json, setup, restart, headers, holdCapabilities, holdSync, get origin() { return origin; }, close() { app.stop(); host?.stop(true); rmSync(root, { recursive: true, force: true }); } };
 }
