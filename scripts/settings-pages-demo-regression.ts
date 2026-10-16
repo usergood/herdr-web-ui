@@ -89,7 +89,7 @@ try {
               }
               const project = await request("/projects", { name: "Fictional automatic queue", path: "/fictional/queue", provider: "codex" });
               const route = `/projects/${project.body.id}/github`;
-              const config = { expected_revision: null, automatic_implementation: true, paused: true, max_implementations: 1 };
+              const config = { expected_revision: null, automatic_implementation: true, paused: true };
               const missing = await request(route + "/queue", config);
               const preview = await request(route + "/preview", {});
               const unavailable = await request(route + "/queue", { ...config, preview_revision: preview.body.revision });

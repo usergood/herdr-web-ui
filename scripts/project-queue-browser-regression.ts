@@ -8,7 +8,7 @@ import { githubScheduleFixture } from "../server/github-schedules.fixture.ts";
 let failLaunch = false, versionReads = 0;
 const f = await githubScheduleFixture({ native: { version: async provider => failLaunch && provider === "codex" && ++versionReads === 2 ? "changed-after-admission" : "queue-browser-fixture" } });
 const projectId = f.route.split("/")[2]!;
-assert.equal((await f.request(`/projects/${projectId}/queue/configure`, { expected_revision: null, max_implementations: 1, paused: false })).status, 200);
+assert.equal((await f.request(`/projects/${projectId}/queue/configure`, { expected_revision: null, paused: false })).status, 200);
 const policy = (await f.request(f.route + "/configure", { ...f.policy, auto_implement: true })).body;
 writeFileSync(f.responses, JSON.stringify({ issues: [1, 2].map(number => ({ number, node_id: `I_QUEUE_${number}`, title: `Queue browser issue ${number}`, body: "Reviewed fictional work", state: "open", html_url: `https://github.com/fictional/schedules/issues/${number}`, updated_at: "2026-10-14T09:00:00Z", labels: [{ name: "ready-for-agent" }] })) }));
 const sources = (await f.request(f.route + "/sync", {})).body.sources;
@@ -25,19 +25,17 @@ try {
     await page.getByRole("tab", { name: "Queue", exact: true }).click();
     const queue = page.getByRole("region", { name: "Project queue", exact: true });
     await queue.getByText("Waiting for verified dependencies", { exact: true }).waitFor();
-    assert.equal(await queue.getByRole("spinbutton", { name: "Concurrent Assignments", exact: true }).inputValue(), "1");
+    assert.equal(await queue.getByRole("spinbutton", { name: "Concurrent Assignments", exact: true }).count(), 0);
     const pause = queue.getByRole("switch", { name: "Pause queue", exact: true });
     await pause.focus(); await page.keyboard.press("Space");
     await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="Pause queue"]')?.getAttribute("aria-checked") === "true");
     await queue.getByText("Queue paused", { exact: true }).first().waitFor();
-    await queue.getByRole("spinbutton", { name: "Concurrent Assignments", exact: true }).fill("2");
-    const saved = page.waitForResponse(response => response.url().endsWith("/queue/configure") && response.request().method() === "POST");
-    await queue.getByRole("button", { name: "Save queue settings", exact: true }).click(); assert.equal((await saved).status(), 200);
     await page.reload();
     if (await page.getByRole("dialog", { name: "Project settings", exact: true }).count() === 0) await page.getByRole("button", { name: "Project settings for Schedule fixture", exact: true }).click();
     await page.getByRole("tab", { name: "Queue", exact: true }).click();
-    await queue.getByRole("spinbutton", { name: "Concurrent Assignments", exact: true }).waitFor();
-    assert.equal(await queue.getByRole("spinbutton", { name: "Concurrent Assignments", exact: true }).inputValue(), "2");
+    await pause.waitFor();
+    assert.equal(await queue.getByRole("spinbutton", { name: "Concurrent Assignments", exact: true }).count(), 0);
+    assert.equal(await queue.getByRole("button", { name: "Save queue settings", exact: true }).count(), 0);
     assert.equal(await pause.getAttribute("aria-checked"), "true");
     await pause.click(); await queue.getByText("Eligible", { exact: true }).waitFor();
     assert.equal(await queue.getByRole("button", { name: "Move earlier", exact: true }).count(), 0);
@@ -47,7 +45,7 @@ try {
     await queue.getByText(/^Builds: /).waitFor();
     assert.equal(await page.getByRole("dialog", { name: "Project settings", exact: true }).evaluate(element => element.scrollWidth <= element.clientWidth + 1), true);
     if (width < 640) for (const button of await queue.getByRole("button").all()) { const box = await button.boundingBox(); assert.ok(box && box.width >= 40 && box.height >= 40, JSON.stringify({ width, label: await button.getAttribute("aria-label") ?? await button.innerText(), box })); }
-    await f.request(`/projects/${projectId}/queue/configure`, { expected_revision: (await f.request(`/projects/${projectId}/queue`)).body.revision, max_implementations: 1, paused: false });
+    await f.request(`/projects/${projectId}/queue/configure`, { expected_revision: (await f.request(`/projects/${projectId}/queue`)).body.revision, paused: false });
     await page.close();
     activePage = undefined;
   }
@@ -71,7 +69,7 @@ try {
   assert.equal((await f.request(`/implementations/${idea.id}`)).body.runs.length, 1);
   await retryPage.close(); activePage = undefined;
   assert.deepEqual(errors, []);
-  console.log("Project queue browser: desktop, narrow phones, automatic ordering, blockers, pause, saved local policy, separate capacity, explicit Retry and reload passed");
+  console.log("Project queue browser: desktop, narrow phones, automatic ordering, blockers, pause across reload, no Assignment quota, separate Agent/build capacity, explicit Retry and reload passed");
 } catch (error) {
   console.error({ url: activePage?.url(), errors, text: (await activePage?.locator("body").innerText())?.slice(0, 8000) }); throw error;
 } finally { await browser.close(); f.close(); }

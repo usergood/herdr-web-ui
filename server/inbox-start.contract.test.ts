@@ -66,7 +66,7 @@ describe("starting an Inbox idea through the public API", () => {
       expect((await fetch(`http://localhost:${app.port}/api/factory`).then(r => r.json())).capacity.contexts).toEqual([]);
       const project = await post("/projects", { name: "Capacity Project", path: repo, machine_id: "local", provider: "codex", tracker: "app" }).then(response => response.json());
       await post("/settings", { max_builds: 6 });
-      await post(`/projects/${project.id}/queue/configure`, { expected_revision: null, max_implementations: 6, paused: false });
+      await post(`/projects/${project.id}/queue/configure`, { expected_revision: null, paused: false });
       const ideas: { id: string }[] = [];
       for (let index = 0; index < 8; index++) ideas.push(await post("/implementations", { title: `Owned task ${index}`, description: "", project_id: project.id }).then(response => response.json()));
       const runs: { id: string; pane_id: string; workspace_id: string }[] = [];

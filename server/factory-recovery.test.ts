@@ -56,7 +56,7 @@ test("the board distinguishes selected waiting work, conflicting readiness and u
     const sources = (await f.request(f.route + "/sync", {})).body.sources;
     const first = sources.find((source: { number: number }) => source.number === 1);
     await f.request(f.route + "/issues/1/approve", { issue_revision: first.revision, policy_revision: policy.revision, plan: f.plan });
-    await f.request(`/projects/${f.project.id}/queue/configure`, { expected_revision: null, max_implementations: 1, paused: true });
+    await f.request(`/projects/${f.project.id}/queue/configure`, { expected_revision: null, paused: true });
     const overview = (await f.request("")).body;
     for (const [number, lane] of [[1, "queued"], [2, "needs_you"], [3, "inbox"]] as const) {
       const source = sources.find((source: { number: number }) => source.number === number);

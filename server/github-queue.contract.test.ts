@@ -8,17 +8,17 @@ test("queue controls default off independently of GitHub synchronization", async
     const response = await fixture.get(route + "/queue");
     expect(response.status).toBe(200);
     const queue = await response.json();
-    expect(queue).toMatchObject({ policy: { project_id: project.id, revision: null, automatic_implementation: false, paused: false, max_implementations: 1 }, global_limit: 6, eligible_count: 0, entries: [], preview: null, preview_current: false });
+    expect(queue).toMatchObject({ policy: { project_id: project.id, revision: null, automatic_implementation: false, paused: false }, eligible_count: 0, entries: [], preview: null, preview_current: false });
     fixture.restart();
     expect(await fixture.json(route + "/queue")).toMatchObject({ policy: queue.policy });
   } finally { fixture.close(); }
 });
 
-test("owner queue controls retain pause and bounded capacity without enabling implementation", async () => {
+test("owner queue controls retain pause and revision authority without enabling implementation", async () => {
   const fixture = githubQueueFixture();
   try {
     const { route } = await fixture.setup();
-    const config = { expected_revision: null, automatic_implementation: false, paused: true, max_implementations: 2 };
+    const config = { expected_revision: null, automatic_implementation: false, paused: true };
     for (const path of ["/queue", "/preview"]) {
       const refused = await fixture.post(route + path, config, { ...fixture.headers, "x-herdr-machine": "" });
       expect(refused.status).toBe(403);
@@ -28,11 +28,11 @@ test("owner queue controls retain pause and bounded capacity without enabling im
     const response = await fixture.post(route + "/queue", config);
     expect(response.status).toBe(200);
     const saved = await response.json();
-    expect(saved.policy).toMatchObject({ automatic_implementation: false, paused: true, max_implementations: 2 });
+    expect(saved.policy).toMatchObject({ automatic_implementation: false, paused: true });
     expect(saved.policy.revision).toBeString();
     expect((await fixture.post(route + "/queue", config)).status).toBe(409);
     const proof = { ...config, expected_revision: saved.policy.revision };
-    for (const max_implementations of [0, 7, 1.5]) expect((await fixture.post(route + "/queue", { ...proof, max_implementations })).status).toBe(400);
+    for (const max_implementations of [0, 1, 7, 1.5, null]) expect((await fixture.post(route + "/queue", { ...proof, max_implementations })).status).toBe(400);
     const enable = await fixture.post(route + "/queue", { ...proof, automatic_implementation: true });
     expect(enable.status).toBe(409); expect((await enable.json()).error.code).toBe("queue_preview_required");
     fixture.restart();
@@ -92,7 +92,7 @@ test("preview keeps automatic creation order and becomes stale on policy, planni
     expect(current.preview.revision).toBe(preview.revision);
     expect(current.entries.map((entry: any) => entry.number)).toEqual([1, 2]);
     preview = await fixture.json(route + "/preview", {});
-    await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true, max_implementations: 2 });
+    await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true });
     current = await fixture.json(route + "/queue"); expect(current.preview_current).toBe(false); expect(current.eligible_count).toBe(1);
     await fixture.json(route + "/preview", {});
     fixture.save([fixture.issue, second], true);
@@ -119,17 +119,22 @@ test("preview keeps automatic creation order and becomes stale on policy, planni
   } finally { fixture.close(); }
 });
 
-test("agent capacity bounds explicit Project policy independently of build capacity and invalidates previews", async () => {
+test("global Agent and build limits stay independent of logical Assignment queue policy", async () => {
   const fixture = githubQueueFixture();
   try {
     const { route } = await fixture.setup();
-    await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: false, max_implementations: 3 });
-    await fixture.json(route + "/preview", {});
+    await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: false });
+    const preview = await fixture.json(route + "/preview", {});
     await fixture.json("/settings", { max_agents: 2, max_builds: 1 });
-    expect(await fixture.json(route + "/queue")).toMatchObject({ policy: { max_implementations: 3 }, global_limit: 2, effective_limit: 2, preview_current: false });
-    await fixture.json(route + "/preview", {});
+    const queue = await fixture.json(route + "/queue");
+    expect(queue).toMatchObject({ policy: { automatic_implementation: false, paused: false }, preview_current: true });
+    expect(queue.revision).toBe(preview.revision);
+    for (const field of ["global_limit", "effective_limit", "available_slots"]) expect(queue).not.toHaveProperty(field);
+    expect(queue.policy).not.toHaveProperty("max_implementations");
+    expect((await fixture.json("")).capacity).toMatchObject({ normal: { limit: 2 }, builds: { limit: 1 } });
     await fixture.json("/settings", { max_builds: 2 });
-    expect(await fixture.json(route + "/queue")).toMatchObject({ policy: { max_implementations: 3 }, global_limit: 2, effective_limit: 2, preview_current: true });
+    expect((await fixture.json(route + "/queue")).preview_current).toBe(true);
+    expect((await fixture.json("")).capacity).toMatchObject({ normal: { limit: 2 }, builds: { limit: 2 } });
   } finally { fixture.close(); }
 });
 

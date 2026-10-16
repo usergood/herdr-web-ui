@@ -90,7 +90,7 @@ test.each(["REST", "GraphQL"] as const)("reopening after closure seen only at th
 test("a prerequisite body changed at the readiness fence cannot complete or automatically admit its dependent", async () => {
   const f = await deliveryFixture();
   try {
-    await f.fixture.json(f.route + "/queue", { expected_revision: null, automatic_implementation: true, preview_revision: f.preview.revision, paused: false, max_implementations: 1 });
+    await f.fixture.json(f.route + "/queue", { expected_revision: null, automatic_implementation: true, preview_revision: f.preview.revision, paused: false });
     f.pull.merged = true;
     f.fixture.save(f.issues, false, f.dependencies, false, [f.issues[0]!, { ...f.prerequisite, body: "Changed intended behavior during collection" }]);
     f.coverageResponses();

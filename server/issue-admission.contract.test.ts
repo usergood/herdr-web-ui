@@ -101,7 +101,7 @@ test.each([false, true])("generic app-plan approvals stay unbound after an incom
       const policy = (await fixture.json(route)).policy;
       await fixture.json(route + "/configure", { ...policy, expected_revision: policy.revision, sync_enabled: true });
       const preview = await fixture.json(route + "/preview", {});
-      await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: true, preview_revision: preview.revision, paused: false, max_implementations: 1 });
+      await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: true, preview_revision: preview.revision, paused: false });
       await fixture.json(route + "/sync", {}); fixture.restart(); await fixture.json(route + "/sync", {});
       expect((await fixture.json(route + "/queue")).eligible_count).toBe(0);
       expect(fixture.launches).toEqual([]);
@@ -427,7 +427,7 @@ test("Pause queue refuses a new explicit issue Start while keeping its prepared 
   const fixture = githubQueueFixture(true);
   try {
     const { path, start, route } = await prepared(fixture);
-    await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true, max_implementations: 1 });
+    await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true });
     const response = await fixture.post(path + "/runs", start);
     expect(response.status).toBe(409);
     expect((await response.json()).error.code).toBe("queue_paused");
@@ -445,7 +445,7 @@ test.each(["paused", "outage", "changed_scope", "unresolved_dependencies", "need
     for (const kind of ["specification", "testing_seams"]) await fixture.json(path + "/approvals", { kind, revision: source.planning.specification_id, scope: "Public HTTP and real browser journeys.", issue_scope: issueScope });
     await fixture.json(path + "/approvals", { kind: "ticket_graph", revision: source.planning.graph_hash, scope: "Approved bounded greeting", issue_scope: issueScope });
     expect((await fixture.json(path)).questions).toEqual([]);
-    if (blocker === "paused") await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true, max_implementations: 1 });
+    if (blocker === "paused") await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true });
     if (blocker === "outage") { fixture.save([fixture.issue], true); expect((await fixture.post(route + "/sync", {})).status).toBe(409); }
     if (blocker === "changed_scope" || blocker === "needs_you") {
       fixture.issue.body += "\nChange the greeting after preparation.";
@@ -494,7 +494,7 @@ test("issue preparation during an ordinary Start cannot bypass final guarded adm
     const prepared = await fixture.json(route + "/issues/1/prepare", { source_revision: source.revision });
     expect(prepared.sources[0].planning.condition).toBe("prepared");
     expect((await fixture.json(path)).questions).toEqual([]);
-    await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true, max_implementations: 1 });
+    await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true });
     gate.release();
     const refused = await starting;
     expect(refused.status).toBe(409);
@@ -511,23 +511,24 @@ test("explicit issue Start follows current board priority", async () => {
     const second = await prepareSecond(fixture, route, readiness);
     const refused = await fixture.post(second.path + "/runs", second.start);
     expect(refused.status).toBe(409); expect((await refused.json()).error.code).toBe("queue_priority_changed");
-    await fixture.json(second.path + "/order", { before_id: path.split("/").at(-1) });
+    expect((await fixture.post(second.path + "/order", { before_id: path.split("/").at(-1) })).status).toBe(409);
+    const first = await fixture.json(route);
+    const source = first.sources.find((source: any) => source.implementation_id === path.split("/").at(-1));
+    expect((await fixture.post(path + "/runs", { action: "implement-spec", idempotency_key: "oldest-first", issue_scope: { source_id: source.id, source_revision: source.revision, graph_hash: source.planning.graph_hash } })).status).toBe(202);
     expect((await fixture.post(second.path + "/runs", second.start)).status).toBe(202);
   } finally { fixture.close(); }
 }, 20_000);
 
-test("Project implementing capacity remains reserved by an admitted issue Run", async () => {
+test("independent issues in one Project start without an Assignment quota while Agent slots permit", async () => {
   const fixture = githubQueueFixture(true);
   try {
     fixture.save([fixture.issue, { ...fixture.issue, number: 2, node_id: "fictional-2", title: "Later issue" }]);
     const { path, start, route, readiness } = await prepared(fixture);
     const second = await prepareSecond(fixture, route, readiness);
     expect((await fixture.post(path + "/runs", start)).status).toBe(202);
-    const refused = await fixture.post(second.path + "/runs", second.start);
-    expect(refused.status).toBe(409); expect((await refused.json()).error.code).toBe("project_capacity_exhausted");
-    expect((await fixture.json(second.path)).runs).toEqual([]);
-    await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: false, max_implementations: 2 });
     expect((await fixture.post(second.path + "/runs", second.start)).status).toBe(202);
+    expect((await fixture.json(second.path)).runs).toMatchObject([{ action: "implement-spec", condition: "working" }]);
+    expect((await fixture.json("")).capacity.normal).toMatchObject({ used: 2, limit: 6 });
   } finally { fixture.close(); }
 }, 20_000);
 
@@ -1037,7 +1038,7 @@ test.each(["scope", "closure", "readiness", "outage", "pause", "policy"])("Start
     const held = fixture.holdCapabilities(); release = held.release;
     const pending = fixture.post(path + "/runs", start);
     await Promise.race([held.waiting, new Promise((_, reject) => setTimeout(() => reject(new Error("Native fixture did not reach admission gate")), 5000))]);
-    if (change === "pause") await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true, max_implementations: 1 });
+    if (change === "pause") await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true });
     else if (change === "policy") await fixture.json(route + "/readiness", { expected_revision: readiness.revision, account_profile_id: readiness.account_profile_id, triage_labels: {}, blocked_label: "on-hold" });
     else {
       if (change === "scope") fixture.issue.body += "\nChanged testing requirement.";
@@ -1143,7 +1144,7 @@ test("global agent capacity remains effective even when the Project allows anoth
     fixture.save([fixture.issue, { ...fixture.issue, number: 2, node_id: "fictional-2", title: "Later issue" }]);
     const { path, route, readiness, start } = await prepared(fixture);
     const second = await prepareSecond(fixture, route, readiness);
-    await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: false, max_implementations: 2 });
+    await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: false });
     await fixture.json("/settings", { max_agents: 1 });
     expect((await fixture.post(path + "/runs", start)).status).toBe(202);
     const response = await fixture.post(second.path + "/runs", second.start);
@@ -1188,7 +1189,7 @@ test.each(["free", "worker", "build"])("a confirmed owner Stop permits one expli
     if (ownership !== "free") {
       const response = await fixture.post(`/runs/${run.id}/retry`, retry);
       expect(response.status).toBe(409);
-      expect(["implementation_owned", "project_capacity_exhausted"]).toContain((await response.json()).error.code);
+      expect((await response.json()).error.code).toBe("implementation_owned");
       const retained = await fixture.json(path);
       expect(retained.runs).toEqual([stopped]);
       expect(ownership === "worker" ? retained.workers[0].condition : retained.checks[0].condition).toBe(ownership === "worker" ? "ready" : "interrupted");
@@ -1363,21 +1364,25 @@ test("concurrent owner retries and a lost Retry response create one successor wi
   } finally { release(); fixture.close(); }
 }, 20_000);
 
-test("unreachable execution after restart retains Project capacity until its original identity is observed", async () => {
+test("unreachable execution retains its global Agent reservation without replay across restart", async () => {
   const fixture = githubQueueFixture(true);
   try {
     fixture.save([fixture.issue, { ...fixture.issue, number: 2, node_id: "fictional-2", title: "Next issue" }]);
     const { path, start, route, readiness } = await prepared(fixture);
     const second = await prepareSecond(fixture, route, readiness);
+    await fixture.json("/settings", { max_agents: 1 });
     fixture.setLaunchOutcome("lost"); const uncertain = await fixture.json(path + "/runs", start);
     fixture.setHostOffline(true); fixture.restart();
     expect((await fixture.json(path)).runs[0].condition).toBe("disconnected");
-    const refused = await fixture.post(second.path + "/runs", second.start);
-    expect(refused.status).toBe(409); expect((await refused.json()).error.code).toBe("project_capacity_exhausted");
+    expect((await fixture.json("")).capacity).toMatchObject({ normal: { used: 1, limit: 1 }, contexts: [expect.objectContaining({ id: uncertain.id, uncertain: true })] });
     expect(fixture.launches).toEqual([uncertain.id]);
     fixture.setHostOffline(false);
     expect((await fixture.json(`/runs/${uncertain.id}/reconcile`, {})).id).toBe(uncertain.id);
     expect((await fixture.json(path)).runs[0].condition).toBe("working");
+    const refused = await fixture.post(second.path + "/runs", second.start);
+    expect(refused.status).toBe(409); expect((await refused.json()).error.code).toBe("capacity_exhausted");
+    expect((await fixture.json(second.path)).runs).toEqual([]);
+    expect(fixture.launches).toEqual([uncertain.id]);
   } finally { fixture.close(); }
 }, 20_000);
 
@@ -1386,7 +1391,7 @@ test("Retry cannot replace a failed parent while an uncertain build still owns t
   const fixture = githubQueueFixture(true);
   try {
     const { path, start, route } = await prepared(fixture);
-    await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: false, max_implementations: 2 });
+    await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: false });
     const run = await fixture.json(path + "/runs", start);
     const check = await fixture.json(`/runs/${run.id}/checks`, {});
     expect(check.condition).toBe("interrupted");
@@ -1409,7 +1414,7 @@ test.each(["pause", "priority", "scope", "outage", "readiness"])("Retry revalida
     const { path, start, route, readiness } = await prepared(fixture);
     const second = await prepareSecond(fixture, route, readiness);
     fixture.setLaunchOutcome("failed"); const failed = await fixture.json(path + "/runs", start);
-    if (change === "pause") await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true, max_implementations: 1 });
+    if (change === "pause") await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true });
     if (change === "priority") await fixture.json(second.path + "/order", { before_id: failed.implementation_id });
     if (change === "scope") fixture.issue.body += "\nA different behavior.";
     if (change === "readiness") fixture.issue.labels = [];
@@ -1660,7 +1665,7 @@ for (const drift of ["source", "graph", "queue_pause"] as const) test(`accepted 
       await fixture.json(path + "/tickets", { specification_id: specification.id, tickets: [{ key: "changed", title: "Changed scope", acceptance: "A different greeting", dependencies: [] }] });
     } else {
       const queue = await fixture.json(route + "/queue");
-      await fixture.json(route + "/queue", { expected_revision: queue.policy.revision, automatic_implementation: false, paused: true, max_implementations: queue.policy.max_implementations });
+      await fixture.json(route + "/queue", { expected_revision: queue.policy.revision, automatic_implementation: false, paused: true });
     }
     gate.release();
     const deadline = Date.now() + 8000;

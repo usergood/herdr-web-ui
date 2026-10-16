@@ -195,7 +195,7 @@ try {
         const initial = await guarded.json(path);
         assert.deepEqual(initial.approvals, []); assert.deepEqual(initial.questions, []);
         assert.equal(prepared.planning.condition, "prepared"); assert.equal(prepared.planning.origin, "issue_body");
-        await guarded.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true, max_implementations: 1 });
+        await guarded.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true });
         guarded.setNativeIdentity();
         async function openControl() {
           const url = guarded.origin + `/#factory/${source.implementation_id}`;
@@ -236,7 +236,7 @@ try {
         assert.equal(recovered.planning.condition, "prepared");
         assert.deepEqual((await guarded.json(path)).approvals, []);
         const queue = await guarded.json(route + "/queue");
-        await guarded.json(route + "/queue", { expected_revision: queue.policy.revision, automatic_implementation: false, paused: false, max_implementations: 1 });
+        await guarded.json(route + "/queue", { expected_revision: queue.policy.revision, automatic_implementation: false, paused: false });
         await openControl();
         const started = page.waitForResponse(response => response.url().endsWith(path + "/runs") && response.request().method() === "POST");
         await page.getByRole("button", { name: control, exact: true }).click();
@@ -393,7 +393,7 @@ try {
   const evidence = process.env["UI_EVIDENCE_DIR"]; if (evidence) mkdirSync(evidence, { recursive: true });
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
     const queue = await fixture.json(route + "/queue");
-    await fixture.json(route + "/queue", { expected_revision: queue.policy.revision, automatic_implementation: false, paused: false, max_implementations: 1 });
+    await fixture.json(route + "/queue", { expected_revision: queue.policy.revision, automatic_implementation: false, paused: false });
     const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });
     page.setDefaultTimeout(10_000); page.on("pageerror", recordPageError);
     const queueResponses: unknown[] = [];
@@ -548,7 +548,8 @@ try {
       await page.getByRole("button", { name: `Project settings for ${project.name}`, exact: true }).click();
       await page.getByRole("tab", { name: "GitHub", exact: true }).click();
       const queue = page.getByRole("region", { name: "Issue queue", exact: true });
-      await queue.getByText("Project implementation slots available: 1", { exact: true }).waitFor();
+      assert.equal(await queue.getByText(/Project implementation slots available/).count(), 0);
+      assert.equal(await queue.getByRole("spinbutton", { name: "Concurrent Assignments", exact: true }).count(), 0);
       await queue.getByText("Implementing Assignments: 0", { exact: true }).waitFor();
       assert(await queue.evaluate(element => element.scrollWidth <= element.clientWidth));
       if (evidence) await page.screenshot({ path: join(evidence, `issue-completion-${viewport.width}.png`), fullPage: true });
@@ -560,7 +561,7 @@ try {
     } finally { await page.close(); reviewed.close(); }
   }
   assert.deepEqual(errors, []);
-  console.log("PASS: desktop/mobile awaiting merge, separate owner acceptance, available Project capacity and unrelated admission without false delivery");
+  console.log("PASS: desktop/mobile awaiting merge, separate owner acceptance, informational ownership and unrelated Agent admission without false delivery");
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
     const automatic = githubQueueFixture(true);
     const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });

@@ -82,10 +82,10 @@ test.each(["merge", "release", "wrong_branch", "old_checkout"])("a prerequisite 
   } finally { f.close(); }
 }, 30_000);
 
-test.each(["verified", "stale_head", "uncertain_check"])("only current verified implementation releases an explicitly configured Project slot before manual merge (%s)", async mode => {
+test.each(["verified", "stale_head", "uncertain_check"])("only current verified implementation retires before manual merge while independent work already runs (%s)", async mode => {
   const f = await readyIssuesFixture();
   try {
-    expect((await f.request(`/projects/${f.project.id}/queue/configure`, { expected_revision: null, max_implementations: 1, paused: false })).status).toBe(200);
+    expect((await f.request(`/projects/${f.project.id}/queue/configure`, { expected_revision: null, paused: false })).status).toBe(200);
     const policy = (await f.request(f.route + "/configure", f.policy)).body;
     f.respond({ issues: [f.issue(1), f.issue(2)] });
     const sources = (await f.request(f.route + "/sync", {})).body.sources;
@@ -93,8 +93,10 @@ test.each(["verified", "stale_head", "uncertain_check"])("only current verified 
     await f.tick();
     const a = sources.find((source: any) => source.number === 1), b = sources.find((source: any) => source.number === 2);
     const run = (await f.request(`/implementations/${a.implementation_id}`)).body.runs[0];
+    const independent = (await f.request(`/implementations/${b.implementation_id}`)).body.runs[0];
+    expect(independent).toMatchObject({ action: "implement-spec", condition: "working" });
     f.rest(run.id); await f.tick();
-    expect((await f.request(`/implementations/${b.implementation_id}`)).body.runs).toHaveLength(0);
+    expect((await f.request(`/implementations/${b.implementation_id}`)).body.runs[0]).toMatchObject({ id: independent.id, condition: "working" });
     const workerRoute = `/runs/${run.id}/workers`;
     const worker = (await f.request(workerRoute, { role: "implementer", ticket_id: run.manifest.tickets[0].id, idempotency_key: "bounded-implementation" })).body;
     writeFileSync(worker.worktree + "/ready.txt", "Reviewed fixture change\n");
@@ -124,7 +126,7 @@ test.each(["verified", "stale_head", "uncertain_check"])("only current verified 
     const standards = (await f.request(workerRoute, { role: "standards", idempotency_key: "independent-standards" })).body;
     await f.request(`${workerRoute}/${standards.id}/review-evidence`, {});
     await f.tick();
-    expect((await f.request(`/implementations/${b.implementation_id}`)).body.runs).toHaveLength(0);
+    expect((await f.request(`/implementations/${b.implementation_id}`)).body.runs[0]).toMatchObject({ id: independent.id, condition: "working" });
     const spec = (await f.request(workerRoute, { role: "spec", idempotency_key: "independent-spec" })).body;
     if (mode === "stale_head") {
       writeFileSync(run.worktree + "/later.txt", "An unreviewed later change\n");
@@ -152,9 +154,9 @@ test.each(["verified", "stale_head", "uncertain_check"])("only current verified 
     }
     if (mode !== "verified") {
       expect(complete.runs[0].condition).not.toBe("completed");
-      expect((await f.request(`/implementations/${b.implementation_id}`)).body.runs).toHaveLength(0);
+      expect((await f.request(`/implementations/${b.implementation_id}`)).body.runs[0]).toMatchObject({ id: independent.id, condition: "working" });
       const queue = (await f.request(`/projects/${f.project.id}/queue`)).body;
-      expect(queue.capacity.project_implementations).toBe(1);
+      expect(queue.capacity.project_implementations).toBe(2);
       if (mode === "uncertain_check") expect(queue.capacity.builds).toBe(1);
       return;
     }
@@ -167,7 +169,8 @@ test.each(["verified", "stale_head", "uncertain_check"])("only current verified 
       await f.tick(); next = (await f.request(`/implementations/${b.implementation_id}`)).body;
       if (!next.runs.length) await Bun.sleep(10);
     }
-    expect(next.runs[0]).toMatchObject({ action: "implement-spec", condition: "working" });
+    expect(next.runs[0]).toMatchObject({ id: independent.id, action: "implement-spec", condition: "working" });
+    expect((await f.request(`/projects/${f.project.id}/queue`)).body.capacity.project_implementations).toBe(1);
     expect(f.calls().some(args => args.includes("--method"))).toBe(false);
   } finally { f.close(); }
 }, 30_000);
@@ -205,9 +208,9 @@ test("automatic launch preserves opt-in, scope, pause, owner-question and uncert
     await f.tick(); expect(f.launches).toHaveLength(0); // The changed trust policy needs its own receipt.
     await f.request(f.route + "/issues/1/approve", { issue_revision: source.revision, policy_revision: policy.revision, plan: f.plan });
     const queueRoute = `/projects/${f.project.id}/queue`;
-    let queue = (await f.request(queueRoute + "/configure", { expected_revision: null, paused: true, max_implementations: 1 })).body;
+    let queue = (await f.request(queueRoute + "/configure", { expected_revision: null, paused: true })).body;
     await f.tick(); expect(f.launches).toHaveLength(0);
-    queue = (await f.request(queueRoute + "/configure", { expected_revision: queue.revision, paused: false, max_implementations: 1 })).body;
+    queue = (await f.request(queueRoute + "/configure", { expected_revision: queue.revision, paused: false })).body;
     issue.body = "An unapproved scope edit"; f.respond({ issues: [issue] });
     await f.tick(); expect(f.launches).toHaveLength(0);
     source = (await f.request(f.route)).body.sources.find((source: any) => source.number === 1);
