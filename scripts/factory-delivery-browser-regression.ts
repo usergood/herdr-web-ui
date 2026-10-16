@@ -30,6 +30,7 @@ try {
   assert.equal(await milestone.inputValue(), "release");
   assert(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth), "Delivery settings fit a phone");
   await page.route("**/api/factory/project-discovery", route => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "owned_discovery_failed", message: "Owned Project discovery failed" } }) }));
+  await page.setViewportSize({ width: 1440, height: 1000 });
   await page.reload();
   await dialog.getByRole("tab", { name: "Workflow", exact: true }).click();
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {

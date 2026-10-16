@@ -356,7 +356,7 @@ test.each(["independent_project", "global"])("Continue preserves global capacity
       let detail;
       do {
         detail = await fixture.json(path);
-        if (detail.runs.some((run: any) => run.action === "implement-spec")) break;
+        if (detail.runs.some((run: any) => run.action === "implement-spec" && run.condition === "working")) break;
         await Bun.sleep(25);
       } while (Date.now() < deadline);
       expect(detail.runs).toMatchObject([{ id: planning.id, condition: "completed" }, { action: "implement-spec", idempotency_key: body.idempotency_key, condition: "working", manifest: { issue_admission: { source: { id: body.issue_scope.source_id, revision: body.issue_scope.source_revision } } } }]);
