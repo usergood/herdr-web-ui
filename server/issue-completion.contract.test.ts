@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { githubReviewFixture } from "../scripts/fixtures/github-review.ts";
+import { summarizeIssueAdmission, type IssueAdmission } from "../shared/issue-admission.ts";
 import { githubDeliveryResponses } from "../scripts/fixtures/github-delivery.ts";
 import type { ProjectPullRequest } from "../shared/github-project.ts";
 
@@ -264,9 +265,10 @@ test.each(["worker", "build"])("a retained %s still owns capacity after a coordi
   try {
     const { run, route } = await fixture.prepare();
     await fixture.integrate(run); await fixture.json(`/runs/${run.id}/checks`, {});
-    await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    await fixture.review(run, "standards");
     if (kind === "worker") await fixture.json(`/runs/${run.id}/workers`, { role: "spec", idempotency_key: "unconsumed-native-worker" });
-    else {
+    await fixture.review(run, "spec");
+    if (kind === "build") {
       fixture.setCheck("interrupted"); await fixture.json(`/runs/${run.id}/checks`, {});
       fixture.setCheck("passed"); await fixture.json(`/runs/${run.id}/checks`, {});
     }
@@ -454,9 +456,10 @@ test.each(["worker", "build"] as const)("paused historical retirement cannot cle
   try {
     const { run, path, route } = await fixture.prepare();
     await fixture.integrate(run); await fixture.json(`/runs/${run.id}/checks`, {});
-    await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    await fixture.review(run, "standards");
     if (child === "worker") await fixture.json(`/runs/${run.id}/workers`, { role: "spec", idempotency_key: "retained-review-child" });
-    else { fixture.setCheck("interrupted"); await fixture.json(`/runs/${run.id}/checks`, {}); }
+    await fixture.review(run, "spec");
+    if (child === "build") { fixture.setCheck("interrupted"); await fixture.json(`/runs/${run.id}/checks`, {}); }
     fixture.issue.body += "\nA changed requirement."; fixture.save(); await fixture.json(route + "/sync", {});
     const paused = (await fixture.json(path)).runs[0];
     // Historical input only: restore an interrupted retirement with a retained child.
@@ -910,5 +913,34 @@ test.each(["issue", "manual"])("failed %s rework keeps the produced commit for t
     const next = await fixture.json(`/runs/${failed.id}/retry`, { ...scope, idempotency_key: "retry-failed-retired-rework" });
     expect(next).toMatchObject({ condition: "working", retry_of: failed.id, manifest: { rework: { run_id: run.id, head: "b".repeat(40) } } });
     expect((await fixture.json(`/runs/${failed.id}/retry`, { ...scope, idempotency_key: "retry-failed-retired-rework" })).id).toBe(next.id);
+  } finally { fixture.close(); }
+}, 20_000);
+
+test("compact current decisions retain admitted identity and controlled pause without frozen planning history", async () => {
+  const fixture = githubReviewFixture();
+  try {
+    const { run, path, route } = await fixture.prepare();
+    fixture.issue.body += "\nChanged owned scope."; fixture.save(); await fixture.json(route + "/sync", {});
+    const full = await fixture.json(path), current = await fixture.json(path + "?view=current");
+    expect(current.runs[0].issue_pause).toEqual(full.runs[0].issue_pause);
+    expect(current.runs[0].manifest.issue_admission).toEqual(summarizeIssueAdmission((run.manifest as { issue_admission: IssueAdmission }).issue_admission));
+    expect(current.runs[0].manifest.issue_admission.planning.content).toBeUndefined();
+    expect(current.runs[0].manifest.issue_admission.source.history).toBeUndefined();
+    expect(full.runs[0].manifest).toEqual(run.manifest);
+  } finally { fixture.close(); }
+}, 20_000);
+
+test("an explicit Project delivery declaration still binds manual work in an intake Project", async () => {
+  const fixture = githubReviewFixture();
+  try {
+    const { project } = await fixture.setup();
+    await fixture.json(`/projects/${project.id}/configure`, { delivery_policy: "merge" });
+    const idea = await fixture.json("/implementations", { title: "Explicit delivery", description: "Owned explicit delivery contract", project_id: project.id });
+    fixture.setNativeIdentity();
+    const run = await fixture.json(`/implementations/${idea.id}/runs`, { action: "work", idempotency_key: "explicit-delivery" });
+    const response = await fixture.post(`/implementations/${idea.id}/complete-work`, { run_id: run.id });
+    expect(response.status).toBe(409);
+    expect((await response.json()).error.code).toBe("repository_delivery_required");
+    expect((await fixture.json(`/implementations/${idea.id}`)).implementation.stage).not.toBe("done");
   } finally { fixture.close(); }
 }, 20_000);

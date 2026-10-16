@@ -1135,6 +1135,8 @@ export const DEFAULT_PORT = 7317;
  * GET /api/factory?navigation=1 -> FactoryOverview without Assignment descriptions/delivery
  * evidence/upstream bodies or checkout instruction contents. Sidebar and board share this read.
  * GET /api/factory/implementations/:id?view=current -> FactoryCurrent: current decisions,
+ *   Run manifests include execution_preset, bounded IssueAdmissionSummary and rework identity;
+ *   frozen issue history and planning content remain in the lazy full Assignment response.
  * latest Specification, Ticket graph, Run status/model summaries, report/check metadata and
  * current continuation warnings. No frozen manifests, transcripts, diffs or historical bodies.
  * GET ...?view=review -> FactoryReviewDetail: selectable report/snapshot metadata and findings.
@@ -1301,6 +1303,7 @@ export const DEFAULT_PORT = 7317;
  * proposal -> FactoryRetrospective, 201. Bodies are FactoryAgentRequests; proposals are action-scoped.
  * POST .../worker/:id/:action (empty) has the corresponding owner worker response above.
  */
+export type { IssueAdmissionSummary } from "./issue-admission.ts";
 export type { FactoryCurrent, FactoryReviewDetail, FactoryBoardItem, FactoryBoardLane, FactoryActivity, FactoryOverview, FactoryDetail, Implementation, FactoryProject, ProjectCheckout, FactoryChat, FactoryMessage, FactoryEvent, SpecificationVersion, FactoryTicket, FactoryApproval, FactoryQuestion, FactoryArtifact, FactoryRun, ReviewSnapshot, ReviewComment, FactorySettings, FactoryProvider, FactoryStage, FactoryAction, RunCondition, FactoryCapabilities, FactoryProviderCapability, FactoryOutput } from "./factory.ts";
 export type { FactoryWorker, FactoryCheck, FactoryReviewEvidence, FactoryRetrospective, FactoryRework } from "./factory.ts";
 export type { NativeConversationSnapshot } from "./factory.ts";

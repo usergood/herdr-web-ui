@@ -1,3 +1,4 @@
+import { manualCompletionAllowed } from "./factory-delivery.ts";
 import type { FactoryRun, FactoryWorker, FactoryCheck, FactoryProject, Implementation, ProjectCheckout, ReviewSnapshot } from "../shared/factory.ts";
 import { deliveryScopeCurrent } from "./issue-delivery.ts";
 import type { FactoryStore } from "./factory-store.ts";
@@ -55,6 +56,10 @@ export function migrateFactoryHistory(store: FactoryStore, restoredId?: string):
         && store.list<FactoryCheck>("checks", run.id).every(check => !["working", "interrupted"].includes(check.condition)));
       if (quiescent && idea.outcome === "discarded" && Number.isFinite(Date.parse(idea.discard_requested_at ?? ""))) continue;
       if (quiescent && !retainedChanges && idea.outcome === "research_accepted" && idea.completion_evidence?.repository_changes === "none" && idea.completion_evidence.quiescent && idea.completion_evidence.reason === null && Number.isFinite(Date.parse(idea.completion_evidence.checked_at))) continue;
+      if (quiescent && manualCompletionAllowed(store, idea) && idea.outcome === "implementation_complete"
+        && !store.list<import("../shared/github-project.ts").ProjectGitHubSource>("github_sources").some(source => source.implementation_id === idea.id && source.kind === "issue")
+        && (store.list<import("../shared/factory.ts").FactoryApproval>("approvals", idea.id).some(approval => approval.kind === "review" && runs.some(run => approval.scope.startsWith(`Run ${run.id};`)))
+          || store.list<import("../shared/factory.ts").FactoryEvent>("events", idea.id).some(event => event.kind === "direct_work_completed" && (event.data as { owner_accepted?: boolean })?.owner_accepted))) continue;
       if (quiescent && (verifiedDelivery(idea) || verifiedIssueDelivery(store, idea))) continue;
       const changes = retainedChanges || idea.completion_evidence?.repository_changes === "changes" ? "changes" : "unknown";
       const pendingRelease = verifiedDelivery(idea, false) && idea.delivery_scope?.milestone === "release";

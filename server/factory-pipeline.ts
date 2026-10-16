@@ -5,7 +5,7 @@ import { CLEAN_WORKSPACE_HASH, FactoryError } from "./factory-host.ts";
 import { FactoryRuntime } from "./factory-runtime.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { FactoryWorkflow } from "./factory-workflow.ts";
-import { FactoryDelivery } from "./factory-delivery.ts";
+import { FactoryDelivery, manualCompletionAllowed } from "./factory-delivery.ts";
 
 const owns = (condition: string): boolean => !["completed", "cancelled", "failed"].includes(condition);
 type CompletionCleanup = { id: string; machine_id: string; worktree: string; branch: string | null; completion: NonNullable<FactoryRun["implementation_completion"]> };
@@ -287,8 +287,13 @@ export class FactoryPipeline {
     this.store.put("runs", completed, run.implementation_id);
     const implementation = this.store.get<Implementation>("implementations", run.implementation_id)!;
     if (["work", "implement-spec"].includes(run.action) && !["merged", "released"].includes(implementation.outcome)) {
-      this.store.put("implementations", { ...implementation, stage: "review", activity: "awaiting_merge", outcome: "implementation_complete" });
-      await new FactoryDelivery(this.store, this.runtime).inspect(run.implementation_id);
+      const requiresDelivery = !manualCompletionAllowed(this.store, implementation) || hasIssueSource(this.store, run.implementation_id);
+      this.store.put("implementations", { ...implementation, stage: requiresDelivery ? "review" : "done", activity: requiresDelivery ? "awaiting_merge" : undefined, outcome: "implementation_complete" });
+      const evidence = await new FactoryDelivery(this.store, this.runtime).inspect(run.implementation_id);
+      if (!requiresDelivery && (!evidence.quiescent || evidence.repository_changes === "unknown")) {
+        const current = this.store.get<Implementation>("implementations", run.implementation_id)!;
+        this.store.put("implementations", { ...current, stage: "review" });
+      }
     }
     if (run.action === "apply-retro") {
       const scoped = (run.manifest as { retrospective: import("../shared/protocol.ts").FactoryRetrospective }).retrospective;

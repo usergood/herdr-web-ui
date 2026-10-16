@@ -9,7 +9,7 @@ import { FactoryReads } from "./factory-reads.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { migrateFactoryHistory } from "./factory-history.ts";
 import { FactoryError, hash, inspectCheckout } from "./factory-host.ts";
-import { FactoryDelivery } from "./factory-delivery.ts";
+import { FactoryDelivery, manualCompletionAllowed } from "./factory-delivery.ts";
 import { FactoryMergeDelivery } from "./factory-merge-delivery.ts";
 import { readDeliveryGitHub } from "./factory-delivery-github.ts";
 import { FactoryArtifacts } from "./factory-artifacts.ts";
@@ -693,7 +693,11 @@ export class FactoryService {
           next.execution_preset = selection;
         } else if (next.provider !== project.provider) delete next.execution_preset;
         if (hash(JSON.stringify(this.store.get("projects", project.id))) !== hash(JSON.stringify(project))) throw new FactoryError("project_changed", "Refresh this Project before saving changes", 409);
-        this.store.put("projects", next); this.store.event(null, "project_configured", { project_id: project.id }); return jsonResponse(next);
+        this.store.db.transaction(() => {
+          this.store.put("projects", next);
+          if (body.delivery_policy !== undefined || body.delivery_branch !== undefined) this.store.put("project_delivery_declarations", { id: project.id, policy: next.delivery_policy, branch: next.delivery_branch }, project.id);
+          this.store.event(null, "project_configured", { project_id: project.id });
+        })(); return jsonResponse(next);
       }
       const projectAccountCheck = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/accounts\/verify$/.exec(url.pathname);
       if (projectAccountCheck && request.method === "POST") {
@@ -869,18 +873,18 @@ export class FactoryService {
         if (idea.discard_requested_at || idea.outcome === "discarded") throw new FactoryError("assignment_discarded", "This Assignment was discarded or is waiting for its owned work to stop", 409);
         if (idea.stage === "done" && !this.activeWork(id)) return jsonResponse(idea);
         const evidence = await new FactoryDelivery(this.store, this.runtime).inspect(id);
-        if (evidence.repository_changes !== "none" || !evidence.quiescent) throw new FactoryError(evidence.repository_changes === "changes" ? "repository_delivery_required" : "completion_evidence_required", evidence.reason!, 409);
+        if (evidence.repository_changes === "unknown" || !evidence.quiescent || !manualCompletionAllowed(this.store, idea) && evidence.repository_changes !== "none") throw new FactoryError(evidence.repository_changes === "changes" ? "repository_delivery_required" : "completion_evidence_required", evidence.reason!, 409);
         const scope = hash(JSON.stringify({project_id:idea.project_id,provider:idea.provider,machine_id:idea.machine_id,archived_at:idea.archived_at,discard_requested_at:idea.discard_requested_at}));
         await this.retainHandoff(run.id);
         if (!["completed", "cancelled", "failed"].includes(this.store.get<FactoryRun>("runs", run.id)!.condition)) await this.runtime.finishStep(run.id);
         const finalEvidence = await new FactoryDelivery(this.store, this.runtime).inspect(id);
-        if (finalEvidence.repository_changes !== "none" || !finalEvidence.quiescent) throw new FactoryError(finalEvidence.repository_changes === "changes" ? "repository_delivery_required" : "completion_evidence_required", finalEvidence.reason!, 409);
+        if (finalEvidence.repository_changes === "unknown" || !finalEvidence.quiescent || !manualCompletionAllowed(this.store, idea) && finalEvidence.repository_changes !== "none") throw new FactoryError(finalEvidence.repository_changes === "changes" ? "repository_delivery_required" : "completion_evidence_required", finalEvidence.reason!, 409);
         return jsonResponse(this.store.db.transaction(() => {
           const current = this.store.get<Implementation>("implementations", id)!;
           if (this.store.list<FactoryRun>("runs", id).at(-1)?.id !== run.id || this.activeWork(id) || hash(JSON.stringify({project_id:current.project_id,provider:current.provider,machine_id:current.machine_id,archived_at:current.archived_at,discard_requested_at:current.discard_requested_at})) !== scope) throw new FactoryError("scope_changed", "The Assignment changed during completion; refresh it before continuing", 409);
           const issueSourced = hasIssueSource(this.store, id);
           const delivered = ["merged", "released"].includes(current.outcome) && !!(current.delivery_evidence || current.delivery && ["merged", "released"].includes(current.delivery.condition));
-          const next: Implementation = { ...current, ...(delivered ? {} : issueSourced ? { stage: "review" as const, activity: "awaiting_merge" as const, outcome: "implementation_complete" as const } : { stage: "done" as const, outcome: "research_accepted" as const }), updated_at: new Date().toISOString() };
+          const next: Implementation = { ...current, ...(delivered ? {} : issueSourced ? { stage: "review" as const, activity: "awaiting_merge" as const, outcome: "implementation_complete" as const } : { stage: "done" as const, activity: undefined, outcome: manualCompletionAllowed(this.store, current) ? "implementation_complete" as const : "research_accepted" as const }), updated_at: new Date().toISOString() };
           this.store.put("implementations",next);this.store.event(id,"direct_work_completed",{run_id:run.id,owner_accepted:true});return next;
         })());
       }

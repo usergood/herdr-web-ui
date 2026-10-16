@@ -39,6 +39,10 @@ export function githubReviewFixture() {
       return Response.json({ removed: cleanupOutcome === "unconfirmed" ? [] : cleanupOutcome === "other_checkout" ? [fixture.root + "/other"] : [run.worktree], branches_retained: true, notes_retained: true });
     }
     if (action === "reconcile") return Response.json(["completed", "cancelled", "failed"].includes(run.condition) ? run : { ...run, condition: coordinator });
+    if (action === "finish") {
+      if (coordinator !== "ready" || uncertainStop) return Response.json({ error: { code: "step_owned", message: "The fictional native step has not confirmed rest" } }, { status: 409 });
+      const finished = { ...run, condition: "completed" as const }; runs.set(run.id, finished); return Response.json(finished);
+    }
     if (action === "stop") {
       const gate = stopGate; stopGate = null; await gate?.();
       if (uncertainStop) return Response.json({ error: { code: "unreachable", message: "Owned stop outcome uncertain" } }, { status: 409 });

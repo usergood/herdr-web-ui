@@ -17,3 +17,13 @@ export interface IssueAdmission {
   queue_policy: ProjectQueuePolicy;
   queue_revision: string;
 }
+
+/** Bounded current-view identity; the full frozen contract stays in lazy detail. */
+export interface IssueAdmissionSummary {
+  source: { id: string; revision: string; current?: { title: string } };
+  planning: { authorization: { approval: { actor: { login: string } } } };
+}
+export function summarizeIssueAdmission(admitted: IssueAdmission | null | undefined): IssueAdmissionSummary | undefined {
+  if (!admitted) return undefined;
+  return { source: { id: admitted.source.id, revision: admitted.source.revision, ...(admitted.source.current ? { current: { title: admitted.source.current.title } } : {}) }, planning: { authorization: { approval: { actor: { login: admitted.planning.authorization.approval.actor.login } } } } };
+}

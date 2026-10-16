@@ -1449,6 +1449,7 @@ export const ZH: Record<string, string> = {
   "Plan implementation starts Grill with docs: discuss the idea, approve a specification, then plan Tickets.": "规划实现将启动 Grill with docs：讨论想法、批准规格，然后规划任务单。",
   "New workspaces use the latest commit. Local changes stay in the original folder.": "新工作区使用最新提交。本地更改保留在原文件夹中。",
   "Accept research": "接受研究结果",
+  "Mark work done": "将工作标记为完成",
   "Check completion evidence": "检查完成依据",
   "No repository changes; owned work is quiescent.": "仓库没有更改，所持有的工作均已停止。",
   "Check repository changes and owned work before accepting research.": "接受研究结果前，请检查仓库更改和所持有的工作。",

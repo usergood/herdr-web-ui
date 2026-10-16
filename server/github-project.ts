@@ -245,7 +245,7 @@ export class ProjectGitHub {
   overview(id: string): ProjectGitHubOverview {
     this.project(id);
     const state = this.store.get<SyncState>("github_sync", id);
-    return { readiness_policy: this.store.get("github_readiness_policies", id), policy: this.store.get("github_policies", id), pulls: this.store.list("github_pulls", id), sources: this.sources(id).map(source => this.store.get("github_readiness_policies", id) ? this.describeSource(source) : this.planReadiness(source, this.store.get<ProjectGitHubPolicy>("github_policies", id))), mutations: this.store.list("github_mutations", id), last_sync: state?.last_sync ?? null, problem: state?.problem ?? null };
+    return { readiness_policy: this.store.get("github_readiness_policies", id), policy: this.store.get("github_policies", id), pulls: this.store.list("github_pulls", id), sources: this.sources(id).map(source => ({ ...(this.store.get("github_readiness_policies", id) ? this.describeSource(source) : this.planReadiness(source, this.store.get<ProjectGitHubPolicy>("github_policies", id))), intake: this.intake(source) })), mutations: this.store.list("github_mutations", id), last_sync: state?.last_sync ?? null, problem: state?.problem ?? null };
   }
   /** Historical projection; queue and mutation entrypoints require an active Project. */
   legacyOverview(id: string): ProjectGitHubOverview<ProjectIssueReadiness> {
@@ -268,7 +268,7 @@ export class ProjectGitHub {
     return { ...source, readiness, planning: planning ? { ...planning, condition: planning.condition === "needs_you" && workflow.questions(source.implementation_id).some(question => question.answer === null) ? "needs_you" : current ? planning.condition : "stale" } : undefined };
   }
   intake(source: ProjectGitHubSource): import("../shared/issue-queue.ts").IssueQueueEntry | undefined {
-    if (source.kind !== "issue" || this.store.get<FactoryProject>("projects", source.project_id)?.removed_at) return undefined;
+    if (source.kind !== "issue" || !this.store.get("github_readiness_policies", source.project_id) || this.store.get<FactoryProject>("projects", source.project_id)?.removed_at) return undefined;
     return this.queue(source.project_id).entries.find(entry => entry.source_id === source.id);
   }
   schedules(id: string): ProjectSchedulesOverview {

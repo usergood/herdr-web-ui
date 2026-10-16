@@ -10,7 +10,7 @@ export class FactoryReads {
   list<T>(kind: string, parent?: string): T[] {
     const key = JSON.stringify([kind, parent]);
     if (!this.cache.has(key)) {
-      const expression = kind === "runs" ? `json_set(json_remove(data, '$.manifest'), '$.manifest', json_object('execution_preset', json_extract(data, '$.manifest.execution_preset'), 'project', json_object('id', json_extract(data, '$.manifest.project.id')), 'tickets', json((SELECT coalesce(json_group_array(json_object('id', json_extract(value, '$.id'), 'title', json_extract(value, '$.title'))), '[]') FROM json_each(data, '$.manifest.tickets')))))`
+      const expression = kind === "runs" ? `json_set(json_remove(data, '$.manifest'), '$.manifest', json_object('execution_preset', json_extract(data, '$.manifest.execution_preset'), 'rework', json_extract(data, '$.manifest.rework'), 'issue_admission', CASE WHEN json_type(data, '$.manifest.issue_admission') = 'object' THEN json_object('source', json_object('id', json_extract(data, '$.manifest.issue_admission.source.id'), 'revision', json_extract(data, '$.manifest.issue_admission.source.revision'), 'current', json_object('title', json_extract(data, '$.manifest.issue_admission.source.current.title'))), 'planning', json_object('authorization', json_object('approval', json_object('actor', json_object('login', json_extract(data, '$.manifest.issue_admission.planning.authorization.approval.actor.login')))))) ELSE NULL END, 'project', json_object('id', json_extract(data, '$.manifest.project.id')), 'tickets', json((SELECT coalesce(json_group_array(json_object('id', json_extract(value, '$.id'), 'title', json_extract(value, '$.title'))), '[]') FROM json_each(data, '$.manifest.tickets')))))`
         : kind === "checks" ? `json_remove(data, '$.commands')`
         : kind === "review_evidence" ? `json_remove(data, '$.content')`
         : kind === "events" ? `json_set(json_remove(data, '$.data'), '$.data', json_object('run_id', json_extract(data, '$.data.run_id'), 'message', json_extract(data, '$.data.message')))` : "data";
@@ -57,7 +57,7 @@ export class FactoryReads {
       question_context: { run_id: questionRunId ?? null, revision: hash(JSON.stringify(scoped)), questions: scoped },
       questions: scoped, specifications: spec ? [spec] : [], tickets,
       approvals: this.list<FactoryDetail["approvals"][number]>("approvals", id).map(a => ({ ...a, scope: "" })),
-      runs: runs.map(run => ({ ...run, manifest: { execution_preset: (run.manifest as { execution_preset?: unknown })?.execution_preset } })),
+      runs: runs.map(run => ({ ...run, manifest: { execution_preset: (run.manifest as { execution_preset?: unknown })?.execution_preset, issue_admission: (run.manifest as { issue_admission?: unknown })?.issue_admission, rework: (run.manifest as { rework?: unknown })?.rework } })),
       checks: checks.filter(check => check.worker_id === null),
       review_evidence: [...runIds].flatMap(runId => this.list<Omit<FactoryReviewEvidence, "content">>("review_evidence", runId)), events: selectedEvents,
     };

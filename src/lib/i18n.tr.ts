@@ -1400,6 +1400,7 @@ export const TR: Record<string, string> = {
   "Plan implementation starts Grill with docs: discuss the idea, approve a specification, then plan Tickets.": "Uygulama planı Grill with docs ile başlar: fikri tartışın, belirtimi onaylayın, ardından biletleri planlayın.",
   "New workspaces use the latest commit. Local changes stay in the original folder.": "Yeni çalışma alanları son commit'i kullanır. Yerel değişiklikler özgün klasörde kalır.",
   "Accept research": "Araştırmayı kabul et",
+  "Mark work done": "Çalışmayı tamamlandı olarak işaretle",
   "Check completion evidence": "Tamamlanma kanıtını kontrol et",
   "No repository changes; owned work is quiescent.": "Depoda değişiklik yok; sahip olunan tüm çalışmalar durmuş durumda.",
   "Check repository changes and owned work before accepting research.": "Araştırmayı kabul etmeden önce depo değişikliklerini ve sahip olunan çalışmaları kontrol edin.",

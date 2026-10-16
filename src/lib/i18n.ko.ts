@@ -1445,6 +1445,7 @@ export const KO: Record<string, string> = {
   "Plan implementation starts Grill with docs: discuss the idea, approve a specification, then plan Tickets.": "구현 계획은 Grill with docs로 시작합니다. 아이디어를 논의하고 명세를 승인한 뒤 티켓을 계획하세요.",
   "New workspaces use the latest commit. Local changes stay in the original folder.": "새 작업 공간은 최신 커밋을 사용합니다. 로컬 변경 사항은 원래 폴더에 그대로 남습니다.",
   "Accept research": "연구 결과 수락",
+  "Mark work done": "작업 완료 표시",
   "Check completion evidence": "완료 근거 확인",
   "No repository changes; owned work is quiescent.": "저장소 변경 사항이 없으며 소유한 작업이 모두 정지 상태입니다.",
   "Check repository changes and owned work before accepting research.": "연구 결과를 수락하기 전에 저장소 변경 사항과 소유한 작업을 확인하세요.",

@@ -183,6 +183,7 @@ export function FactoryPanel({ overview, refreshOverview, machines, onOpenPane, 
       <FactoryPublicationPanel key={detail.implementation.id} detail={detail} busy={busy} perform={perform} />
       {detail.implementation.project_id && <FactoryIssueBatches key={detail.implementation.id} implementationId={detail.implementation.id} projectId={detail.implementation.project_id} busy={busy} perform={perform} />}
       <FactoryDetailSection<FactoryReviewDetail> view="review" key={`review-${detail.implementation.id}`} id={detail.implementation.id} revision={detail.revision} title={t("Review changes")}>{full => <FactoryReviewPanel detail={full} busy={busy} perform={perform} />}</FactoryDetailSection>
+      {detail.runs.map(run => <IssueRunContract compact key={run.id} run={run} busy={busy} perform={perform} />)}
       <FactoryDetailSection key={`history-${detail.implementation.id}`} id={detail.implementation.id} revision={detail.revision} title={t("Advanced controls")}>{detail => { const chatId = detail.chats.find(chat => chat.id === selectedChat)?.id ?? detail.chats[0]?.id ?? ""; return <>
         {detail.runs.map(run => <IssueRunContract key={run.id} run={run} busy={busy} perform={perform} />)}
         <div className="factory-filters">

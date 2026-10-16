@@ -1447,6 +1447,7 @@ export const JA: Record<string, string> = {
   "Plan implementation starts Grill with docs: discuss the idea, approve a specification, then plan Tickets.": "実装の計画は Grill with docs から始まります。アイデアを話し合い、仕様を承認してからチケットを計画します。",
   "New workspaces use the latest commit. Local changes stay in the original folder.": "新しいワークスペースは最新のコミットを使用します。ローカルの変更は元のフォルダーに残ります。",
   "Accept research": "調査結果を承認",
+  "Mark work done": "作業を完了にする",
   "Check completion evidence": "完了の根拠を確認",
   "No repository changes; owned work is quiescent.": "リポジトリに変更はなく、所有する作業はすべて停止しています。",
   "Check repository changes and owned work before accepting research.": "調査結果を承認する前に、リポジトリの変更と所有する作業を確認してください。",

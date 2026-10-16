@@ -1,3 +1,4 @@
+import { summarizeIssueAdmission } from "../../shared/issue-admission.ts";
 import { nativeSessionRef } from "../../shared/native-pane.ts";
 import { AGENT_PERMISSION_MODES, permissionDescription } from "../../shared/agent-permissions.ts";
 import { MATT_PROJECT_WORKFLOW } from "../../shared/project-setup.ts";
@@ -282,7 +283,7 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
       const view = url.searchParams.get("view");
       if (view === "report") { const report = detail.review_evidence.find(record => record.id === url.searchParams.get("record_id")); return report ? json(report) : failure("not_found", "Review report not found", 404); }
       if (view === "snapshot") { const snapshot = detail.snapshots.find(record => record.id === url.searchParams.get("record_id")); return snapshot ? json(snapshot) : failure("not_found", "Review snapshot not found", 404); }
-      const runs = detail.runs.map(run => ({ ...run, manifest: { execution_preset: (run.manifest as { execution_preset?: unknown })?.execution_preset } }));
+      const runs = detail.runs.map(run => ({ ...run, manifest: { execution_preset: (run.manifest as { execution_preset?: unknown })?.execution_preset, issue_admission: summarizeIssueAdmission((run.manifest as { issue_admission?: import("../../shared/issue-admission.ts").IssueAdmission })?.issue_admission), rework: (run.manifest as { rework?: unknown })?.rework } }));
       const checks = detail.checks.map(({ commands, ...check }) => check);
       const review_evidence = detail.review_evidence.map(({ content, ...report }) => report);
       if (view === "review") return json({ implementation: detail.implementation, runs, checks, review_evidence, review_batches: (detail.review_batches ?? []).map(({ reports, ...batch }) => batch), snapshots: detail.snapshots.map(({ files, ...snapshot }) => snapshot), comments: detail.comments } satisfies import("../../shared/factory.ts").FactoryReviewDetail);

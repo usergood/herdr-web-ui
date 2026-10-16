@@ -349,7 +349,12 @@ export class FactoryRuntime {
     const artifacts = selectedArtifacts();
     const messages = this.store.list<FactoryMessage>("messages", id);
     const projectReferences = project ? this.references.current(project.id) : null;
-    const deliveryRepository = !implementation.delivery_scope && inspected
+    // Intake keeps its bounded issue verifier and manual compatibility unless the
+    // owner explicitly binds Assignment delivery. Existing frozen scopes stay bound.
+    const deliveryBinding = () => project ? { intake: !!this.store.get("github_readiness_policies", project.id), declaration: this.store.get("project_delivery_declarations", project.id) } : null;
+    const binding = deliveryBinding();
+    const bindAssignmentDelivery = !binding?.intake || !!binding.declaration || !!project?.auto_publish_pr;
+    const deliveryRepository = bindAssignmentDelivery && !implementation.delivery_scope && inspected
       ? machineId === "local" ? (await githubDirectory(inspected.path, this.accounts.discoveryHome)).repository : (await this.discover(machineId, inspected.path)).github.repository
       : null;
     if (projectReferences?.entries.length && capabilities.project_reference_protocol !== 1) throw new FactoryError("factory_bridge_incompatible", "The selected Machine needs a bridge with Project reference support", 409);
@@ -359,7 +364,7 @@ export class FactoryRuntime {
       if (!specification || !this.workflow.tickets(id).length || !issueAdmission && (!this.workflow.approved(id, "specification", specification.id) || !this.workflow.approved(id, "testing_seams", specification.id) || !this.workflow.approved(id, "ticket_graph", graphHash))) throw new FactoryError("scope_unaccepted", "Accept the current specification, testing seams and Ticket graph", 409);
       if (!project?.checks?.length || !project.permissions?.trim()) throw new FactoryError("project_setup_required", "Configure known Project checks and execution permissions before factory admission", 409);
     }
-    const contractHash = hash(JSON.stringify({ implementation, project, checkout, specification, graphHash, settings: this.settings(), skills: skills.hash, artifacts, messages, projectReferences }));
+    const contractHash = hash(JSON.stringify({ implementation, project, checkout, specification, graphHash, settings: this.settings(), skills: skills.hash, artifacts, messages, projectReferences, deliveryBinding: binding }));
     await this.reconcileCapacity();
     const run = this.store.db.transaction(() => {
       continuation?.validateScope?.();
@@ -371,7 +376,7 @@ export class FactoryRuntime {
       validateChildren();
       validateIssue();
       if (this.stopped) throw new FactoryError("stopping", "The bridge is stopping; reconcile before retrying", 409);
-      const currentHash = hash(JSON.stringify({ implementation: this.store.get("implementations", id), project: project ? this.store.get("projects", project.id) : null, checkout: checkout ? this.store.get("checkouts", checkout.id) : null, specification: this.workflow.specification(id), graphHash: this.workflow.graphHash(id), settings: this.settings(), skills: skills.hash, artifacts: selectedArtifacts(), messages: this.store.list<FactoryMessage>("messages", id), projectReferences: project ? this.references.current(project.id) : null }));
+      const currentHash = hash(JSON.stringify({ implementation: this.store.get("implementations", id), project: project ? this.store.get("projects", project.id) : null, checkout: checkout ? this.store.get("checkouts", checkout.id) : null, specification: this.workflow.specification(id), graphHash: this.workflow.graphHash(id), settings: this.settings(), skills: skills.hash, artifacts: selectedArtifacts(), messages: this.store.list<FactoryMessage>("messages", id), projectReferences: project ? this.references.current(project.id) : null, deliveryBinding: deliveryBinding() }));
       if (currentHash !== contractHash) throw new FactoryError("scope_changed", "The selected execution scope changed during admission", 409);
       const owned = this.store.list<FactoryRun>("runs").filter((entry) => activeConditions.has(entry.condition));
       if (owned.some((entry) => entry.implementation_id === id)) throw new FactoryError("implementation_owned", "An existing or uncertain Run still owns this Implementation", 409);
@@ -382,7 +387,7 @@ export class FactoryRuntime {
         if (capacity.builds >= this.settings().max_builds) throw new FactoryError("build_capacity_exhausted", "Global build capacity is reserved, including uncertain builds", 409);
       }
       const selectedImplementation = this.store.get<Implementation>("implementations", id)!;
-      if (!selectedImplementation.delivery_scope) {
+      if (bindAssignmentDelivery && !selectedImplementation.delivery_scope) {
         implementation = { ...selectedImplementation, delivery_scope: { milestone: project?.delivery_policy ?? "merge", repository: project?.repository ?? null, branch: project?.delivery_branch ?? inspected?.branch ?? null, base: inspected?.head ?? null, github_repository: deliveryRepository } };
         this.store.put("implementations", implementation);
       }
@@ -392,6 +397,8 @@ export class FactoryRuntime {
       if (issueScope) record.manifest = { ...(record.manifest as object), issue_scope: issueScope };
       if (issueScope) this.consumeRetry(id, record.id);
       if (projectReferences) this.references.freeze(projectReferences.project_id);
+      // Freeze the compatibility decision; absence of a legacy delivery scope is not authority.
+      if (!bindAssignmentDelivery && !implementation.delivery_scope && project) this.store.put("manual_completion_scopes", { id: record.id, project_id: project.id, contract_hash: contractHash }, id);
       this.store.put("runs", record, id);
       this.store.put("run_access", { id: record.id, token: randomBytes(32).toString("base64url"), url: `${api.origin}/api/factory-agent/${record.id}` });
       this.store.put("run_artifacts", { id: record.id, artifacts });
