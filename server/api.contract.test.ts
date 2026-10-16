@@ -418,7 +418,10 @@ describe("Assignment discard", () => {
       const deadline = Date.now() + 12_000;
       let admittedRuns = (await f.request(`/implementations/${next.id}`).then(r => r.json())).runs;
       while (!admittedRuns.some((run: FactoryRun) => run.idempotency_key === "reserved-until-stopped" && run.condition === "working")) {
-        expect(Date.now()).toBeLessThan(deadline);
+        if (Date.now() >= deadline) {
+          const detail = await f.request(`/implementations/${next.id}`).then(r => r.json());
+          throw new Error(`Queued recovery did not admit the owned request: ${JSON.stringify({ runs: detail.runs, waiting: detail.capacity_waiting })}`);
+        }
         await Bun.sleep(50);
         admittedRuns = (await f.request(`/implementations/${next.id}`).then(r => r.json())).runs;
       }
