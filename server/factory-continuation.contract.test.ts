@@ -318,7 +318,7 @@ describe("continuing approved workflow steps", () => {
       expect((await host.agent(run, "sync-answers", { before: result.cursor })).status).toBe(200);
       const detail = await api(`/implementations/${idea.id}`).then(r => r.json());
       expect(detail.approvals).toHaveLength(0);
-    } finally { app.stop(); proxy.stop(); await host.close(); rmSync(state, { recursive: true, force: true }); }
+    } finally { app.stop(); await proxy.stop(); await host.close(); rmSync(state, { recursive: true, force: true }); }
   }, 60_000);
 
   it.each([[false, false, false, false], [true, false, false, false], [false, true, false, false], [false, false, true, false], [false, false, false, true]])("observes remote readiness and fences scope changes (checkout: %s, prompt: %s, verification: %s, question: %s)", async (changeCheckout, nativePrompt, changeDuringVerification, changeProductQuestion) => {
@@ -400,7 +400,7 @@ describe("continuing approved workflow steps", () => {
       expect(detail.events.some((event: { kind: string; data: { message?: string } }) => event.kind === "continuation_waiting" && event.data.message?.includes(expectedProblem)), JSON.stringify({ runs: detail.runs.map((r: FactoryRun)=>({ id:r.id, condition:r.condition, waiting_reason:r.waiting_reason })), events: detail.events.filter((e: {kind:string})=>e.kind.includes("continuation")) })).toBe(true);
       expect(detail.runs.some((entry: FactoryRun) => entry.action === "implement-spec")).toBe(false);
       if (changeCheckout) expect(verificationRequests).toBe(0); else if (changeDuringVerification || changeProductQuestion) expect(verificationRequests).toBe(1); else expect(verificationRequests).toBeGreaterThanOrEqual(2);
-    } finally { release(); app.stop(); proxy.stop(); await host.close(); rmSync(state, { recursive: true, force: true }); }
+    } finally { release(); app.stop(); await proxy.stop(); await host.close(); rmSync(state, { recursive: true, force: true }); }
   }, 60_000);
 
   it("confirms shared understanding once without inventing text answers or approving obsolete probes", async () => {
