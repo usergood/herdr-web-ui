@@ -223,6 +223,39 @@ test("explicit Start admits the prepared trusted plan with its frozen authorizat
   } finally { fixture.close(); }
 }, 20_000);
 
+test.each(["outage", "readiness"] as const)("retained natural issue planning survives %s without authorizing Start until fresh recovery", async loss => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { path, start, route, readiness } = await prepared(fixture);
+    const before = await fixture.json(path);
+    expect(before.approvals).toEqual([]);
+    if (loss === "readiness") fixture.issue.labels = [];
+    fixture.save([fixture.issue], loss === "outage");
+    expect((await fixture.post(route + "/sync", {})).status).toBe(loss === "outage" ? 409 : 200);
+    const stale = await fixture.json(path);
+    expect(stale.github_sources[0].planning).toMatchObject({ condition: "stale", origin: "issue_body", specification_id: before.specifications.at(-1).id, graph_hash: before.graph_hash });
+    expect(stale.specifications).toEqual(before.specifications); expect(stale.tickets).toEqual(before.tickets);
+    expect(stale.approvals).toEqual([]); expect(stale.questions).toEqual([]);
+    const refused = await fixture.post(path + "/runs", start);
+    expect(refused.status).toBe(409); expect((await refused.json()).error.code).toBe(loss === "outage" ? "issue_not_eligible" : "issue_changed");
+    expect((await fixture.json(path)).runs).toEqual([]); expect(fixture.launches).toEqual([]);
+    fixture.issue.labels = [{ name: "ready-for-agent" }]; fixture.save();
+    let current = (await fixture.json(route + "/sync", {})).sources[0];
+    if (loss === "readiness") {
+      await fixture.json(route + "/issues/1/approve", { source_revision: current.revision, policy_revision: readiness.revision });
+      expect((await fixture.json(path)).github_sources[0].planning.condition).toBe("stale");
+      const stillBlocked = await fixture.post(path + "/runs", { ...start, issue_scope: { ...start.issue_scope, source_revision: current.revision } });
+      expect(stillBlocked.status).toBe(409); expect((await stillBlocked.json()).error.code).toBe("issue_not_eligible");
+      expect((await fixture.json(path)).runs).toEqual([]); expect(fixture.launches).toEqual([]);
+    }
+    await fixture.json(route + "/issues/1/prepare", { source_revision: current.revision });
+    current = (await fixture.json(route + "/sync", {})).sources[0];
+    const admitted = await fixture.json(path + "/runs", { ...start, issue_scope: { source_id: current.id, source_revision: current.revision, graph_hash: current.planning.graph_hash } });
+    expect(admitted).toMatchObject({ condition: "working", manifest: { issue_admission: { source: { id: current.id, revision: current.revision }, planning: { graph_hash: current.planning.graph_hash } } } });
+    expect((await fixture.json(path)).approvals).toEqual([]);
+  } finally { fixture.close(); }
+}, 20_000);
+
 test("Pause queue refuses a new explicit issue Start while keeping its prepared plan", async () => {
   const fixture = githubQueueFixture(true);
   try {

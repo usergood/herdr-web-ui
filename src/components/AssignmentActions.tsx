@@ -18,7 +18,8 @@ export function AssignmentActions({ preset, onPresetChange, detail, project, mac
   const unconfirmedWork = active?.action === "work" && ["interrupted", "disconnected"].includes(active.condition);
   const specification = detail.specifications.at(-1);
   const issueStart = issueImplementationStart(detail);
-  const issuePlan = detail.github_sources?.find(source => source.planning?.condition === "prepared" && source.planning.specification_id === specification?.id && source.planning.graph_hash === detail.graph_hash)?.planning;
+  const retainedIssuePlan = detail.github_sources?.find(source => source.kind === "issue" && source.planning && source.planning.specification_id === specification?.id && source.planning.graph_hash === detail.graph_hash)?.planning;
+  const issuePlan = retainedIssuePlan?.condition === "prepared" ? retainedIssuePlan : undefined;
   const approved = (kind: string, revision: string) => detail.approvals.some(a => a.kind === kind && a.revision === revision);
   const specReady = !!specification && approved("specification", specification.id) && approved("testing_seams", specification.id);
   const questions = detail.question_context?.questions ?? detail.questions;
@@ -38,7 +39,8 @@ export function AssignmentActions({ preset, onPresetChange, detail, project, mac
   const [acknowledgedHandoff, setAcknowledgedHandoff] = useState<string | null>(null);
   const incompleteHandoff = handoffProblem && acknowledgedHandoff !== latest?.id;
   const check = active ? detail.checks.filter(c=>c.run_id===active.id&&c.worker_id===null).at(-1) : undefined;
-  const graphReady = detail.tickets.length > 0 && (approved("ticket_graph", detail.graph_hash) || !!issuePlan && !!issueStart.scope);
+  // Retained planning keeps the action visible; issueStart still requires fresh admission.
+  const graphReady = detail.tickets.length > 0 && (approved("ticket_graph", detail.graph_hash) || !!retainedIssuePlan && !!issueStart.scope);
   const suggestedAction: FactoryAction | null = graphReady ? "implement-spec" : specReady ? "to-tickets" : !specification && discussed && understood ? "to-spec" : null;
   const nextAction = suggestedAction === active?.action ? null : suggestedAction;
   async function launch(action: FactoryAction) {

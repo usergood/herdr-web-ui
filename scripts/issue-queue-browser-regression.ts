@@ -199,11 +199,29 @@ try {
         assert.equal((await guarded.json(path)).runs.length, 0);
         // Outage cannot turn a prepared issue back into manual admission.
         guarded.save([guarded.issue], true); assert.equal((await guarded.post(route + "/sync", {})).status, 409);
+        const stale = await guarded.json(path);
+        assert.equal(stale.github_sources[0].planning.condition, "stale");
+        assert.equal(stale.github_sources[0].planning.specification_id, initial.specifications.at(-1).id);
+        assert.equal(stale.github_sources[0].planning.graph_hash, initial.graph_hash);
         await openControl();
         assert(await page.getByRole("button", { name: control, exact: true }).isDisabled());
         guarded.save(); await guarded.json(route + "/sync", {});
         assert.deepEqual((await guarded.json(path)).questions, []);
         assert.equal((await guarded.json(path)).github_sources[0].planning.condition, "prepared");
+        // Readiness loss retains the same action, but renewal alone cannot refresh its plan.
+        guarded.issue.labels = []; guarded.save(); await guarded.json(route + "/sync", {});
+        await openControl();
+        assert(await page.getByRole("button", { name: control, exact: true }).isDisabled());
+        assert.equal((await guarded.json(path)).runs.length, 0);
+        guarded.issue.labels = [{ name: "ready-for-agent" }]; guarded.save();
+        const renewed = (await guarded.json(route + "/sync", {})).sources[0];
+        await guarded.json(route + "/issues/1/approve", { source_revision: renewed.revision, policy_revision: readiness.revision });
+        await openControl();
+        assert(await page.getByRole("button", { name: control, exact: true }).isDisabled());
+        await guarded.json(route + "/issues/1/prepare", { source_revision: renewed.revision });
+        const recovered = (await guarded.json(route + "/sync", {})).sources[0];
+        assert.equal(recovered.planning.condition, "prepared");
+        assert.deepEqual((await guarded.json(path)).approvals, []);
         const queue = await guarded.json(route + "/queue");
         await guarded.json(route + "/queue", { expected_revision: queue.policy.revision, automatic_implementation: false, paused: false, max_implementations: 1 });
         await openControl();
@@ -212,13 +230,13 @@ try {
         const admitted = await started; assert.equal(admitted.status(), 202);
         const run = await admitted.json();
         assert.equal(run.manifest.issue_admission.source.id, source.id);
-        assert.equal(run.manifest.issue_admission.source.revision, prepared.revision);
+        assert.equal(run.manifest.issue_admission.source.revision, recovered.revision);
         assert.equal((await guarded.json(path)).runs.length, 1);
       } finally { await page.close(); guarded.close(); }
     }
   }
   assert.deepEqual(errors, []);
-  console.log("PASS: desktop/mobile existing implementation controls use guarded issue admission, pause and outage rules");
+  console.log("PASS: desktop/mobile existing implementation controls retain disabled actions across outage/readiness loss and use fresh guarded admission");
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
     for (const condition of ["ready", "working", "disconnected"] as const) {
       const continuation = issueContinuationFixture();
@@ -271,13 +289,24 @@ try {
     const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });
     page.setDefaultTimeout(10_000); page.on("pageerror", recordPageError);
     try {
-      const { path, planning, body } = await continuation.preparedPlanning("to-spec");
+      const { path, planning, body, route } = await continuation.preparedPlanning("to-spec");
       const prepared = await continuation.json(path);
       assert.deepEqual(prepared.approvals, []); assert.deepEqual(prepared.questions, []);
       assert.equal(prepared.github_sources[0].planning.condition, "prepared");
       assert.equal(prepared.github_sources[0].planning.origin, "issue_body");
       continuation.setFactoryReady(false);
       await page.goto(continuation.origin + `/#factory/${planning.implementation_id}`);
+      continuation.save([continuation.issue], true); assert.equal((await continuation.post(route + "/sync", {})).status, 409);
+      await page.reload();
+      assert(await page.getByRole("region", { name: "Next step", exact: true }).getByRole("button", { name: "Continue workflow", exact: true }).isDisabled());
+      const retained = await continuation.json(path);
+      assert.equal(retained.github_sources[0].planning.condition, "stale");
+      assert.equal(retained.github_sources[0].planning.specification_id, prepared.specifications.at(-1).id);
+      assert.equal(retained.github_sources[0].planning.graph_hash, prepared.graph_hash);
+      assert.deepEqual(retained.runs, prepared.runs); assert.deepEqual(retained.messages, prepared.messages);
+      continuation.save(); await continuation.json(route + "/sync", {});
+      assert.equal((await continuation.json(path)).github_sources[0].planning.condition, "prepared");
+      await page.reload();
       const started = page.waitForResponse(response => response.url().endsWith(path + "/continue") && response.request().method() === "POST");
       await page.getByRole("region", { name: "Next step", exact: true }).getByRole("button", { name: "Continue workflow", exact: true }).click();
       const response = await started; assert.equal(response.status(), 202);
@@ -306,6 +335,36 @@ try {
   }
   assert.deepEqual(errors, []);
   console.log("PASS: desktop/mobile prepared issue Continue runs verification before one guarded implementation successor");
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    const continuation = issueContinuationFixture();
+    const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });
+    page.setDefaultTimeout(10_000); page.on("pageerror", recordPageError);
+    try {
+      const { path, planning, body, route, readiness } = await continuation.preparedPlanning("to-spec");
+      const before = await continuation.json(path);
+      continuation.issue.labels = []; continuation.save(); await continuation.json(route + "/sync", {});
+      await page.goto(continuation.origin + `/#factory/${planning.implementation_id}`);
+      const button = page.getByRole("region", { name: "Next step", exact: true }).getByRole("button", { name: "Continue workflow", exact: true });
+      assert(await button.isDisabled());
+      const rejected = await continuation.post(path + "/continue", body);
+      assert.equal(rejected.status, 409); assert.equal((await rejected.json()).error.code, "issue_changed");
+      continuation.issue.labels = [{ name: "ready-for-agent" }]; continuation.save();
+      const current = (await continuation.json(route + "/sync", {})).sources[0];
+      await continuation.json(route + "/issues/1/approve", { source_revision: current.revision, policy_revision: readiness.revision });
+      await page.reload(); assert(await button.isDisabled());
+      const busy = await continuation.post(route + "/issues/1/prepare", { source_revision: current.revision });
+      assert.equal(busy.status, 409); assert.equal((await busy.json()).error.code, "planning_busy");
+      const stillBlocked = await continuation.post(path + "/continue", { ...body, issue_scope: { ...body.issue_scope, source_revision: current.revision } });
+      assert.equal(stillBlocked.status, 409); assert.equal((await stillBlocked.json()).error.code, "issue_not_eligible");
+      const retained = await continuation.json(path);
+      assert.deepEqual(retained.runs, before.runs); assert.deepEqual(retained.messages, before.messages);
+      assert.deepEqual(retained.approvals, []); assert.deepEqual(retained.questions, []);
+      assert.equal(retained.github_sources[0].planning.graph_hash, before.graph_hash);
+      assert.equal(retained.events.some((event: any) => event.kind === "workflow_step_finished"), false);
+    } finally { await page.close(); continuation.close(); }
+  }
+  assert.deepEqual(errors, []);
+  console.log("PASS: desktop/mobile natural Continue remains visible and blocked after readiness renewal while its predecessor retains ownership");
   const { project, route, readiness } = await fixture.setup();
   const second = { ...fixture.issue, number: 2, node_id: "fictional-2", title: "Later greeting", html_url: "https://github.com/fictional/project/issues/2" };
   const blocked = { ...fixture.issue, number: 3, node_id: "fictional-3", title: "Blocked greeting", labels: [{ name: "blocked" }, { name: "ready-for-agent" }] };

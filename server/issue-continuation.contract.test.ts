@@ -191,6 +191,47 @@ test.each(["working", "disconnected", "interrupted", "failed"] as const)("Contin
   } finally { fixture.close(); }
 }, 15_000);
 
+test.each(["outage", "readiness"] as const)("natural planning Continue retains its %s-blocked handoff and requires fresh authorization", async loss => {
+  const fixture = issueContinuationFixture();
+  try {
+    const { path, planning, body, route, readiness } = await fixture.preparedPlanning("to-spec");
+    const before = await fixture.json(path);
+    expect(before.approvals).toEqual([]);
+    if (loss === "readiness") fixture.issue.labels = [];
+    fixture.save([fixture.issue], loss === "outage");
+    expect((await fixture.post(route + "/sync", {})).status).toBe(loss === "outage" ? 409 : 200);
+    const stale = await fixture.json(path);
+    expect(stale.github_sources[0].planning).toMatchObject({ condition: "stale", origin: "issue_body", specification_id: before.specifications.at(-1).id, graph_hash: before.graph_hash });
+    expect(stale.questions).toEqual([]);
+    const refused = await fixture.post(path + "/continue", body);
+    expect(refused.status).toBe(409); expect((await refused.json()).error.code).toBe(loss === "outage" ? "issue_not_eligible" : "issue_changed");
+    const unchanged = await fixture.json(path);
+    expect(unchanged.runs).toEqual(before.runs); expect(unchanged.messages).toEqual(before.messages);
+    expect(unchanged.events.some((event: any) => event.kind === "workflow_step_finished")).toBe(false);
+    fixture.issue.labels = [{ name: "ready-for-agent" }]; fixture.save();
+    const current = (await fixture.json(route + "/sync", {})).sources[0];
+    if (loss === "readiness") {
+      await fixture.json(route + "/issues/1/approve", { source_revision: current.revision, policy_revision: readiness.revision });
+      const busy = await fixture.post(route + "/issues/1/prepare", { source_revision: current.revision });
+      expect(busy.status).toBe(409); expect((await busy.json()).error.code).toBe("planning_busy");
+      const stillBlocked = await fixture.post(path + "/continue", { ...body, issue_scope: { ...body.issue_scope, source_revision: current.revision } });
+      expect(stillBlocked.status).toBe(409); expect((await stillBlocked.json()).error.code).toBe("issue_not_eligible");
+      const retained = await fixture.json(path);
+      expect(retained.runs).toEqual(before.runs); expect(retained.messages).toEqual(before.messages);
+      expect(retained.events.some((event: any) => event.kind === "workflow_step_finished")).toBe(false);
+      expect(retained.approvals).toEqual([]);
+      return;
+    }
+    expect(current.planning.condition).toBe("prepared");
+    const successor = await fixture.json(path + "/continue", { ...body, issue_scope: { source_id: current.id, source_revision: current.revision, graph_hash: current.planning.graph_hash } });
+    expect(successor).toMatchObject({ action: "implement-spec", condition: "working", manifest: { issue_admission: { source: { id: current.id, revision: current.revision } } } });
+    const after = await fixture.json(path);
+    expect(after.runs.map((run: any) => [run.id, run.condition])).toEqual([[planning.id, "completed"], [successor.id, "working"]]);
+    expect(after.messages.some((message: any) => message.content.includes("Retained fictional planning handoff."))).toBe(true);
+    expect(after.approvals).toEqual([]);
+  } finally { fixture.close(); }
+}, 15_000);
+
 test("an unrelated ready predecessor or a direct Start run_id cannot retire the issue's planning ownership", async () => {
   const fixture = issueContinuationFixture();
   try {
