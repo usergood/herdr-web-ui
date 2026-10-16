@@ -33,7 +33,7 @@ import { factoryMergeFixture } from "./factory-merge.fixture.ts";
 
 describe("factory loading HTTP contract", () => {
   it("authenticates compact reads and scopes lazy report/snapshot bodies to their Assignment", async () => {
-    const fixture = factoryLoadingFixture(); fixture.service.stop();
+    const fixture = factoryLoadingFixture(); fixture.stop();
     const app = createServer({ port: 0, token: "owned-loading-token", stateDir: fixture.root, machines: false, factory: { accountDiscoveryHome: fixture.root } });
     const origin = `http://localhost:${app.port}/api/factory`;
     const headers = { authorization: "Bearer owned-loading-token" };
