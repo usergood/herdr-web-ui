@@ -110,7 +110,7 @@ export class ProjectGitHub {
   }
 
   /** Known changes request a pause. Missing metadata alone never cancels frozen work. */
-  private reconcileAdmissions(id: string, detectedChange?: { sourceId: string; runId?: string; reason: import("../shared/issue-admission.ts").IssuePause["reason"] }): void {
+  reconcileAdmissions(id: string, detectedChange?: { sourceId: string; runId?: string; reason: import("../shared/issue-admission.ts").IssuePause["reason"] }): void {
     const workflow = new FactoryWorkflow(this.store);
     const policy = this.store.get<ProjectReadinessPolicy>("github_readiness_policies", id);
     for (const run of this.store.list<import("../shared/factory.ts").FactoryRun>("runs")) {

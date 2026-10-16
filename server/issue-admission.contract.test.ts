@@ -68,6 +68,66 @@ test("Pause queue refuses a new explicit issue Start while keeping its prepared 
   } finally { fixture.close(); }
 }, 20_000);
 
+test.each(["paused", "outage", "changed_scope", "unresolved_dependencies", "needs_you"])("ordinary Start cannot omit formerly prepared issue provenance with %s evidence", async blocker => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { path, source, route, readiness } = await prepared(fixture);
+    for (const kind of ["specification", "testing_seams"]) await fixture.json(path + "/approvals", { kind, revision: source.planning.specification_id, scope: "Public HTTP and real browser journeys." });
+    await fixture.json(path + "/approvals", { kind: "ticket_graph", revision: source.planning.graph_hash, scope: "Approved bounded greeting" });
+    if (blocker === "paused") await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true, max_implementations: 1 });
+    if (blocker === "outage") { fixture.save([fixture.issue], true); expect((await fixture.post(route + "/sync", {})).status).toBe(409); }
+    if (blocker === "changed_scope" || blocker === "needs_you") {
+      fixture.issue.body += "\nChange the greeting after preparation.";
+      fixture.save(); await fixture.json(route + "/sync", {});
+      if (blocker === "needs_you") {
+        const current = (await fixture.json(route)).sources[0];
+        await fixture.json(route + "/issues/1/approve", { source_revision: current.revision, policy_revision: readiness.revision });
+        await fixture.json(route + "/issues/1/prepare", { source_revision: current.revision });
+      }
+    }
+    if (blocker === "unresolved_dependencies") {
+      fixture.save([fixture.issue], false, { 1: [{ ...fixture.issue, number: 42, node_id: "missing-dependency", html_url: "https://github.com/fictional/project/issues/42" }] });
+      await fixture.json(route + "/sync", {});
+    }
+    if (blocker !== "paused") expect((await fixture.json(path)).github_sources[0].planning.condition).not.toBe("prepared");
+    for (const route of ["/runs", "/continue"]) {
+      const response = await fixture.post(path + route, { action: "implement-spec", idempotency_key: "ordinary-prepared-start" + route.slice(1), run_id: null });
+      expect(response.status).toBe(409);
+      // Continue can also refuse earlier because changed scope left unanswered decisions.
+      const code = (await response.json()).error.code;
+      if (route === "/runs") expect(code).toBe("issue_scope_required");
+      else expect(["issue_scope_required", "answers_unready"]).toContain(code);
+    }
+    expect((await fixture.json(path)).runs).toEqual([]);
+    expect(fixture.launches).toEqual([]);
+  } finally { fixture.close(); }
+}, 20_000);
+
+test("issue preparation during an ordinary Start cannot bypass final guarded admission", async () => {
+  const fixture = githubQueueFixture(true);
+  let release: (() => void) | undefined;
+  try {
+    const { route, readiness } = await fixture.setup();
+    const source = (await fixture.json(route + "/sync", {})).sources[0];
+    const path = `/implementations/${source.implementation_id}`;
+    await fixture.json(route + "/issues/1/approve", { source_revision: source.revision, policy_revision: readiness.revision });
+    const specification = await fixture.json(path + "/specifications", { content: fixture.issue.body });
+    for (const kind of ["specification", "testing_seams"]) await fixture.json(path + "/approvals", { kind, revision: specification.id, scope: "Public HTTP and real browser journeys." });
+    const graph = await fixture.json(path + "/tickets", { specification_id: specification.id, tickets: [{ key: "greeting", title: "Greeting", acceptance: "Show hello", dependencies: [] }] });
+    await fixture.json(path + "/approvals", { kind: "ticket_graph", revision: graph.hash, scope: "Approved bounded greeting" });
+    const gate = fixture.holdCapabilities(); release = gate.release;
+    const starting = fixture.post(path + "/runs", { action: "implement-spec", idempotency_key: "prepare-during-start" });
+    await gate.waiting;
+    await fixture.json(route + "/issues/1/prepare", { source_revision: source.revision });
+    await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true, max_implementations: 1 });
+    gate.release();
+    const refused = await starting;
+    expect(refused.status).toBe(409);
+    expect((await fixture.json(path)).runs).toEqual([]);
+    expect(fixture.launches).toEqual([]);
+  } finally { release?.(); fixture.close(); }
+}, 20_000);
+
 test("explicit issue Start follows current board priority", async () => {
   const fixture = githubQueueFixture(true);
   try {
@@ -106,6 +166,82 @@ test("a Start key cannot replay a different trusted issue scope", async () => {
     expect(refused.status).toBe(409); expect((await refused.json()).error.code).toBe("idempotency_conflict");
     expect((await fixture.json(path)).runs).toHaveLength(1);
   } finally { fixture.close(); }
+}, 20_000);
+
+test("local approved specification changes pause admitted issue work without a GitHub sync", async () => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { path, start } = await prepared(fixture);
+    const run = await fixture.json(path + "/runs", start);
+    fixture.save([fixture.issue], true);
+    const replacement = await fixture.json(path + "/specifications", { content: "Show a different greeting through the approved public seams." });
+    for (const kind of ["specification", "testing_seams"]) await fixture.json(path + "/approvals", { kind, revision: replacement.id, scope: "Public HTTP and real browser journeys." });
+    const detail = await fixture.json(path);
+    expect(detail.runs[0]).toMatchObject({ id: run.id, condition: "needs_you", issue_pause: { reason: "scope_changed" }, specification_id: run.specification_id, graph_hash: run.graph_hash, manifest: run.manifest });
+    const worker = await fixture.post(`/runs/${run.id}/workers`, { role: "implementer", ticket_id: run.manifest.tickets[0].id, idempotency_key: "after-local-change" });
+    expect(worker.status).toBe(409);
+    expect((await worker.json()).error.code).toBe("issue_pause_required");
+  } finally { fixture.close(); }
+}, 20_000);
+
+test("local graph changes pause once, retain uncertain workers and survive restart while unchanged approvals do not pause", async () => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { path, start, source, route } = await prepared(fixture);
+    const run = await fixture.json(path + "/runs", start);
+    for (const kind of ["specification", "testing_seams"]) await fixture.json(path + "/approvals", { kind, revision: source.planning.specification_id, scope: "Public HTTP and real browser journeys." });
+    await fixture.json(path + "/approvals", { kind: "ticket_graph", revision: run.graph_hash, scope: "Same bounded greeting" });
+    expect((await fixture.json(path)).runs[0].issue_pause).toBeUndefined();
+    const worker = await fixture.json(`/runs/${run.id}/workers`, { role: "implementer", ticket_id: run.manifest.tickets[0].id, idempotency_key: "uncertain-before-local-change" });
+    expect(worker.condition).toBe("disconnected");
+    fixture.save([fixture.issue], true);
+    const graph = await fixture.json(path + "/tickets", { specification_id: run.specification_id, tickets: [{ key: "different", title: "Different greeting", acceptance: "Show the new greeting", dependencies: [] }] });
+    await fixture.json(path + "/approvals", { kind: "ticket_graph", revision: graph.hash, scope: "Reviewed new graph" });
+    let detail = await fixture.json(path);
+    const paused = detail.runs[0];
+    expect(paused).toMatchObject({ id: run.id, condition: "needs_you", issue_pause: { reason: "scope_changed" }, manifest: run.manifest, worktree: run.worktree, graph_hash: run.graph_hash });
+    expect(detail.workers).toEqual([worker]);
+    expect(detail.questions.filter((question: any) => question.question.startsWith("Controlled pause requested:"))).toHaveLength(1);
+    const unrelated = await fixture.json("/implementations", { title: "Unrelated manual Assignment", description: "Keep manual decisions independent", project_id: source.project_id });
+    await fixture.json(`/implementations/${unrelated.id}/specifications`, { content: "An unrelated approved manual change" });
+    const policy = (await fixture.json(route)).policy;
+    expect(policy.sync_enabled).toBe(false);
+    fixture.restart();
+    detail = await fixture.json(path);
+    expect(detail.runs[0].issue_pause).toEqual(paused.issue_pause);
+    expect(detail.runs[0].manifest).toEqual(run.manifest);
+    expect(detail.workers).toEqual([worker]);
+    expect(detail.questions.filter((question: any) => question.question.startsWith("Controlled pause requested:"))).toHaveLength(1);
+    const refused = await fixture.post(`/runs/${run.id}/workers`, { role: "spec", idempotency_key: "after-local-graph-restart" });
+    expect(refused.status).toBe(409); expect((await refused.json()).error.code).toBe("issue_pause_required");
+    expect((await fixture.json(`/implementations/${unrelated.id}`)).questions).toEqual([]);
+  } finally { fixture.close(); }
+}, 20_000);
+
+test("a worker allocation awaiting native observation cannot pass a concurrent local scope change", async () => {
+  const fixture = githubQueueFixture(true);
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => release = resolve);
+  let entered!: () => void;
+  const waiting = new Promise<void>(resolve => entered = resolve);
+  try {
+    const { path, start } = await prepared(fixture);
+    const run = await fixture.json(path + "/runs", start);
+    fixture.setExecutionHandler(async request => {
+      if (new URL(request.url).pathname.endsWith("/operations/head")) { entered(); await gate; }
+      return null;
+    });
+    const allocating = fixture.post(`/runs/${run.id}/workers`, { role: "implementer", ticket_id: run.manifest.tickets[0].id, idempotency_key: "racing-local-change" });
+    await waiting;
+    const replacement = await fixture.json(path + "/specifications", { content: "A changed local specification" });
+    await fixture.json(path + "/approvals", { kind: "specification", revision: replacement.id, scope: "Reviewed changed greeting" });
+    release();
+    const refused = await allocating;
+    expect(refused.status).toBe(409); expect((await refused.json()).error.code).toBe("issue_pause_required");
+    const detail = await fixture.json(path);
+    expect(detail.workers).toEqual([]);
+    expect(detail.runs[0]).toMatchObject({ issue_pause: { reason: "scope_changed" }, manifest: run.manifest });
+  } finally { release(); fixture.close(); }
 }, 20_000);
 
 test("a known active-scope edit requests controlled pause without rewriting the admitted contract", async () => {

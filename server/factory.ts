@@ -70,6 +70,15 @@ export class FactoryService {
       },
     });
   }
+  /** Persist known local scope changes and their controlled pauses atomically. */
+  private mutateWorkflow(id: string, action: string, body: Record<string, unknown>): unknown {
+    return this.store.db.transaction(() => {
+      const result = this.workflow.mutate(id, action, body);
+      const projectId = this.store.get<Implementation>("implementations", id)?.project_id;
+      if (projectId && ["specifications", "tickets", "approvals"].includes(action)) this.github.reconcileAdmissions(projectId);
+      return result;
+    })();
+  }
   bindAddress(address: string): void { this.address = address; }
   settings(): FactorySettings { return this.store.get<{ id: string; value: FactorySettings }>("settings", "default")?.value ?? { ...initialSettings, skills_path: this.skillsPath }; }
   private activeWork(id: string): boolean {
@@ -140,8 +149,8 @@ export class FactoryService {
       }
       if (request.method !== "POST" || request.headers.get("x-herdr-factory") !== "1") throw new FactoryError("invalid_operation", "Use an explicit scoped tracker operation", 400);
       const body = await this.body(request, action === "artifact" ? Math.ceil(this.settings().max_artifact_bytes / 3) * 4 + 64 * 1024 : 512 * 1024);
-      if (action === "specification" && run.action === "to-spec") return jsonResponse(this.workflow.mutate(run.implementation_id, "specifications", body), 201);
-      if (action === "tickets" && run.action === "to-tickets") return jsonResponse(this.workflow.mutate(run.implementation_id, "tickets", body), 201);
+      if (action === "specification" && run.action === "to-spec") return jsonResponse(this.mutateWorkflow(run.implementation_id, "specifications", body), 201);
+      if (action === "tickets" && run.action === "to-tickets") return jsonResponse(this.mutateWorkflow(run.implementation_id, "tickets", body), 201);
       if (action === "proposal" && run.action === "retro") {
         const scope = (run.manifest as { retrospective: import("../shared/protocol.ts").FactoryRetrospective }).retrospective;
         return jsonResponse(this.retrospectives.propose(scope.id, body), 201);
@@ -571,7 +580,7 @@ export class FactoryService {
       const workflowRoute = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/(specifications|tickets|approvals|order|questions)$/.exec(url.pathname);
       if (workflowRoute && request.method === "POST") {
         const body = await this.body(request);
-        return jsonResponse(this.workflow.mutate(workflowRoute[1]!, workflowRoute[2]!, body), workflowRoute[2] === "order" ? 200 : 201);
+        return jsonResponse(this.mutateWorkflow(workflowRoute[1]!, workflowRoute[2]!, body), workflowRoute[2] === "order" ? 200 : 201);
       }
       const answerRoute = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/questions\/([a-zA-Z0-9-]+)\/answer$/.exec(url.pathname);
       if (answerRoute && request.method === "POST") {

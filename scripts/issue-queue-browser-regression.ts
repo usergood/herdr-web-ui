@@ -11,12 +11,13 @@ import { githubDeliveryResponses } from "./fixtures/github-delivery.ts";
 const fixture = githubQueueFixture();
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 const errors: string[] = [];
+const recordPageError = (error: Error) => { errors.push(error.message); };
 try {
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
     for (const issueSourced of [true, false]) {
       const direct = githubReviewFixture();
       const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });
-      page.setDefaultTimeout(10_000); page.on("pageerror", error => errors.push(error.message));
+      page.setDefaultTimeout(10_000); page.on("pageerror", recordPageError);
       try {
         const { project, route } = await direct.setup();
         const source = issueSourced ? (await direct.json(route + "/sync", {})).sources[0] : null;
@@ -63,7 +64,7 @@ try {
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
     const manual = githubReviewFixture();
     const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });
-    page.setDefaultTimeout(10_000); page.on("pageerror", error => errors.push(error.message));
+    page.setDefaultTimeout(10_000); page.on("pageerror", recordPageError);
     try {
       const { project } = await manual.setup();
       const assignment = await manual.json("/implementations", { title: "Owned manual Assignment", description: "Show a greeting", project_id: project.id });
@@ -111,6 +112,55 @@ try {
     } finally { await page.close(); manual.close(); }
   }
   console.log("PASS: desktop/mobile retired manual implementation acceptance and archive");
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    for (const control of ["Start implementation", "Start factory"]) {
+      const guarded = githubReviewFixture();
+      const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });
+      page.setDefaultTimeout(10_000); page.on("pageerror", recordPageError);
+      try {
+        const { route, readiness } = await guarded.setup();
+        const source = (await guarded.json(route + "/sync", {})).sources[0];
+        const path = `/implementations/${source.implementation_id}`;
+        await guarded.json(route + "/issues/1/approve", { source_revision: source.revision, policy_revision: readiness.revision });
+        await guarded.json(route + "/issues/1/prepare", { source_revision: source.revision });
+        const prepared = (await guarded.json(route + "/sync", {})).sources[0];
+        for (const kind of ["specification", "testing_seams"]) await guarded.json(path + "/approvals", { kind, revision: prepared.planning.specification_id, scope: "Public HTTP and real browser journeys." });
+        await guarded.json(path + "/approvals", { kind: "ticket_graph", revision: prepared.planning.graph_hash, scope: "Approved bounded greeting" });
+        await guarded.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true, max_implementations: 1 });
+        guarded.setNativeIdentity();
+        async function openControl() {
+          const url = guarded.origin + `/#factory/${source.implementation_id}`;
+          if (page.url() === url) await page.reload(); else await page.goto(url);
+          if (control === "Start factory") await page.getByText("Advanced controls", { exact: true }).last().click();
+        }
+        await openControl();
+        const rejected = page.waitForResponse(response => response.url().endsWith(path + "/runs") && response.request().method() === "POST");
+        await page.getByRole("button", { name: control, exact: true }).click();
+        const response = await rejected;
+        assert.equal(response.status(), 409);
+        assert.equal((await response.json()).error.code, "queue_paused");
+        assert.deepEqual(response.request().postDataJSON().issue_scope, { source_id: source.id, source_revision: prepared.revision, graph_hash: prepared.planning.graph_hash });
+        assert.equal((await guarded.json(path)).runs.length, 0);
+        // Outage cannot turn a prepared issue back into manual admission.
+        guarded.save([guarded.issue], true); assert.equal((await guarded.post(route + "/sync", {})).status, 409);
+        await openControl();
+        assert(await page.getByRole("button", { name: control, exact: true }).isDisabled());
+        guarded.save(); await guarded.json(route + "/sync", {});
+        const queue = await guarded.json(route + "/queue");
+        await guarded.json(route + "/queue", { expected_revision: queue.policy.revision, automatic_implementation: false, paused: false, max_implementations: 1 });
+        await openControl();
+        const started = page.waitForResponse(response => response.url().endsWith(path + "/runs") && response.request().method() === "POST");
+        await page.getByRole("button", { name: control, exact: true }).click();
+        const admitted = await started; assert.equal(admitted.status(), 202);
+        const run = await admitted.json();
+        assert.equal(run.manifest.issue_admission.source.id, source.id);
+        assert.equal(run.manifest.issue_admission.source.revision, prepared.revision);
+        assert.equal((await guarded.json(path)).runs.length, 1);
+      } finally { await page.close(); guarded.close(); }
+    }
+  }
+  assert.deepEqual(errors, []);
+  console.log("PASS: desktop/mobile existing implementation controls use guarded issue admission, pause and outage rules");
   const { project, route, readiness } = await fixture.setup();
   const second = { ...fixture.issue, number: 2, node_id: "fictional-2", title: "Later greeting", html_url: "https://github.com/fictional/project/issues/2" };
   const blocked = { ...fixture.issue, number: 3, node_id: "fictional-3", title: "Blocked greeting", labels: [{ name: "blocked" }, { name: "ready-for-agent" }] };
@@ -129,7 +179,7 @@ try {
     await fixture.json(route + "/queue", { expected_revision: queue.policy.revision, automatic_implementation: false, paused: false, max_implementations: 1 });
     await fixture.json(`/implementations/${view.sources[0].implementation_id}/order`, { before_id: view.sources[1].implementation_id });
     const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });
-    page.setDefaultTimeout(10_000); page.on("pageerror", error => errors.push(error.message));
+    page.setDefaultTimeout(10_000); page.on("pageerror", recordPageError);
     const queueResponses: unknown[] = [];
     page.on("response", async response => {
       if (!response.url().endsWith(route + "/queue")) return;
@@ -203,7 +253,7 @@ try {
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
     const admitted = githubQueueFixture(true);
     const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });
-    page.setDefaultTimeout(10_000); page.on("pageerror", error => errors.push(error.message));
+    page.setDefaultTimeout(10_000); page.on("pageerror", recordPageError);
     try {
       const { project, route, readiness } = await admitted.setup();
       const source = (await admitted.json(route + "/sync", {})).sources[0];
@@ -253,7 +303,7 @@ try {
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
     const reviewed = githubReviewFixture();
     const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });
-    page.setDefaultTimeout(10_000); page.on("pageerror", error => errors.push(error.message));
+    page.setDefaultTimeout(10_000); page.on("pageerror", recordPageError);
     try {
       reviewed.save([reviewed.issue, { ...reviewed.issue, number: 2, node_id: "fictional-2", title: "Unrelated reviewed backlog" }]);
       const { run, path, project, route, readiness } = await reviewed.prepare();
@@ -293,7 +343,7 @@ try {
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
     const automatic = githubQueueFixture(true);
     const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });
-    page.setDefaultTimeout(10_000); page.on("pageerror", error => errors.push(error.message));
+    page.setDefaultTimeout(10_000); page.on("pageerror", recordPageError);
     try {
       const { project, account, route } = await automatic.setup();
       const later = { ...automatic.issue, number: 2, node_id: "fictional-auto-2", title: "Queued automatic greeting" };

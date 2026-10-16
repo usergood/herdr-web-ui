@@ -1,3 +1,4 @@
+import { issueImplementationStart } from "../lib/issueStart.ts";
 import { useEffect, useRef, useState } from "react";
 import { MessageSquare, Play, ListChecks } from "lucide-react";
 import type { FactoryAction, FactoryCapabilities, FactoryDetail, FactoryProject, FactoryProvider, FactoryRun } from "../../shared/protocol.ts";
@@ -16,6 +17,7 @@ export function AssignmentActions({ preset, onPresetChange, detail, project, mac
   const active = [...detail.runs].reverse().find(run => ["accepted", "working", "ready", "needs_you", "blocked", "disconnected", "interrupted"].includes(run.condition));
   const unconfirmedWork = active?.action === "work" && ["interrupted", "disconnected"].includes(active.condition);
   const specification = detail.specifications.at(-1);
+  const issueStart = issueImplementationStart(detail);
   const issuePlan = detail.github_sources?.find(source => source.planning?.condition === "prepared" && source.planning.specification_id === specification?.id && source.planning.graph_hash === detail.graph_hash)?.planning;
   const approved = (kind: string, revision: string) => detail.approvals.some(a => a.kind === kind && a.revision === revision);
   const specReady = !!specification && approved("specification", specification.id) && approved("testing_seams", specification.id);
@@ -38,7 +40,9 @@ export function AssignmentActions({ preset, onPresetChange, detail, project, mac
   const nextAction = suggestedAction === active?.action ? null : suggestedAction;
   async function launch(action: FactoryAction) {
       if (!capability?.skills_verified) await factoryRequest(`/machines/${encodeURIComponent(machineId)}/prepare`, {});
-      const run = await factoryRequest<FactoryRun>(prefix + (action === "work" ? "/runs" : "/continue"), { ...(action === "work" ? {} : { run_id: active?.id ?? null, allow_partial_handoff: acknowledgedHandoff === active?.id }), action, execution_preset: preset, idempotency_key: crypto.randomUUID(), expected: { provider, machine_id: machineId, project_id: detail.implementation.project_id, specification_id: specification?.id ?? null, graph_hash: detail.graph_hash } });
+      const issueScope = action === "implement-spec" ? issueStart.scope : undefined;
+      const direct = action === "work" || !!issueScope;
+      const run = await factoryRequest<FactoryRun>(prefix + (direct ? "/runs" : "/continue"), { ...(direct ? {} : { run_id: active?.id ?? null, allow_partial_handoff: acknowledgedHandoff === active?.id }), ...(issueScope ? { issue_scope: issueScope } : {}), action, execution_preset: preset, idempotency_key: crypto.randomUUID(), expected: { provider, machine_id: machineId, project_id: detail.implementation.project_id, specification_id: specification?.id ?? null, graph_hash: detail.graph_hash } });
       if (!live.current) return;
       if (run.condition !== "working" || !run.pane_id) throw new Error(run.waiting_reason ?? t("The agent did not start. Open advanced controls to inspect the retained attempt."));
       onOpenPane(run.machine_id, run.pane_id);
@@ -73,7 +77,7 @@ export function AssignmentActions({ preset, onPresetChange, detail, project, mac
     {active ? <div className="factory-actions">
       {unconfirmedWork && active.waiting_reason && <p role="alert">{active.waiting_reason}</p>}
       <button className="btn btn-primary" disabled={busy || !active.pane_id} onClick={() => active.pane_id && onOpenPane(active.machine_id, active.pane_id)}><MessageSquare />{t("Continue in agent chat")}</button>
-      {active.action !== "implement-spec" && nextAction && <button className="btn btn-primary" disabled={busy || incompleteHandoff || ["disconnected", "interrupted"].includes(active.condition)} onClick={() => void start(nextAction)}>{t("Continue workflow")}</button>}
+      {active.action !== "implement-spec" && nextAction && <button className="btn btn-primary" disabled={busy || incompleteHandoff || nextAction === "implement-spec" && issueStart.blocked || ["disconnected", "interrupted"].includes(active.condition)} onClick={() => void start(nextAction)}>{t("Continue workflow")}</button>}
       {active.action==="implement-spec" ? <button className="btn" disabled={busy||!!active.issue_pause||check?.condition!=="passed"} onClick={()=>void perform(async()=>{await factoryRequest(`/runs/${active.id}/accept`,{head:check?.head??""});})}>{t("Accept reviewed head")}</button> : active.action === "work" ? <button className="btn" disabled={busy} onClick={() => void perform(async () => { if(active.action==="work"&&!unconfirmedWork)await factoryRequest(prefix+"/complete-work",{run_id:active.id});else await factoryRequest(`/runs/${active.id}/stop`, { summary: unconfirmedWork ? "Owner stopped an unconfirmed work attempt; retained work remains available" : "Owner finished this workflow step; retained work remains available" }); })}>{unconfirmedWork?t("Stop this attempt"):active.action==="work"?t("Mark work done"):t("Finish this step")}</button> : null}
       {active.action==="implement-spec" && detail.review_evidence.filter(r=>r.run_id===active.id).map(r=><details key={r.id}><summary>{r.axis} · {r.outcome}</summary><pre>{r.content}</pre></details>)}
       <p className="field-hint">{unconfirmedWork?t("Stopping keeps the worktree. You can start a new attempt afterwards."):t("Review and continue from this chat. Finished steps keep their history.")}</p>
@@ -82,7 +86,7 @@ export function AssignmentActions({ preset, onPresetChange, detail, project, mac
       {!specification && <button className="btn" disabled={disabled} onClick={() => void start("grill-with-docs")}><ListChecks />{t("Plan implementation")}</button>}
       {!specification && discussed && understood && <button className="btn" disabled={disabled || incompleteHandoff} onClick={() => void start("to-spec")}>{t("Create specification")}</button>}
       {specReady && !detail.tickets.length && <button className="btn" disabled={disabled || incompleteHandoff} onClick={() => void start("to-tickets")}>{t("Plan tickets")}</button>}
-      {detail.tickets.length > 0 && approved("ticket_graph", detail.graph_hash) && <button className="btn" disabled={disabled || incompleteHandoff} onClick={() => void start("implement-spec")}>{t("Start implementation")}</button>}
+      {detail.tickets.length > 0 && approved("ticket_graph", detail.graph_hash) && <button className="btn" disabled={disabled || incompleteHandoff || issueStart.blocked} onClick={() => void start("implement-spec")}>{t("Start implementation")}</button>}
     </div>}
     {!active && !specification && <p className="field-hint">{t("Plan implementation starts Grill with docs: discuss the idea, approve a specification, then plan Tickets.")}</p>}
     <p className="field-hint">{t("New workspaces use the latest commit. Local changes stay in the original folder.")}</p>

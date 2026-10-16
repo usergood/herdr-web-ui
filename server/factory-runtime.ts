@@ -183,6 +183,9 @@ export class FactoryRuntime {
     };
     validateRetry();
     const retryRunId = typeof body.retry_of === "string" ? body.retry_of : undefined;
+    // A prepared issue remains governed by admission even after its current evidence
+    // becomes stale or its plan needs owner decisions. Never fall back to manual Start.
+    if (action === "implement-spec" && body.issue_scope === undefined && this.store.list<import("../shared/issue-planning.ts").IssuePlanning>("github_plan_versions", id).some(plan => plan.specification_id && plan.graph_hash)) throw new FactoryError("issue_scope_required", "Select the displayed prepared issue scope before starting implementation", 409);
     const issueAdmission = body.issue_scope === undefined ? null : this.issueAdmission(id, body.issue_scope, retryRunId);
     const validateIssue = () => {
       if (issueAdmission && hash(JSON.stringify(this.issueAdmission(id, body.issue_scope, retryRunId))) !== hash(JSON.stringify(issueAdmission))) throw new FactoryError("issue_changed", "The issue admission evidence changed; review it before starting", 409);
