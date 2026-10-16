@@ -38,6 +38,7 @@ function capture(title: string, description: string): Implementation {
 if (!details.size) capture("Explore release notes", "A fictional Inbox idea: keep release research and decisions in one place before selecting a Project.");
 
 export async function factoryDemo(url: URL, method: string, body: Record<string, unknown>, machines: Machine[] = []): Promise<Response> {
+  if (method === "POST" && /\/comments\/[^/]+\/(edit|delete)$/.test(url.pathname)) return failure("demo_unavailable", "Editing review drafts requires a captured repository review on a real Machine");
   const path = url.pathname;
   if (/^\/api\/factory-host\/runs\/[^/]+\/operations\/publish$/.test(path)) return failure("demo_unavailable", "PR publication requires an owned execution Machine and explicit Project destination");
   if (/^\/api\/factory\/implementations\/[^/]+\/human-review\/approve$/.test(path)) return failure("demo_unavailable", "Merge approval requires a real checked candidate, owned execution Machine and verified GitHub account");

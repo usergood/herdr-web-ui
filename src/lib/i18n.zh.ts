@@ -1440,4 +1440,12 @@ export const ZH: Record<string, string> = {
   "Delivery milestone": "交付里程碑",
   "Verified merge": "已验证的合并",
   "Containing release": "包含更改的发布",
+  "Select range end": "选择范围末尾",
+  "Stale anchor: the candidate changed. Original lines are retained.": "锚点已过期：候选版本已更改。原始行将保留。",
+  "Original anchor": "原始锚点",
+  "Edit draft": "编辑草稿",
+  "Remove draft": "删除草稿",
+  "Draft comments": "评论草稿",
+  "Submitted comments": "已提交的评论",
+  "Saved drafts do not start repairs or authorize a merge.": "保存草稿不会启动修复或授权合并。",
 };

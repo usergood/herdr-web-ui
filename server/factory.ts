@@ -599,6 +599,8 @@ export class FactoryService {
         return jsonResponse(reviewRoute[2] === "snapshots" ? await this.review.capture(reviewRoute[1]!, body) : this.review.comment(reviewRoute[1]!, body), 201);
       }
       const batchRoute = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/request-changes$/.exec(url.pathname);
+      const draftRoute = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/comments\/([a-zA-Z0-9-]+)\/(edit|delete)$/.exec(url.pathname);
+      if (draftRoute && request.method === "POST") return jsonResponse(this.review.draft(draftRoute[1]!, draftRoute[2]!, draftRoute[3] as "edit" | "delete", await this.body(request)));
       const resolution = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/comments\/([a-zA-Z0-9-]+)\/resolve$/.exec(url.pathname);
       if (resolution && request.method === "POST") return jsonResponse(await this.pipeline.resolveFinding(resolution[1]!, resolution[2]!, await this.body(request)));
       if (batchRoute && request.method === "POST") return jsonResponse(await this.review.requestChanges(batchRoute[1]!, await this.body(request), (run, text) => this.runtime.send(run, text, request.signal)));

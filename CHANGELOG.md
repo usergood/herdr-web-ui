@@ -9,6 +9,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 
 ### Fixed
 - Approve checked Human Review candidates with an explicit, repeat-safe merge control, preserve stale/protected/denied outcomes, and verify merge or containing-release delivery before Done.
+- Draft line and range comments directly in Human Review on desktop and mobile, retain saved drafts across reloads, and edit/remove drafts while preserving original revision anchors and visible staleness.
 - Hand off checked PRs to Human Review with captured file navigation, bounded Git diffs and an assistant discussion that uses normal capacity only while executing.
 - Permanently delete linked GitHub issues with safe pending recovery, and prevent deleted Assignments from returning through stale issue sync or retained PR automation.
 - Purge deleted Assignment records and exclusive blobs from app-managed backups and recovery copies while preserving shared Project evidence and unrelated recovery data.

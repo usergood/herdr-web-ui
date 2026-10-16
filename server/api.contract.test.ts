@@ -761,6 +761,12 @@ describe("factory records", () => {
       const detail = await fetch(`http://localhost:${app.port}/api/factory/${prefix}`).then((response) => response.json());
       expect(detail.comments.find((comment: { id: string }) => comment.id === first.id).status).toBe("submitted");
       expect(detail.comments.find((comment: { id: string }) => comment.id === second.id).status).toBe("draft");
+      expect((await request(`${prefix}/comments/${first.id}/edit`, { content: "Rewrite submitted feedback" })).status).toBe(409);
+      expect((await request(`${prefix}/comments/${first.id}/delete`, {})).status).toBe(409);
+      const edited = await request(`${prefix}/comments/${second.id}/edit`, { content: "Updated draft" });
+      expect(edited.status).toBe(200);
+      expect(await edited.json()).toMatchObject({ id: second.id, snapshot_id: snapshot.id, content: "Updated draft", status: "draft" });
+      expect((await request(`${prefix}/comments/${second.id}/delete`, {})).status).toBe(200);
     } finally { if (workspaceId) await workspaceClose(workspaceId); app.stop(); rmSync(state, { recursive: true, force: true }); }
   });
   it("retains generated remote research centrally so it remains readable while the host is offline", async () => {

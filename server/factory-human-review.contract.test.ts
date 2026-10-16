@@ -62,7 +62,7 @@ describe("Human Review through authenticated HTTP", () => {
       const { prefix, detail } = await published(f);
       const d = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
       await f.api(`${prefix}/human-review/messages`, { review_id: d.human_reviews[0].id, content: "Discuss the result", idempotency_key: "question-discussion" });
-      const started = await until(detail, d => d.runs.some((r: any) => r.conversation_kind === "human_review"));
+      const started = await until(detail, d => d.runs.some((r: any) => r.conversation_kind === "human_review" && r.condition === "working"));
       const assistant = started.runs.find((r: any) => r.conversation_kind === "human_review");
       const question = await f.agent(assistant.id, "question", { question: "Which changed file should we discuss?" }).then(r => r.json());
       f.runs.get(assistant.id)!.condition = "ready";
@@ -83,7 +83,7 @@ describe("Human Review through authenticated HTTP", () => {
       const { prefix, detail } = await published(f);
       const d = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
       await f.api(`${prefix}/human-review/messages`, { review_id: d.human_reviews[0].id, content: "Discuss the result", idempotency_key: "discussion" });
-      const started = await until(detail, d => d.runs.some((r: any) => r.conversation_kind === "human_review"));
+      const started = await until(detail, d => d.runs.some((r: any) => r.conversation_kind === "human_review" && r.condition === "working"));
       const assistant = started.runs.find((r: any) => r.conversation_kind === "human_review");
       const native = f.runs.get(assistant.id)!; native.workspace_id = "owned-human-review"; native.pane_id = "owned-human-review:p1"; native.condition = "ready";
       await f.api(`/runs/${assistant.id}/reconcile`, {});
@@ -100,7 +100,7 @@ describe("Human Review through authenticated HTTP", () => {
       const ready = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
       const review = ready.human_reviews[0];
       await f.api(`${prefix}/human-review/messages`, { review_id: review.id, content: "First context", idempotency_key: "first-context" });
-      const started = await until(detail, d => d.runs.some((r: any) => r.conversation_kind === "human_review"));
+      const started = await until(detail, d => d.runs.some((r: any) => r.conversation_kind === "human_review" && r.condition === "working"));
       const first = started.runs.find((r: any) => r.conversation_kind === "human_review");
       f.setTranscript({ source_id: "first-native-context", version: "one", cursor: null, turns: [{ role: "assistant", ts: new Date().toISOString(), parts: [{ kind: "text", text: "Retain this review explanation." }] }] });
       f.runs.get(first.id)!.condition = "ready";
@@ -159,7 +159,7 @@ describe("Human Review through authenticated HTTP", () => {
       const ready = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
       const reviewId = ready.human_reviews[0].id;
       await f.api(`${prefix}/human-review/messages`, { review_id: reviewId, content: "First discussion", idempotency_key: "first" });
-      const started = await until(detail, d => d.runs.some((r: any) => r.conversation_kind === "human_review"));
+      const started = await until(detail, d => d.runs.some((r: any) => r.conversation_kind === "human_review" && r.condition === "working"));
       const assistant = started.runs.find((r: any) => r.conversation_kind === "human_review");
       f.runs.get(assistant.id)!.condition = "ready";
       await f.api(`/runs/${assistant.id}/reconcile`, {});
@@ -183,7 +183,7 @@ describe("Human Review through authenticated HTTP", () => {
       const { prefix, detail } = await published(f);
       const d = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
       await f.api(`${prefix}/human-review/messages`, { review_id: d.human_reviews[0].id, content: "Discuss the captured result", idempotency_key: "discuss" });
-      const next = await until(detail, d => d.runs.some((r: any) => r.conversation_kind === "human_review"));
+      const next = await until(detail, d => d.runs.some((r: any) => r.conversation_kind === "human_review" && r.condition === "working"));
       const assistant = next.runs.find((r: any) => r.conversation_kind === "human_review");
       f.runs.get(assistant.id)!.condition = "ready";
       await f.api(`/runs/${assistant.id}/reconcile`, {});
@@ -233,7 +233,7 @@ describe("Human Review through authenticated HTTP", () => {
       expect((await f.api(`${prefix}/human-review/messages`, body)).status).toBe(202);
       f.restart();
       f.runs.get(f.launches.at(-1)!)!.condition = "ready";
-      const started = await until(detail, d => d.runs.some((r: any) => r.conversation_kind === "human_review"));
+      const started = await until(detail, d => d.runs.some((r: any) => r.conversation_kind === "human_review" && r.condition === "working"));
       const assistant = started.runs.find((r: any) => r.conversation_kind === "human_review");
       expect(assistant).toMatchObject({ action: "work", capacity_pool: "normal", base: d.human_reviews[0].head, checkout: run.checkout });
       expect(started.runs.filter((r: any) => r.action === "implement-spec")).toHaveLength(1);

@@ -109,10 +109,25 @@ export class FactoryReview {
     const candidates = snapshot.files.filter((file) => file.path === body.path && (body.change === undefined || body.change === file.status));
     if (candidates.length !== 1) throw new FactoryError("ambiguous_anchor", "Select the exact staged, unstaged or branch change");
     const file = candidates[0]!;
+    if (file.binary || file.oversized) throw new FactoryError("invalid_anchor", "This capture has no reviewable text lines");
     const lines = linesInDiff(file.diff, body.side as "old" | "new");
     for (let line = Number(body.line_start); line <= Number(body.line_end); line++) if (!lines.has(line)) throw new FactoryError("invalid_anchor", "This line is not present on the selected side of the captured hunk");
-    const comment: ReviewComment = { ...this.store.record(), implementation_id: id, run_id: snapshot.run_id, snapshot_id: snapshot.id, path: file.path, change: file.status, side: body.side as "old" | "new", line_start: body.line_start as number, line_end: body.line_end as number, context: file.diff, content: body.content.trim(), status: "draft", batch_id: null };
+    const latest = this.store.list<ReviewSnapshot>("snapshots", id).filter(s => s.run_id === snapshot.run_id && s.mode === snapshot.mode).at(-1);
+    const comment: ReviewComment = { ...this.store.record(), implementation_id: id, run_id: snapshot.run_id, snapshot_id: snapshot.id, path: file.path, change: file.status, side: body.side as "old" | "new", line_start: body.line_start as number, line_end: body.line_end as number, context: file.diff, content: body.content.trim(), status: latest && latest.hash !== snapshot.hash ? "outdated" : "draft", batch_id: null };
     this.store.db.transaction(() => { this.store.put("comments", comment, id); this.store.event(id, "review_drafted", { comment_id: comment.id, snapshot_id: snapshot.id }); })(); return comment;
+  }
+  draft(id: string, commentId: string, action: "edit" | "delete", body: Record<string, unknown>): ReviewComment | { id: string } {
+    const comment = this.store.get<ReviewComment>("comments", commentId);
+    if (!comment || comment.implementation_id !== id) throw new FactoryError("not_found", "Review comment not found", 404);
+    if (comment.batch_id !== null || comment.resolution || !["draft", "outdated"].includes(comment.status)) throw new FactoryError("comment_submitted", "Only unsent drafts can be edited or removed", 409);
+    if (action === "edit" && (typeof body.content !== "string" || !body.content.trim() || body.content.length > 10_000)) throw new FactoryError("invalid_comment", "Enter a bounded review comment");
+    const next = { ...comment, content: action === "edit" ? (body.content as string).trim() : comment.content, updated_at: new Date().toISOString() };
+    this.store.db.transaction(() => {
+      if (action === "delete") this.store.remove("comments", commentId);
+      else this.store.put("comments", next, id);
+      this.store.event(id, action === "delete" ? "review_draft_removed" : "review_draft_edited", { comment_id: commentId, snapshot_id: comment.snapshot_id });
+    })();
+    return action === "delete" ? { id: commentId } : next;
   }
   async requestChanges(id: string, body: Record<string, unknown>, send: (run: FactoryRun, text: string) => Promise<void>): Promise<{ id: string; status: string }> {
     if (typeof body.idempotency_key !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.idempotency_key) || typeof body.run_id !== "string" || typeof body.snapshot_id !== "string" || !Array.isArray(body.comment_ids) || !body.comment_ids.length || body.comment_ids.length > 100 || body.comment_ids.some((value: unknown) => typeof value !== "string")) throw new FactoryError("invalid_batch", "Select a Run, snapshot and a bounded finding batch");

@@ -11,4 +11,9 @@
 .human-review-diff { min-width: 0; }
 .human-review-diff h5 { overflow-wrap: anywhere; }
 .human-review-diff pre { white-space: pre; max-height: 36rem; max-width: 100%; overflow: auto; padding: var(--space-2); border: var(--hairline) solid var(--border); }
+.human-review-line { display: flex; align-items: baseline; min-width: max-content; }
+.human-review-line-number { flex: none; min-width: var(--touch-target); min-height: var(--touch-target); color: var(--text-dim); background: var(--bg-panel); border: var(--hairline) solid var(--border); font: inherit; cursor: pointer; }
+.human-review-line-number[aria-pressed="true"] { color: var(--text-strong); background: var(--bg-elevated); outline: var(--ring); }
+.human-review-comment p { overflow-wrap: anywhere; white-space: pre-wrap; }
+.human-review-comment pre { overflow: auto; max-height: 20rem; }
 @media (max-width: 640px) { .human-review-layout { grid-template-columns: minmax(0, 1fr); } .human-review-changes { grid-template-columns: minmax(0, 1fr); } .human-review-changes > nav { max-height: 14rem; } }

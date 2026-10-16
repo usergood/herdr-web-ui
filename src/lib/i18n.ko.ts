@@ -1436,4 +1436,12 @@ export const KO: Record<string, string> = {
   "Delivery milestone": "완료 기준",
   "Verified merge": "확인된 병합",
   "Containing release": "변경 사항을 포함하는 릴리스",
+  "Select range end": "범위 끝 선택",
+  "Stale anchor: the candidate changed. Original lines are retained.": "오래된 위치: 후보가 변경되었습니다. 원래 줄은 보존됩니다.",
+  "Original anchor": "원래 위치",
+  "Edit draft": "초안 편집",
+  "Remove draft": "초안 삭제",
+  "Draft comments": "댓글 초안",
+  "Submitted comments": "제출된 댓글",
+  "Saved drafts do not start repairs or authorize a merge.": "저장된 초안은 수정을 시작하거나 병합을 승인하지 않습니다.",
 };
