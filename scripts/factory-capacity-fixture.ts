@@ -112,7 +112,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean } = {
       }
       if (action === "operations/publish") {
         if (denyPublication) return Response.json({ error: { code: "publication_unconfigured", message: "Unsafe remote diagnostic must not be copied" } }, { status: 409 });
-        if (!publications.has(run.id)) publications.set(run.id, { run_id: run.id, head: body.head, repository: "fictional/project", base_branch: "main", branch: run.branch, number: 27, url: "https://github.com/fictional/project/pull/27" });
+        if (!publications.has(run.id) || publications.get(run.id).head !== body.head) publications.set(run.id, { run_id: run.id, head: body.head, repository: "fictional/project", base_branch: "main", branch: run.branch, number: 27, url: "https://github.com/fictional/project/pull/27" });
         if (losePublication) { losePublication = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost publication acknowledgment" } }, { status: 503 }); }
         return Response.json(publications.get(run.id));
       }

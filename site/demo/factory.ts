@@ -42,6 +42,7 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
   const path = url.pathname;
   if (/^\/api\/factory-host\/runs\/[^/]+\/operations\/publish$/.test(path)) return failure("demo_unavailable", "PR publication requires an owned execution Machine and explicit Project destination");
   if (/^\/api\/factory\/implementations\/[^/]+\/human-review\/messages$/.test(path)) return failure("demo_unavailable", "Human Review discussion requires a real execution Machine; retained fictional reviews remain readable");
+  if (/^\/api\/factory\/implementations\/[^/]+\/human-review\/submit$/.test(path)) return failure("demo_unavailable", "Feedback repairs require a real execution Machine; Decline never authorizes a merge");
   const suspension = /^\/api\/factory\/implementations\/([^/]+)\/(pause|resume)$/.exec(path);
   if (suspension && method === "POST") {
     const detail = details.get(suspension[1]!);

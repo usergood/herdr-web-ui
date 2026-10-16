@@ -170,7 +170,7 @@ export class FactoryExecution {
         const policy = (run.manifest as { project: FactoryProject }).project.pull_request;
         if (!policy) { this.store.put("automatic_review", { ...state, condition: "waiting", reason: "Configure a PR repository and target branch before accepting the Specification for publication" }, run.implementation_id); return; }
         this.store.put("automatic_review", { ...state, condition: "publishing", reason: null }, run.implementation_id);
-        const result = await this.runtime.operation<import("../shared/factory.ts").FactoryPullRequest>(run, "publish", { head: head.head, workspace_hash: check.workspace_hash, check_id: check.id, evidence_ids: state.evidence_ids, reports: reports.map(r => ({ worker_id: r.worker_id, source_id: r.source_id })) } satisfies import("../shared/factory.ts").FactoryPublicationRequest);
+        const result = await this.runtime.operation<import("../shared/factory.ts").FactoryPullRequest>(run, "publish", { ...(state.human_batch_id ? { previous_head: this.store.get<import("../shared/factory.ts").FactoryPullRequest>("pull_requests", run.id)?.head } : {}), head: head.head, workspace_hash: check.workspace_hash, check_id: check.id, evidence_ids: state.evidence_ids, reports: reports.map(r => ({ worker_id: r.worker_id, source_id: r.source_id })) } satisfies import("../shared/factory.ts").FactoryPublicationRequest);
         if (!this.live(plan)) return;
         if (result.run_id !== run.id || result.head !== head.head || result.repository !== policy.repository || result.base_branch !== policy.base_branch || result.branch !== run.branch || !Number.isSafeInteger(result.number) || result.number < 1 || result.url !== `https://github.com/${policy.repository}/pull/${result.number}`) throw new FactoryError("publication_changed", "The PR does not match the authorized checked candidate and target", 409);
         const current = await this.runtime.operation<{ head: string; workspace_hash: string }>(run, "head");
@@ -179,6 +179,12 @@ export class FactoryExecution {
         this.store.db.transaction(() => {
           const pr = { ...this.store.record(), ...result, id: run.id, check_id: check.id, evidence_ids: state.evidence_ids };
           this.store.put("pull_requests", pr, run.implementation_id);
+          if (state.human_batch_id) {
+            const batch = this.store.get<import("../shared/factory.ts").FactoryHumanFeedbackBatch>("review_batches", state.human_batch_id)!;
+            const resolution = { head: state.head, check_id: state.check_id, evidence_ids: state.evidence_ids };
+            this.store.put("review_batches", { ...batch, resolution }, run.implementation_id);
+            for (const comment of this.store.list<import("../shared/factory.ts").ReviewComment>("comments", run.implementation_id).filter(c => c.batch_id === batch.id)) this.store.put("comments", { ...comment, status: "resolved", resolution: { ...resolution, summary: "Feedback repaired and independently reviewed; awaiting owner approval" } }, run.implementation_id);
+          }
           this.store.put("automatic_review", { ...state, condition: "published", reason: null, attempts: 0 }, run.implementation_id);
           const assignment = this.store.get<Implementation>("implementations", run.implementation_id)!;
           this.store.put("implementations", { ...assignment, stage: "review", outcome: "pr_open" });
@@ -197,12 +203,18 @@ export class FactoryExecution {
   private async repair(plan: FactoryExecutionPlan, state: FactoryAutomaticReview): Promise<void> {
     const run = this.live(plan);
     if (!run || !state.batch_id) return;
-    const batch = this.store.get<import("../shared/factory.ts").FactoryAutomaticReviewBatch>("automatic_review_batches", state.batch_id)!;
+    const batch = this.store.get<import("../shared/factory.ts").FactoryAutomaticReviewBatch>("automatic_review_batches", state.batch_id) ?? this.store.get<import("../shared/factory.ts").FactoryHumanFeedbackBatch>("review_batches", state.batch_id)!;
     for (const ticketId of batch.ticket_ids) {
       let worker = this.store.list<FactoryWorker>("workers", run.id).find(w => w.rework_batch_id === batch.id && w.ticket_id === ticketId);
       if (worker?.condition === "completed") continue;
+      if (batch.origin === "human" && !worker?.integration_pending) {
+        const integrated = this.store.list<FactoryWorker>("workers", run.id).filter(w => w.rework_batch_id === batch.id && w.condition === "completed").at(-1);
+        const current = await this.runtime.operation<{ head: string }>(run, "head");
+        if (!this.live(plan)) return;
+        if (current.head !== (integrated?.head ?? batch.head)) throw new FactoryError("review_stale", "The candidate changed outside the submitted Human Review repair lineage", 409);
+      }
       if (!worker) {
-        const request = await this.pipeline.requestWorker(run.id, { role: "implementer", ticket_id: ticketId, review_batch_id: batch.id, idempotency_key: `automatic-fix-${state.round}-${ticketId}`, shared_paths: (run.manifest as { project: FactoryProject }).project.shared_paths ?? [] });
+        const request = await this.pipeline.requestWorker(run.id, { role: "implementer", ticket_id: ticketId, review_batch_id: batch.id, idempotency_key: `fix-${batch.id}-${ticketId}`, shared_paths: (run.manifest as { project: FactoryProject }).project.shared_paths ?? [] });
         if (this.live(plan) && "reason" in request) this.store.put("automatic_review", { ...state, condition: "waiting", reason: request.reason }, run.implementation_id);
         return;
       }

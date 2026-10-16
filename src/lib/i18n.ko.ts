@@ -1435,4 +1435,8 @@ export const KO: Record<string, string> = {
   "Draft comments": "댓글 초안",
   "Submitted comments": "제출된 댓글",
   "Saved drafts do not start repairs or authorize a merge.": "저장된 초안은 수정을 시작하거나 병합을 승인하지 않습니다.",
+  "Decline": "거절",
+  "Decline submits all saved drafts for repair and grants no merge authority.": "거절하면 저장된 모든 초안이 수정을 위해 제출되며 병합 권한은 부여되지 않습니다.",
+  "Fixes are running. A later approval is required to merge.": "수정이 진행 중입니다. 병합하려면 나중에 승인이 필요합니다.",
+  "Fixes passed checks and independent reviews. Awaiting your approval.": "수정 사항이 검사와 독립 검토를 통과했습니다. 승인을 기다리고 있습니다.",
 };

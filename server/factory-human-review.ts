@@ -1,5 +1,5 @@
 import type { FactoryChat, FactoryMessage, FactoryHumanReview as HumanReview, FactoryPullRequest, FactoryRun, Implementation } from "../shared/factory.ts";
-import { FactoryError } from "./factory-host.ts";
+import { FactoryError, hash } from "./factory-host.ts";
 import type { FactoryReview } from "./factory-review.ts";
 import type { FactoryRuntime } from "./factory-runtime.ts";
 import type { FactoryStore } from "./factory-store.ts";
@@ -12,6 +12,40 @@ export class FactoryHumanReview {
       if (message) store.put("human_review_messages", { ...request, condition: "uncertain", reason: "Discussion delivery was not confirmed; inspect the retained native conversation before sending again" }, message.implementation_id);
     }
     runtime.queue.discuss = (id, body) => this.deliver(id, String(body.message_id));
+  }
+  async submit(id: string, body: Record<string, unknown>): Promise<import("../shared/factory.ts").FactoryHumanFeedbackBatch> {
+    this.runtime.assertExecuting(id);
+    if (body.disposition !== "decline" || typeof body.review_id !== "string" || typeof body.snapshot_id !== "string" || typeof body.head !== "string" || typeof body.idempotency_key !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.idempotency_key) || !Array.isArray(body.comment_ids) || body.comment_ids.length > 100 || body.comment_ids.some(c => typeof c !== "string") || new Set(body.comment_ids).size !== body.comment_ids.length) throw new FactoryError("invalid_review_submission", "Select Decline, its exact candidate and the complete draft batch");
+    const signature = hash(JSON.stringify({ review_id: body.review_id, snapshot_id: body.snapshot_id, head: body.head, disposition: body.disposition, comment_ids: [...body.comment_ids].sort() }));
+    const receipt = () => {
+      const previous = this.store.list<import("../shared/factory.ts").FactoryHumanFeedbackBatch>("review_batches", id).find(b => b.key === body.idempotency_key);
+      if (previous && previous.signature !== signature) throw new FactoryError("batch_conflict", "This submission identity belongs to different feedback", 409);
+      return previous;
+    };
+    const previous = receipt(); if (previous) return previous;
+    const entry = this.store.get<HumanReview>("human_reviews", body.review_id);
+    if (!entry || entry.implementation_id !== id || entry.condition !== "ready" || entry.head !== body.head || entry.snapshot_id !== body.snapshot_id) throw new FactoryError("review_stale", "Submit the exact current Human Review candidate; original anchors are retained", 409);
+    const run = this.store.get<FactoryRun>("runs", entry.run_id)!;
+    const snapshot = this.store.get<import("../shared/factory.ts").ReviewSnapshot>("snapshots", entry.snapshot_id!)!;
+    const current = await this.review.capture(id, { run_id: run.id, mode: "branch" });
+    if (current.hash !== snapshot.hash || current.head !== entry.head) throw new FactoryError("review_stale", "The candidate changed after capture; reconcile the retained anchors", 409);
+    return this.store.db.transaction(() => {
+      this.runtime.assertExecuting(id);
+      const raced = receipt(); if (raced) return raced;
+      const live = this.store.get<HumanReview>("human_reviews", entry.id)!;
+      const state = this.store.get<import("../shared/factory.ts").FactoryAutomaticReview>("automatic_review", run.id);
+      const plan = this.store.get<import("../shared/factory.ts").FactoryExecutionPlan>("execution_plans", run.id);
+      if (live.condition !== "ready" || live.snapshot_id !== entry.snapshot_id || live.head !== entry.head || state?.condition !== "published" || state.head !== entry.head || !plan) throw new FactoryError("review_stale", "The current review is already submitted or changed", 409);
+      const comments = this.store.list<import("../shared/factory.ts").ReviewComment>("comments", id).filter(c => c.batch_id === null && !c.resolution && ["draft", "outdated"].includes(c.status));
+      if (comments.length !== (body.comment_ids as string[]).length || comments.some(c => !(body.comment_ids as string[]).includes(c.id) || c.snapshot_id !== entry.snapshot_id || c.status !== "draft")) throw new FactoryError("draft_batch_changed", "Submit every current draft from this exact snapshot; reconcile stale drafts first", 409);
+      const batch: import("../shared/factory.ts").FactoryHumanFeedbackBatch = { ...this.store.record(), implementation_id: id, run_id: run.id, review_id: entry.id, snapshot_id: snapshot.id, head: entry.head, origin: "human", disposition: "decline", merge_authorized: false, key: body.idempotency_key as string, signature, status: "sent", comment_ids: comments.map(c => c.id), ticket_ids: plan.tickets.map(t => t.id) };
+      this.store.put("review_batches", batch, id);
+      for (const c of comments) this.store.put("comments", { ...c, status: "submitted", batch_id: batch.id }, id);
+      this.store.put("human_reviews", { ...live, condition: "repairing", reason: null }, id);
+      this.store.put("automatic_review", { ...state, condition: "repairing", human_batch_id: batch.id, batch_id: batch.id, generation: (state.generation ?? 0) + 1, round: 0, evidence_ids: [], attempts: 0, next_attempt_at: 0, reason: null }, id);
+      this.store.event(id, "human_review_declined", { batch_id: batch.id, snapshot_id: snapshot.id, head: entry.head, comment_ids: batch.comment_ids, merge_authorized: false });
+      return batch;
+    }).immediate();
   }
   async discuss(id: string, body: Record<string, unknown>, origin: string): Promise<FactoryMessage> {
     this.runtime.assertExecuting(id);
@@ -39,6 +73,7 @@ export class FactoryHumanReview {
     const request = this.store.get<{ id: string; review_id: string; condition: string; origin: string }>("human_review_messages", messageId);
     if (!request || request.condition !== "queued") return;
     const entry = this.store.get<HumanReview>("human_reviews", request.review_id)!;
+    if (entry.condition !== "ready") throw new FactoryError("continuation_waiting", "Human Review discussion yields while submitted fixes run", 409);
     const parent = this.store.get<FactoryRun>("runs", id)!;
     const message = this.store.get<FactoryMessage>("messages", messageId)!;
     this.runtime.assertExecuting(parent.implementation_id);
@@ -71,7 +106,7 @@ export class FactoryHumanReview {
       if (snapshot.head !== pr.head) throw new FactoryError("review_stale", "The captured candidate differs from the checked PR head", 409);
       this.runtime.assertExecuting(run.implementation_id);
       this.store.db.transaction(() => {
-        entry = { ...entry, snapshot_id: snapshot.id, condition: "ready", reason: null };
+        entry = { ...entry, head: pr.head, snapshot_id: snapshot.id, condition: "ready", reason: null };
         this.store.put("human_reviews", entry, run.implementation_id);
         this.store.event(run.implementation_id, "human_review_handoff", { run_id: run.id, snapshot_id: snapshot.id, head: pr.head, conversation_id: entry.conversation_id });
       }).immediate();

@@ -8,6 +8,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 ## [Unreleased]
 
 ### Fixed
+- Submit Human Review Decline with all saved comments, dispatch fresh repairs and independent validation, and return the updated PR to the same conversation awaiting explicit approval.
 - Draft line and range comments directly in Human Review on desktop and mobile, retain saved drafts across reloads, and edit/remove drafts while preserving original revision anchors and visible staleness.
 - Hand off checked PRs to Human Review with captured file navigation, bounded Git diffs and an assistant discussion that uses normal capacity only while executing.
 - Permanently delete linked GitHub issues with safe pending recovery, and prevent deleted Assignments from returning through stale issue sync or retained PR automation.

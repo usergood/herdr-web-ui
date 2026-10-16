@@ -83,7 +83,7 @@ export interface FactoryAutomaticExecution extends FactoryRecord {
   reason: string | null; attempts: number; next_attempt_at: number;
 }
 export interface FactoryAutomaticReview extends FactoryRecord {
-  context_revision?: string; generation?: number;
+  context_revision?: string; generation?: number; human_batch_id?: string;
   run_id: string; head: string; round: number;
   condition: "reviewing" | "repairing" | "publishing" | "published" | "waiting" | "blocked";
   reason: string | null; attempts: number; next_attempt_at: number;
@@ -100,6 +100,7 @@ export interface FactoryPullRequest extends FactoryRecord {
   number: number; url: string; check_id: string; evidence_ids: string[];
 }
 export interface FactoryPublicationRequest {
+  previous_head?: string;
   head: string; workspace_hash: string; check_id: string; evidence_ids: string[];
   reports: { worker_id: string; source_id: string }[];
 }
@@ -178,6 +179,12 @@ export interface FactoryCapacity {
   waiting: FactoryCapacityWait[];
 }
 export interface FactoryOverview { capacity: FactoryCapacity }
+export interface FactoryHumanFeedbackBatch extends FactoryRecord {
+  implementation_id: string; run_id: string; review_id: string; snapshot_id: string; head: string;
+  origin: "human"; disposition: "decline"; merge_authorized: false;
+  key: string; signature: string; status: "sent"; comment_ids: string[]; ticket_ids: string[];
+  resolution?: { head: string; check_id: string; evidence_ids: string[] };
+}
 export interface FactoryHumanReviewDelivery {
   id: string; review_id: string;
   condition: "queued" | "sending" | "sent" | "uncertain"; reason: string | null;
@@ -185,9 +192,10 @@ export interface FactoryHumanReviewDelivery {
 export interface FactoryHumanReview extends FactoryRecord {
   implementation_id: string; run_id: string; conversation_id: string;
   head: string; snapshot_id: string | null; assistant_run_id: string | null;
-  condition: "capturing" | "ready" | "waiting" | "blocked"; reason: string | null;
+  condition: "capturing" | "ready" | "repairing" | "waiting" | "blocked"; reason: string | null;
 }
 export interface FactoryDetail {
+  human_feedback_batches?: FactoryHumanFeedbackBatch[];
   human_reviews?: FactoryHumanReview[];
   human_review_deliveries?: FactoryHumanReviewDelivery[];
   automatic_review_batches?: FactoryAutomaticReviewBatch[];
