@@ -10,7 +10,7 @@ import { FactoryWorkflow } from "./factory-workflow.ts";
 const owns = (condition: string): boolean => !["completed", "cancelled", "failed"].includes(condition);
 /** Admission reservations cover all native contexts and builds, including uncertain remote work. */
 export class FactoryPipeline {
-  constructor(private readonly store: FactoryStore, private readonly runtime: FactoryRuntime, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly retainBeforeStop: (id: string) => Promise<void>) {
+  constructor(private readonly store: FactoryStore, private readonly runtime: FactoryRuntime, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly retainBeforeStop: (id: string) => Promise<void>, private readonly retainWorkerHistory: (id: string, before: string | undefined, workerId: string) => Promise<import("../shared/protocol.ts").NativeConversationSnapshot>) {
     runtime.queue.worker = (id, body) => this.startWorker(id, body);
   }
   async requestWorker(id: string, body: Record<string, unknown>): Promise<FactoryWorker | import("../shared/factory.ts").FactoryCapacityWait> {
@@ -90,6 +90,45 @@ export class FactoryPipeline {
     }
     this.store.event(run.implementation_id, "worker_observed", { worker_id: worker.id, condition: worker.condition }); return worker;
   }
+  private async retainChild(run: FactoryRun, worker: FactoryWorker): Promise<void> {
+    const identity = (context: FactoryWorker) => JSON.stringify([context.id, context.run_id, context.role, context.ticket_id, context.base, context.head, context.worktree, context.workspace_id, context.pane_id]);
+    const receipt = this.store.list<{ kind: string; data: { worker_id?: string; identity?: string } }>("events", run.implementation_id).filter(event => ["worker_history_retained", "worker_history_unavailable"].includes(event.kind) && event.data.worker_id === worker.id).at(-1);
+    if (receipt?.kind === "worker_history_retained" && receipt.data.identity === identity(worker)) {
+      const observed = await this.runtime.operation<FactoryWorker>(run, "reconcile-worker", { worker_id: worker.id });
+      if (identity(observed) !== identity(worker)) throw new FactoryError("native_identity_changed", "The retained child's native identity changed", 409);
+      if (!owns(observed.condition)) return;
+    }
+    const deadline = Date.now() + 30_000;
+    const snapshotIds: string[] = [];
+    const cursors = new Set<string>();
+    let before: string | undefined;
+    let source: string | undefined;
+    let turns = 0;
+    try {
+      for (let page = 0; page < 128 && Date.now() < deadline; page++) {
+        const snapshot = await this.retainWorkerHistory(run.id, before, worker.id);
+        if (!snapshot.source_id || !snapshot.version || !Array.isArray(snapshot.turns)) throw new FactoryError("native_history_incomplete", "The child has no verified native history page", 409);
+        turns += snapshot.turns.length;
+        if (source && source !== snapshot.source_id) throw new FactoryError("native_identity_changed", "The child's native history changed during retention", 409);
+        source = snapshot.source_id;
+        snapshotIds.push(snapshot.id);
+        if (!snapshot.cursor) {
+          if (!turns) throw new FactoryError("native_history_incomplete", "The child has not recorded its native conversation yet", 409);
+          this.store.event(run.implementation_id, "worker_history_retained", { run_id: run.id, worker_id: worker.id, identity: identity(worker), source_id: source, snapshot_ids: snapshotIds });
+          return;
+        }
+        if (cursors.has(snapshot.cursor)) break;
+        cursors.add(snapshot.cursor); before = snapshot.cursor;
+      }
+      throw new FactoryError("native_history_incomplete", "The child's native history is incomplete; retain its context before closing it", 409);
+    } catch (error) {
+      const reason = "Native child history could not be completely retained; its context and ownership remain available for recovery";
+      const current = this.store.get<FactoryWorker>("workers", worker.id);
+      if (current && owns(current.condition)) this.store.put("workers", { ...current, waiting_reason: reason }, run.id);
+      this.store.event(run.implementation_id, "worker_history_unavailable", { run_id: run.id, worker_id: worker.id, native_context_retained: true });
+      throw new FactoryError(error instanceof FactoryError && error.code === "native_identity_changed" ? error.code : "execution_uncertain", reason, 409);
+    }
+  }
   async workerAction(id: string, workerId: string, action: string): Promise<unknown> {
     const run = ["stop", "reconcile"].includes(action) ? this.store.get<FactoryRun>("runs", id) : this.run(id, false); const worker = this.store.get<FactoryWorker>("workers", workerId);
     if (!run) throw new FactoryError("not_found", "Run not found", 404);
@@ -109,6 +148,8 @@ export class FactoryPipeline {
       }
       if (evidence.head !== current.head || worker.base !== current.head) throw new FactoryError("review_stale", "Review evidence must name the current integration head", 409);
       if (worker.condition !== "completed") {
+        await this.retainChild(run, worker);
+        this.run(id, false);
         await this.runtime.operation(run, "stop-worker", { worker_id: workerId });
         this.store.put("workers", { ...this.store.get<FactoryWorker>("workers", workerId)!, head: evidence.head, condition: "completed" }, id);
       }
@@ -152,6 +193,8 @@ export class FactoryPipeline {
     if (questions.some((question) => question.answer === null) || questions.length && !this.store.list<{ worker_id: string; revision: string }>("answer_consumption", id).some((receipt) => receipt.worker_id === worker.id && receipt.revision === this.workflow.questionRevision(run.implementation_id))) throw new FactoryError("answers_unconsumed", "The worker must consume the current answered context through its scoped tracker", 409);
     const check = this.store.list<FactoryCheck>("checks", id).filter((entry) => entry.worker_id === workerId).at(-1);
     if (!check || check.condition !== "passed" || check.head !== worker.head) throw new FactoryError("checks_required", "Run fresh checks on the reconciled worker head", 409);
+    if (worker.condition !== "completed") await this.retainChild(run, worker);
+    this.run(id);
     const next = await this.runtime.operation<FactoryWorker>(run, "integrate", { worker_id: workerId, tip: worker.integration_tip });
     if (next.id !== workerId || next.run_id !== id || next.head !== worker.head || next.condition !== "completed") throw new FactoryError("integration_uncertain", "Integration identity is uncertain; reconcile before further work", 409);
     await this.runtime.operation(run, "stop-worker", { worker_id: workerId });

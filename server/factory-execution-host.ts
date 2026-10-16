@@ -199,6 +199,7 @@ export class FactoryExecutionHost {
       try {
         const conversation = await paneConversation(context.pane_id, undefined, typeof body.before === "string" ? { before: body.before } : {});
         if (conversation.source !== `${run.provider}-transcript`) throw new FactoryError("native_identity_changed", "This history belongs to another provider", 409);
+        if (worker && conversation.history_id.startsWith("unwritten:")) throw new FactoryError("native_evidence_required", "The child has not recorded its native conversation yet; retain its context", 409);
         const bound = this.store.get<{ id: string; history_id: string }>("host_native_identity", worker?.id ?? id);
         if (bound && bound.history_id !== conversation.history_id) throw new FactoryError("native_identity_changed", "The pane now holds another native session; its earlier history remains retained", 409);
         this.store.put("host_native_identity", { id: worker?.id ?? id, history_id: conversation.history_id });

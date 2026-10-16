@@ -67,7 +67,7 @@ export class FactoryService {
     this.executionHost = new FactoryExecutionHost(this.store, () => this.settings().skills_path, native, this.accounts);
     this.runtime = new FactoryRuntime(this.store, this.workflow, () => this.settings(), this.executionHost, endpoint, (record) => this.artifacts.read(record), publicUrl, this.references, this.accounts); this.review = new FactoryReview(this.store, (machine, path, base, mode) => this.runtime.capture(machine, path, base, mode), (machine, path) => this.runtime.inspect(machine, path));
     this.runtime.retainBeforePause = async (id, workerId) => { await this.retainNative(id, undefined, workerId); };
-    this.pipeline = new FactoryPipeline(this.store, this.runtime, this.workflow, () => this.settings(), id => this.retainHandoff(id));
+    this.pipeline = new FactoryPipeline(this.store, this.runtime, this.workflow, () => this.settings(), id => this.retainHandoff(id), (id, before, workerId) => this.retainNative(id, before, workerId));
     this.continuation = new FactoryContinuation(this.store, this.workflow, this.runtime, async (id, allowPartial) => {
       await this.retainHandoff(id);
       const events = this.store.list<import("../shared/protocol.ts").FactoryEvent>("events", this.store.get<FactoryRun>("runs", id)!.implementation_id).filter(event => (event.data as { run_id?: string })?.run_id === id);

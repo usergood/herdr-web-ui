@@ -6,7 +6,7 @@ import { createServer } from "../server/index.ts";
 import type { AccountTools } from "../server/account-tools.ts";
 import type { FactoryCheck, FactoryRun, FactoryWorker, NativeConversationSnapshot } from "../shared/factory.ts";
 
-export async function capacityFixture(scenario: { advancingHeads?: boolean; accountTools?: AccountTools } = {}) {
+export async function capacityFixture(scenario: { advancingHeads?: boolean; accountTools?: AccountTools; workerTranscript?: (worker: FactoryWorker, before?: string) => Pick<NativeConversationSnapshot, "source_id" | "version" | "cursor" | "turns"> | null } = {}) {
   const tips = new Map<string, string>(); let candidate = 1;
   const state = mkdtempSync(join(tmpdir(), "factory-capacity-"));
   const token = "owned-capacity-fixture";
@@ -28,6 +28,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
   const prompts: { run_id: string; text: string; worker_id?: string }[] = [];
   const launches: string[] = [];
   const workerLaunches: string[] = [];
+  const closedWorkers = new Set<string>();
   const reviewOutcomes = new Map<string, "passed" | "failed">();
   const workerContexts = new Map<string, any>();
   let legacyHumanReview = false;
@@ -101,7 +102,14 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
         return Response.json(target);
       }
       if (action === "operations/resume-status") return Response.json(body.worker_id ? workers.get(body.worker_id)! : run);
-      if (action === "operations/transcript") return Response.json(transcript);
+      if (action === "operations/transcript") {
+        if (!body.worker_id) return Response.json(transcript);
+        const worker = workers.get(body.worker_id);
+        if (!worker || worker.run_id !== run.id || closedWorkers.has(worker.id)) return Response.json({ error: { code: "native_evidence_required", message: "Owned child history is unavailable after close" } }, { status: 409 });
+        const history = scenario.workerTranscript ? scenario.workerTranscript(worker, body.before) : { source_id: `owned-worker:${worker.id}`, version: "v1", cursor: null, turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: `Owned ${worker.role} context for ${worker.ticket_id}` }] }] };
+        if (!history) return Response.json({ error: { code: "native_evidence_required", message: "Owned child history is temporarily unavailable" } }, { status: 409 });
+        return Response.json({ ...history, worker_id: worker.id });
+      }
       if (action === "reconcile") return Response.json(run);
       if (action === "artifacts") return Response.json([]);
       if (action === "finish") { run.condition = "completed"; return Response.json(run); }
@@ -158,7 +166,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
         return Response.json(worker); }
       if (action === "operations/integrate") { const worker = workers.get(body.worker_id)!; worker.condition = "completed"; if (scenario.advancingHeads) tips.set(run.id, worker.head!); if (afterIntegrationHead) { tips.set(run.id, afterIntegrationHead); afterIntegrationHead = null; } if (loseIntegration) { loseIntegration = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost merger acknowledgment" } }, { status: 503 }); } return Response.json(worker); }
       if (action === "operations/reconcile-worker") return Response.json(workers.get(body.worker_id));
-      if (action === "operations/stop-worker") { const worker = workers.get(body.worker_id)!; if (worker.condition !== "completed") worker.condition = "cancelled"; if (loseStop) { loseStop = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost shutdown acknowledgment" } }, { status: 503 }); } return Response.json(worker); }
+      if (action === "operations/stop-worker") { const worker = workers.get(body.worker_id)!; closedWorkers.add(worker.id); if (worker.condition !== "completed") worker.condition = "cancelled"; if (loseStop) { loseStop = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost shutdown acknowledgment" } }, { status: 503 }); } return Response.json(worker); }
     }
     return Response.json({ error: { code: "not_found", message: `Unimplemented owned Machine fixture route: ${path}` } }, { status: 404 });
   } });
@@ -209,6 +217,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
       allocationGate = { worker, entered, wait };
       return { started, release };
     },
+    closedWorkers,
     setTranscript: (value: typeof transcript) => { transcript = value; },
     offline: (value: boolean) => { offline = value; },
     uncertain: (value: boolean) => { uncertain = value; },

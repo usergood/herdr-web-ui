@@ -7,7 +7,7 @@ import { capacityFixture } from "./factory-capacity-fixture.ts";
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
-    const f = await capacityFixture({ advancingHeads: true });
+    const f = await capacityFixture({ advancingHeads: true, workerTranscript: (worker, before) => ({ source_id: `owned-browser-history:${worker.id}`, version: "fixture-v1", cursor: before ? null : "earlier", turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: `${before ? "Earlier" : "Final"} ${worker.role} reasoning for ${worker.id}` }] }] }) });
     const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
     try {
       await f.api("/settings", { max_agents: 1 });
@@ -55,6 +55,21 @@ try {
       assert(await page.getByRole("region", { name: "Automatic execution", exact: true }).locator("summary").filter({ hasText: pr.head.slice(0, 12) }).count() >= 3);
       assert.equal(done.implementation.outcome, "pr_open"); assert.equal(done.approvals.length, 1);
       await page.reload(); await review.getByText("PR published", { exact: true }).waitFor();
+      const history = page.getByRole("region", { name: "Workflow conversations", exact: true });
+      const tree = history.getByRole("navigation", { name: "Workflow history", exact: true });
+      for (const entry of [
+        { label: "Implementation: Retain the draft", workers: done.workers.filter((w: any) => w.role === "implementer" && !w.rework_batch_id) },
+        { label: "Standards", workers: done.workers.filter((w: any) => w.role === "standards") },
+        { label: "Spec", workers: done.workers.filter((w: any) => w.role === "spec") },
+        { label: "Review-fixes", workers: done.workers.filter((w: any) => w.rework_batch_id) },
+      ]) {
+        await tree.getByRole("button", { name: entry.label, exact: true }).click();
+        for (const worker of entry.workers) {
+          assert(f.closedWorkers.has(worker.id));
+          for (const age of ["Earlier", "Final"]) await history.getByText(`${age} ${worker.role} reasoning for ${worker.id}`, { exact: true }).waitFor();
+        }
+        assert.equal(await history.getByText("Native history has not been retained.", { exact: true }).count(), 0);
+      }
       assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       assert.deepEqual(errors, []);
     } finally { await context.close(); f.close(); }
