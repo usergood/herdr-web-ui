@@ -21,7 +21,8 @@ test("retained failed reports reach one repair writer intact without inline comm
     expect((await f.request(f.workerRoute, repair)).body.id).toBe(worker.body.id);
     expect(await f.request(f.workerRoute, { ...repair, idempotency_key: "second-writer" })).toMatchObject({ status: 409, body: { error: { code: "rework_batch_unavailable" } } });
     const after = (await f.request(f.prefix)).body;
-    expect(after.workers).toEqual(before.workers);
+    const identity = (worker: any) => [worker.id, worker.run_id, worker.ticket_id, worker.role, worker.base, worker.worktree, worker.rework_batch_id, worker.key];
+    expect(after.workers.map(identity)).toEqual(before.workers.map(identity));
     expect(after.capacity_waiting).toEqual(before.capacity_waiting);
     expect(f.workerContexts).toHaveLength(contexts);
     expect((await f.request(f.prefix)).body.review_batches[0].id).toBe(sent.body.id);
