@@ -5,6 +5,7 @@ import { githubReviewFixture } from "../scripts/fixtures/github-review.ts";
 import { summarizeIssueAdmission, type IssueAdmission } from "../shared/issue-admission.ts";
 import { githubDeliveryResponses } from "../scripts/fixtures/github-delivery.ts";
 import type { ProjectPullRequest } from "../shared/github-project.ts";
+import type { FactoryRun } from "../shared/factory.ts";
 
 test("review browser origin reaches retained Assignment state after restart", async () => {
   const fixture = githubReviewFixture();
@@ -18,6 +19,12 @@ test("review browser origin reaches retained Assignment state after restart", as
     expect((await response.json()).implementation).toMatchObject({ id: assignment.id, title: "Retained review Assignment" });
   } finally { retired?.stop(true); fixture.close(); }
 });
+
+async function observeReviewedRest(fixture: ReturnType<typeof githubReviewFixture>, run: FactoryRun, head: string): Promise<void> {
+  // A child-summary delivery acknowledgment does not prove the coordinator's turn rested.
+  const observed = await fixture.json(`/runs/${run.id}/reconcile`, {});
+  expect(observed).toMatchObject({ id: run.id, implementation_id: run.implementation_id, machine_id: run.machine_id, worktree: run.worktree, branch: run.branch, workspace_id: run.workspace_id, pane_id: run.pane_id, condition: "completed", implementation_completion: { head } });
+}
 
 async function prepareManual(fixture: ReturnType<typeof githubReviewFixture>) {
   const { project, route } = await fixture.setup();
@@ -38,6 +45,7 @@ test("owner acceptance completes a manual Assignment and allows archiving withou
     await fixture.integrate(run);
     const check = await fixture.json(`/runs/${run.id}/checks`, {});
     await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    await observeReviewedRest(fixture, run, check.head);
     await fixture.json(`/runs/${run.id}/accept`, { head: check.head });
     const detail = await fixture.json(path);
     expect(detail.github_sources).toEqual([]);
@@ -643,6 +651,7 @@ test.each(["unexpected", "lost", "unconfirmed", "other_checkout"] as const)("%s 
     const { run, path, route } = await fixture.prepare();
     await fixture.integrate(run); const check = await fixture.json(`/runs/${run.id}/checks`, {});
     await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    await observeReviewedRest(fixture, run, check.head);
     await fixture.json(`/runs/${run.id}/accept`, { head: check.head });
     if (kind === "unexpected") fixture.setHeadUnavailable();
     else {
@@ -793,6 +802,7 @@ test("historically accepted implementations with cleaned workspaces retain relea
     const second = await fixture.second(route, readiness);
     await fixture.integrate(run); const check = await fixture.json(`/runs/${run.id}/checks`, {});
     await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    await observeReviewedRest(fixture, run, check.head);
     await fixture.json(`/runs/${run.id}/accept`, { head: check.head });
     const accepted = await fixture.json(path);
     // Persist the pre-upgrade input format while the disposable server is stopped.
