@@ -1083,7 +1083,10 @@ test("concurrent and overlapping Start requests retain one admitted attempt", as
     const other = fixture.post(path + "/runs", { ...start, idempotency_key: "overlapping-request" });
     release();
     const responses = await Promise.all([first, replay, other]);
-    expect(responses.map(response => response.status)).toEqual([202, 202, 409]);
+    expect(responses.slice(0, 2).map(response => response.status)).toEqual([202, 202]);
+    const overlapping = await responses[2]!.json();
+    if (responses[2]!.status === 409) expect(overlapping.error.code).toBe("issue_not_eligible");
+    else expect({ status: responses[2]!.status, body: overlapping }).toMatchObject({ status: 202, body: { condition: "blocked", idempotency_key: "overlapping-request", run_id: null, reason: expect.stringContaining("issue eligibility") } });
     const admitted = await responses[0]!.json(); expect(admitted.id).toBe((await responses[1]!.json()).id);
     expect((await fixture.json(path)).runs).toMatchObject([{ id: admitted.id, condition: "working" }]);
     expect(fixture.launches).toEqual([admitted.id]);

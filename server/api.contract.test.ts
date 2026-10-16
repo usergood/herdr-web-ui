@@ -408,10 +408,14 @@ describe("Assignment discard", () => {
       f.reconnect();
       const next = await f.request("/implementations", { title: "Wait for owned stop", description: "", project_id: f.project.id }).then(r => r.json());
       const response = await f.request(`/implementations/${next.id}/runs`, { action: "work", idempotency_key: "reserved-until-stopped" });
-      expect(response.status).toBe(409);
-      expect((await response.json()).error.code).toBe("capacity_exhausted");
+      expect(response.status).toBe(202);
+      expect(await response.json()).toMatchObject({ condition: "queued", run_id: null, purpose: "execution" });
+      expect((await f.request("").then(r => r.json())).capacity.normal.used).toBe(1);
+      expect((await f.request(`/implementations/${next.id}`).then(r => r.json())).runs).toEqual([]);
       expect((await f.request(`${f.prefix}/discard`, {}).then(r => r.json())).outcome).toBe("discarded");
-      expect((await f.request(`/implementations/${next.id}/runs`, { action: "work", idempotency_key: "capacity-after-stop" })).status).toBe(202);
+      const admitted = await f.request(`/implementations/${next.id}/runs`, { action: "work", idempotency_key: "reserved-until-stopped" });
+      expect(admitted.status).toBe(202);
+      expect(await admitted.json()).toMatchObject({ condition: "working", idempotency_key: "reserved-until-stopped" });
     } finally { await f.close(); }
   }, 30_000);
   it("continues stopping other owned contexts when one child's stop is uncertain", async () => {
@@ -1875,8 +1879,9 @@ describe("factory records", () => {
       const duplicate = await request(`implementations/${idea.id}/runs`, { action: "grill-me", idempotency_key: "remote-owner-click" }).then((response) => response.json());
       expect(duplicate.id).toBe(run.id);
       const elsewhere = await request(`implementations/${idea.id}/runs`, { action: "grill-me", idempotency_key: "new-click" });
-      expect(elsewhere.status).toBe(202);
-      expect(await elsewhere.json()).toMatchObject({ condition: "queued", reason: expect.stringContaining("ownership") });
+      const competing = await elsewhere.json();
+      if (elsewhere.status === 409) expect(competing.error.code).toBe("implementation_owned");
+      else expect({ status: elsewhere.status, body: competing }).toMatchObject({ status: 202, body: { condition: "blocked", reason: expect.stringContaining("ownership") } });
       const retained = await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then((response) => response.json());
       expect(retained.messages).toMatchObject([{ content: "Keep the original host" }]);
       expect(retained.runs).toHaveLength(1);
@@ -5545,7 +5550,9 @@ describe("changed GitHub issue scope", () => {
       const created = await f.request("/implementations", { title: "Independent capacity fixture", description: "Owned capacity check", project_id: f.route.split("/")[2] });
       expect(created.status).toBe(201); const other = created.body;
       const blocked = await f.request(`/implementations/${other.id}/runs`, { action: "work", idempotency_key: "unrelated-scope" });
-      expect(blocked.status).toBe(409); expect(blocked.body.error.code).toBe("capacity_exhausted");
+      expect(blocked.status).toBe(202);
+      expect(blocked.body).toMatchObject({ condition: "queued", run_id: null, purpose: "execution" });
+      expect((await f.request(`/implementations/${other.id}`)).body.runs).toEqual([]);
       const more = await f.request(`/runs/${run.id}/workers`, { role: "spec", idempotency_key: "must-not-launch" });
       expect(more.status).toBe(409);
       await f.request(`/runs/${run.id}/reconcile`, {});

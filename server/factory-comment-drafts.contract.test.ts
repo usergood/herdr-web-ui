@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { CLEAN_WORKSPACE_HASH } from "./factory-host.ts";
 import { capacityFixture } from "../scripts/factory-capacity-fixture.ts";
 import { published, until } from "../scripts/factory-human-review-fixture.ts";
 
@@ -53,7 +54,7 @@ describe("Human Review comment drafts through authenticated HTTP", () => {
     } finally { f.close(); }
   });
   it("keeps resolved history immutable even when a later capture makes its anchor stale", async () => {
-    const f = await capacityFixture({ advancingHeads: true });
+    const f = await capacityFixture({ advancingHeads: true, workspaceHash: CLEAN_WORKSPACE_HASH });
     try {
       const { prefix, detail, run } = await published(f);
       const ready = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
@@ -68,7 +69,7 @@ describe("Human Review comment drafts through authenticated HTTP", () => {
     } finally { f.close(); }
   }, 20000);
   it("retains stale draft anchors and marks late drafts on a changed candidate as outdated", async () => {
-    const f = await capacityFixture({ advancingHeads: true });
+    const f = await capacityFixture({ advancingHeads: true, workspaceHash: CLEAN_WORKSPACE_HASH });
     try {
       const { prefix, detail, run } = await published(f);
       const ready = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
@@ -88,7 +89,7 @@ describe("Human Review comment drafts through authenticated HTTP", () => {
     } finally { f.close(); }
   }, 20000);
   it("edits and removes saved drafts without changing their captured anchors or launching work", async () => {
-    const f = await capacityFixture({ advancingHeads: true });
+    const f = await capacityFixture({ advancingHeads: true, workspaceHash: CLEAN_WORKSPACE_HASH });
     try {
       const { prefix, detail } = await published(f);
       const ready = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
