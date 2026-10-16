@@ -126,7 +126,13 @@ export class FactoryRuntime {
     if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Execution is disabled on a restored copy", 409);
     const project = idea.project_id ? this.store.get<FactoryProject>("projects", idea.project_id) : null;
     const action = body.action as FactoryAction;
-    if (["work", "implement-spec"].includes(action)) { await this.queue.flush(); this.projectAdmission(id); }
+    if (["work", "implement-spec"].includes(action)) {
+      await this.queue.flush();
+      // A matching Start may have been admitted while this request waited for dispatch.
+      // Revalidate its scope through start instead of queuing its accepted key again.
+      if (this.store.list<FactoryRun>("runs", id).some(run => run.idempotency_key === body.idempotency_key)) return this.start(id, body, origin);
+      this.projectAdmission(id);
+    }
     const planning = ["grill-me", "grill-with-docs"].includes(action) || action === "to-spec" && !this.workflow.approved(id, "specification", this.workflow.specification(id)?.id ?? "");
     return this.queue.start({ ...this.store.record(), id: `${id}:${body.idempotency_key}`, implementation_id: id, assignment_title: idea.title, action, machine_id: idea.machine_id ?? project?.machine_id ?? "local", provider: idea.provider ?? project?.provider ?? this.settings().provider, idempotency_key: body.idempotency_key, reason: "Waiting for agent capacity", purpose: planning ? "planning" : "execution", condition: "queued", run_id: null }, body, origin);
   }
