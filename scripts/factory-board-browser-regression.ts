@@ -61,10 +61,20 @@ try {
       await page.getByRole("button", { name: "Refresh factory", exact: true }).click();
       await card.getByText("1 waiting · 0 running · 1 completed", { exact: true }).waitFor();
       assert.equal(await card.locator("details[open]").count(), 1);
+      const countsBeforeReview = await card.locator(".factory-progress-counts").textContent();
+      const reviewCheckGate = f.holdNextCheck("integration");
+      const reviewCheck = f.api(`/runs/${run.id}/checks`, {});
+      try {
+        await reviewCheckGate.started;
+        await page.getByRole("button", { name: "Refresh factory", exact: true }).click();
+        await card.getByRole("status").filter({ hasText: "Testing" }).waitFor();
+        assert.equal(await card.locator(".factory-progress-counts").textContent(), countsBeforeReview);
+      } finally { reviewCheckGate.release(); await reviewCheck; }
       await f.api("/settings", { max_agents: 6 });
       const reviewer = await f.api(`/runs/${run.id}/workers`, { role: "standards", idempotency_key: "board-standards" }).then(r => r.json());
       await page.getByRole("button", { name: "Refresh factory", exact: true }).click();
-      await card.getByText("Auto-Review", { exact: true }).waitFor();
+      await card.getByRole("status").filter({ hasText: "Auto-Review" }).waitFor();
+      assert.equal(await card.locator(".factory-progress-counts").textContent(), countsBeforeReview);
       await f.api(`/runs/${run.id}/workers/${reviewer.id}/stop`, {});
       await boardRepair(f, id, run.id, graph.tickets[0].id);
       await page.getByRole("button", { name: "Refresh factory", exact: true }).click();
@@ -84,5 +94,5 @@ try {
       assert.deepEqual(errors, []);
     } finally { gate.release(); await check; await context.close(); f.close(); }
   }
-  console.log("PASS named Ticket progress, all activity tags, five populated lanes, keyboard expansion and pending/verified Pause on desktop/mobile");
+  console.log("PASS named Ticket progress, live activity changes with unchanged counts, all activity tags, five populated lanes, keyboard expansion and pending/verified Pause on desktop/mobile");
 } finally { await browser.close(); }
