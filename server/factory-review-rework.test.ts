@@ -16,7 +16,14 @@ test("retained failed reports reach one repair writer intact without inline comm
     const worker = await f.request(f.workerRoute, repair);
     expect(worker.status).toBe(200);
     expect(f.workerContexts.at(-1)).toMatchObject({ review_batch: { id: sent.body.id, report_ids: sent.body.report_ids, head: f.head } });
-    expect((await f.request(f.workerRoute, { ...repair, idempotency_key: "second-writer" })).status).toBe(409);
+    const before = (await f.request(f.prefix)).body;
+    const contexts = f.workerContexts.length;
+    expect((await f.request(f.workerRoute, repair)).body.id).toBe(worker.body.id);
+    expect(await f.request(f.workerRoute, { ...repair, idempotency_key: "second-writer" })).toMatchObject({ status: 409, body: { error: { code: "rework_batch_unavailable" } } });
+    const after = (await f.request(f.prefix)).body;
+    expect(after.workers).toEqual(before.workers);
+    expect(after.capacity_waiting).toEqual(before.capacity_waiting);
+    expect(f.workerContexts).toHaveLength(contexts);
     expect((await f.request(f.prefix)).body.review_batches[0].id).toBe(sent.body.id);
     expect((await f.agentContract(f.run.id)).review_batches.find((entry: { id: string }) => entry.id === sent.body.id).reports).toEqual(sent.body.reports);
     expect((await f.request(f.prefix)).body.comments).toEqual([]);

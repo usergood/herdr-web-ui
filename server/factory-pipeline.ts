@@ -24,6 +24,7 @@ export class FactoryPipeline {
     const batch = typeof body.review_batch_id === "string" ? this.store.get<ReworkBatch>("review_batches", body.review_batch_id) ?? this.store.get<ReworkBatch>("automatic_review_batches", body.review_batch_id) : null;
     const ticket = batch?.run_id === run.id && batch.status === "sent" && !batch.resolution && (!batch.ticket_ids || batch.ticket_ids.includes(String(body.ticket_id))) ? this.workflow.executionTickets(run).find(entry => entry.id === body.ticket_id) : null;
     if (!batch || !ticket) throw new FactoryError("rework_batch_unavailable", "Select an unresolved delivered rework batch for this Run and Ticket", 409);
+    if (batch.reports && this.store.list<FactoryWorker>("workers", run.id).some(worker => worker.rework_batch_id === batch.id || worker.role === "implementer" && owns(worker.condition))) throw new FactoryError("rework_batch_unavailable", "Use the current delivered batch without a prior repair writer", 409);
     return { batch, ticket };
   }
   async requestWorker(id: string, body: Record<string, unknown>): Promise<FactoryWorker | import("../shared/factory.ts").FactoryCapacityWait> {
@@ -69,7 +70,7 @@ export class FactoryPipeline {
       const selected = this.selectedRework(run, body);
       const batch = selected?.batch;
       const rework = selected?.ticket;
-      if (role === "implementer" && batch?.reports && (batch.head !== tip.head || this.store.list<FactoryWorker>("workers", id).some(worker => worker.rework_batch_id === batch.id || worker.role === "implementer" && owns(worker.condition)))) throw new FactoryError("rework_batch_unavailable", "Use the current delivered batch without a prior repair writer", 409);
+      if (role === "implementer" && batch?.reports && batch.head !== tip.head) throw new FactoryError("rework_batch_unavailable", "Use the current delivered batch without a prior repair writer", 409);
       if (role === "implementer" && !ticket && !rework) throw new FactoryError("ticket_not_ready", "Select a ready Ticket or an explicitly delivered rework batch", 409);
       if (rework && batch?.origin === "human") {
         const integrated = this.store.list<FactoryWorker>("workers", id).filter(w => w.rework_batch_id === batch.id && w.condition === "completed").at(-1);
