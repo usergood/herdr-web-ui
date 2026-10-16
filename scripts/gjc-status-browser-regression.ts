@@ -16,6 +16,10 @@ const root = mkdtempSync(join(tmpdir(), "herdr-gjc-status-browser-"));
 const store = join(root, ".gjc", "agent", "sessions", "v2-fixture");
 const script = join(root, "gjc");
 const oldPath = process.env.PATH;
+// The SDK fixture reports the real anchor, including CI's checkout-local TMPDIR.
+const gitRoot = Bun.spawnSync(["git", "-C", root, "rev-parse", "--show-toplevel"], { stdout: "pipe", stderr: "pipe" });
+assert.ok([0, 128].includes(gitRoot.exitCode), "owned fixture's Git context is readable");
+const worktreeRoot = gitRoot.exitCode === 0 ? gitRoot.stdout.toString().trim() : null;
 const sdkRows: Record<string, unknown>[] = [];
 const sdkRegistry = join(root, "sdk-fixture.json");
 const oldHome = process.env.HOME, oldSocket = process.env.HERDR_SOCKET;
@@ -76,7 +80,7 @@ async function fixture(transcript: string): Promise<string> {
   sdkRows.push({ sessionId: header.id, pid: foreground.pid, hostIncarnation: "owned-fixture",
     endpointGeneration: 1, identityProvenance: "composite", live: true, terminal: false,
     terminalUncertain: false, ambiguous: false,
-    locator: { cwd: root, worktreeRoot: null, stateRoot: join(root, ".gjc", "agent") }, path: transcript });
+    locator: { cwd: root, worktreeRoot, stateRoot: join(root, ".gjc", "agent") }, path: transcript });
   writeFileSync(sdkRegistry, JSON.stringify(sdkRows));
   await until(async () => await gjcTranscriptForPane(paneId, root, root) === transcript, "exact native transcript binding");
   await herdrRpc("pane.report_agent", { pane_id: paneId, source: "manual", agent: "gjc", state: "working" });

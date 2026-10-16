@@ -1,6 +1,6 @@
 /** Owned, real-browser regression of the sidebar's workspace rows. Run after `bun run build`. */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
@@ -62,7 +62,8 @@ async function changeState(page: Page, states: readonly State[], action: () => P
 const paneSelector = (paneId: string): string => `.pane-select[title^=${JSON.stringify(`${paneId} —`)}]`;
 const itemSelector = (paneId: string): string => `.pane-item:has(${paneSelector(paneId)})`;
 const workspaceSelector = (workspaceId: string): string => `.workspace-group[data-workspace=${JSON.stringify(workspaceId)}]`;
-const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-workspace-rows-regression-")));
+// These are plain folders even when CI puts TMPDIR inside the repository checkout.
+const root = realpathSync(mkdtempSync(join(existsSync("/tmp") ? "/tmp" : tmpdir(), "herdr-workspace-rows-regression-")));
 // These accumulators contain only IDs created by this invocation.
 const ownedWorkspaces: string[] = [];
 const errors: string[] = [];

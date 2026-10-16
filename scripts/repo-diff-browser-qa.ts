@@ -14,7 +14,7 @@
  * touches the clipboard of the PC running the check.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Page } from "playwright-core";
@@ -29,7 +29,8 @@ process.env["GIT_CONFIG_NOSYSTEM"] = "1";
 const BIG_LINES = 10_000;
 /** Rewritten whole, its patch passes the server's 1 MiB cap; the 10 000-line diff stays under it. */
 const LARGE_LINES = 8_000;
-const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-repo-diff-")));
+// The plain-folder fixture must not inherit CI's enclosing Git checkout through TMPDIR.
+const root = realpathSync(mkdtempSync(join(existsSync("/tmp") ? "/tmp" : tmpdir(), "herdr-repo-diff-")));
 const evidence = process.env.UI_EVIDENCE_DIR;
 if (evidence) mkdirSync(evidence, { recursive: true });
 
