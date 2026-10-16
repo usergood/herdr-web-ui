@@ -1,14 +1,14 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { FactoryService } from "./factory.ts";
+import { createServer } from "./index.ts";
+import { FactoryStore } from "./factory-store.ts";
 import type { FactoryRun, Implementation } from "../shared/factory.ts";
 
 /** Deterministic synthetic history, never a copy of the owner's live factory database. */
-export function factoryLoadingFixture() {
+export function factoryLoadingFixture(seedBeforeStartup?: (store: FactoryStore) => void) {
   const root = mkdtempSync(join(tmpdir(), "factory-loading-"));
-  const service = new FactoryService(root, null, {}, () => undefined, null, {}, () => false, root);
-  const store = service.store;
+  const store = new FactoryStore(root);
   const record = (id: string) => ({ id, created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z" });
   const text = (size: number) => "Synthetic evidence. ".repeat(Math.ceil(size / 20)).slice(0, size);
   for (let a = 0; a < 8; a++) {
@@ -28,5 +28,26 @@ export function factoryLoadingFixture() {
       store.put("events", { ...record(`event-${a}-${r}`), implementation_id: id, kind: "fixture_history", data: { evidence: text(50_000) } }, id);
     }
   }
-  return { service, root, id: "assignment-0", close() { service.stop(); rmSync(root, { recursive: true, force: true }); } };
+  seedBeforeStartup?.(store);
+  let observedRuns = store.list<{ run: FactoryRun }>("host_leases").map(lease => lease.run); store.close();
+  const token = "owned-loading-token";
+  const options = { port: 0, token, stateDir: root, machines: false as const, factory: { accountDiscoveryHome: root, native: {
+    snapshot: async () => ({ panes: observedRuns.map(run => ({ pane_id: run.pane_id, workspace_id: run.workspace_id, terminal_id: `owned-${run.id}`, cwd: run.worktree, agent: run.provider, agent_status: "blocked" })), workspaces: observedRuns.map(run => ({ workspace_id: run.workspace_id, label: `saurons-eye-run-${run.id}` })) }) as any,
+  } } };
+  let app: ReturnType<typeof createServer> | null = createServer(options);
+  const stop = () => { app?.stop(); app = null; };
+  const origin = () => { if (!app) throw new Error("Owned loading fixture is stopped"); return `http://localhost:${app.port}`; };
+  return { root, id: "assignment-0", origin,
+    request(path: string, body?: unknown) {
+      return fetch(origin() + "/api/factory" + path, { method: body === undefined ? "GET" : "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-herdr-factory": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    },
+    // Restore owned fixture state only while its server is stopped. Assertions
+    // always read the product's authenticated public HTTP boundary.
+    restart(seed: (store: FactoryStore) => void) {
+      stop(); const restored = new FactoryStore(root);
+      try { seed(restored); observedRuns = restored.list<{ run: FactoryRun }>("host_leases").map(lease => lease.run); } finally { restored.close(); }
+      app = createServer(options);
+    },
+    stop, close() { stop(); rmSync(root, { recursive: true, force: true }); },
+  };
 }
