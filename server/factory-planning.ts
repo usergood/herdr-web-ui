@@ -53,17 +53,21 @@ export class FactoryPlanning {
         }
         const result = await this.runtime.requestStart(id, { action: "implement-spec", idempotency_key: key }, "http://localhost");
         if (this.stopped) return;
-        this.store.put("automatic_planning", { ...request, condition: "pane_id" in result ? "started" : result.condition === "blocked" ? "blocked" : "queued", run_id: "pane_id" in result ? result.id : null, reason: "reason" in result ? result.reason : result.waiting_reason }, id);
+        this.store.put("automatic_planning", { ...request, condition: "pane_id" in result ? "started" : result.condition === "blocked" ? "blocked" : "queued", run_id: "pane_id" in result ? result.id : null, attempts: 0, next_attempt_at: 0, reason: "reason" in result ? result.reason : result.waiting_reason }, id);
       } catch (error) {
         if (this.stopped) return;
-        if (error instanceof FactoryError && error.code === "assignment_paused") {
-          this.store.put("automatic_planning", { ...request, condition: "pending", reason: error.message }, id);
+        const current = this.store.get<Implementation>("implementations", id);
+        if (!current || current.deletion) continue;
+        if (current.pause || error instanceof FactoryError && error.code === "assignment_paused") {
+          this.store.put("automatic_planning", { ...request, condition: "pending", reason: error instanceof FactoryError ? error.message : request.reason }, id);
           continue;
         }
         this.store.db.transaction(() => {
           const reason = error instanceof FactoryError ? error.message : "Automatic planning could not be verified; inspect the retained request";
           if (error instanceof FactoryError && error.code === "scope_changed") this.workflow.mutate(id, "questions", { question: `${reason} (Specification ${request.specification_id}). Which Specification and execution settings should govern the next attempt?` });
-          this.store.put("automatic_planning", { ...request, condition: "blocked", reason }, id);
+          const retry = error instanceof FactoryError && ["handoff_incomplete", "native_history_incomplete", "native_evidence_required", "machine_offline", "machine_disconnected"].includes(error.code);
+          const attempts = retry ? (request.attempts ?? 0) + 1 : request.attempts ?? 0;
+          this.store.put("automatic_planning", { ...request, condition: retry && attempts < 6 ? "pending" : "blocked", attempts, next_attempt_at: retry && attempts < 6 ? Date.now() + Math.min(30_000, 1000 * 2 ** (attempts - 1)) : 0, reason: `${reason}${retry && attempts >= 6 ? "; automatic handoff recovery exhausted after six observations; inspect the preserved planning history" : ""}` }, id);
         }).immediate();
       }
     }

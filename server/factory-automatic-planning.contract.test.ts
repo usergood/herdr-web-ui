@@ -2,8 +2,8 @@ import { describe, expect, it } from "bun:test";
 import { capacityFixture } from "../scripts/factory-capacity-fixture.ts";
 import { createServer } from "./index.ts";
 
-async function until<T>(read: () => Promise<T>, ready: (value: T) => boolean): Promise<T> {
-  const deadline = Date.now() + 4000;
+async function until<T>(read: () => Promise<T>, ready: (value: T) => boolean, timeoutMs = 4000): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
   for (;;) {
     const value = await read();
     if (ready(value)) return value;
@@ -12,7 +12,124 @@ async function until<T>(read: () => Promise<T>, ready: (value: T) => boolean): P
   }
 }
 
+async function acceptedHandoff(f: Awaited<ReturnType<typeof capacityFixture>>, title: string) {
+  const id = await f.assignment(title); const prefix = `/implementations/${id}`;
+  const detail = () => f.api(prefix).then(r => r.json());
+  await f.api(`/projects/${(await detail()).implementation.project_id}/configure`, { checks: [["bun", "test"]], permissions: "Edit owned files" });
+  const source = await f.api(`${prefix}/runs`, { action: "to-spec", idempotency_key: "specifications" }).then(r => r.json());
+  const spec = await f.agent(source.id, "specification", { content: "Recover retained accepted planning within its unchanged scope" }).then(r => r.json());
+  f.runs.get(source.id)!.condition = "ready";
+  expect((await f.api(`${prefix}/specification-acceptance`, { specification_id: spec.id, hash: spec.hash, source: "button" })).status).toBe(201);
+  return { id, prefix, detail, source, spec };
+}
+const planningHistory = (id: string) => ({ source_id: `retained:${id}`, version: "v1", cursor: null, turns: [{ role: "assistant" as const, ts: "2026-10-16T00:00:00Z", parts: [{ kind: "text" as const, text: "Accepted planning decisions" }] }] });
+
 describe("Automatic planning through authenticated HTTP", () => {
+  it("automatically recovers one unavailable Specification handoff history read without another owner action", async () => {
+    let reads = 0;
+    const f = await capacityFixture({ runTranscript: run => ++reads === 1 ? null : ({ source_id: `accepted:${run.id}`, version: "v1", cursor: null, turns: [{ role: "assistant", ts: "2026-10-16T00:00:00Z", parts: [{ kind: "text", text: "Retained accepted Specification decisions" }] }] }) });
+    try {
+      const id = await f.assignment("Recover planning history"); const prefix = `/implementations/${id}`;
+      const detail = () => f.api(prefix).then(r => r.json());
+      await f.api(`/projects/${(await detail()).implementation.project_id}/configure`, { checks: [["bun", "test"]], permissions: "Edit owned files" });
+      const source = await f.api(`${prefix}/runs`, { action: "to-spec", idempotency_key: "retained-specifications" }).then(r => r.json());
+      const spec = await f.agent(source.id, "specification", { content: "Recover an unavailable native history read automatically" }).then(r => r.json());
+      f.runs.get(source.id)!.condition = "ready";
+      expect((await f.api(`${prefix}/specification-acceptance`, { specification_id: spec.id, hash: spec.hash, source: "button" })).status).toBe(201);
+      const result = await until(detail, d => d.runs.some((r: any) => r.action === "implement-spec" && r.condition === "working"));
+      expect(result.runs.find((r: any) => r.id === source.id).condition).toBe("completed");
+      expect(result.runs.filter((r: any) => r.action === "implement-spec")).toHaveLength(1);
+      expect(result.approvals).toHaveLength(1);
+      expect(result.automatic_planning[0]).toMatchObject({ condition: "started", specification_id: spec.id });
+      expect(f.launches).toHaveLength(2);
+      f.restart();
+      expect((await detail()).runs.filter((r: any) => r.action === "implement-spec")).toHaveLength(1);
+      expect(f.launches).toHaveLength(2);
+    } finally { f.close(); }
+  });
+
+  it("retains handoff retry identity and deadline across restart and recovers without duplicate admission", async () => {
+    let unavailable = true;
+    const f = await capacityFixture({ runTranscript: run => unavailable ? null : planningHistory(run.id) });
+    try {
+      const { detail, source, spec } = await acceptedHandoff(f, "Restart a retained handoff retry");
+      const waiting = await until(detail, d => d.automatic_planning[0]?.attempts === 1);
+      const retry = waiting.automatic_planning[0];
+      expect(retry).toMatchObject({ condition: "pending", run_id: null, specification_id: spec.id });
+      expect(retry.next_attempt_at).toBeGreaterThan(Date.now());
+      f.restart();
+      expect((await detail()).automatic_planning[0]).toEqual(retry);
+      unavailable = false;
+      const result = await until(detail, d => d.runs.some((r: any) => r.action === "implement-spec" && r.condition === "working"));
+      expect(result.runs.find((r: any) => r.id === source.id).condition).toBe("completed");
+      expect(result.automatic_planning[0]).toMatchObject({ id: retry.id, scope_hash: retry.scope_hash, specification_id: spec.id, condition: "started", attempts: 0, next_attempt_at: 0 });
+      expect(result.approvals).toHaveLength(1);
+      f.restart();
+      expect((await detail()).runs.filter((r: any) => r.action === "implement-spec")).toHaveLength(1);
+      expect(f.launches).toHaveLength(2);
+    } finally { f.close(); }
+  });
+
+  for (const control of ["Pause", "Delete", "changed scope"] as const) it(`preserves ${control} authority while handoff recovery is pending`, async () => {
+    let unavailable = true;
+    const f = await capacityFixture({ runTranscript: run => unavailable ? null : planningHistory(run.id) });
+    try {
+      const { id, prefix, detail, source } = await acceptedHandoff(f, `Handoff retry respects ${control}`);
+      const waiting = await until(detail, d => d.automatic_planning[0]?.attempts === 1);
+      const retry = waiting.automatic_planning[0];
+      unavailable = false;
+      if (control === "Pause") expect((await f.api(`${prefix}/pause`, {}).then(r => r.json())).pause.condition).toBe("paused");
+      else if (control === "Delete") expect((await f.api(`${prefix}/delete`, {}).then(r => r.json())).condition).toBe("deleted");
+      else await f.api(`${prefix}/specifications`, { content: "A replacement requiring its own owner decision" });
+      f.restart();
+      if (control === "changed scope") {
+        const blocked = await until(detail, d => d.automatic_planning[0]?.condition === "blocked");
+        expect(blocked.questions).toHaveLength(1);
+        expect(blocked.questions[0]).toMatchObject({ answer: null, question: expect.stringContaining("accepted execution scope changed") });
+        expect(blocked.runs.filter((r: any) => r.action === "implement-spec")).toHaveLength(0);
+        expect(blocked.automatic_planning[0].attempts).toBe(1);
+      } else {
+        do {
+          if (control === "Delete") expect((await f.api(prefix)).status).toBe(404);
+          else {
+            const current = await detail();
+            expect(current.automatic_planning[0]).toMatchObject({ id: retry.id, condition: "pending", attempts: 1 });
+            expect(current.runs.filter((r: any) => r.action === "implement-spec")).toHaveLength(0);
+          }
+          expect(f.launches).toHaveLength(1);
+          if (Date.now() > retry.next_attempt_at + 300) break;
+          await Bun.sleep(20);
+        } while (true);
+        if (control === "Pause") {
+          expect((await f.api(`${prefix}/resume`, {})).status).toBe(200);
+          await until(detail, d => !d.implementation.pause && d.runs.find((r: any) => r.id === source.id)?.condition === "working");
+          f.runs.get(source.id)!.condition = "ready";
+          const resumed = await until(detail, d => d.runs.some((r: any) => r.action === "implement-spec" && r.condition === "working"));
+          expect(resumed.runs.filter((r: any) => r.action === "implement-spec")).toHaveLength(1);
+          expect(resumed.approvals).toHaveLength(1);
+        } else expect((await f.api("").then(r => r.json())).implementations.some((entry: any) => entry.id === id)).toBe(false);
+      }
+    } finally { f.close(); }
+  });
+
+  it("escalates unavailable handoff history only after six durable bounded observations", async () => {
+    let unavailable = true;
+    const f = await capacityFixture({ runTranscript: run => unavailable ? null : planningHistory(run.id) });
+    try {
+      const { detail } = await acceptedHandoff(f, "Exhaust bounded handoff recovery");
+      const blocked = await until(detail, d => d.automatic_planning[0]?.condition === "blocked", 40_000);
+      expect(blocked.automatic_planning[0]).toMatchObject({ attempts: 6, next_attempt_at: 0, run_id: null, reason: expect.stringContaining("automatic handoff recovery exhausted after six observations") });
+      expect(blocked.runs.filter((r: any) => r.action === "implement-spec")).toHaveLength(0);
+      unavailable = false; f.restart();
+      const deadline = Date.now() + 700;
+      do {
+        expect((await detail()).automatic_planning[0]).toEqual(blocked.automatic_planning[0]);
+        expect(f.launches).toHaveLength(1);
+        await Bun.sleep(20);
+      } while (Date.now() < deadline);
+    } finally { f.close(); }
+  }, 45_000);
+
   it("retains acceptance while already Paused and automatically starts the same scope once after Resume and restart", async () => {
     const f = await capacityFixture();
     try {

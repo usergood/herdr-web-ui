@@ -134,6 +134,59 @@ try {
         assert.deepEqual(errors, []);
       } finally { await context.close(); f.close(); }
     }
+    let unavailable = true;
+    const f = await capacityFixture({ runTranscript: run => unavailable ? null : ({ source_id: `recovered-planning:${run.id}`, version: "v1", cursor: null, turns: [{ role: "assistant", ts: "2026-10-16T00:00:00Z", parts: [{ kind: "text", text: "Recovered accepted Specification handoff" }] }] }) });
+    const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
+    try {
+      const id = await f.assignment("Automatic handoff recovery"); const prefix = `/implementations/${id}`;
+      const detail = () => f.api(prefix).then(r => r.json());
+      await f.api(`/projects/${(await detail()).implementation.project_id}/configure`, { checks: [["bun", "test"]], permissions: "Edit owned files" });
+      const source = await f.api(`${prefix}/runs`, { action: "to-spec", idempotency_key: "recover-specifications" }).then(r => r.json());
+      const spec = await f.agent(source.id, "specification", { content: "Recover this accepted scope after an unavailable native handoff read." }).then(r => r.json());
+      f.runs.get(source.id)!.condition = "ready";
+      const origin = `http://localhost:${f.app.port}`;
+      assert.equal((await context.request.post(`${origin}/api/auth`, { data: { token: f.token } })).status(), 204);
+      const page = await context.newPage(); page.setDefaultTimeout(10_000);
+      const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
+      await page.goto(`${origin}/#factory/${id}`);
+      const specifications = page.getByRole("region", { name: "Specifications", exact: true });
+      await specifications.getByRole("button", { name: "Accept specification", exact: true }).click();
+      await specifications.getByText("Specification accepted", { exact: true }).waitFor();
+      const waitForDetail = async (ready: (value: FactoryDetail) => boolean) => {
+        const deadline = Date.now() + 10_000;
+        for (;;) {
+          const value: FactoryDetail = await detail();
+          if (ready(value)) return value;
+          if (Date.now() > deadline) throw new Error(`Automatic handoff recovery did not progress: ${JSON.stringify(value.automatic_planning)}`);
+          await Bun.sleep(20);
+        }
+      };
+      const waiting = await waitForDetail(value => (value.automatic_planning?.[0]?.attempts ?? 0) > 0);
+      assert.equal(waiting.automatic_planning![0]!.condition, "pending");
+      assert.equal(waiting.runs.filter(run => run.action === "implement-spec").length, 0);
+      f.restart();
+      const restarted = `http://localhost:${f.app.port}`;
+      assert.equal((await context.request.post(`${restarted}/api/auth`, { data: { token: f.token } })).status(), 204);
+      await page.goto(`${restarted}/#factory/${id}`);
+      await specifications.getByText("Specification accepted", { exact: true }).waitFor();
+      unavailable = false;
+      const recovered = await waitForDetail(value => value.runs.some(run => run.action === "implement-spec" && run.condition === "working"));
+      assert.equal(recovered.approvals.length, 1);
+      assert.equal(recovered.automatic_planning![0]!.id, waiting.automatic_planning![0]!.id);
+      assert.equal(recovered.automatic_planning![0]!.specification_id, spec.id);
+      assert.equal(recovered.runs.filter(run => run.action === "implement-spec").length, 1);
+      assert.equal(f.launches.length, 2);
+      const run = recovered.runs.find(run => run.action === "implement-spec")!;
+      const panel = page.getByRole("region", { name: "Workflow conversations", exact: true });
+      await panel.getByRole("button", { name: "Orchestrator", exact: true }).click();
+      const orchestrator = panel.getByRole("region", { name: "Orchestrator", exact: true });
+      await orchestrator.getByText("Native context", { exact: true }).click();
+      await orchestrator.getByText(run.id, { exact: true }).waitFor();
+      await panel.getByRole("button", { name: "Specifications", exact: true }).click();
+      await specifications.getByText("Recovered accepted Specification handoff", { exact: true }).waitFor();
+      assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+      assert.deepEqual(errors, []);
+    } finally { await context.close(); f.close(); }
   }
-  console.log("PASS button/chat acceptance while Paused or queued, restart and automatic Resume, retained Ticket names and execution history across later drafts, acceptance and restart on desktop/mobile at cap one");
+  console.log("PASS button/chat acceptance while Paused or queued, restart and automatic Resume, retained Ticket names and execution history, automatic unavailable-handoff recovery across restart without another approval, on desktop/mobile at cap one");
 } finally { await browser.close(); }
