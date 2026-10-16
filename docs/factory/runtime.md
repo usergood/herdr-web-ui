@@ -70,6 +70,8 @@ Linked GitHub issues are permanently deleted through the selected repository's v
 
 The Delete panel shows pending GitHub permission, account, transport and receipt problems after local cleanup. Repository-admin permission and organization deletion policy still apply. Reconciliation verifies a bounded, paginated issue inventory before sending a deletion; an already-missing issue completes safely. Lost or ambiguous replies remain pending until confirmed by a later observation, and confirmed cleanup is not repeated while another obligation remains. Restart resumes the same authorized identity and journal. After final cleanup, source fences contain only repository/source identifiers, without Assignment content/history. Sanitized app-managed snapshots and recovery copies retain these content-free fences, so restoring older data cannot re-enable automatic import or retained-PR mutations for deleted work. These fences also cover app-published PRs and publication branches whose confirmation reply was lost.
 
+During pending Delete reconciliation, the last confirmed local-cleanup receipt and external permission reason remain visible while a later retry waits for its response. A retry replaces them only after it has a new result.
+
 ## Board progress
 
 Assignments use five board lanes: Inbox, Queued, Running, Needs you and Done. Cards with Tickets show named active work and an expandable complete Ticket list with waiting/running/completed counts and dependency, capacity or failure reasons. The disclosure supports keyboard activation and stays open when changing progress moves a card between lanes.

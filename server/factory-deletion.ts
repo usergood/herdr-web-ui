@@ -93,7 +93,7 @@ export class FactoryDeletion {
         }
       }
       this.store.put("deleted_assignments", { id, context_ids: [...new Set([...(this.store.get<{ context_ids: string[] }>("deleted_assignments", id)?.context_ids ?? []), ...contextIds])] });
-      this.store.put("implementations", { ...idea, title: "Delete pending", description: "", outcome: "none", pause: undefined, deletion: { ...idea.deletion!, reasons: [], local_cleanup: undefined } });
+      this.store.put("implementations", { ...idea, title: "Delete pending", description: "", outcome: "none", pause: undefined, deletion: { ...idea.deletion! } });
       this.store.put("assignment_deletions", { ...journal!, local_done: true });
     }).immediate();
     const retained = this.store.db.query<{ data: string }, []>("SELECT data FROM records WHERE kind NOT IN ('assignment_deletions','deleted_assignments')").all();
