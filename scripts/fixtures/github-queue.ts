@@ -67,6 +67,10 @@ console.log(JSON.stringify(endpoint === "user" ? {login:"fictional-owner",id:104
     if (hostOffline) return Response.json({ error: { code: "offline", message: "Fictional host unavailable" } }, { status: 503 });
     if (path.endsWith("/capabilities")) { await capabilityGate?.(); return Response.json(capabilities); }
     if (path.endsWith("/inspect")) return Response.json(checkout);
+    if (path.endsWith("/project-discovery")) {
+      const body = await request.json() as { path: string };
+      if (body.path === repo) return Response.json(await json("/project-discovery", { machine_id: "local", path: repo }));
+    }
     if (path.endsWith("/operations/head")) return Response.json({ head: (checkout as { head: string }).head });
     if (path.endsWith("/launch")) {
       const { run, access } = await request.json() as { run: Record<string, unknown>; access: { token: string; url: string } };

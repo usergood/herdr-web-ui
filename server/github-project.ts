@@ -711,10 +711,12 @@ export class ProjectGitHub {
     }
     if (!observed && issue.updated_at && Number.isFinite(Date.parse(issue.updated_at))) observed = { revision, title: snapshot.title, body: snapshot.body, labels, state: issue.state as "open" | "closed", source_updated_at: issue.updated_at, fetched_at: new Date().toISOString(), repository: policy.repository, url: issue.html_url, account_profile_id: policy.account_profile_id, policy_revision: policy.revision };
     const source = this.import(policy.id, issue.node_id, issue.number, observed?.revision ?? revision, issue.title, `GitHub issue: ${issue.html_url}\n\n${issue.body ?? ""}\n\nProject review context:\n${policy.review_context}`, issue.html_url, issue.state, "issue", observed);
+    // Native observations and retained legacy receipts can use different digests.
+    // Revoke against the revision actually retained by import, including its scope fence.
     for (const approval of this.store.list<ProjectIssueApproval>("github_readiness", policy.id)) {
-      if (approval.source_id === source.id && approval.issue_revision !== revision && !approval.revoked_at) {
+      if (approval.source_id === source.id && approval.issue_revision !== source.revision && !approval.revoked_at) {
         this.store.put("github_readiness", { ...approval, revoked_at: new Date().toISOString() }, policy.id);
-        this.store.event(source.implementation_id, "github_readiness_revoked", { source_id: source.id, approval_id: approval.id, observed_revision: revision });
+        this.store.event(source.implementation_id, "github_readiness_revoked", { source_id: source.id, approval_id: approval.id, observed_revision: source.revision });
       }
     }
     const roles = PROJECT_TRIAGE_ROLES.filter(role => labels.some(label => label.toLowerCase() === (policy.triage_labels?.[role] || role).toLowerCase()));

@@ -200,7 +200,7 @@ else if (endpoint?.includes("/git/ref/tags/")) result = data.tag_ref ?? {};
 else if (endpoint?.includes("/git/tags/")) result = data.tag_object ?? {};
 else if (endpoint?.includes("/releases/tags/")) result = data.releases?.[decodeURIComponent(endpoint.split("/releases/tags/")[1])] ?? {};
 else if (endpoint === "repos/fictional/project") result = { full_name: "fictional/project" };
-else if (endpoint === "graphql" && args.some(arg => arg.includes("comments(first:"))) result = { data: { repository: { issue: { comments: { nodes: data.comments ?? [], pageInfo: { hasNextPage: false, endCursor: null } } } } } };
+else if (endpoint === "graphql" && Number.isSafeInteger(issueNumber) && args.some(arg => arg.includes("comments(first:"))) result = { data: { repository: { issue: { comments: { nodes: data.comments ?? [], pageInfo: { hasNextPage: false, endCursor: null } } } } } };
 else if (endpoint === "graphql") result = { data: { repository: { issue: issueProof, viewerPermission: "ADMIN", pullRequests: { nodes: data.pulls, pageInfo: { hasNextPage: false, endCursor: null } }, pullRequest: data.pull ?? data.pulls[0] } } };
 else if (endpoint?.endsWith("/merge")) result = { merged: !data.fail_merge, sha: "fictional-merged" };
 else if (endpoint?.endsWith("/update-branch")) result = { message: "Updating pull request branch", url: "https://api.github.com/fictional/update" };

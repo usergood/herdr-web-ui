@@ -34,6 +34,7 @@ const result = data.resources && Object.hasOwn(data.resources, endpoint) ? data.
   : endpoint?.includes("/releases?") ? data.release_pages?.[endpoint.split("page=").at(-1)] ?? (endpoint.endsWith("page=1") ? data.releases ?? [] : [])
   : endpoint?.includes("/commits/") ? { sha: data.release_heads?.[decodeURIComponent(endpoint.split("/commits/")[1])] }
   : endpoint?.includes("/issues?") ? (endpoint.includes("page=1&") ? data.issues ?? [] : [])
+  : endpoint?.includes("/dependencies/blocked_by?") ? []
   : endpoint?.includes("/issues/") ? data.issues?.find(issue => endpoint.endsWith("/" + issue.number)) : endpoint === "repos/fictional/schedules" ? { full_name: "fictional/schedules", default_branch: "main" } : {};
 process.stdout.write(JSON.stringify(result));
 `);
