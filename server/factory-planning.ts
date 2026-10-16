@@ -1,4 +1,4 @@
-import type { FactoryPlanningRequest, FactoryRun } from "../shared/factory.ts";
+import type { FactoryPlanningRequest, FactoryRun, Implementation } from "../shared/factory.ts";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { FactoryError } from "./factory-host.ts";
@@ -22,6 +22,8 @@ export class FactoryPlanning {
       if (this.stopped) return;
       if (request.condition === "blocked" || (request.next_attempt_at ?? 0) > Date.now()) continue;
       const id = request.implementation_id;
+      const idea = this.store.get<Implementation>("implementations", id);
+      if (idea?.pause || idea?.deletion) continue;
       const key = `specification-${request.specification_id}`;
       try {
         const existing = this.store.list<FactoryRun>("runs", id).find(run => run.idempotency_key === key);
@@ -54,6 +56,10 @@ export class FactoryPlanning {
         this.store.put("automatic_planning", { ...request, condition: "pane_id" in result ? "started" : result.condition === "blocked" ? "blocked" : "queued", run_id: "pane_id" in result ? result.id : null, reason: "reason" in result ? result.reason : result.waiting_reason }, id);
       } catch (error) {
         if (this.stopped) return;
+        if (error instanceof FactoryError && error.code === "assignment_paused") {
+          this.store.put("automatic_planning", { ...request, condition: "pending", reason: error.message }, id);
+          continue;
+        }
         this.store.db.transaction(() => {
           const reason = error instanceof FactoryError ? error.message : "Automatic planning could not be verified; inspect the retained request";
           if (error instanceof FactoryError && error.code === "scope_changed") this.workflow.mutate(id, "questions", { question: `${reason} (Specification ${request.specification_id}). Which Specification and execution settings should govern the next attempt?` });

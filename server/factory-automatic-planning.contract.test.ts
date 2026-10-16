@@ -13,6 +13,80 @@ async function until<T>(read: () => Promise<T>, ready: (value: T) => boolean): P
 }
 
 describe("Automatic planning through authenticated HTTP", () => {
+  it("retains acceptance while already Paused and automatically starts the same scope once after Resume and restart", async () => {
+    const f = await capacityFixture();
+    try {
+      const id = await f.assignment("Paused before acceptance"); const prefix = `/implementations/${id}`;
+      const detail = () => f.api(prefix).then(r => r.json());
+      await f.api(`/projects/${(await detail()).implementation.project_id}/configure`, { checks: [["bun", "test"]], permissions: "Edit owned files" });
+      const spec = await f.api(`${prefix}/specifications`, { content: "Preserve the accepted scope while Paused" }).then(r => r.json());
+      expect((await f.api(`${prefix}/pause`, {})).status).toBe(200);
+      const accept = () => f.api(`${prefix}/specification-acceptance`, { specification_id: spec.id, hash: spec.hash, source: "button" });
+      expect((await accept()).status).toBe(201);
+      f.restart();
+      const deadline = Date.now() + 700;
+      do {
+        const current = await detail();
+        expect(current.automatic_planning[0].condition).toBe("pending");
+        expect(current.automatic_planning[0].attempts ?? 0).toBe(0);
+        expect(current.runs).toHaveLength(0);
+        expect(f.launches).toHaveLength(0);
+        await Bun.sleep(20);
+      } while (Date.now() < deadline);
+      const retained = (await detail()).automatic_planning[0];
+      expect((await f.api(`${prefix}/resume`, {})).status).toBe(200);
+      f.restart();
+      const started = await until(detail, d => d.runs.some((r: any) => r.action === "implement-spec" && r.condition === "working"));
+      expect(started.runs).toHaveLength(1);
+      expect(started.runs[0].manifest.specification).toMatchObject({ id: spec.id, hash: spec.hash });
+      expect(started.automatic_planning[0]).toMatchObject({ id: retained.id, scope_hash: retained.scope_hash, specification_id: spec.id });
+      expect((await f.api(`${prefix}/resume`, {})).status).toBe(200);
+      await accept(); f.restart();
+      expect((await detail()).runs).toHaveLength(1);
+      expect(f.launches).toHaveLength(1);
+    } finally { f.close(); }
+  });
+
+  for (const phase of ["queued capacity", "Machine admission"] as const) it(`keeps accepted planning unfinished when Paused during ${phase} and admits once after restart and Resume`, async () => {
+    const f = await capacityFixture(); let release: (() => void) | undefined;
+    try {
+      await f.api("/settings", { max_agents: 1 });
+      const occupied = phase === "queued capacity" ? await f.assignment("Capacity holder") : null;
+      const holder = occupied ? await f.api(`/implementations/${occupied}/runs`, { action: "work", idempotency_key: "holder" }).then(r => r.json()) : null;
+      const id = await f.assignment(`Pause during ${phase}`); const prefix = `/implementations/${id}`;
+      const detail = () => f.api(prefix).then(r => r.json());
+      await f.api(`/projects/${(await detail()).implementation.project_id}/configure`, { checks: [["bun", "test"]], permissions: "Edit owned files" });
+      const spec = await f.api(`${prefix}/specifications`, { content: "Retain this scope through admission Pause" }).then(r => r.json());
+      const gate = phase === "Machine admission" ? f.holdNextAdmission() : null; release = gate?.release;
+      await f.api(`${prefix}/specification-acceptance`, { specification_id: spec.id, hash: spec.hash, source: "button" });
+      if (gate) await Promise.race([gate.started, Bun.sleep(4000).then(() => { throw new Error("Machine admission did not start"); })]);
+      else await until(detail, d => d.automatic_planning[0]?.condition === "queued");
+      const retained = (await detail()).automatic_planning[0];
+      expect((await f.api(`${prefix}/pause`, {})).status).toBe(200);
+      gate?.release(); release = undefined;
+      if (holder) await f.api(`/runs/${holder.id}/stop`, {});
+      const deadline = Date.now() + 700;
+      do {
+        const current = await detail();
+        expect(["pending", "queued"]).toContain(current.automatic_planning[0].condition);
+        expect(current.automatic_planning[0].attempts ?? 0).toBe(0);
+        expect(current.runs).toHaveLength(0);
+        expect(f.launches).toHaveLength(holder ? 1 : 0);
+        await Bun.sleep(20);
+      } while (Date.now() < deadline);
+      f.restart();
+      expect((await f.api(`${prefix}/resume`, {})).status).toBe(200);
+      const started = await until(detail, d => d.runs.some((r: any) => r.action === "implement-spec" && r.condition === "working"));
+      expect(started.runs).toHaveLength(1);
+      expect(started.runs[0].manifest.specification).toMatchObject({ id: spec.id, hash: spec.hash });
+      expect(started.automatic_planning[0]).toMatchObject({ id: retained.id, scope_hash: retained.scope_hash });
+      expect((await f.api(`${prefix}/resume`, {})).status).toBe(200);
+      f.restart();
+      expect((await detail()).runs).toHaveLength(1);
+      expect(f.launches).toHaveLength(holder ? 2 : 1);
+    } finally { release?.(); f.close(); }
+  });
+
   it("starts one Orchestrator and exposes its bounded plan and frontier with Specification authority alone", async () => {
     const f = await capacityFixture();
     try {

@@ -24,6 +24,11 @@ try {
         const page = await context.newPage(); page.setDefaultTimeout(10_000);
         const errors: string[] = []; page.on("pageerror", e => errors.push(e.message));
         await page.goto(`${origin}/#factory/${id}`);
+        const controls = page.getByRole("region", { name: "Assignment execution", exact: true });
+        if (source === "owner_chat") {
+          await controls.getByRole("button", { name: "Pause Assignment", exact: true }).click();
+          await controls.getByText("Paused", { exact: true }).waitFor();
+        }
         const history = page.getByRole("region", { name: "Specifications", exact: true });
         if (source === "button") await history.getByRole("button", { name: "Accept specification", exact: true }).click();
         else {
@@ -33,12 +38,30 @@ try {
         await history.getByText("Specification accepted", { exact: true }).waitFor();
         const steps = page.getByRole("region", { name: "Next step", exact: true });
         assert.equal(await steps.getByRole("button", { name: "Confirm testing seams", exact: true }).count(), 0);
-        await page.getByText("Queued work starts automatically when capacity is available.", { exact: true }).first().waitFor();
+        if (source === "button") {
+          await page.getByText("Queued work starts automatically when capacity is available.", { exact: true }).first().waitFor();
+          await controls.getByRole("button", { name: "Pause Assignment", exact: true }).click();
+          await controls.getByText("Paused", { exact: true }).waitFor();
+        }
         await page.getByText("Advanced controls", { exact: true }).first().click();
         assert.equal(await page.getByRole("button", { name: "Plan tickets", exact: true }).count(), 0);
         assert.equal(await page.getByRole("button", { name: "Propose Tickets", exact: true }).count(), 0);
         await page.reload();
+        f.restart();
+        const resumedOrigin = `http://localhost:${f.app.port}`;
+        assert.equal((await context.request.post(`${resumedOrigin}/api/auth`, { data: { token: f.token } })).status(), 204);
+        await page.goto(`${resumedOrigin}/#factory/${id}`);
+        await controls.getByText("Paused", { exact: true }).waitFor();
         await f.api(`/runs/${holder.id}/stop`, {});
+        const pausedDeadline = Date.now() + 700;
+        do {
+          const paused = await detail();
+          assert(["pending", "queued"].includes(paused.automatic_planning[0].condition));
+          assert.equal(paused.runs.length, 0);
+          assert.equal(f.launches.length, 1);
+          await Bun.sleep(20);
+        } while (Date.now() < pausedDeadline);
+        await controls.getByRole("button", { name: "Resume Assignment", exact: true }).click();
         await page.waitForFunction(async prefix => { const d = await fetch(`/api/factory${prefix}`).then(r => r.json()); return d.runs.some((r: { action: string }) => r.action === "implement-spec"); }, prefix);
         let run;
         const deadline = Date.now() + 10_000;
@@ -112,5 +135,5 @@ try {
       } finally { await context.close(); f.close(); }
     }
   }
-  console.log("PASS button/chat acceptance, queued planning, retained Ticket names and execution history across later drafts, acceptance and restart on desktop/mobile at cap one");
+  console.log("PASS button/chat acceptance while Paused or queued, restart and automatic Resume, retained Ticket names and execution history across later drafts, acceptance and restart on desktop/mobile at cap one");
 } finally { await browser.close(); }
