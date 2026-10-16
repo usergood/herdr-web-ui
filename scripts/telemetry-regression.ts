@@ -16,7 +16,7 @@ export async function checkTelemetrySettings(browser: Browser): Promise<void> {
   const state = join(root, "server-state");
   const server = createServer({
     port: 0, hostname: "127.0.0.1", token: "", stateDir: state,
-    accountDiscoveryHome: join(root, "account-home"), native: { version: async () => null },
+    factory: { accountDiscoveryHome: join(root, "account-home"), native: { version: async () => null } },
     usage: new UsageService(undefined, []), registerBridge: false,
   });
   try {

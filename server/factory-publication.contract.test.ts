@@ -9,7 +9,7 @@ import { factoryDeliveryFixture } from "./factory-delivery.fixture.ts";
 import { factoryPublicationFixture } from "./factory-publication.fixture.ts";
 import { fictionalGitHubPull } from "../site/demo/github-fixtures.ts";
 
-async function publicationFixture() {
+async function publicationFixture(assignmentTitle?: string) {
   const root = mkdtempSync(join(tmpdir(), "factory-publication-"));
   const repo = join(root, "repo"); mkdirSync(repo);
   const git = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -59,7 +59,7 @@ else if (args.includes("POST")) {
     // All behavioral assertions use authenticated HTTP, the fake GitHub tool and owned Git refs.
     const store = new FactoryStore(stateDir);
     const record = store.record();
-    store.put("host_leases", { id, signature: "owned", run: { ...record, id, action: "implement-spec", implementation_id: "owned-assignment", provider: "codex", machine_id: "local", condition: "ready", pane_id: pane.pane_id, workspace_id: pane.workspace_id, checkout: repo, worktree: repo, branch, base: head, manifest: { project: { ...project, checks: [["bun", "-e", "process.exit(0)"]], pull_request: { repository: "fictional/project", base_branch: "main" } }, checkout: overview.checkouts[0], planning_authority: { automatic_execution: true }, account_snapshot: { host_id: accountOverview.host_id, profiles: [{ id: profile.id, revision: profile.revision, service: "github", identity: profile.verified_identity }] } } } });
+    store.put("host_leases", { id, signature: "owned", run: { ...record, id, action: "implement-spec", implementation_id: "owned-assignment", provider: "codex", machine_id: "local", condition: "ready", pane_id: pane.pane_id, workspace_id: pane.workspace_id, checkout: repo, worktree: repo, branch, base: head, manifest: { ...(assignmentTitle === undefined ? {} : { implementation: { title: assignmentTitle } }), project: { ...project, checks: [["bun", "-e", "process.exit(0)"]], pull_request: { repository: "fictional/project", base_branch: "main" } }, checkout: overview.checkouts[0], planning_authority: { automatic_execution: true }, account_snapshot: { host_id: accountOverview.host_id, profiles: [{ id: profile.id, revision: profile.revision, service: "github", identity: profile.verified_identity }] } } } });
     for (const axis of ["standards", "spec"]) store.put("host_review_evidence", { ...store.record(), id: `owned-${axis}`, worker_id: `owned-${axis}`, run_id: id, axis, head, outcome: "passed", source_id: `owned-source-${axis}`, content: "FACTORY_REVIEW: PASS" }, id);
     store.close();
     const route = `factory-host/runs/${id}/operations/`;
@@ -116,6 +116,51 @@ it("the owned Machine publishes the exact commit and reconciles a lost GitHub cr
     expect(requests.filter(args => args.includes("POST"))).toHaveLength(1);
     expect(requests.filter(args => args.includes("PATCH"))).toHaveLength(1);
 
+  } finally { f.close(); }
+}, 20000);
+
+it.each(["initial", "repaired"] as const)("the %s publication push excludes reachable release tags despite repository followTags", async (candidate) => {
+  const f = await publicationFixture();
+  try {
+    let body = f.body;
+    let head = f.head;
+    if (candidate === "repaired") {
+      expect((await f.post(f.route + "publish", f.body)).status).toBe(409);
+      expect((await f.post(f.route + "publish", f.body)).status).toBe(200);
+      const repaired = await f.repair();
+      body = repaired.repairBody;
+      head = repaired.repairedHead;
+    }
+    f.git(["config", "push.followTags", "true"]);
+    f.git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "tag", "-a", "v999.0.0-owned-publication-fixture", "-m", "Owned unpublished release fixture", head]);
+    // Both create and repair lose their acknowledgment; retry must observe the same receipt.
+    expect((await f.post(f.route + "publish", body)).status).toBe(409);
+    f.restart();
+    const observed = await f.post(f.route + "publish", body);
+    expect(observed.status).toBe(200);
+    expect(await observed.json()).toMatchObject({ head, number: 27 });
+    expect(execFileSync("git", ["--git-dir", f.bare, "rev-parse", `refs/heads/${f.branch}`], { encoding: "utf8" }).trim()).toBe(head);
+    expect(execFileSync("git", ["--git-dir", f.bare, "for-each-ref", "--format=%(refname)", "refs/tags/"], { encoding: "utf8" }).trim()).toBe("");
+    const mutations = readFileSync(f.calls, "utf8").trim().split("\n").map(line => JSON.parse(line));
+    expect(mutations.filter(args => args.includes("POST"))).toHaveLength(1);
+    expect(mutations.filter(args => args.includes("PATCH"))).toHaveLength(candidate === "repaired" ? 1 : 0);
+  } finally { f.close(); }
+}, 20000);
+
+it.each([
+  [undefined, "feat(factory): Fixture"],
+  ["Improve fictional publication", "feat(factory): Improve fictional publication"],
+  ["fix(review): retain the exact candidate", "fix(review): retain the exact candidate"],
+  ["feat(factory)!: change the fictional contract", "feat(factory)!: change the fictional contract"],
+] as const)("publication title %s has the required scope without nesting a valid title", async (assignmentTitle, expected) => {
+  const f = await publicationFixture(assignmentTitle);
+  try {
+    expect((await f.post(f.route + "publish", f.body)).status).toBe(409);
+    f.restart();
+    expect((await f.post(f.route + "publish", f.body)).status).toBe(200);
+    const creates = readFileSync(f.calls, "utf8").trim().split("\n").map(line => JSON.parse(line)).filter(args => args.includes("POST"));
+    expect(creates).toHaveLength(1);
+    expect(creates[0]).toContain(`title=${expected}`);
   } finally { f.close(); }
 }, 20000);
 

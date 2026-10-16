@@ -8,6 +8,29 @@ import { published, until } from "./factory-human-review-fixture.ts";
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    // The owned Machine returns a different captured head from the checked PR. The public
+    // handoff must retain that mismatch as blocked, and both layouts must announce the error.
+    const blockedFixture = await capacityFixture({ advancingHeads: true });
+    const blockedContext = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
+    try {
+      blockedFixture.reviewHead("f".repeat(40));
+      const { id, detail } = await published(blockedFixture);
+      const blocked = await until(detail, d => d.human_reviews?.[0]?.condition === "blocked");
+      const reason = "The captured candidate differs from the checked PR head";
+      assert.equal(blocked.human_reviews[0].reason, reason);
+      assert.equal(blocked.human_review_approvals.length, 0);
+      const origin = `http://localhost:${blockedFixture.app.port}`;
+      assert.equal((await blockedContext.request.post(`${origin}/api/auth`, { data: { token: blockedFixture.token } })).status(), 204);
+      const page = await blockedContext.newPage(); page.setDefaultTimeout(10000);
+      await page.goto(`${origin}/#factory/${id}`);
+      await page.getByRole("navigation", { name: "Workflow history", exact: true }).getByRole("button", { name: "Human Review", exact: true }).click();
+      const review = page.getByRole("region", { name: "Human Review", exact: true });
+      await review.getByText(reason, { exact: true }).waitFor();
+      await review.getByRole("alert").filter({ hasText: reason }).waitFor();
+      assert.equal(await review.getByRole("status").filter({ hasText: reason }).count(), 0);
+      assert(await review.getByRole("button", { name: "Approve and merge", exact: true }).isDisabled());
+      console.log(`PASS blocked snapshot mismatch alert ${viewport.width}x${viewport.height}`);
+    } finally { await blockedContext.close(); blockedFixture.close(); }
     const f = await capacityFixture({ advancingHeads: true });
     const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
     try {
@@ -28,6 +51,7 @@ try {
       await page.getByRole("navigation", { name: "Workflow history", exact: true }).getByRole("button", { name: "Human Review", exact: true }).click();
       const review = page.getByRole("region", { name: "Human Review", exact: true });
       await review.getByRole("navigation", { name: "Changed files", exact: true }).waitFor();
+      await review.getByRole("status").filter({ hasText: "Review the captured result and discuss it with the assistant." }).waitFor();
       await review.getByRole("button", { name: "src/progress.ts · branch:R090", exact: true }).click();
       await review.getByRole("region", { name: "Captured diff", exact: true }).locator("pre").filter({ hasText: "rename from src/old.ts" }).waitFor();
       await review.getByText("Review snapshot", { exact: true }).first().click();

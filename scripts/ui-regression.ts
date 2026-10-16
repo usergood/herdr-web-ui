@@ -11,7 +11,6 @@ import { createServer } from "../server/index.ts";
 import { herdrRpc, sessionSnapshot, workspaceCreate, workspaceClose } from "../server/herdr/client.ts";
 import type { PaneMoved, SessionSnapshot, WorkspaceCreated, WorktreeOpened } from "../shared/protocol.ts";
 import type { Machine } from "../shared/machines.ts";
-import { MAX_ATTACHMENT_BYTES } from "../shared/attachments.ts";
 import { alertsOffMarked, alertsState, runMoreItem } from "./header-more.ts";
 import { sheetsSettled } from "./sheets-settled.ts";
 import { routeDrained } from "./drained-route.ts";

@@ -42,7 +42,7 @@ export function HumanReviewConversation({ detail, busy, perform, history }: { de
       {drafts.length > 0 && <div className="factory-actions"><button className="btn factory-button" disabled={!feedbackReady} onClick={() => void perform(async () => {
         await factoryRequest(`/implementations/${detail.implementation.id}/human-review/submit`, { review_id: review.id, snapshot_id: review.snapshot_id!, head: review.head, disposition: "approve", comment_ids: drafts.map(c => c.id), idempotency_key: `approve-comments-${review.snapshot_id}` });
       })}>{t("Approve with comments")}</button><p>{t("Approval submits all saved comments for repair, then merges after passing checks and independent reviews. No further approval is required.")}</p></div>}
-      <p role="status">{review.reason ?? t("Review the captured result and discuss it with the assistant.")}</p>
+      <p role={review.condition === "blocked" ? "alert" : "status"}>{review.reason ?? t("Review the captured result and discuss it with the assistant.")}</p>
       <p className="field-hint">{t("Approval merges this checked and independently reviewed candidate into its authorized target.")}</p>
       {approval && <p role={approval.condition === "blocked" ? "alert" : "status"}>{approval.reason ?? (approval.condition === "released" ? t("Release verified") : approval.condition === "merged" ? t("Merge verified") : t("Merge approval retained"))}</p>}
       {(retainedComments || composing || text.trim()) && <p role="status">{t("Finish your draft comments before approving without comments.")}</p>}

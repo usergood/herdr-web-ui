@@ -79,12 +79,13 @@ export class FactoryHostPublication {
       if (remote && remote.split(/\s+/)[0] !== body.head) throw new FactoryError("publication_branch_changed", "The owned remote branch has another head; preserve it", 409);
       await assertCurrent();
       assertOwned();
-      await git(run.worktree, ["push", "--", destination, `${body.head}:refs/heads/${run.branch}`]);
+      await git(run.worktree, ["-c", "push.followTags=false", "push", "--", destination, `${body.head}:refs/heads/${run.branch}`]);
       await assertCurrent();
       const title = (frozen.implementation?.title ?? frozen.project.name).replace(/[\r\n]/g, " ").slice(0, 180);
+      const pullTitle = /^[a-z][a-z0-9-]*\([^()\r\n]+\)!?: \S/.test(title) ? title : `feat(factory): ${title}`;
       const description = `## Summary\n\n${title}\n\n\`\`\`text\nAccepted Specification → Tickets → checks → Standards + Spec → PR\n\`\`\`\n\n## Evidence\n\n- Checked and independently reviewed commit: ${body.head}\n- Check: ${String(body.check_id)}\n- Independent reports: ${Array.isArray(body.evidence_ids) ? body.evidence_ids.join(", ") : ""}\n\n## Merge Danger\n\n**Door:** two-way\n\n**Blast Radius:** Project\n\nMerge requires separate Human Review authorization.\n\n${marker}`;
       let sent = false;
-      try { pull = await api(["api", `repos/${policy.repository}/pulls`, "--method", "POST", "-f", `title=feat: ${title}`, "-f", `head=${run.branch}`, "-f", `base=${policy.base_branch}`, "-f", `body=${description}`], () => { intent = { ...intent!, condition: "sending" }; this.store.put("host_publications", intent, id); sent = true; }) as GitHubPull; }
+      try { pull = await api(["api", `repos/${policy.repository}/pulls`, "--method", "POST", "-f", `title=${pullTitle}`, "-f", `head=${run.branch}`, "-f", `base=${policy.base_branch}`, "-f", `body=${description}`], () => { intent = { ...intent!, condition: "sending" }; this.store.put("host_publications", intent, id); sent = true; }) as GitHubPull; }
       catch (error) { if (!sent) throw error; throw new FactoryError("publication_uncertain", "PR creation was sent; reconcile its exact identity before any further action", 409); }
     }
     if (pull && !pull.body?.includes(marker) && typeof body.previous_head === "string") {
@@ -99,7 +100,7 @@ export class FactoryHostPublication {
       catch { throw new FactoryError("publication_branch_changed", "The repaired head must preserve the published history", 409); }
       await assertCurrent();
       assertOwned();
-      if (remote !== body.head) await git(run.worktree, ["push", "--", destination, `${body.head}:refs/heads/${run.branch}`]);
+      if (remote !== body.head) await git(run.worktree, ["-c", "push.followTags=false", "push", "--", destination, `${body.head}:refs/heads/${run.branch}`]);
       await assertCurrent();
       const description = pull.body.replace(previousMarker, marker) + `\n\nRepaired candidate: ${body.head}\nCheck: ${String(body.check_id)}\nIndependent reports: ${(body.evidence_ids as string[]).join(", ")}\nMerge still requires Human Review authorization.\n`;
       let sent = false;
