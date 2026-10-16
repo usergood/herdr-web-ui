@@ -8,7 +8,7 @@ export class FactoryHumanApprovalService {
   private stopped = false;
   stop(): void { this.stopped = true; }
   private readonly busy = new Set<string>();
-  constructor(private readonly store: FactoryStore, private readonly runtime: FactoryRuntime, private readonly workflow: import("./factory-workflow.ts").FactoryWorkflow) {}
+  constructor(private readonly store: FactoryStore, private readonly runtime: FactoryRuntime, private readonly workflow: import("./factory-workflow.ts").FactoryWorkflow, private readonly retainBeforeDelivery: (id: string) => Promise<unknown>) {}
   private candidate(id: string, review: FactoryHumanReview, submitting = false) {
     if (this.stopped) throw new FactoryError("stopping", "The bridge is stopping", 409);
     this.runtime.assertExecuting(id);
@@ -98,12 +98,37 @@ export class FactoryHumanApprovalService {
   }
   async maintain(): Promise<void> {
     if (this.stopped) return;
-    for (const receipt of this.store.list<FactoryHumanApproval>("human_review_approvals")) if (!this.store.get<Implementation>("implementations", receipt.implementation_id)?.pause && ["repairing", "pending", "uncertain", "awaiting_release"].includes(receipt.condition) && (receipt.next_observation_at ?? 0) <= Date.now()) await this.reconcile(receipt);
+    for (const receipt of this.store.list<FactoryHumanApproval>("human_review_approvals")) if (!this.store.get<Implementation>("implementations", receipt.implementation_id)?.pause && ["repairing", "pending", "uncertain", "awaiting_release", "merged", "released"].includes(receipt.condition) && (!["merged", "released"].includes(receipt.condition) || this.store.get<FactoryRun>("runs", receipt.run_id)?.condition !== "completed") && (receipt.next_observation_at ?? 0) <= Date.now()) await this.reconcile(receipt);
+  }
+  /** Delivery evidence survives unavailable cleanup; only verified shutdown releases execution. */
+  private async finishDelivery(receipt: FactoryHumanApproval): Promise<void> {
+    const run = this.store.get<FactoryRun>("runs", receipt.run_id);
+    if (!run || run.condition === "completed") return;
+    try {
+      this.runtime.assertExecuting(receipt.implementation_id);
+      const identity = JSON.stringify([run.id, run.worktree, run.workspace_id, run.pane_id]);
+      const retained = this.store.list<{ kind: string; data: { run_id?: string; identity?: string } }>("events", receipt.implementation_id).some(event => event.kind === "delivery_history_retained" && event.data.run_id === run.id && event.data.identity === identity);
+      if (!retained) {
+        await this.retainBeforeDelivery(run.id);
+        if (this.stopped) return;
+        this.runtime.assertExecuting(receipt.implementation_id);
+        this.store.event(receipt.implementation_id, "delivery_history_retained", { run_id: run.id, identity, approval_id: receipt.id });
+      }
+      await this.runtime.completeDelivery(run.id);
+    } catch (error) {
+      if (this.stopped || error instanceof FactoryError && ["assignment_paused", "assignment_deleting"].includes(error.code)) return;
+      const current = this.store.get<FactoryRun>("runs", run.id);
+      const reason = error instanceof FactoryError ? error.message : "Delivery is verified; owned native shutdown remains unconfirmed";
+      if (current && current.condition !== "completed") this.store.put("runs", { ...current, waiting_reason: reason }, receipt.implementation_id);
+      this.store.put("human_review_approvals", { ...receipt, next_observation_at: Date.now() + 2000 }, receipt.implementation_id);
+      this.store.event(receipt.implementation_id, "delivery_completion_pending", { run_id: run.id, approval_id: receipt.id, reason });
+    }
   }
   private async reconcile(receipt: FactoryHumanApproval): Promise<void> {
-    if (this.stopped || receipt.superseded_by_batch_id || this.busy.has(receipt.id) || ["merged", "released"].includes(receipt.condition)) return;
+    if (this.stopped || receipt.superseded_by_batch_id || this.busy.has(receipt.id)) return;
     this.busy.add(receipt.id);
     try {
+      if (["merged", "released"].includes(receipt.condition)) { await this.finishDelivery(receipt); return; }
       const review = this.store.get<FactoryHumanReview>("human_reviews", receipt.review_id)!;
       if (receipt.repair_batch_id && receipt.repair_scope !== this.repairScope(receipt.implementation_id, receipt.run_id)) throw new FactoryError("repair_scope_changed", "The owner context changed; review the repair scope before granting new merge authority", 409);
       if (receipt.condition === "repairing") {
@@ -135,6 +160,7 @@ export class FactoryHumanApprovalService {
         const idea = this.store.get<Implementation>("implementations", receipt.implementation_id)!;
         if (result.condition !== "uncertain") this.store.put("implementations", { ...idea, stage: result.condition === "awaiting_release" ? "review" : "done", outcome: result.condition === "released" ? "released" : "merged" });
       }).immediate();
+      if (["merged", "released"].includes(result.condition)) await this.finishDelivery(this.store.get<FactoryHumanApproval>("human_review_approvals", receipt.id)!);
     } catch (error) {
       if (this.stopped || error instanceof FactoryError && error.code === "assignment_paused") return;
       if (error instanceof FactoryError && error.code === "merge_waiting") {

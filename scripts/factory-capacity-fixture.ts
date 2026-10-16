@@ -38,7 +38,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
   const publications = new Map<string, any>();
   let losePublication = false;
   let publicationGate: { entered: () => void; wait: Promise<void> } | null = null;
-  let loseStop = false;
+  let loseStop = false; let loseRunStop = false; let unavailableRunStop = false;
   let denyPublication = false;
   let mergeFailure: string | null = null; let loseMerge = false;
   const mergeObservations: string[] = [];
@@ -117,7 +117,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
       if (action === "artifacts") return Response.json([]);
       if (action === "finish") { run.condition = "completed"; return Response.json(run); }
       if (action === "send") { if (rejectSend) { rejectSend = false; run.condition = "needs_you"; return Response.json({ error: { code: "agent_blocked", message: "Owned native permission arrived before delivery" } }, { status: 409 }); } prompts.push({ run_id: run.id, text: body.text }); run.condition = "working"; if (loseSend) { loseSend = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost continuation acknowledgment" } }, { status: 503 }); } return Response.json({ ok: true }); }
-      if (action === "stop") { run.condition = "cancelled"; return Response.json(run); }
+      if (action === "stop") { if (unavailableRunStop) return Response.json({ error: { code: "native_identity_uncertain", message: "Owned native shutdown is unconfirmed" } }, { status: 409 }); run.condition = "cancelled"; if (loseRunStop) { loseRunStop = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost parent shutdown acknowledgment" } }, { status: 503 }); } return Response.json(run); }
       if (action === "operations/check") {
         const checked = { ...body.check, head: scenario.advancingHeads ? (body.worker_id ? workers.get(body.worker_id)?.head : tips.get(run.id)) ?? "1".repeat(40) : "1".repeat(40), workspace_hash: "owned-check", commands: [{ args: ["bun", "test"], exit_code: 0, output: "Owned checks passed" }], condition: "passed" } as FactoryCheck;
         if (failCheck) { failCheck = false; checked.condition = "failed"; checked.commands[0]!.exit_code = 1; checked.commands[0]!.output = "Owned check failure"; }
@@ -207,6 +207,8 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
     changeHead: (runId: string, head: string) => { tips.set(runId, head); },
     changeAfterNextIntegration: (head: string) => { afterIntegrationHead = head; },
     loseNextStop: () => { loseStop = true; },
+    loseNextRunStop: () => { loseRunStop = true; },
+    unavailableRunStop: (value: boolean) => { unavailableRunStop = value; },
     holdNextAdmission: () => {
       let entered!: () => void; let release!: () => void;
       const started = new Promise<void>(resolve => { entered = resolve; });

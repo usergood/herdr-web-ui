@@ -10,6 +10,7 @@ try {
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
     for (const scenario of ["merge", "release", "stale", "failing", "protected", "denied", "lost", "pending"] as const) {
       const f = await capacityFixture({ advancingHeads: true });
+      f.setTranscript({ source_id: "owned-delivery-history", version: "one", cursor: null, turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: "Retained implementation delivery history." }] }] });
       const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
       try {
         if (scenario === "merge") f.reviewFiles([
@@ -19,7 +20,7 @@ try {
         const { id, detail, run } = await published(f, scenario === "release" ? "release" : "merge");
         await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
         const occupied = await f.assignment("Occupied approval capacity");
-        await f.api(`/implementations/${occupied}/runs`, { action: "work", idempotency_key: "occupy" });
+        const occupiedRun = await f.api(`/implementations/${occupied}/runs`, { action: "work", idempotency_key: "occupy" }).then(r => r.json());
         if (scenario === "failing") { f.failNextCheck(); assert.equal((await f.api(`/runs/${run.id}/checks`, {}).then(r => r.json())).condition, "failed"); }
         if (scenario === "stale") f.changeHead(run.id, "f".repeat(40));
         if (scenario === "protected") f.mergeFailure("merge_blocked");
@@ -84,14 +85,34 @@ try {
           await review.getByText("Merge verified", { exact: true }).waitFor();
           assert.equal((await detail()).implementation.stage, "done");
         }
+        if (scenario === "merge") {
+          assert.equal((await detail()).runs.find((r: any) => r.id === run.id).condition, "completed");
+          await page.getByRole("button", { name: "Archive task", exact: true }).click();
+          await page.getByRole("button", { name: "Restore", exact: true }).click();
+          assert.equal((await detail()).implementation.archived_at, null);
+          f.runs.get(occupiedRun.id)!.condition = "ready";
+          await review.getByRole("textbox", { name: "Discuss this review", exact: true }).fill("Explain the delivered change");
+          await review.getByRole("button", { name: "Send discussion", exact: true }).click();
+          const discussed = await until(detail, d => d.human_review_deliveries?.[0]?.condition === "sent");
+          assert.equal(discussed.implementation.stage, "done");
+          assert.equal(discussed.human_review_approvals[0].condition, "merged");
+          assert.equal(discussed.runs.find((r: any) => r.id === run.id).condition, "completed");
+          const assistant = discussed.human_reviews[0].assistant_run_id;
+          f.setTranscript({ source_id: "owned-delivered-explanation", version: "one", cursor: null, turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: "The delivered change retains truthful progress." }] }] });
+          f.runs.get(assistant)!.condition = "ready";
+          await until(detail, d => d.native_snapshots.some((s: any) => s.run_id === assistant && s.source_id === "owned-delivered-explanation"));
+          await page.reload();
+          await review.getByText("The delivered change retains truthful progress.", { exact: true }).waitFor();
+          assert.equal((await detail()).implementation.stage, "done");
+        }
         await page.reload();
         assert.equal((await detail()).human_review_approvals.length, scenario === "failing" ? 0 : 1);
         if (["merge", "lost", "release", "pending"].includes(scenario)) assert.equal(f.mergeEffects.length, 1);
-        assert.equal(f.launches.length, 2);
+        assert.equal(f.launches.length, scenario === "merge" ? 3 : 2);
         assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
         assert.deepEqual(errors, []);
       } finally { await context.close(); f.close(); }
     }
   }
-  console.log("PASS Human Review merge authority, stale/protected/denied targets, lost replies, retained CI waits and release completion on desktop/mobile");
+  console.log("PASS Human Review merge authority, stale/protected/denied targets, lost replies, retained CI waits, release completion, delivery archive and postdelivery discussion on desktop/mobile");
 } finally { await browser.close(); }

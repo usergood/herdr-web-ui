@@ -21,11 +21,12 @@ async function humanHostFixture(holdCheck = false) {
   const checkStarted = join(root, "check-started"); const releaseCheck = join(root, "release-check");
   const checks = holdCheck ? [[process.execPath, "-e", `const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(checkStarted)}, "working"); const deadline = Date.now() + 10000; while (!fs.existsSync(${JSON.stringify(releaseCheck)})) { if (Date.now() > deadline) process.exit(1); await Bun.sleep(20); }`]] : [];
   const panes: any[] = []; const workspaces: any[] = [];
+  let snapshotGate: { entered: () => void; wait: Promise<void> } | null = null;
   const app = createServer({ port: 0, token: "owned-native-review", stateDir: join(root, "state"), machines: false, factory: { accountDiscoveryHome: root, native: {
     version: async () => "owned-native-review",
     createWorkspace: async (options: any) => { const workspace = { workspace_id: `owned-review-${workspaces.length}`, label: options.label }; const pane = { pane_id: `${workspace.workspace_id}:p1`, workspace_id: workspace.workspace_id, terminal_id: `${workspace.workspace_id}:terminal`, cwd: options.cwd, agent: "codex", agent_status: "idle" }; workspaces.push(workspace); panes.push(pane); return { workspace, root_pane: pane } as any; },
     startAgent: async () => ({}) as any,
-    snapshot: async () => ({ panes, workspaces }) as any,
+    snapshot: async () => { if (snapshotGate) { const gate = snapshotGate; snapshotGate = null; gate.entered(); await gate.wait; } return { panes, workspaces } as any; },
     closeWorkspace: async (workspaceId: string) => { for (let i = panes.length - 1; i >= 0; i--) if (panes[i].workspace_id === workspaceId) panes.splice(i, 1); const index = workspaces.findIndex(w => w.workspace_id === workspaceId); if (index >= 0) workspaces.splice(index, 1); return {} as any; },
   } } });
   const api = (path: string, body?: unknown) => fetch(`http://localhost:${app.port}/api/${path}`, { method: body === undefined ? "GET" : "POST", headers: { authorization: "Bearer owned-native-review", "x-herdr-factory": "1", "x-herdr-machine": "1", "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
@@ -40,8 +41,39 @@ async function humanHostFixture(holdCheck = false) {
   await api(`factory-host/runs/${parentId}/reconcile`, {});
   const snapshotId = crypto.randomUUID();
   const run = { id, created_at: now, updated_at: now, implementation_id: assignmentId, action: "work", provider: "codex", machine_id: "local", conversation_kind: "human_review", condition: "accepted", waiting_reason: null, idempotency_key: "owned-human-native", specification_id: null, graph_hash: null, base: candidate, checkout: repo, worktree: null, branch: null, workspace_id: null, pane_id: null, manifest: { skills: { hash: capabilities.skill_manifest.hash }, provider_version: "owned-native-review", checkout, project: { permission_mode: "approve_for_me", checks }, implementation: { title: "Owned review", description: "Discuss the captured result" }, human_review: { review: { id: parentId, run_id: parentId, implementation_id: assignmentId, conversation_id: `${assignmentId}:human_review`, condition: "ready", head: candidate, snapshot_id: snapshotId }, snapshot: { id: snapshotId, run_id: parentId, implementation_id: assignmentId, machine_id: "local", repository: checkout.repository, mode: "branch", base: checkout.head, head: candidate } } } };
-  return { api, run, parent: launchedParent, source, repo, checkout, candidate, panes, workspaces, git, checkStarted, releaseCheck, close: () => { app.stop(); rmSync(root, { recursive: true, force: true }); } };
+  return { api, run, parent: launchedParent, source, repo, checkout, candidate, panes, workspaces, git, checkStarted, releaseCheck,
+    holdNextSnapshot: () => { let entered!: () => void; let release!: () => void; const started = new Promise<void>(resolve => { entered = resolve; }); const wait = new Promise<void>(resolve => { release = resolve; }); snapshotGate = { entered, wait }; return { started, release }; }, close: () => { app.stop(); rmSync(root, { recursive: true, force: true }); } };
 }
+
+it("admits only captured readonly Human Review after the candidate owner confirms native Stop", async () => {
+  const f = await humanHostFixture();
+  try {
+    expect((await f.api(`factory-host/runs/${f.parent.id}/stop`, {})).status).toBe(200);
+    expect(f.workspaces).toHaveLength(0);
+    const response = await f.api("factory-host/launch", { run: f.run });
+    expect(response.status).toBe(202);
+    expect(await response.json()).toMatchObject({ conversation_kind: "human_review", condition: "working", base: f.candidate });
+    expect(f.workspaces).toHaveLength(1);
+    expect(f.git(["rev-parse", "HEAD"])).toBe(f.checkout.head);
+  } finally { f.close(); }
+}, 20000);
+
+it("rejects an older Human Review admission observation when Stop or Pause closes its candidate owner", async () => {
+  for (const control of ["stop", "pause"] as const) {
+    const f = await humanHostFixture(); const gate = f.holdNextSnapshot(); let pending: Promise<Response> | undefined;
+    try {
+      pending = f.api("factory-host/launch", { run: f.run });
+      await gate.started;
+      const route = `factory-host/runs/${f.parent.id}/${control === "pause" ? "operations/pause" : "stop"}`;
+      expect((await f.api(route, control === "pause" ? { pause_id: crypto.randomUUID() } : {})).status).toBe(200);
+      gate.release();
+      const rejected = await pending;
+      expect(rejected.status).toBe(409);
+      expect(await rejected.json()).toMatchObject({ error: { code: "host_owned" } });
+      expect(f.workspaces).toHaveLength(0);
+    } finally { gate.release(); if (pending) await pending.catch(() => {}); f.close(); }
+  }
+}, 20000);
 
 describe("Human Review through authenticated HTTP", () => {
   it("hands the resting candidate owner to a read-only assistant without releasing the parent's ownership", async () => {

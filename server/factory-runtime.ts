@@ -556,7 +556,7 @@ export class FactoryRuntime {
       run = { ...run, capacity_pool: current?.capacity_pool ?? run.capacity_pool, continuation: current?.continuation ?? run.continuation, ...(current?.continuation && ["working", "ready"].includes(run.condition) ? { condition: current.condition, waiting_reason: current.waiting_reason } : {}) };
       this.store.put("runs", run, run.implementation_id);
       this.store.event(run.implementation_id, run.condition === "working" ? "native_launch_confirmed" : "dispatch_uncertain", { run_id: run.id, machine_id: run.machine_id, pane_id: run.pane_id, reason: run.waiting_reason });
-      if (run.condition === "working") { const idea = this.store.get<Implementation>("implementations", run.implementation_id)!; this.store.put("implementations", { ...idea, stage: run.conversation_kind === "human_review" ? "review" : ["work", "implement-spec"].includes(run.action) ? "running" : "specifying" }); }
+      if (run.condition === "working") { const idea = this.store.get<Implementation>("implementations", run.implementation_id)!; if (run.conversation_kind !== "human_review" || idea.stage !== "done") this.store.put("implementations", { ...idea, stage: run.conversation_kind === "human_review" ? "review" : ["work", "implement-spec"].includes(run.action) ? "running" : "specifying" }); }
     })();
     return run;
   }
@@ -619,6 +619,20 @@ export class FactoryRuntime {
     const stopped = this.observed(run, run.machine_id === "local" ? await this.host.stopRun(id) : await this.remote<FactoryRun>(run.machine_id, `/runs/${id}/stop`, {}));
     this.store.db.transaction(() => { this.store.put("runs", stopped, run.implementation_id); this.store.event(run.implementation_id, "run_stopped", { run_id: id, summary: body.summary ?? "Owner stopped this attempt", worktree_retained: true }); })();
     return stopped;
+  }
+  async completeDelivery(id: string): Promise<FactoryRun> {
+    const run = this.store.get<FactoryRun>("runs", id);
+    if (!run || run.action !== "implement-spec") throw new FactoryError("factory_run_required", "Complete the delivered implementation Run", 409);
+    if (run.condition === "completed") return run;
+    this.assertExecuting(run.implementation_id);
+    const stopped = await this.stopRun(id, { summary: "Verified delivery completed this implementation; history and worktree are retained" });
+    if (!["cancelled", "completed"].includes(stopped.condition)) throw new FactoryError("native_identity_uncertain", "Delivery is verified; owned native shutdown remains unconfirmed", 409);
+    if (this.stopped) throw new FactoryError("stopping", "Delivery completion will reconcile after restart", 409);
+    this.assertExecuting(run.implementation_id);
+    const completed: FactoryRun = { ...stopped, condition: "completed", waiting_reason: null };
+    this.store.put("runs", completed, run.implementation_id);
+    this.store.event(run.implementation_id, "delivery_execution_completed", { run_id: id, history_retained: true, worktree_retained: true });
+    return completed;
   }
   async finishStep(id: string): Promise<FactoryRun> {
     const run = this.store.get<FactoryRun>("runs", id);

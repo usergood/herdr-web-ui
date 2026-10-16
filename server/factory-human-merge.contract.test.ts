@@ -433,3 +433,107 @@ it("the Machine continues to accept a successful required commit-status context"
     expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
   } finally { f.close(); }
 }, 20000);
+
+
+it("preserves delivered Done during a new Human Review discussion and a delayed assistant launch", async () => {
+  for (const delayed of [false, true]) {
+    const f = await capacityFixture({ advancingHeads: true }); f.setTranscript({ source_id: "delivered-discussion", version: "one", cursor: null, turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: "Retained discussion" }] }] }); let release: (() => void) | undefined;
+    try {
+      const { prefix, detail } = await published(f);
+      const d = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
+      const review = d.human_reviews[0];
+      const approve = () => f.api(`${prefix}/human-review/approve`, { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, idempotency_key: "delivered-discussion" });
+      if (!delayed) expect((await approve()).status).toBe(200);
+      const gate = delayed ? f.holdNextAllocation() : null; release = gate?.release;
+      expect((await f.api(`${prefix}/human-review/messages`, { review_id: review.id, content: "Explain the delivered change", idempotency_key: "explain-delivered" })).status).toBe(202);
+      if (gate) { await gate.started; expect((await approve()).status).toBe(200); gate.release(); }
+      let discussed = await until(detail, d => d.human_review_deliveries?.[0]?.condition === "sent");
+      expect(discussed.implementation).toMatchObject({ stage: "done", outcome: "merged" });
+      expect(discussed.human_review_approvals[0].condition).toBe("merged");
+      expect(discussed.runs.find((r: any) => r.action === "implement-spec").condition).toBe("completed");
+      expect((await f.api(`${prefix}/archive`, {})).status).toBe(409);
+      expect((await f.api(`${prefix}/pause`, {})).status).toBe(200);
+      expect((await detail()).implementation.stage).toBe("done");
+      expect((await f.api(`${prefix}/resume`, {})).status).toBe(200);
+      f.runs.get(discussed.human_reviews[0].assistant_run_id)!.condition = "ready";
+      f.restart();
+      discussed = await until(detail, d => d.runs.some((r: any) => r.conversation_kind === "human_review" && r.condition === "ready"));
+      expect(discussed.implementation.stage).toBe("done");
+      expect((await f.api(`${prefix}/delete`, {}).then(r => r.json())).condition).toBe("deleted");
+      expect((await f.api(prefix)).status).toBe(404);
+    } finally { release?.(); f.close(); }
+  }
+}, 30000);
+
+
+it("finishes delivered execution and archives without manual Stop while retaining complete native history", async () => {
+  const f = await capacityFixture({ advancingHeads: true, runTranscript: (_run, before) => ({ source_id: "delivered-history", version: before ? "older" : "latest", cursor: before ? null : "earlier", turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: before ? "Earlier implementation decisions" : "Delivered implementation result" }] }] }) });
+  try {
+    const { prefix, detail, run } = await published(f);
+    const d = await until(detail, d => d.human_reviews?.[0]?.condition === "ready"); const review = d.human_reviews[0];
+    expect((await f.api(`${prefix}/human-review/approve`, { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, idempotency_key: "deliver-and-archive" })).status).toBe(200);
+    const delivered = await detail();
+    expect(delivered.implementation).toMatchObject({ stage: "done", outcome: "merged" });
+    expect(delivered.runs.find((r: any) => r.id === run.id).condition).toBe("completed");
+    expect(delivered.native_snapshots.flatMap((s: any) => s.turns.flatMap((t: any) => t.parts.map((p: any) => p.text)))).toContain("Earlier implementation decisions");
+    expect(delivered.native_snapshots.flatMap((s: any) => s.turns.flatMap((t: any) => t.parts.map((p: any) => p.text)))).toContain("Delivered implementation result");
+    expect((await f.api(`${prefix}/archive`, {})).status).toBe(200);
+    f.restart();
+    const retained = await detail();
+    expect(retained.implementation.archived_at).toBeTruthy();
+    expect(retained.review_evidence).toHaveLength(2);
+    expect(retained.native_snapshots.length).toBeGreaterThanOrEqual(delivered.native_snapshots.length);
+    expect(f.mergeEffects).toHaveLength(1);
+  } finally { f.close(); }
+}, 20000);
+
+
+it("retains verified delivery through unavailable history and uncertain shutdown, then completes without another merge", async () => {
+  for (const problem of ["history", "shutdown", "lost-shutdown"] as const) {
+    let historyAvailable = true;
+    const f = await capacityFixture({ advancingHeads: true, runTranscript: () => historyAvailable ? { source_id: "delivery-recovery", version: "one", cursor: null, turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: "Complete retained implementation history" }] }] } : null });
+    try {
+      const { prefix, detail, run } = await published(f);
+      const d = await until(detail, d => d.human_reviews?.[0]?.condition === "ready"); const review = d.human_reviews[0];
+      if (problem === "history") historyAvailable = false;
+      if (problem === "shutdown") f.unavailableRunStop(true);
+      if (problem === "lost-shutdown") f.loseNextRunStop();
+      expect((await f.api(`${prefix}/human-review/approve`, { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, idempotency_key: "recover-completion" })).status).toBe(200);
+      const pending = await detail();
+      expect(pending.implementation).toMatchObject({ stage: "done", outcome: "merged" });
+      expect(pending.human_review_approvals[0].condition).toBe("merged");
+      expect(pending.runs.find((r: any) => r.id === run.id).condition).not.toBe("completed");
+      expect(pending.events.some((e: any) => e.kind === "delivery_completion_pending")).toBe(true);
+      expect((await f.api(`${prefix}/archive`, {})).status).toBe(409);
+      const observations = f.mergeObservations.length;
+      historyAvailable = true; f.unavailableRunStop(false); f.restart();
+      const completed = await until(detail, d => d.runs.find((r: any) => r.id === run.id)?.condition === "completed");
+      expect(completed.human_review_approvals[0].condition).toBe("merged");
+      expect((await f.api(`${prefix}/archive`, {})).status).toBe(200);
+      expect(f.mergeEffects).toHaveLength(1);
+      expect(f.mergeObservations).toHaveLength(observations);
+    } finally { f.close(); }
+  }
+}, 30000);
+
+it("keeps execution open until a frozen containing-release milestone is actually verified", async () => {
+  const f = await capacityFixture({ advancingHeads: true });
+  f.setTranscript({ source_id: "release-delivery", version: "one", cursor: null, turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: "Retain release implementation" }] }] });
+  try {
+    const { prefix, detail, run } = await published(f, "release");
+    const d = await until(detail, d => d.human_reviews?.[0]?.condition === "ready"); const review = d.human_reviews[0];
+    const body = { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, idempotency_key: "release-completion" };
+    expect((await f.api(`${prefix}/human-review/approve`, body)).status).toBe(200);
+    const waiting = await detail();
+    expect(waiting.implementation.stage).toBe("review");
+    expect(waiting.human_review_approvals[0].condition).toBe("awaiting_release");
+    expect(waiting.runs.find((r: any) => r.id === run.id).condition).toBe("ready");
+    expect(waiting.events.some((e: any) => e.kind === "delivery_execution_completed")).toBe(false);
+    expect((await f.api(`${prefix}/archive`, {})).status).toBe(409);
+    f.releaseMerged(); await f.api(`${prefix}/human-review/approve`, body);
+    const released = await until(detail, d => d.runs.find((r: any) => r.id === run.id)?.condition === "completed");
+    expect(released.implementation).toMatchObject({ stage: "done", outcome: "released" });
+    expect((await f.api(`${prefix}/archive`, {})).status).toBe(200);
+    expect(f.mergeEffects).toHaveLength(1);
+  } finally { f.close(); }
+}, 20000);

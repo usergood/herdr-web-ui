@@ -81,7 +81,7 @@ export class FactoryService {
       const latest = (kinds: string[]) => events.filter(event => kinds.includes(event.kind)).at(-1)?.kind;
       if (latest(["native_snapshot_unavailable", "planning_handoff_retained"]) === "native_snapshot_unavailable" || latest(["planning_documents_unavailable", "planning_documents_retained"]) === "planning_documents_unavailable") throw new FactoryError("handoff_incomplete", "The accepted Specification is retained, but some native planning evidence is unavailable; inspect the preserved conversation before continuing", 409);
     });
-    this.humanApproval = new FactoryHumanApprovalService(this.store, this.runtime, this.workflow);
+    this.humanApproval = new FactoryHumanApprovalService(this.store, this.runtime, this.workflow, id => this.retainNativeHistory(id));
     this.runtime.resumeReviewRecovery = (run, review) => this.humanApproval.resumeRepairRecovery(run, review);
     this.humanReview = new FactoryHumanReview(this.store, this.runtime, this.review, id => this.retainNative(id), this.humanApproval);
     const maintenance = this.runtime.queue.maintenance;

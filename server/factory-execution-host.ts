@@ -310,7 +310,7 @@ export class FactoryExecutionHost {
   private assertReviewQuiescent(id: string): void {
     this.assertNotDeleting(id);
     const lease = this.store.get<{ run: FactoryRun; closing?: boolean }>("host_leases", id);
-    if (!lease || lease.closing || lease.run.suspension || this.launches.has(id) || this.sends.has(id) || this.operations.get(id)?.size
+    if (!lease || lease.closing && !["completed", "cancelled"].includes(lease.run.condition) || lease.run.suspension || this.launches.has(id) || this.sends.has(id) || this.operations.get(id)?.size
       || this.store.list<FactoryWorker>("host_workers", id).some(worker => !["completed", "cancelled", "failed"].includes(worker.condition))
       || this.store.list<FactoryCheck>("host_checks", id).some(check => ["working", "interrupted"].includes(check.condition))) throw new FactoryError("host_owned", "Human Review cannot bypass active or uncertain candidate work", 409);
   }
@@ -342,7 +342,12 @@ export class FactoryExecutionHost {
       const current = this.store.get<typeof lease>("host_leases", other.id)!;
       retained.set(other.id, JSON.stringify(current));
     }
-    if (!retained.has(parent.id)) return reject();
+    if (!retained.has(parent.id)) {
+      const ended = this.store.get<{ run: FactoryRun; closing?: boolean }>("host_leases", parent.id);
+      if (!["completed", "cancelled"].includes(parent.condition) || !ended?.closing || !["completed", "cancelled"].includes(ended.run.condition)) return reject();
+      this.assertReviewQuiescent(parent.id);
+      retained.set(parent.id, JSON.stringify(ended));
+    }
     const candidate = await inspectCheckout(parent.worktree);
     if (candidate.head !== record.base || candidate.repository !== snapshot.repository || candidate.repository !== (parent.manifest as { checkout?: { repository?: string } }).checkout?.repository || candidate.branch !== parent.branch) return reject();
     return retained;
