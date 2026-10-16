@@ -478,12 +478,17 @@ export class FactoryRuntime {
     this.assertExecuting(parent.implementation_id);
     const capabilities = await this.capabilities(parent.machine_id, (parent.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot);
     if (capabilities.human_review_protocol !== 1) throw new FactoryError("human_review_bridge_required", "The selected Machine needs Human Review bridge support before its assistant can execute", 409);
+    const currentReview = () => {
+      const current = this.store.get<import("../shared/factory.ts").FactoryHumanReview>("human_reviews", review.id);
+      if (!current || current.condition !== "ready" || current.head !== review.head || current.snapshot_id !== review.snapshot_id) throw new FactoryError("continuation_waiting", "Human Review discussion yields while submitted fixes run or its captured candidate changes", 409);
+      return current;
+    };
     const reviewRuns = this.store.list<FactoryRun>("runs", parent.implementation_id).filter(r => r.conversation_kind === "human_review");
     const key = `human-review-${review.id}-${message.id}`;
     const existing = reviewRuns.find(r => r.id === review.assistant_run_id && r.base === review.head && !["completed", "cancelled", "failed"].includes(r.condition)) ?? reviewRuns.find(r => r.idempotency_key === key);
     if (existing) {
       // Admission and the durable sending claim precede every native effect.
-      this.store.db.transaction(() => { agentCapacityPool(this.store, this.settings()); claim(); }).immediate();
+      this.store.db.transaction(() => { currentReview(); agentCapacityPool(this.store, this.settings()); claim(); }).immediate();
       await this.send(existing, `Human Review discussion of snapshot ${review.snapshot_id}, head ${review.head}. Discuss only; do not edit, create workers, publish or merge.\n\n${message.content}`, new AbortController().signal);
       return this.store.get<FactoryRun>("runs", existing.id)!;
     }
@@ -496,10 +501,11 @@ export class FactoryRuntime {
     const { planning_authority: _authority, ...manifest } = parent.manifest as Record<string, unknown>;
     const run = this.store.db.transaction(() => {
       this.assertExecuting(parent.implementation_id);
+      const current = currentReview();
       const pool = agentCapacityPool(this.store, this.settings());
       const record: FactoryRun = { ...parent, ...this.store.record(), action: "work", conversation_kind: "human_review", capacity_pool: pool, condition: "accepted", waiting_reason: null, idempotency_key: key, base: review.head, checkout: parent.checkout, worktree: null, branch: null, workspace_id: null, pane_id: null, continuation: undefined, suspension: undefined, manifest: { ...manifest, checkout: inspected, human_review: { review, message, history, history_snapshot_ids: histories.map(s => s.id), snapshot: this.store.get("snapshots", review.snapshot_id!) }, context_message_ids: this.store.list<FactoryMessage>("messages", parent.implementation_id).filter(m => m.chat_id === message.chat_id).map(m => m.id) } };
       claim(); this.store.put("runs", record, parent.implementation_id);
-      this.store.put("human_reviews", { ...review, assistant_run_id: record.id }, parent.implementation_id);
+      this.store.put("human_reviews", { ...current, assistant_run_id: record.id }, parent.implementation_id);
       const api = new URL(this.publicUrl ?? origin);
       this.store.put("run_access", { id: record.id, token: randomBytes(32).toString("base64url"), url: `${api.origin}/api/factory-agent/${record.id}` });
       return record;

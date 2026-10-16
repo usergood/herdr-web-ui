@@ -84,7 +84,7 @@ export class FactoryHumanReview {
     let claimed = false;
     try {
       const run = await this.runtime.discussReview(parent, entry, message, request.origin, () => { claimed = true; this.store.put("human_review_messages", { ...request, condition: "sending", reason: null }, parent.implementation_id); });
-      this.store.put("human_reviews", { ...entry, assistant_run_id: run.id }, parent.implementation_id);
+      // The assistant identity is retained before dispatch; its reply cannot restore an older review revision.
       this.store.put("human_review_messages", { ...request, condition: ["working", "ready"].includes(run.condition) ? "sent" : "uncertain", reason: ["working", "ready"].includes(run.condition) ? null : "Discussion delivery was not confirmed; inspect the retained native conversation before sending again" }, parent.implementation_id);
     } catch (error) {
       if (!claimed) throw error;

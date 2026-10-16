@@ -3,6 +3,65 @@ import { capacityFixture } from "../scripts/factory-capacity-fixture.ts";
 import { published, until } from "../scripts/factory-human-review-fixture.ts";
 
 describe("Human Review Decline through authenticated HTTP", () => {
+  it("yields a discussion whose candidate was submitted during Machine admission", async () => {
+    const f = await capacityFixture({ advancingHeads: true }); let release: (() => void) | undefined;
+    try {
+      const { prefix, detail } = await published(f);
+      const original = (await until(detail, d => d.human_reviews?.[0]?.condition === "ready")).human_reviews[0];
+      const gate = f.holdNextAdmission(); release = gate.release;
+      await f.api(`${prefix}/human-review/messages`, { review_id: original.id, content: "Discuss after admission", idempotency_key: "admission-discussion" });
+      await gate.started;
+      const comment = await f.api(`${prefix}/comments`, { snapshot_id: original.snapshot_id, path: "progress.ts", side: "new", line_start: 1, line_end: 1, content: "Submit before admission finishes" }).then(r => r.json());
+      expect((await f.api(`${prefix}/human-review/submit`, { review_id: original.id, snapshot_id: original.snapshot_id, head: original.head, disposition: "decline", comment_ids: [comment.id], idempotency_key: "admission-decline" })).status).toBe(202);
+      gate.release();
+      const next = await until(detail, d => d.runs.some((r: any) => r.conversation_kind === "human_review") || d.workers.some((w: any) => w.review_origin === "human" && w.condition === "working"));
+      expect(next.human_reviews[0].condition).toBe("repairing");
+      expect(next.runs.some((r: any) => r.conversation_kind === "human_review")).toBe(false);
+      expect(next.human_review_deliveries[0].condition).toBe("queued");
+    } finally { release?.(); f.close(); }
+  }, 20000);
+  for (const lostResponse of [false, true]) it(`returns submitted repairs after a delayed assistant launch with ${lostResponse ? "lost" : "confirmed"} acknowledgment`, async () => {
+    const f = await capacityFixture({ advancingHeads: true });
+    let release: (() => void) | undefined;
+    try {
+      const { prefix, detail } = await published(f);
+      const original = (await until(detail, d => d.human_reviews?.[0]?.condition === "ready")).human_reviews[0];
+      const gate = f.holdNextAllocation(); release = gate.release;
+      if (lostResponse) f.loseNextLaunch();
+      const discussion = { review_id: original.id, content: "Explain before fixing", idempotency_key: "delayed-discussion" };
+      const message = await f.api(`${prefix}/human-review/messages`, discussion).then(r => r.json());
+      const assistantId = await gate.started;
+      const comment = await f.api(`${prefix}/comments`, { snapshot_id: original.snapshot_id, path: "progress.ts", side: "new", line_start: 1, line_end: 1, content: "Repair while discussion is starting" }).then(r => r.json());
+      const submission = { review_id: original.id, snapshot_id: original.snapshot_id, head: original.head, disposition: "decline", comment_ids: [comment.id], idempotency_key: "decline-during-launch" };
+      const response = await f.api(`${prefix}/human-review/submit`, submission);
+      expect(response.status).toBe(202); const batch = await response.json();
+      expect((await detail()).human_reviews[0].condition).toBe("repairing");
+      gate.release();
+      const delivered = await until(detail, d => d.human_review_deliveries.some((m: any) => m.id === message.id && ["sent", "uncertain"].includes(m.condition)));
+      expect(delivered.human_review_deliveries.find((m: any) => m.id === message.id).condition).toBe(lostResponse ? "uncertain" : "sent");
+      expect(delivered.human_reviews[0]).toMatchObject({ id: original.id, condition: "repairing", assistant_run_id: assistantId });
+      f.runs.get(assistantId)!.condition = "ready";
+      await f.api(`/runs/${assistantId}/reconcile`, {});
+      f.restart();
+      expect((await f.api(`${prefix}/human-review/submit`, submission).then(r => r.json())).id).toBe(batch.id);
+      for (const role of ["implementer", "standards", "spec"]) {
+        const d = await until(detail, d => d.workers.some((w: any) => w.role === role && w.condition === "working"));
+        f.workers.get(d.workers.find((w: any) => w.role === role && w.condition === "working").id)!.condition = "ready";
+      }
+      const repaired = await until(detail, d => d.human_reviews[0].condition === "ready" && d.human_feedback_batches[0]?.resolution);
+      const current = repaired.human_reviews[0];
+      expect(current).toMatchObject({ id: original.id, conversation_id: original.conversation_id, assistant_run_id: assistantId });
+      expect(current.head).not.toBe(original.head); expect(current.snapshot_id).not.toBe(original.snapshot_id);
+      expect(repaired.messages.filter((m: any) => m.content === discussion.content)).toHaveLength(1);
+      expect(repaired.comments[0]).toMatchObject({ id: comment.id, snapshot_id: original.snapshot_id, status: "resolved", batch_id: batch.id });
+      expect(repaired.snapshots.some((s: any) => s.id === original.snapshot_id)).toBe(true);
+      expect(repaired.human_feedback_batches).toHaveLength(1); expect(f.launches.filter(id => id === assistantId)).toHaveLength(1);
+      expect(f.mergeEffects).toHaveLength(0);
+      const approval = await f.api(`${prefix}/human-review/approve`, { review_id: current.id, snapshot_id: current.snapshot_id, head: current.head, idempotency_key: "approve-repaired" });
+      expect(approval.status).toBe(200); expect(await approval.json()).toMatchObject({ condition: "merged", head: current.head });
+      expect(f.mergeEffects).toHaveLength(1);
+    } finally { release?.(); f.close(); }
+  }, 30000);
   for (const noOp of [false, true]) it(`retains obsolete blocked authority while allowing explicit approval after ${noOp ? "unchanged-head" : "changed-head"} Decline repairs`, async () => {
     const f = await capacityFixture({ advancingHeads: true });
     try {

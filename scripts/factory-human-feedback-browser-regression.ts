@@ -15,6 +15,7 @@ try {
     const g = await githubFixture();
     const f = await capacityFixture({ advancingHeads: true, accountTools: { github: { executable: process.execPath, args: [join(g.root, "gh.mjs")] } } });
     const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
+    let releaseDiscussion: (() => void) | undefined;
     try {
       const { id, detail } = await published(f);
       await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
@@ -67,10 +68,27 @@ try {
         await review.getByRole("button", { name: "Save draft finding", exact: true }).click();
         await review.getByRole("region", { name: "Draft comments", exact: true }).getByText(`Feedback ${round + 1}`, { exact: true }).waitFor();
         await page.reload();
+        let assistantId: string | undefined;
+        const discussionGate = round === 1 ? f.holdNextAllocation() : null;
+        if (discussionGate) {
+          releaseDiscussion = discussionGate.release;
+          await review.getByRole("textbox", { name: "Discuss this review", exact: true }).fill("Explain while I submit these fixes");
+          await review.getByRole("button", { name: "Send discussion", exact: true }).click();
+          await review.getByText("Explain while I submit these fixes", { exact: true }).waitFor();
+          assistantId = await discussionGate.started;
+        }
         await review.getByRole("button", { name: "Decline", exact: true }).click();
         await review.getByRole("region", { name: "Submitted comments", exact: true }).getByText(`Feedback ${round + 1}`, { exact: true }).waitFor();
         await review.getByText("Fixes are running. A later approval is required to merge.", { exact: true }).waitFor();
         assert(await review.getByRole("button", { name: "Decline", exact: true }).isDisabled());
+        if (discussionGate && assistantId) {
+          discussionGate.release();
+          const delivered = await until(detail, d => d.human_review_deliveries.some((m: any) => m.condition === "sent"));
+          assert.equal(delivered.human_reviews[0].condition, "repairing");
+          assert.equal(delivered.human_reviews[0].assistant_run_id, assistantId);
+          f.runs.get(assistantId)!.condition = "ready";
+          await f.api(`/runs/${assistantId}/reconcile`, {});
+        }
         const fixing = await until(detail, d => d.workers.some((w: any) => w.review_origin === "human" && w.condition === "working"));
         const fix = fixing.workers.find((w: any) => w.review_origin === "human" && w.condition === "working");
         if (round === 0) f.workers.get(fix.id)!.head = previous.head; // Owned Machine reports a completed no-op repair.
@@ -86,6 +104,7 @@ try {
         await review.getByText("Fixes passed checks and independent reviews. Awaiting your approval.", { exact: true }).waitFor();
         await page.reload();
         await review.getByText("Fixes passed checks and independent reviews. Awaiting your approval.", { exact: true }).waitFor();
+        if (round === 1) await review.getByText("Explain while I submit these fixes", { exact: true }).waitFor();
         assert.equal(returned.human_feedback_batches.length, round + 1);
         assert(returned.human_feedback_batches.every((b: any) => b.merge_authorized === false));
         assert.equal(returned.implementation.stage, "review");
@@ -118,7 +137,7 @@ try {
       assert.notEqual(approvals[2].snapshot_id, oldApproval.snapshot_id);
       assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       assert.deepEqual(errors, []);
-    } finally { await context.close(); f.close(); g.close(); }
+    } finally { releaseDiscussion?.(); await context.close(); f.close(); g.close(); }
   }
   console.log("PASS Human Review decline, fresh repairs, return awaiting approval and explicit reapproval on desktop/mobile");
 } finally { await browser.close(); }
