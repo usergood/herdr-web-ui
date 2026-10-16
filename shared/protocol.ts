@@ -1141,7 +1141,8 @@ export const DEFAULT_PORT = 7317;
  * sidebar/page polling uses metadata; full instructions remain in frozen Run context.
  * Both include a board projection with five lifecycle lanes, current workflow activity,
  * execution condition and nullable Ticket progress; stored stages and Run history are retained.
- * GET /api/factory?navigation=1 -> FactoryOverview without Assignment descriptions/delivery
+ * GET /api/factory?navigation=1 -> FactoryOverview with only visible Project conversation trees
+ * and structural run/worker context IDs; without Assignment descriptions/delivery
  * evidence/upstream bodies or checkout instruction contents. Sidebar and board share this read.
  * GET /api/factory/implementations/:id?view=current -> FactoryCurrent: current decisions,
  *   Run manifests include execution_preset, bounded IssueAdmissionSummary and rework identity;

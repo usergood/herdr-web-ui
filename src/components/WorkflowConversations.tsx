@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import type { FactoryConversation, FactoryConversationKind, FactoryCurrent, FactoryDetail } from "../../shared/factory.ts";
+import type { FactoryConversation, FactoryConversationKind, FactoryNavigationConversation, FactoryCurrent, FactoryDetail } from "../../shared/factory.ts";
 import type { Machine } from "../../shared/machines.ts";
 import { factoryRead } from "../lib/factoryApi.ts";
 import { useT } from "../lib/i18n.ts";
@@ -22,7 +22,7 @@ function conversationLabel(kind: FactoryConversationKind, title: string | null, 
 }
 
 /** Reviewer is a display group; only its two independent contexts are navigable. */
-export function WorkflowConversationTree({ conversations, selectedId, onSelect, renderContext }: { conversations: FactoryConversation[]; selectedId?: string | null; onSelect: (id: string) => void; renderContext?: (conversation: FactoryConversation) => ReactNode }) {
+export function WorkflowConversationTree({ conversations, selectedId, onSelect, renderContext }: { conversations: FactoryNavigationConversation[]; selectedId?: string | null; onSelect: (id: string) => void; renderContext?: (conversation: FactoryNavigationConversation) => ReactNode }) {
   const t = useT();
   const render = (parentId: string | null) => <ul className="workflow-conversation-tree">{conversations.filter(c => c.parent_id === parentId).map(c => <li key={c.id} data-conversation-kind={c.kind}>
     {c.kind === "reviewer" ? <span className="workflow-conversation-group">{conversationLabel(c.kind, c.title, t)}</span> : <button className="project-navigation-row" aria-current={selectedId === c.id ? "page" : undefined} onClick={() => onSelect(c.id)}>{conversationLabel(c.kind, c.title, t)}</button>}

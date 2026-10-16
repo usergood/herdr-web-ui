@@ -86,6 +86,8 @@ export interface FactoryConversation {
   id: string; implementation_id: string; parent_id: string | null;
   kind: FactoryConversationKind; title: string | null; contexts: FactoryConversationContext[];
 }
+/** Sidebar context identity; native provenance is read with the selected conversation. */
+export type FactoryNavigationConversation = Omit<FactoryConversation, "contexts"> & { contexts: Pick<FactoryConversationContext, "run_id" | "worker_id">[] };
 export interface FactoryMessage extends FactoryRecord {
   implementation_id: string; chat_id: string; role: "owner" | "agent" | "system";
   content: string; source_id: string | null; sequence: number | null;
@@ -306,7 +308,7 @@ export interface FactoryPaneLink {
   title: string; condition: RunCondition;
 }
 export interface FactoryPaneArchive extends FactoryRecord { machine_id: string; pane_id: string; terminal_id?: string; session_ref?: string | null; title?: string; archived_at: string | null }
-export interface FactoryOverview { pane_links?: FactoryPaneLink[]; pane_archives?: FactoryPaneArchive[]; conversations?: FactoryConversation[]; board?: FactoryBoardItem[] }
+export interface FactoryOverview { pane_links?: FactoryPaneLink[]; pane_archives?: FactoryPaneArchive[]; conversations?: FactoryNavigationConversation[]; board?: FactoryBoardItem[] }
 export interface FactoryProviderCapability { provider: FactoryProvider; version: string | null; installed: boolean; skills_verified: boolean; factory_ready: boolean; reasons: string[] }
 export interface FactoryCapabilities { providers: FactoryProviderCapability[]; skill_manifest: { commit: string; hash: string; file_count: number } | null; factory_host_protocol: 1; human_review_protocol?: 1; implementation_rework_protocol?: 1; project_reference_protocol?: 1; account_profile_protocol?: 1 }
 export interface FactoryOutput { name: string; media_type: string; hash: string; size: number }

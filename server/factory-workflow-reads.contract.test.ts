@@ -46,6 +46,11 @@ test("compact polls expose workflow metadata and selected conversations exclude 
     expect(compact.text).not.toContain("Unrelated frozen context");
     expect(compact.text).not.toContain("Unselected report body");
     expect(current.automatic_review_batches[0]).not.toHaveProperty("reports");
+    const navigation = await (await fetch(`http://localhost:${app.port}/api/factory?navigation=1`, { headers: { authorization: "Bearer owned-workflow-read" } })).json() as any;
+    expect(navigation.conversations).toEqual(current.conversations.map((conversation: any) => ({ ...conversation, contexts: conversation.contexts.map(({ run_id, worker_id }: any) => ({ run_id, worker_id })) })));
+    const workerContext = navigation.conversations.find((conversation: any) => conversation.kind === "implementation").contexts[0];
+    expect(workerContext.worker_id).toBe(f.implementation.id);
+    expect(navigation.pane_links.find((link: any) => link.worker_id === workerContext.worker_id)).toMatchObject({ run_id: workerContext.run_id, pane_id: f.implementation.pane_id, workspace_id: f.implementation.workspace_id, worktree: f.implementation.worktree });
     const selected = await read("?view=workflow"); const specifications = JSON.parse(selected.text);
     expect(selected.status).toBe(200);
     expect(specifications.native_snapshots.map((snapshot: any) => snapshot.id)).toEqual([`${f.interview.id}-history`, `${f.specification.id}-history`]);

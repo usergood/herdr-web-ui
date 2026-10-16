@@ -80,3 +80,42 @@ test("current question scope and old active attempts match full detail", async (
     expect(current.runs.find(run => run.id === probe.id)?.condition).toBe("needs_you");
   } finally { f.close(); }
 });
+
+
+test("navigation keeps visible Project conversation identities without duplicating native provenance", async () => {
+  const f = factoryLoadingFixture();
+  const read = async <T>(path: string) => {
+    const url = new URL("http://localhost/api/factory" + path);
+    return await (await f.service.handle(new Request(url), url)).json() as T;
+  };
+  try {
+    const store = f.service.store;
+    expect((await read<FactoryOverview>("?navigation=1")).conversations).toEqual([]);
+    const project = { ...store.record(), id: "visible-project", name: "Owned Project", repository: "owned", provider: "codex", machine_id: "local", tracker: "app", tracker_reference: "" };
+    store.put("projects", project);
+    const assigned = store.get<any>("implementations", f.id)!;
+    store.put("implementations", { ...assigned, project_id: project.id });
+    const linked = store.get<any>("runs", "run-1-0")!;
+    store.put("runs", { ...linked, manifest: { ...linked.manifest, project: { id: project.id } } }, linked.implementation_id);
+    const navigation = await read<FactoryOverview>("?navigation=1");
+    const complete = await read<FactoryOverview>("");
+    expect(navigation.pane_links).toEqual(complete.pane_links);
+    expect(navigation.progress).toEqual(complete.progress);
+    expect(navigation.capacity).toEqual(complete.capacity);
+    expect(navigation.conversations?.map(c => c.id)).toEqual(complete.conversations?.filter(c => [f.id, linked.implementation_id].includes(c.implementation_id)).map(c => c.id));
+    const contexts = navigation.conversations?.find(c => c.id === `${f.id}:orchestrator`)?.contexts;
+    expect(contexts).toEqual([0, 1, 2, 3].map(r => ({ run_id: `run-0-${r}`, worker_id: null })));
+    const current = await read<FactoryCurrent>(`/implementations/${f.id}?view=current`);
+    const detail = await read<FactoryDetail>(`/implementations/${f.id}`);
+    expect(current.conversations).toEqual(detail.conversations);
+    expect(current.conversations?.find(c => c.kind === "orchestrator")?.contexts[0]).toMatchObject({ pane_id: "pane-0-0", machine_id: "local", snapshot_ids: ["native-0-0"] });
+    store.put("implementations", { ...assigned, project_id: project.id, archived_at: store.record().created_at });
+    const hidden = store.get<any>("implementations", linked.implementation_id)!;
+    store.put("implementations", { ...hidden, stage: "done", outcome: "discarded" });
+    expect((await read<FactoryOverview>("?navigation=1")).conversations).toEqual([]);
+    store.put("implementations", { ...assigned, project_id: project.id });
+    store.put("projects", { ...project, removed_at: store.record().created_at });
+    expect((await read<FactoryOverview>("?navigation=1")).conversations).toEqual([]);
+    expect((await read<FactoryDetail>(`/implementations/${f.id}`)).conversations).toEqual(detail.conversations);
+  } finally { f.close(); }
+});

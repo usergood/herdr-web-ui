@@ -124,14 +124,21 @@ export class FactoryReads {
     const waiting = this.list<NonNullable<FactoryDetail["capacity_waiting"]>[number] & { ticket_id?: string }>("capacity_waits");
     const ages = new Map<string, string>();
     for (const wait of waiting) if (!ages.has(wait.implementation_id) || wait.created_at < ages.get(wait.implementation_id)!) ages.set(wait.implementation_id, wait.created_at);
-    const nativeMetadata = this.list<Pick<FactoryDetail["native_snapshots"][number], "id" | "run_id" | "worker_id">>("native_snapshots");
+    const nativeMetadata = navigation ? [] : this.list<Pick<FactoryDetail["native_snapshots"][number], "id" | "run_id" | "worker_id">>("native_snapshots");
+    const projects = this.list<FactoryOverview["projects"][number]>("projects");
+    const projectIds = new Set(projects.filter(project => !project.removed_at).map(project => project.id));
+    const board = ideas.map(idea => projectFactoryBoard(idea, { ...context(idea.id), runs: byIdea.get(idea.id), workers, checks, tickets: tickets.get(idea.id), questions: this.questions(idea.id, byIdea.get(idea.id)!) }));
+    // Navigation has no tree for unassigned, archived or finished Assignments.
+    // Explicit run provenance can still put an older Assignment under a Project.
+    const visibleIdeas = navigation ? ideas.filter(idea => !idea.archived_at && !board.find(item => item.implementation_id === idea.id)?.sidebar_hidden && (projectIds.has(idea.project_id ?? "") || byIdea.get(idea.id)!.some(run => projectIds.has((run.manifest as { project?: { id?: string } }).project?.id ?? "")))) : ideas;
+    const conversations = visibleIdeas.flatMap(idea => workflowConversations({ implementation: idea, runs: byIdea.get(idea.id)!, workers, tickets: tickets.get(idea.id)!, execution_plans: plans, native_snapshots: nativeMetadata }));
     return {
       implementations: [...ideas].sort((a,b) => (ages.get(a.id) ?? a.created_at).localeCompare(ages.get(b.id) ?? b.created_at)).map(idea => { if (!navigation) return idea; const { description, delivery, upstream_update, ...summary } = idea; return summary; }),
-      projects: this.list("projects"), checkouts: this.list<FactoryOverview["checkouts"][number]>("checkouts").map(checkout => { if (!navigation) return checkout; const { instructions, ...summary } = checkout; return summary; }), settings,
+      projects, checkouts: this.list<FactoryOverview["checkouts"][number]>("checkouts").map(checkout => { if (!navigation) return checkout; const { instructions, ...summary } = checkout; return summary; }), settings,
       capacity: factoryCapacity(this, settings),
-      conversations: ideas.flatMap(idea => workflowConversations({ implementation: idea, runs: byIdea.get(idea.id)!, workers, tickets: tickets.get(idea.id)!, execution_plans: plans, native_snapshots: nativeMetadata })),
+      conversations: navigation ? conversations.map(conversation => ({ ...conversation, contexts: conversation.contexts.map(({ run_id, worker_id }) => ({ run_id, worker_id })) })) : conversations,
       progress: ideas.map(idea => assignmentProgress(idea, tickets.get(idea.id)!, byIdea.get(idea.id)!, workers, checks.map(check => ({ ...check, commands: [] })), waiting)),
-      board: ideas.map(idea => projectFactoryBoard(idea, { ...context(idea.id), runs: byIdea.get(idea.id), workers, checks, tickets: tickets.get(idea.id), questions: this.questions(idea.id, byIdea.get(idea.id)!) })),
+      board,
       activity: ideas.flatMap(idea => { const run = byIdea.get(idea.id)?.at(-1), graph = tickets.get(idea.id)!; return run ? [{ implementation_id: idea.id, run_id: run.id, condition: run.condition, action: run.action, waiting_reason: run.waiting_reason, completed_tickets: graph.filter(t => t.status === "done").length, total_tickets: graph.length }] : []; }),
       pane_archives: this.list("pane_archives"),
       pane_links: runs.flatMap(run => {
