@@ -162,7 +162,9 @@ export class FactoryPipeline {
   /** A public reconciliation can finish execution without accepting or delivering its changes. */
   async reconcileCompletion(id: string): Promise<FactoryRun> {
     const run = this.store.get<FactoryRun>("runs", id)!;
-    if (run.action !== "implement-spec" || run.issue_pause || !["ready", "completed"].includes(run.condition) && !run.implementation_completion_pending) return run;
+    let retired = this.store.get("implementation_retirement", id);
+    if (!retired && run.implementation_completion_pending && ["completed", "cancelled"].includes(run.condition)) retired = this.store.put("implementation_retirement", { id }, run.implementation_id);
+    if (run.action !== "implement-spec" || run.issue_pause || !["ready", "completed"].includes(run.condition) && !run.implementation_completion_pending && !retired) return run;
     let current: { head: string; workspace_hash: string } | null = null;
     try { current = await this.runtime.operation(run, "head"); } catch { /* Unobservable evidence retains capacity. */ }
     const cleaned = this.store.get<CompletionCleanup>("implementation_cleanup", id);
@@ -171,8 +173,11 @@ export class FactoryPipeline {
       && JSON.stringify(cleaned.completion) === JSON.stringify(run.implementation_completion)) current = cleaned.completion;
     const completion = current && this.completionEvidence(run, current);
     if (!completion) {
-      if (!run.implementation_completion && !run.implementation_completion_pending) return run;
-      const next: FactoryRun = { ...run, implementation_completion: undefined, implementation_completion_pending: undefined, condition: "needs_you", waiting_reason: "Implementation evidence changed or is unavailable. Reconcile current checks and independent reviews." };
+      if (!run.implementation_completion && !run.implementation_completion_pending && !retired) return run;
+      // Native retirement is durable even when its logical completion proof expires.
+      // Keep that distinction after removing the stale proof from the public Run.
+      if (run.implementation_completion) this.store.put("implementation_retirement", { id }, run.implementation_id);
+      const next: FactoryRun = { ...run, implementation_completion: undefined, implementation_completion_pending: retired || run.implementation_completion ? undefined : run.implementation_completion_pending, condition: "needs_you", waiting_reason: "Implementation evidence changed or is unavailable. Reconcile current checks and independent reviews." };
       this.store.put("runs", next, run.implementation_id);
       const implementation = this.store.get<Implementation>("implementations", run.implementation_id)!;
       this.store.put("implementations", { ...implementation, activity: undefined });
@@ -207,18 +212,26 @@ export class FactoryPipeline {
   }
   private async retireImplementation(run: FactoryRun, expected: NonNullable<FactoryRun["implementation_completion"]>): Promise<FactoryRun> {
     const live = this.store.get<FactoryRun>("runs", run.id)!;
-    if (!live.implementation_completion_pending && !["ready", "completed"].includes(live.condition)) throw new FactoryError("execution_changed", "The implementation changed before retirement; reconcile its current ownership", 409);
+    const retired = this.store.get("implementation_retirement", run.id);
+    if (!live.implementation_completion_pending && !retired && !["ready", "completed"].includes(live.condition)) throw new FactoryError("execution_changed", "The implementation changed before retirement; reconcile its current ownership", 409);
     if (live.issue_pause || this.workflow.questions(run.implementation_id).some(question => question.answer === null)) throw new FactoryError("answers_unready", "Resolve current owner decisions before finishing implementation", 409);
     if (this.store.list<{ run_id: string | null; status: string }>("comments", run.implementation_id).some(comment => comment.run_id === run.id && comment.status !== "resolved")) throw new FactoryError("findings_open", "Resolve retained findings before finishing implementation", 409);
     if (JSON.stringify(this.completionEvidence(run, expected)) !== JSON.stringify(expected)) throw new FactoryError("fresh_evidence_required", "Implementation ownership or evidence changed before retirement", 409);
     this.store.put("runs", { ...live, implementation_completion_pending: true }, run.implementation_id);
-    const stopped = run.implementation_completion || run.implementation_completion_pending && ["completed", "cancelled"].includes(run.condition) ? run : await this.runtime.stopRun(run.id, { summary: `Implementation execution finished at ${expected.head}` });
+    const alreadyRetired = retired || run.implementation_completion || run.implementation_completion_pending && ["completed", "cancelled"].includes(run.condition);
+    const stopped = alreadyRetired ? { ...run, condition: "completed" as const } : await this.runtime.stopRun(run.id, { summary: `Implementation execution finished at ${expected.head}` });
     if (!["completed", "cancelled"].includes(stopped.condition)) throw new FactoryError("execution_owned", "Native execution did not confirm termination; retain its reservation", 409);
+    // A crash or a changed head after Stop must not turn confirmed physical
+    // termination into either lost logical ownership or an unrecoverable pending flag.
+    this.store.put("implementation_retirement", { id: run.id }, run.implementation_id);
     const head = await this.runtime.operation<{ head: string; workspace_hash: string }>(run, "head");
     const completion = this.completionEvidence(run, head);
     if (!completion || JSON.stringify(completion) !== JSON.stringify(expected)) throw new FactoryError("fresh_evidence_required", "Implementation changed while retiring execution; retain capacity and reconcile", 409);
     const finished: FactoryRun = { ...stopped, condition: "completed", implementation_completion_pending: undefined, implementation_completion: completion };
-    this.store.put("runs", finished, run.implementation_id);
+    this.store.db.transaction(() => {
+      this.store.put("runs", finished, run.implementation_id);
+      this.store.remove("implementation_retirement", run.id);
+    })();
     return finished;
   }
   async accept(id: string, body: Record<string, unknown>): Promise<FactoryRun> {

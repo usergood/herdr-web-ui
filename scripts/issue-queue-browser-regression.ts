@@ -89,6 +89,10 @@ try {
       const followup = await manual.json(path + "/runs", { action: "implement-spec", idempotency_key: "owned-manual-followup" });
       await manual.integrate(followup); await manual.json(`/runs/${followup.id}/checks`, {});
       await manual.review(followup, "standards"); await manual.review(followup, "spec");
+      const retired = await manual.json(`/runs/${followup.id}/reconcile`, {});
+      const redundantStop = await manual.json(`/runs/${followup.id}/stop`, {});
+      assert.equal(redundantStop.condition, "completed");
+      assert.deepEqual(redundantStop.implementation_completion, retired.implementation_completion);
       await manual.json(`/runs/${followup.id}/reconcile`, {});
       await page.reload();
       await page.getByText("Advanced controls", { exact: true }).last().click();
@@ -113,6 +117,31 @@ try {
     } finally { await page.close(); manual.close(); }
   }
   console.log("PASS: desktop/mobile retired manual implementation acceptance and archive");
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    const stale = githubReviewFixture();
+    const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });
+    page.setDefaultTimeout(10_000); page.on("pageerror", recordPageError);
+    try {
+      const { run, route } = await stale.prepare();
+      await stale.integrate(run); await stale.json(`/runs/${run.id}/checks`, {});
+      await stale.review(run, "standards"); await stale.review(run, "spec");
+      await stale.json(`/runs/${run.id}/reconcile`, {});
+      stale.setWorkspaceHash("changed-after-native-retirement");
+      assert.equal((await stale.json(`/runs/${run.id}/reconcile`, {})).condition, "needs_you");
+      await page.goto(stale.origin + `/#factory/${run.implementation_id}`);
+      await page.getByText("Advanced controls", { exact: true }).last().click();
+      const history = page.getByRole("heading", { name: "Run history", exact: true }).locator("..");
+      for (const action of ["Reconcile Run", "Stop Run", "Reconcile Run"]) {
+        const response = page.waitForResponse(response => response.url().endsWith(`/runs/${run.id}/${action === "Stop Run" ? "stop" : "reconcile"}`) && response.request().method() === "POST");
+        await history.getByRole("button", { name: action, exact: true }).click();
+        assert.equal((await (await response).json()).condition, "needs_you");
+        await history.getByRole("status").filter({ hasText: "Implementation evidence changed or is unavailable" }).waitFor();
+        assert(await history.getByRole("button", { name: "Remove clean checkout", exact: true }).isDisabled());
+        assert.equal((await stale.json(route + "/queue")).implementing_count, 1);
+      }
+    } finally { await page.close(); stale.close(); }
+  }
+  console.log("PASS: desktop/mobile stale retired implementation keeps Needs you, capacity and recovery controls");
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
     for (const control of ["Start implementation", "Start factory"]) {
       const guarded = githubReviewFixture();
@@ -201,6 +230,40 @@ try {
   }
   assert.deepEqual(errors, []);
   console.log("PASS: desktop/mobile exact ready planning Continue retains handoff and admission; working, uncertain and unrelated predecessors cannot retire");
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    const continuation = issueContinuationFixture();
+    const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });
+    page.setDefaultTimeout(10_000); page.on("pageerror", recordPageError);
+    try {
+      const { path, planning, body } = await continuation.preparedPlanning();
+      continuation.setFactoryReady(false);
+      await page.goto(continuation.origin + `/#factory/${planning.implementation_id}`);
+      const started = page.waitForResponse(response => response.url().endsWith(path + "/continue") && response.request().method() === "POST");
+      await page.getByRole("region", { name: "Next step", exact: true }).getByRole("button", { name: "Continue workflow", exact: true }).click();
+      const response = await started; assert.equal(response.status(), 202);
+      assert.deepEqual(response.request().postDataJSON().issue_scope, body.issue_scope);
+      const probe = await response.json(); assert.equal(probe.action, "verify-provider");
+      const question = await continuation.agent(probe.id, "question", { question: "Confirm the owned browser verification fixture?" }).then(response => response.json());
+      await continuation.json(path + `/questions/${question.id}/answer`, { revision: question.revision, answer: "Owned fictional verification answer" });
+      continuation.setVerificationAvailable(); continuation.setRunCondition(probe.id, "ready");
+      const contract = await continuation.agent(probe.id, "contract").then(response => response.json());
+      assert.equal((await continuation.agent(probe.id, "consume", { revision: contract.question_revision })).status, 200);
+      const deadline = Date.now() + 5000;
+      let detail;
+      do {
+        detail = await continuation.json(path);
+        if (detail.runs.at(-1)?.action === "implement-spec" && detail.runs.at(-1)?.condition === "working") break;
+        await new Promise(resolve => setTimeout(resolve, 25));
+      } while (Date.now() < deadline);
+      assert.deepEqual(detail.runs.map((run: any) => [run.action, run.condition]), [["to-tickets", "completed"], ["verify-provider", "completed"], ["implement-spec", "working"]]);
+      assert.equal(detail.runs.at(-1).manifest.issue_admission.source.revision, body.issue_scope.source_revision);
+      await page.goto(continuation.origin + `/#factory/${planning.implementation_id}`);
+      await page.getByRole("region", { name: "Next step", exact: true }).waitFor();
+      assert.equal(await page.getByRole("region", { name: "Next step", exact: true }).getByRole("button", { name: "Continue workflow", exact: true }).count(), 0);
+    } finally { await page.close(); continuation.close(); }
+  }
+  assert.deepEqual(errors, []);
+  console.log("PASS: desktop/mobile prepared issue Continue runs verification before one guarded implementation successor");
   const { project, route, readiness } = await fixture.setup();
   const second = { ...fixture.issue, number: 2, node_id: "fictional-2", title: "Later greeting", html_url: "https://github.com/fictional/project/issues/2" };
   const blocked = { ...fixture.issue, number: 3, node_id: "fictional-3", title: "Blocked greeting", labels: [{ name: "blocked" }, { name: "ready-for-agent" }] };

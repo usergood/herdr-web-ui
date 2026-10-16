@@ -110,7 +110,10 @@ export class FactoryContinuation {
     const record: Continuation = { id: this.store.record().id, implementation_id: id, key: String(body.idempotency_key), signature, body, origin, scope_hash: scopeHash, run_id: null, condition: "starting", problem: null };
     this.store.put("workflow_continuations", record, id);
     try {
-      const run = await this.runtime.start(id, { ...body, action }, origin, { validateScope: () => this.validateScope(id, record.scope_hash, body), ...(source && !["completed", "cancelled", "failed"].includes(source.condition) ? { runId: source.id, finish: async () => {
+      // Keep issue authorization on the durable intent; verification itself has no
+      // implementation scope. The successor rechecks the original displayed scope.
+      const startBody = action === "verify-provider" && body.action === "implement-spec" ? { ...body, issue_scope: undefined } : body;
+      const run = await this.runtime.start(id, { ...startBody, action }, origin, { validateScope: () => this.validateScope(id, record.scope_hash, body), ...(source && !["completed", "cancelled", "failed"].includes(source.condition) ? { runId: source.id, finish: async () => {
         const observed = await this.runtime.reconcile(source.id);
         if (observed.condition !== "ready") throw new FactoryError("step_not_ready", observed.waiting_reason ?? "The current step is still working; continue when its proposal is ready", 409);
         await this.retain(source.id, body.allow_partial_handoff === true);

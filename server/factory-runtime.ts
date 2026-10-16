@@ -347,11 +347,12 @@ export class FactoryRuntime {
     for (const key of ["id", "implementation_id", "action", "provider", "machine_id", "idempotency_key", "specification_id", "graph_hash", "base", "checkout", "created_at", "retry_of"] as const) if (actual?.[key] !== expected[key]) throw new FactoryError("run_identity_changed", "The Machine returned another accepted Run identity; preserve ownership", 409);
     if (hash(JSON.stringify(actual.manifest)) !== hash(JSON.stringify(expected.manifest)) || !["accepted", "working", "ready", "needs_you", "blocked", "disconnected", "interrupted", "failed", "cancelled", "completed"].includes(actual.condition)) throw new FactoryError("run_identity_changed", "The Machine changed the accepted contract; preserve ownership", 409);
     if (expected.worktree && (actual.worktree !== expected.worktree || actual.branch !== expected.branch || expected.workspace_id !== null && actual.workspace_id !== expected.workspace_id || expected.pane_id !== null && actual.pane_id !== expected.pane_id)) throw new FactoryError("run_identity_changed", "The Machine changed the owned working directory or native identity", 409);
-    return actual;
+    // These are coordinator proofs, never part of the Machine's cached Run state.
+    return { ...actual, implementation_completion: expected.implementation_completion, implementation_completion_pending: expected.implementation_completion_pending };
   }
   /** Refresh capacity from owned native identities, including remote and resting chats. */
   async reconcileCapacity(): Promise<void> {
-    const runs = this.store.list<FactoryRun>("runs").filter(run => run.implementation_completion || run.implementation_completion_pending || run.action === "implement-spec" && run.condition === "completed" || activeConditions.has(run.condition) && run.pane_id && run.worktree && (run.machine_id !== "local" || run.condition === "ready"));
+    const runs = this.store.list<FactoryRun>("runs").filter(run => run.implementation_completion || run.implementation_completion_pending || this.store.get("implementation_retirement", run.id) || run.action === "implement-spec" && run.condition === "completed" || activeConditions.has(run.condition) && run.pane_id && run.worktree && (run.machine_id !== "local" || run.condition === "ready"));
     await Promise.all(runs.map(run => this.reconcile(run.id)));
     const workers = this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers").filter(worker => activeConditions.has(worker.condition) && worker.pane_id && worker.worktree && (worker.condition === "ready" || this.store.get<FactoryRun>("runs", worker.run_id)?.machine_id !== "local"));
     await Promise.all(workers.map(async worker => {
@@ -367,6 +368,7 @@ export class FactoryRuntime {
   }
   async reconcile(runId: string): Promise<FactoryRun> {
     let run = this.store.get<FactoryRun>("runs", runId); if (!run) throw new FactoryError("not_found", "Run not found", 404);
+    if (this.store.get("implementation_retirement", runId)) return this.reconcileImplementation(runId);
     if (["completed", "cancelled", "failed"].includes(run.condition)) return run.implementation_completion || run.implementation_completion_pending || run.action === "implement-spec" && run.condition === "completed" ? this.reconcileImplementation(runId) : run;
     const revision = hash(JSON.stringify(run));
     try { run = this.observed(run, run.machine_id === "local" ? await this.host.reconcile(run.id) : await this.remote<FactoryRun>(run.machine_id, `/runs/${run.id}/reconcile`, {})); }
@@ -385,9 +387,16 @@ export class FactoryRuntime {
     const run = this.store.get<FactoryRun>("runs", id);
     if (!run) throw new FactoryError("not_found", "Run not found", 404);
     if (body.summary !== undefined && (typeof body.summary !== "string" || body.summary.length > 100_000)) throw new FactoryError("invalid_summary", "Enter a bounded Stop summary");
+    if (!run.issue_pause && (this.store.get("implementation_retirement", id) || !run.implementation_completion_pending && run.implementation_completion)) return this.reconcileImplementation(id);
     for (const worker of this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers", id)) if (worker.workspace_id && worker.condition !== "cancelled") { await this.operation(run, "stop-worker", { worker_id: worker.id }); this.store.put("workers", { ...worker, condition: worker.condition === "completed" ? "completed" : "cancelled" }, id); }
-    const stopped = { ...this.observed(run, run.machine_id === "local" ? await this.host.stopRun(id) : await this.remote<FactoryRun>(run.machine_id, `/runs/${id}/stop`, {})), ...(run.implementation_completion_pending ? { implementation_completion_pending: true } : {}) };
+    const native = run.machine_id === "local" ? await this.host.stopRun(id) : await this.remote<FactoryRun>(run.machine_id, `/runs/${id}/stop`, {});
     const current = this.store.get<FactoryRun>("runs", id);
+    const stopped = this.observed(current ?? run, native);
+    // Completion/invalidation may have been retained while this Stop was awaiting
+    // its response. A late cached cancellation cannot replace that domain state.
+    if (current && !current.issue_pause && (current.implementation_completion || this.store.get("implementation_retirement", id))) {
+      stopped.condition = current.condition; stopped.waiting_reason = current.waiting_reason;
+    }
     if (current?.issue_pause) stopped.issue_pause = current.issue_pause;
     this.store.db.transaction(() => { this.store.put("runs", stopped, run.implementation_id); this.store.event(run.implementation_id, "run_stopped", { run_id: id, summary: body.summary ?? "Owner stopped this attempt", worktree_retained: true }); })();
     return stopped;

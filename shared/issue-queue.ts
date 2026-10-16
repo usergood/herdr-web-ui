@@ -1,8 +1,9 @@
 import type { FactoryRun } from "./factory.ts";
 
-/** Only a resting planning step may hand its ownership to issue implementation. */
+/** A resting planning step or its verification prerequisite may hand off ownership.
+ * Native provider proof is still required separately by implementation admission. */
 export function readyIssuePlanningStep(run: FactoryRun | null | undefined): boolean {
-  return !!run && run.condition === "ready" && !run.issue_pause && ["grill-me", "grill-with-docs", "to-spec", "to-tickets"].includes(run.action);
+  return !!run && run.condition === "ready" && !run.issue_pause && ["grill-me", "grill-with-docs", "to-spec", "to-tickets", "verify-provider"].includes(run.action);
 }
 
 /** Automatic starts require explicit opt-in bound to a reviewed backlog. */

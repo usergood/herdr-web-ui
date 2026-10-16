@@ -16,6 +16,7 @@ export function githubReviewFixture() {
   let stopHead: string | null = null;
   let nativeIdentity = false;
   let headUnavailable = false;
+  let stopGate: (() => Promise<void>) | null = null;
   const cleanedRuns = new Set<string>();
   let cleanupOutcome: "confirmed" | "lost" | "unconfirmed" | "other_checkout" = "confirmed";
   fixture.setExecutionHandler(async request => {
@@ -28,14 +29,16 @@ export function githubReviewFixture() {
     const id = path.match(/runs\/([^/]+)/)?.[1]; const run = id ? runs.get(id) : undefined;
     if (!run) return null;
     const action = path.split("/").at(-1);
+    if (["completed", "cancelled", "failed"].includes(run.condition) && ["worker", "check", "refresh", "integrate"].includes(action!)) return Response.json({ error: { code: "factory_run_required", message: "The fictional host retains a stopped native lease" } }, { status: 409 });
     if (action === "head") return headUnavailable || cleanedRuns.has(run.id) ? Response.json({ error: { code: "workspace_gone", message: "Owned historical workspace was cleaned" } }, { status: 409 }) : Response.json({ head, workspace_hash: workspaceHash });
     if (action === "cleanup") {
       cleanedRuns.add(run.id);
       if (cleanupOutcome === "lost") return Response.json({ error: { code: "unreachable", message: "Owned cleanup response lost" } }, { status: 503 });
       return Response.json({ removed: cleanupOutcome === "unconfirmed" ? [] : cleanupOutcome === "other_checkout" ? [fixture.root + "/other"] : [run.worktree], branches_retained: true, notes_retained: true });
     }
-    if (action === "reconcile") return Response.json({ ...run, condition: coordinator });
+    if (action === "reconcile") return Response.json(["completed", "cancelled", "failed"].includes(run.condition) ? run : { ...run, condition: coordinator });
     if (action === "stop") {
+      const gate = stopGate; stopGate = null; await gate?.();
       if (uncertainStop) return Response.json({ error: { code: "unreachable", message: "Owned stop outcome uncertain" } }, { status: 409 });
       if (stopHead) head = stopHead;
       const stopped = { ...run, condition: stopCondition } as FactoryRun; runs.set(run.id, stopped); return Response.json(stopped);
@@ -72,7 +75,7 @@ export function githubReviewFixture() {
     await fixture.json(`/runs/${run.id}/workers/${worker.id}/check`, {});
     await fixture.json(`/runs/${run.id}/workers/${worker.id}/integrate`, {});
   }
-  async function review(run: FactoryRun, axis: "standards" | "spec", key = axis) {
+  async function review(run: FactoryRun, axis: "standards" | "spec", key: string = axis) {
     const worker = await fixture.json(`/runs/${run.id}/workers`, { role: axis, idempotency_key: `owned-${key}` });
     return fixture.json(`/runs/${run.id}/workers/${worker.id}/review-evidence`, {});
   }
@@ -85,5 +88,12 @@ export function githubReviewFixture() {
     const detail = await fixture.json(path);
     return { path, start: { action: "implement-spec", idempotency_key: "unrelated-issue", issue_scope: { source_id: source.id, source_revision: source.revision, graph_hash: detail.graph_hash } } };
   }
-  return { ...fixture, prepare, integrate, review, second, setCleanupOutcome(value: typeof cleanupOutcome) { cleanupOutcome = value; }, setHeadUnavailable(value = true) { headUnavailable = value; if (!value) cleanedRuns.clear(); }, setHead(value: string) { head = value; }, setWorkspaceHash(value: string) { workspaceHash = value; }, setCoordinator(value: typeof coordinator) { coordinator = value; }, setCheck(value: typeof checkCondition) { checkCondition = value; }, setCheckCommands(value: string[][] | null, exitCodes: number[] = []) { checkCommands = value; checkExitCodes = exitCodes; }, setReview(value: typeof reviewOutcome) { reviewOutcome = value; }, setUncertainStop(value: boolean) { uncertainStop = value; }, setStopCondition(value: typeof stopCondition) { stopCondition = value; }, setStopHead(value: string) { stopHead = value; }, setNativeIdentity() { nativeIdentity = true; } };
+  function holdStop() {
+    let entered!: () => void; let release!: () => void;
+    const waiting = new Promise<void>(resolve => entered = resolve);
+    const gate = new Promise<void>(resolve => release = resolve);
+    stopGate = async () => { entered(); await gate; };
+    return { waiting, release };
+  }
+  return { ...fixture, prepare, integrate, review, second, holdStop, setCleanupOutcome(value: typeof cleanupOutcome) { cleanupOutcome = value; }, setHeadUnavailable(value = true) { headUnavailable = value; if (!value) cleanedRuns.clear(); }, setHead(value: string) { head = value; }, setWorkspaceHash(value: string) { workspaceHash = value; }, setCoordinator(value: typeof coordinator) { coordinator = value; }, setCheck(value: typeof checkCondition) { checkCondition = value; }, setCheckCommands(value: string[][] | null, exitCodes: number[] = []) { checkCommands = value; checkExitCodes = exitCodes; }, setReview(value: typeof reviewOutcome) { reviewOutcome = value; }, setUncertainStop(value: boolean) { uncertainStop = value; }, setStopCondition(value: typeof stopCondition) { stopCondition = value; }, setStopHead(value: string) { stopHead = value; }, setNativeIdentity() { nativeIdentity = true; } };
 }

@@ -232,7 +232,7 @@ export class FactoryService {
     const nextCondition = ended ? "interrupted" : status === "blocked" ? "needs_you" : ["idle", "done"].includes(status) && !backgroundWorking ? "ready" : "working";
     const reason = ended ? "The native pane ended without an accepted outcome; retained work needs reconciliation" : status === "blocked" ? "The native agent is waiting for an owner answer" : null;
     for (const run of this.store.list<FactoryRun>("runs")) if (run.machine_id === "local" && run.pane_id === paneId && ["working", "ready", "needs_you", "blocked"].includes(run.condition)) {
-      if (run.issue_pause) continue;
+      if (run.issue_pause || run.implementation_completion_pending || this.store.get("implementation_retirement", run.id)) continue;
       if (!ended && agent !== run.provider) continue;
       const pending = this.store.list<import("../shared/protocol.ts").FactoryQuestion>("questions", run.implementation_id).find((question) => question.run_id === run.id && question.answer === null);
       const condition = pending && !ended ? "needs_you" : nextCondition;
