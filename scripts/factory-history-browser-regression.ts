@@ -44,11 +44,13 @@ try {
   await next.getByText(reason, { exact: true }).first().waitFor();
   await page.setViewportSize({ width: 390, height: 844 });
   assert(await delivery.evaluate(el => el.scrollWidth <= el.clientWidth), "Historical delivery correction fits a phone");
-  const discard = next.getByRole("button", { name: "Discard Assignment", exact: true });
-  assert((await discard.boundingBox())!.height >= 40, "Discard has a usable phone touch target");
-  const discarded = page.waitForResponse(r => r.url().endsWith("/implementations/unverified-history/discard") && r.request().method() === "POST");
-  await discard.click();
-  assert.equal((await discarded).status(), 200);
+  const remove = page.getByRole("button", { name: "Delete Assignment", exact: true });
+  await remove.waitFor();
+  assert((await remove.boundingBox())!.height >= 40, "Delete has a usable phone touch target");
+  assert.equal(await page.getByRole("button", { name: "Discard Assignment", exact: true }).count(), 0);
+  // Retention is the legacy oracle here; this HTTP arrangement does not exercise Delete.
+  assert.equal((await f.request("/implementations/unverified-history/discard", {})).status, 200);
+  await page.reload();
   await next.getByText("Discarded", { exact: true }).waitFor();
   const retained = await f.detail("unverified-history");
   assert.equal(retained.implementation.outcome, "discarded");
@@ -64,7 +66,7 @@ try {
   const restored = page.waitForResponse(r => r.url().endsWith("/implementations/archived-history/restore") && r.request().method() === "POST");
   await page.getByRole("button", { name: "Restore", exact: true }).click();
   assert.equal((await restored).status(), 200);
-  await next.getByRole("button", { name: "Discard Assignment", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Delete Assignment", exact: true }).waitFor();
   assert.equal((await f.detail("archived-history")).board?.lane, "needs_you");
   const recovery = await f.request("/backups/prior-version-backup/restore", {}).then(r => r.json());
   f.restart(recovery.state_dir);
@@ -74,5 +76,5 @@ try {
   assert.equal((await f.detail("unverified-history")).events.filter(event => event.kind === "historical_completion_reconciled").length, 1);
   assert.deepEqual(f.starts, [], "Startup, restore and browser navigation launch no native work");
   assert.deepEqual(errors, []);
-  console.log("Historical completion browser: preserved Done/archived history, desktop/phone correction and Discard, restart-safe backup restore without native starts");
+  console.log("Historical completion browser: preserved Done/archived history, desktop/phone correction and retained legacy Discard, current Delete control and restart-safe backup restore without native starts");
 } finally { await browser.close(); f.close(); }

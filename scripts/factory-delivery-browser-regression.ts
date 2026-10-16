@@ -92,9 +92,10 @@ try {
   assert.equal((await f.request(changingPrefix).then(r => r.json())).board.lane, "needs_you");
   assert(await nextStep.evaluate(el => el.scrollWidth <= el.clientWidth), "Completion blockers fit a phone");
   await navigation.getByText(changing.title, { exact: true }).waitFor();
-  const discarded = page.waitForResponse(r => r.url().endsWith(`${changingPrefix}/discard`) && r.request().method() === "POST");
-  await page.getByRole("button", { name: "Discard Assignment", exact: true }).click();
-  assert.equal((await discarded).status(), 200);
+  // Retained legacy outcomes are arranged through HTTP; current owner controls are Pause/Delete.
+  assert.equal(await page.getByRole("button", { name: "Discard Assignment", exact: true }).count(), 0);
+  assert.equal((await f.request(`${changingPrefix}/discard`, {})).status, 200);
+  await page.reload();
   await page.getByRole("region", { name: "Next step", exact: true }).getByText("Discarded", { exact: true }).waitFor();
   await navigation.getByText(changing.title, { exact: true }).waitFor({ state: "detached" });
   await page.goto(`${origin}/#projects/${f.project.id}`);
@@ -115,9 +116,9 @@ try {
     await page.getByRole("region", { name: "Next step", exact: true }).getByText("Repository change evidence is unavailable. Reconnect the Machine and inspect the retained work before accepting research.", { exact: true }).waitFor();
     assert.equal(await page.getByRole("button", { name: "Accept research", exact: true }).count(), 0);
     assert.equal((await remote.request(remote.prefix).then(r => r.json())).board.lane, "needs_you");
-    const pendingResponse = page.waitForResponse(r => r.url().endsWith(`${remote.prefix}/discard`) && r.request().method() === "POST");
-    await page.getByRole("button", { name: "Discard Assignment", exact: true }).click();
-    assert.equal((await pendingResponse).status(), 200);
+    assert.equal(await page.getByRole("button", { name: "Discard Assignment", exact: true }).count(), 0);
+    assert.equal((await remote.request(`${remote.prefix}/discard`, {})).status, 200);
+    await page.reload();
     await page.getByRole("status", { name: "Discard pending", exact: true }).waitFor();
     assert.equal((await remote.request(remote.prefix).then(r => r.json())).board.sidebar_hidden, false);
     await page.reload();

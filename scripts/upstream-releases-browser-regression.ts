@@ -38,8 +38,10 @@ try {
   const active = upstream.getByRole("link", { name: "Active update: v11", exact: true });
   await active.focus(); await page.keyboard.press("Enter");
   await page.getByRole("heading", { name: "Update from fictional/upstream v11", exact: true }).waitFor();
-  const discarded = page.waitForResponse(response => response.url().endsWith("/discard") && response.request().method() === "POST");
-  await page.getByRole("button", { name: "Discard Assignment", exact: true }).click(); assert.equal((await discarded).status(), 200);
+  // Arrange the retained legacy outcome through HTTP; current owner controls are Pause/Delete.
+  assert.equal(await page.getByRole("button", { name: "Discard Assignment", exact: true }).count(), 0);
+  const activeId = (await f.request(f.route + "/schedules")).body.upstream.active.implementation_id;
+  assert.equal((await f.request(`/implementations/${activeId}/discard`, {})).status, 200);
   await page.goto(f.origin() + `/#projects/${projectId}`);
   await upstream.getByRole("link", { name: "Active update: v13", exact: true }).waitFor();
   assert.equal(await upstream.getByRole("link", { name: "Active update: v12", exact: true }).count(), 0);
