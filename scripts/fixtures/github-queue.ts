@@ -24,6 +24,11 @@ export function githubQueueFixture(execution = false, publicUrl: string | null =
   writeFileSync(cli, `import { existsSync, readFileSync, writeFileSync } from "node:fs";
 const data = JSON.parse(readFileSync(${JSON.stringify(responses)}, "utf8")); const endpoint = process.argv[3];
 if (data.sync?.api_fail === endpoint) throw new Error("Fictional GitHub transport failure");
+if (data.apiSequences?.[endpoint]?.length) {
+  const result = data.apiSequences[endpoint].shift();
+  writeFileSync(${JSON.stringify(responses)}, JSON.stringify(data));
+  console.log(JSON.stringify(result)); process.exit(0);
+}
 if (Object.hasOwn(data.apiResponses ?? {}, endpoint)) { console.log(JSON.stringify(data.apiResponses[endpoint])); process.exit(0); }
 const gate = existsSync(${JSON.stringify(syncGate)}) ? readFileSync(${JSON.stringify(syncGate)}, "utf8") : null;
 if (gate && (gate.startsWith("=") ? endpoint === gate.slice(1) : endpoint.includes(gate))) {
@@ -130,9 +135,9 @@ console.log(JSON.stringify(endpoint === "user" ? {login:"fictional-owner",id:104
     writeFileSync(responses, JSON.stringify(data));
   }
   function restart(beforeStart?: () => void, nextPublicUrl?: string | null) { app.stop(); beforeStart?.(); if (nextPublicUrl !== undefined) options.publicUrl = nextPublicUrl; app = createServer({ port: 0, stateDir: root, machines: false, token: "fixture-owner", factory: options }); origin = `http://localhost:${app.port}`; }
-  function setApiResponses(apiResponses: Record<string, unknown>) {
+  function setApiResponses(apiResponses: Record<string, unknown>, apiSequences?: Record<string, unknown[]>) {
     const data = JSON.parse(readFileSync(responses, "utf8"));
-    writeFileSync(responses, JSON.stringify({ ...data, apiResponses }));
+    writeFileSync(responses, JSON.stringify({ ...data, apiResponses, apiSequences }));
   }
   function holdCapabilities() {
     let entered!: () => void; let release!: () => void;

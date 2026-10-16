@@ -51,6 +51,35 @@ export function effectiveIssueTestingSeams(store: FactoryStore, source: ProjectG
     .filter(approval => approval.kind === "testing_seams" && approval.revision === specification.id && approval.issue_scope?.source_id === source.id && approval.issue_scope.scope_hash === scopeHash).at(-1)?.scope ?? null;
 }
 
+/** Intended work ignores proposal IDs, but includes current-bound approved decisions. */
+export function issueDeliveryPlanningScope(store: FactoryStore, source: ProjectGitHubSource): string {
+  const workflow = new FactoryWorkflow(store);
+  const approved = store.list<SpecificationVersion>("specifications", source.implementation_id)
+    .filter(specification => workflow.issueApproved(source, "specification", specification.id));
+  // Drafts and unbound/stale receipts cannot replace the applicable approved plan.
+  const selected = approved.at(-1);
+  const content = selected?.content ?? source.current?.body ?? "";
+  const matching = approved.filter(specification => specification.content === content);
+  const testingSeams = [...matching].reverse().map(specification => effectiveIssueTestingSeams(store, source, specification))
+    .find(seams => seams !== null) ?? sections(content)["testing seams"] ?? null;
+  type Graph = { specification_id: string; hash: string; tickets: FactoryTicket[]; issue_scope?: FactoryApproval["issue_scope"] };
+  const scopeHash = workflow.issueApprovalScope(source).scope_hash;
+  const graph = store.list<Graph>("graph_versions", source.implementation_id).filter(graph => matching.some(specification => specification.id === graph.specification_id)
+    && (workflow.issueApproved(source, "ticket_graph", graph.hash) || graph.issue_scope?.source_id === source.id && graph.issue_scope.scope_hash === scopeHash)).at(-1);
+  const planned = ticketBreakdown(sections(content).tickets ?? "") ?? [{ key: "scope", title: source.current?.title ?? "", acceptance: content, dependencies: [] }];
+  const tickets = graph ? graph.tickets.map(ticket => ({ key: ticket.id, title: ticket.title, acceptance: ticket.acceptance, dependencies: ticket.dependencies })) : planned;
+  // New records/keys and a different list order do not change the same DAG's work.
+  const scopes = new Map<string, string>();
+  const ticketScope = (key: string): string => {
+    const retained = scopes.get(key);
+    if (retained) return retained;
+    const ticket = tickets.find(ticket => ticket.key === key)!;
+    const scope = hash(JSON.stringify([ticket.title, ticket.acceptance, ticket.dependencies.map(ticketScope).sort()]));
+    scopes.set(key, scope); return scope;
+  };
+  return hash(JSON.stringify([content, testingSeams, tickets.map(ticket => ticketScope(ticket.key)).sort()]));
+}
+
 /** A known edit to selected scope asks the owner while preserving the previous graph. */
 export function reconcileIssuePlan(store: FactoryStore, source: ProjectGitHubSource): void {
   const prior = store.get<IssuePlanning>("github_plans", source.id);

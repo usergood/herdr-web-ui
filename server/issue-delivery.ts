@@ -4,6 +4,7 @@ import { FactoryStore } from "./factory-store.ts";
 import { isJsonObject } from "./http.ts";
 import { dependencyPlan } from "./issue-dependencies.ts";
 import type { Implementation } from "../shared/factory.ts";
+import { issueDeliveryPlanningScope } from "./issue-planning.ts";
 
 const sha = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
 const ref = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 200 && !/[\s~^:?*\[\\\x00-\x1f]/.test(value) && !value.includes("..") && !value.includes("@{") && !value.startsWith("/") && !value.endsWith("/") && !value.endsWith(".") && !value.split("/").some(part => !part || part.startsWith(".") || part.endsWith(".lock"));
@@ -25,7 +26,13 @@ function containsMerge(comparison: unknown, mergeCommit: string): boolean | null
 export function coverageRevision(store: FactoryStore, projectId: string): string {
   // A failed fence outside sync (for example, owner readiness approval) also
   // invalidates dependency proofs previously certified from the old inventory.
-  return hash(JSON.stringify(store.list<ProjectGitHubSource>("github_sources", projectId).filter(source => source.kind === "issue").map(source => [source.id, source.revision, dependencyPlan(store, source).revision, store.get<IssueDeliveryLink>("github_delivery_links", source.id)?.revision ?? null, source.readiness_evidence?.complete ?? null, source.readiness_evidence?.source_revision ?? null])));
+  return hash(JSON.stringify(store.list<ProjectGitHubSource>("github_sources", projectId).filter(source => source.kind === "issue").map(source => [source.id, source.revision, dependencyPlan(store, source).revision, issueDeliveryPlanningScope(store, source), store.get<IssueDeliveryLink>("github_delivery_links", source.id)?.revision ?? null, source.readiness_evidence?.complete ?? null, source.readiness_evidence?.source_revision ?? null])));
+}
+
+/** Retire a known planning change at its mutation, before another fallible sync. */
+export function reconcileIssueDelivery(store: FactoryStore, source: ProjectGitHubSource): void {
+  const link = store.get<IssueDeliveryLink>("github_delivery_links", source.id);
+  if (link && store.get<{ planning_scope: string }>("github_delivery_planning_scopes", link.revision)?.planning_scope !== issueDeliveryPlanningScope(store, source)) invalidateIssueDelivery(store, source);
 }
 
 /** Coverage survives metadata edits only along a proven, uninterrupted semantic history. */
@@ -33,6 +40,8 @@ export function deliveryScopeCurrent(store: FactoryStore, source: ProjectGitHubS
   const current = source.current;
   const history = source.history ?? [];
   if (link.source_id !== source.id || !current?.native_dependencies || current.revision !== source.revision || store.get("github_delivery_scope_invalidations", link.revision)) return false;
+  // Legacy links with unknown planning provenance need explicit current-intent relinking.
+  if (store.get<{ planning_scope: string }>("github_delivery_planning_scopes", link.revision)?.planning_scope !== issueDeliveryPlanningScope(store, source)) return false;
   let anchor = -1;
   for (const [index, observed] of history.entries()) {
     if (observed.revision === link.source_revision && Date.parse(observed.fetched_at) <= Date.parse(link.created_at)) anchor = index;
@@ -82,6 +91,7 @@ export function linkIssueDelivery(store: FactoryStore, source: ProjectGitHubSour
     store.put("github_sources", { ...source, delivery_requires: source.delivery_requires === "release" || body.release_tag ? "release" : "merge" }, source.project_id);
     store.put("github_delivery_links", { ...link, id: source.id }, source.project_id);
     store.put("github_delivery_link_versions", link, source.implementation_id);
+    store.put("github_delivery_planning_scopes", { id: link.revision, planning_scope: issueDeliveryPlanningScope(store, source) }, source.implementation_id);
     store.event(source.implementation_id, "issue_delivery_linked", { source_id: source.id, revision: link.revision });
   })();
 }

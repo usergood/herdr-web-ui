@@ -76,6 +76,10 @@ try {
     const assignmentLink = dependencies.getByRole("link", { name: "Open prerequisite Assignment", exact: true });
     assert.equal(await assignmentLink.getAttribute("href"), `#factory/${view.sources.find((source: { number: number }) => source.number === 24).implementation_id}`);
     const targetId = view.sources.find((entry: { number: number }) => entry.number === 24).implementation_id;
+    const targetSource = (await fetch(origin + "/api/factory" + route).then(response => response.json())).sources.find((entry: { number: number }) => entry.number === 24);
+    const appContent = "## Scope\nDeliver the approved prerequisite.\n## Acceptance criteria\nShow the prerequisite greeting.\n## Testing seams\nPublic HTTP and real browser journeys.";
+    const appSpec = await post(`/implementations/${targetId}/specifications`, { content: appContent });
+    for (const kind of ["specification", "testing_seams"]) await post(`/implementations/${targetId}/approvals`, { kind, revision: appSpec.id, scope: "Reviewed app prerequisite contract", issue_scope: { source_id: targetSource.id, source_revision: targetSource.revision } });
     await page.goto(origin + `/#factory/${targetId}`);
     const coverage = page.getByRole("region", { name: "Dependency delivery", exact: true });
     await coverage.getByLabel("Target branch", { exact: true }).fill("main");
@@ -121,6 +125,23 @@ try {
       await page.goto(origin + `/#factory/${id}`);
       await dependencies.getByText("Dependencies are satisfied.", { exact: true }).waitFor();
     }
+    // App approvals can change intended work even when the GitHub issue is
+    // unchanged. Closed-source delivery keeps its approved plan until this point.
+    const currentTarget = (await fetch(origin + "/api/factory" + route).then(response => response.json())).sources.find((entry: { number: number }) => entry.number === 24);
+    const revisedSpec = await post(`/implementations/${targetId}/specifications`, { content: appContent + "\n## Additional acceptance\nAlso show goodbye." });
+    for (const kind of ["specification", "testing_seams"]) await post(`/implementations/${targetId}/approvals`, { kind, revision: revisedSpec.id, scope: "Reviewed additional prerequisite acceptance", issue_scope: { source_id: currentTarget.id, source_revision: currentTarget.revision } });
+    await page.goto(origin + `/#factory/${targetId}`);
+    await coverage.getByText("Issue changed. Review and relink intended coverage.", { exact: true }).waitFor();
+    assert(await coverage.evaluate(element => element.scrollWidth <= element.clientWidth));
+    await page.goto(origin + `/#factory/${id}`);
+    await dependencies.getByText("Dependency evidence is stale or incomplete. Sync GitHub before starting work.", { exact: true }).waitFor();
+    await post(route + "/sync", {}); await page.reload();
+    await dependencies.getByText("Dependencies are blocked.", { exact: true }).waitFor();
+    await page.goto(origin + `/#factory/${targetId}`);
+    await coverage.getByRole("button", { name: "Save intended coverage", exact: true }).click();
+    await coverage.getByText("Coverage linked. Sync GitHub to verify delivery.", { exact: true }).waitFor();
+    await post(route + "/sync", {}); await page.goto(origin + `/#factory/${id}`);
+    await dependencies.getByText("Dependencies are satisfied.", { exact: true }).waitFor();
     const originalTitle = prerequisite.title;
     prerequisite.title = "Changed prerequisite scope"; saveIssues(); await post(route + "/sync", {});
     await page.goto(origin + `/#factory/${targetId}`);

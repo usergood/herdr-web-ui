@@ -764,7 +764,19 @@ export class ProjectGitHub {
         const verificationScope = coverageRevision(this.store, id);
         // Dependency satisfaction and Assignment completion use the same immutable sync evidence.
         const deliveryProofs = new Map<string, ReturnType<typeof verifyIssueDelivery>>();
+        // A later observation can contradict an earlier proof in this snapshot.
+        // Keep that revocation for the whole sync, including cached promises,
+        // local edges not yet stored and completion waiting to be published.
+        const contradictions = new Map<string, "merge" | "release">();
+        const contradicted = (edge: Pick<GitHubDependencyEdge, "implementation_id" | "requires">, branch: string | null): boolean => {
+          const kind = contradictions.get(JSON.stringify([edge.implementation_id, branch]));
+          return kind === "merge" || kind === "release" && edge.requires === "release";
+        };
+        const revoke = (edge: GitHubDependencyEdge, branch: string | null): GitHubDependencyEdge => contradicted(edge, branch)
+          ? { ...edge, blocker: contradictions.get(JSON.stringify([edge.implementation_id, branch])) === "merge" ? "delivery_unverified" : "release_unverified", delivery: undefined }
+          : edge;
         const verifyDelivery = async (edge: GitHubDependencyEdge, target: ProjectGitHubSource, branch: string | null): Promise<GitHubDependencyEdge> => {
+          if (contradicted(edge, branch)) return revoke(edge, branch);
           const key = JSON.stringify([target.id, branch, edge.requires ?? "merge"]);
           let proof = deliveryProofs.get(key);
           if (!proof) { proof = verifyIssueDelivery(this.store, edge, target, branch, path => this.api(policy, scope, path)); deliveryProofs.set(key, proof); }
@@ -772,6 +784,8 @@ export class ProjectGitHub {
           if (result.contradicted) {
             this.current(policy);
             if (verificationScope !== coverageRevision(this.store, id)) throw new FactoryError("dependency_scope_changed", "The approved delivery scope changed during verification; sync GitHub again", 409);
+            const scopeKey = JSON.stringify([target.implementation_id, branch]);
+            if (contradictions.get(scopeKey) !== "merge") contradictions.set(scopeKey, result.contradicted);
             // Retain positive contradiction before another fallible fetch. Only
             // the affected branch/artifact loses its cached dependency proof.
             const affected = (cached: GitHubDependencyEdge) => cached.implementation_id === target.implementation_id && (result.contradicted === "merge" || cached.requires === "release");
@@ -785,7 +799,7 @@ export class ProjectGitHub {
               if (link?.target_branch === branch && (result.contradicted === "merge" || requires === "release")) invalidateIssueDelivery(this.store, target, "coverage_changed");
             })();
           }
-          return { ...edge, blocker: result.blocker, delivery: result.delivery };
+          return revoke({ ...edge, blocker: result.blocker, delivery: result.delivery }, branch);
         };
         const combined = new Map(sources.map(source => [source.external_id, combinedDependencies(this.store, source, dependencies.get(source.external_id) ?? [], sources)]));
         const cyclic = (sourceId: string, targetId: string): boolean => {
@@ -830,7 +844,9 @@ export class ProjectGitHub {
             const proof = await verifyDelivery({ external_id: source.external_id, repository: policy.repository, number: source.number, url: source.url, state: source.state === "closed" ? "closed" : "open", source_updated_at: source.current!.source_updated_at, implementation_id: source.implementation_id, resolution: "resolved", blocker: "delivery_unverified", requires }, source, link.target_branch);
             if (!proof.blocker && proof.delivery) delivered.push({ source, evidence: { ...proof.delivery, source_id: source.id, source_revision: link.source_revision, requires } });
           }
-          this.store.put<ProjectGitHubSource>("github_sources", { ...source, dependencies: { revision: hash(JSON.stringify(edges)), plan_revision: plan.revision, coverage_revision: verificationScope, target_branch: targetBranch, conflicts: plan.conflicts, satisfied: !plan.conflicts.length && edges.every(edge => edge.blocker === null), source_revision: source.revision, fetched_at: source.current!.fetched_at, account_profile_id: policy.account_profile_id, policy_revision: policy.revision, complete: true, fresh: true, edges } }, id);
+          const currentEdges = edges.map(edge => revoke(edge, targetBranch));
+          const complete = !edges.some(edge => contradicted(edge, targetBranch));
+          this.store.put<ProjectGitHubSource>("github_sources", { ...source, dependencies: { revision: hash(JSON.stringify(currentEdges)), plan_revision: plan.revision, coverage_revision: verificationScope, target_branch: targetBranch, conflicts: plan.conflicts, satisfied: complete && !plan.conflicts.length && currentEdges.every(edge => edge.blocker === null), source_revision: source.revision, fetched_at: source.current!.fetched_at, account_profile_id: policy.account_profile_id, policy_revision: policy.revision, complete, fresh: complete, edges: currentEdges } }, id);
         }
         this.current(policy);
         if (verificationScope !== coverageRevision(this.store, id)) throw new FactoryError("dependency_scope_changed", "The approved dependency scope changed during verification; sync GitHub again", 409);
@@ -849,6 +865,7 @@ export class ProjectGitHub {
         if (verificationScope !== coverageRevision(this.store, id)) throw new FactoryError("dependency_scope_changed", "The approved delivery scope changed during verification; sync GitHub again", 409);
         this.store.db.transaction(() => {
           for (const { source, evidence } of delivered) {
+            if (contradicted({ implementation_id: source.implementation_id, requires: evidence.requires }, evidence.merges[0]?.target_branch ?? null)) continue;
             const idea = this.store.get<Implementation>("implementations", source.implementation_id);
             if (!idea || idea.project_id !== id || idea.archived_at) continue;
             this.store.put("implementations", { ...idea, stage: "done", activity: undefined, outcome: evidence.requires === "release" ? "released" : "merged", delivery_evidence: evidence });

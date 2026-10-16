@@ -24,7 +24,7 @@ import { projectReferenceTemplate } from "../shared/project-references.ts";
 import { MachineAccounts } from "./accounts.ts";
 import type { AccountTools } from "./account-tools.ts";
 import { ProjectGitHub } from "./github-project.ts";
-import { hasIssueSource } from "./issue-delivery.ts";
+import { hasIssueSource, reconcileIssueDelivery } from "./issue-delivery.ts";
 import { sameOrigin } from "./machine-security.ts";
 import { parseModelSelection, resolveModelSelection } from "./agent-model-selection.ts";
 
@@ -75,7 +75,10 @@ export class FactoryService {
     return this.store.db.transaction(() => {
       const result = this.workflow.mutate(id, action, body);
       const projectId = this.store.get<Implementation>("implementations", id)?.project_id;
-      if (projectId && ["specifications", "tickets", "approvals"].includes(action)) this.github.reconcileAdmissions(projectId);
+      if (projectId && ["specifications", "tickets", "approvals"].includes(action)) {
+        for (const source of this.store.list<import("../shared/github-project.ts").ProjectGitHubSource>("github_sources", projectId)) if (source.kind === "issue" && source.implementation_id === id) reconcileIssueDelivery(this.store, source);
+        this.github.reconcileAdmissions(projectId);
+      }
       return result;
     })();
   }
