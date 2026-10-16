@@ -234,11 +234,11 @@ export class FactoryPipeline {
     if (JSON.stringify(this.completionEvidence(run, expected)) !== JSON.stringify(expected)) throw new FactoryError("fresh_evidence_required", "Implementation ownership or evidence changed before retirement", 409);
     this.store.put("runs", { ...live, implementation_completion_pending: true }, run.implementation_id);
     const alreadyRetired = retired || run.implementation_completion || run.implementation_completion_pending && ["completed", "cancelled"].includes(run.condition);
-    const stopped = alreadyRetired ? { ...run, condition: "completed" as const } : await this.runtime.stopRun(run.id, { summary: `Implementation execution finished at ${expected.head}` });
+    const stopped = alreadyRetired ? { ...run, condition: "completed" as const } : await this.runtime.stopRun(run.id, { summary: `Implementation execution finished at ${expected.head}` }, "retirement");
     if (!["completed", "cancelled"].includes(stopped.condition)) throw new FactoryError("execution_owned", "Native execution did not confirm termination; retain its reservation", 409);
     // A crash or a changed head after Stop must not turn confirmed physical
     // termination into either lost logical ownership or an unrecoverable pending flag.
-    this.store.put("implementation_retirement", { id: run.id }, run.implementation_id);
+    this.store.put("implementation_retirement", { ...this.store.get<{ id: string; rework_requested?: boolean }>("implementation_retirement", run.id), id: run.id }, run.implementation_id);
     const head = await this.runtime.operation<{ head: string; workspace_hash: string }>(run, "head");
     const completion = this.completionEvidence(run, head);
     if (!completion || JSON.stringify(completion) !== JSON.stringify(expected)) throw new FactoryError("fresh_evidence_required", "Implementation changed while retiring execution; retain capacity and reconcile", 409);

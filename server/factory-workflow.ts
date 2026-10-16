@@ -23,6 +23,18 @@ export class FactoryWorkflow {
   approved(id: string, kind: FactoryApproval["kind"], revision: string): boolean {
     return this.store.list<FactoryApproval>("approvals", id).some((record) => record.kind === kind && record.revision === revision);
   }
+  issueApprovalScope(source: import("../shared/github-project.ts").ProjectGitHubSource): NonNullable<FactoryApproval["issue_scope"]> {
+    const current = source.current;
+    return { source_id: source.id, source_revision: source.revision, scope_hash: hash(JSON.stringify([source.id, current?.repository, current?.title, current?.body, current?.native_dependencies])) };
+  }
+  issueApproved(source: import("../shared/github-project.ts").ProjectGitHubSource, kind: FactoryApproval["kind"], revision: string): boolean {
+    const scopeHash = this.issueApprovalScope(source).scope_hash;
+    return this.store.list<FactoryApproval>("approvals", source.implementation_id).some(approval => approval.kind === kind && approval.revision === revision && approval.issue_scope?.source_id === source.id && approval.issue_scope.scope_hash === scopeHash);
+  }
+  issueGraphApproved(source: import("../shared/github-project.ts").ProjectGitHubSource): boolean {
+    const graph = this.store.get<{ hash: string; specification_id: string; issue_scope?: FactoryApproval["issue_scope"] }>("graphs", source.implementation_id);
+    return !!graph && (this.issueApproved(source, "ticket_graph", graph.hash) || graph.specification_id === this.specification(source.implementation_id)?.id && graph.issue_scope?.source_id === source.id && graph.issue_scope.scope_hash === this.issueApprovalScope(source).scope_hash);
+  }
   /** Only a verified native page may supply an answer; ambiguous replies stay pending. */
   retainNativeAnswers(run: FactoryRun, snapshot: NativeConversationSnapshot, latestPage: boolean): void {
     const questions = this.store.list<FactoryQuestion>("questions", run.implementation_id)
@@ -137,7 +149,9 @@ export class FactoryWorkflow {
           for (const question of pending) this.mutate(id, "answer", { question_id: question.id, revision: question.revision, answer: "Confirmed" });
           revision = this.questionRevision(id);
         }
-        const approval: FactoryApproval = { ...this.store.record(), implementation_id: id, kind: body.kind as FactoryApproval["kind"], revision, scope: body.scope.trim() };
+        const source = this.store.list<import("../shared/github-project.ts").ProjectGitHubSource>("github_sources").find(source => source.kind === "issue" && source.implementation_id === id && source.current);
+        if (body.issue_scope !== undefined && (!source || !isJsonObject(body.issue_scope) || body.issue_scope.source_id !== source.id || body.issue_scope.source_revision !== source.revision)) throw new FactoryError("issue_changed", "Review the current issue scope before approving retained planning", 409);
+        const approval: FactoryApproval = { ...this.store.record(), implementation_id: id, kind: body.kind as FactoryApproval["kind"], revision, scope: body.scope.trim(), ...(source && body.issue_scope !== undefined && ["specification", "testing_seams", "ticket_graph"].includes(body.kind as string) ? { issue_scope: this.issueApprovalScope(source) } : {}) };
         this.store.put("approvals", approval, id); this.store.event(id, "owner_approved", approval);
         if (approval.kind === "ticket_graph" && !["running", "review"].includes(implementation.stage)) this.store.put("implementations", { ...implementation, stage: "ready", updated_at: approval.created_at });
         return approval;

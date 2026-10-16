@@ -16,7 +16,11 @@ writeFileSync(join(repo, "README.md"), "# Fictional issue source\n");
 for (const args of [["add", "."], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "fixture"], ["remote", "add", "origin", "https://github.com/fictional/project.git"]]) execFileSync("git", ["-C", repo, ...args], { stdio: "ignore" });
 const responses = join(root, "issues.json");
 const issue = { repository_url: "https://api.github.com/repos/fictional/project", number: 12, node_id: "fictional-issue", title: "Fictional source title", body: "## Scope\nShow a greeting.\n\n## Acceptance criteria\nShow hello.\n\n## Dependencies\nNone.", labels: [{ name: "ready-for-agent" }], state: "open", updated_at: "2026-10-01T12:00:00Z", html_url: "https://github.com/fictional/project/issues/12" };
-function saveIssues(dependencies: Record<string, unknown[]> = {}) { writeFileSync(responses, JSON.stringify({ issues: [issue], dependencies })); }
+const issues = new Map<number, typeof issue>();
+function saveIssues(dependencies: Record<string, unknown[]> = {}) {
+  issues.set(issue.number, structuredClone(issue));
+  writeFileSync(responses, JSON.stringify({ issues: [...issues.values()], dependencies }));
+}
 saveIssues();
 const cli = issueBrowserCli(root, responses);
 const app = createServer({ port: 0, stateDir: root, machines: false, factory: { accountDiscoveryHome: root, accountTools: { github: { executable: process.execPath, args: [cli] } } } });
@@ -77,6 +81,58 @@ try {
     } catch (error) {
       if (evidence) await page.screenshot({ path: join(evidence, `issue-plan-failure-${viewport.width}.png`), fullPage: true });
       throw error;
+    } finally { await page.close(); }
+  }
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    issue.number = viewport.width === 1440 ? 21 : 22;
+    issue.node_id = `fictional-app-plan-${issue.number}`;
+    issue.html_url = `https://github.com/fictional/project/issues/${issue.number}`;
+    issue.body = "## Scope\nShow a greeting.\n\n## Acceptance criteria\nShow hello.\n\n## Dependencies\nNone.\n\n## Testing seams\nPublic HTTP and real browser journeys.";
+    saveIssues();
+    const original = (await post(route + "/sync", {})).sources.find((source: any) => source.number === issue.number);
+    const prefix = `/implementations/${original.implementation_id}`;
+    const specification = await post(prefix + "/specifications", { content: issue.body });
+    const oldScope = { source_id: original.id, source_revision: original.revision };
+    for (const kind of ["specification", "testing_seams"]) await post(prefix + "/approvals", { kind, revision: specification.id, scope: "Hello through HTTP", issue_scope: oldScope });
+    const graph = await post(prefix + "/tickets", { specification_id: specification.id, tickets: [{ key: "hello", title: "Retained Hello Ticket", acceptance: "Show hello via HTTP", dependencies: [] }] });
+    await post(prefix + "/approvals", { kind: "ticket_graph", revision: graph.hash, scope: "Hello graph", issue_scope: oldScope });
+    issue.body = issue.body.replaceAll("hello", "goodbye").replace("Public HTTP", "Public CLI");
+    saveIssues();
+    const changed = (await post(route + "/sync", {})).sources.find((source: any) => source.number === issue.number);
+    await post(route + `/issues/${issue.number}/approve`, { source_revision: changed.revision, policy_revision: policy.revision });
+    assert.equal((await post(route + "/preview", {})).entries.find((entry: any) => entry.source_id === changed.id).eligible, false);
+    const page = await browser.newPage({ viewport }); page.setDefaultTimeout(10_000);
+    page.on("pageerror", error => errors.push(error.message));
+    try {
+      await page.goto(origin + `/#factory/${changed.implementation_id}`);
+      const planning = page.getByRole("region", { name: "Issue planning", exact: true });
+      await planning.getByText("Needs you", { exact: true }).waitFor();
+      assert.equal(await planning.getByRole("button", { name: "Start prepared issue", exact: true }).count(), 0);
+      const actions = page.getByRole("region", { name: "Next step", exact: true });
+      await actions.getByLabel("Your answer", { exact: true }).fill("yes");
+      await actions.getByRole("button", { name: "Save answer", exact: true }).click();
+      await actions.getByLabel("Your answer", { exact: true }).waitFor({ state: "detached" });
+      await planning.getByRole("button", { name: "Prepare issue plan", exact: true }).click();
+      await actions.getByLabel("Your answer", { exact: true }).waitFor();
+      await planning.getByText("Needs you", { exact: true }).waitFor();
+      const retained = planning.locator("details").filter({ has: page.locator("summary", { hasText: "Reused planning" }) });
+      await retained.locator("summary").click();
+      await retained.getByText("Show hello.", { exact: true }).waitFor();
+      const approved = page.waitForResponse(response => response.url().endsWith(prefix + "/approvals") && response.request().postDataJSON().kind === "ticket_graph");
+      await planning.getByRole("button", { name: "Approve retained app plan for this issue revision", exact: true }).click();
+      assert.equal((await approved).status(), 201);
+      await actions.getByLabel("Your answer", { exact: true }).fill("Retain the app plan I explicitly reviewed for this issue revision.");
+      await actions.getByRole("button", { name: "Save answer", exact: true }).click();
+      await actions.getByLabel("Your answer", { exact: true }).waitFor({ state: "detached" });
+      await planning.getByRole("button", { name: "Prepare issue plan", exact: true }).click();
+      await planning.getByText("Planning prepared", { exact: true }).waitFor();
+      await planning.getByText("Retained Hello Ticket", { exact: true }).waitFor();
+      const detail = await fetch(origin + `/api/factory${prefix}`).then(response => response.json());
+      assert.equal(detail.github_sources[0].planning.graph_hash, graph.hash);
+      assert.deepEqual(detail.approvals.slice(-3).map((approval: any) => ({ source_id: approval.issue_scope.source_id, source_revision: approval.issue_scope.source_revision })), Array(3).fill({ source_id: changed.id, source_revision: changed.revision }));
+      assert.deepEqual(detail.runs, []);
+      assert(await planning.evaluate(element => element.scrollWidth <= element.clientWidth));
+      if (evidence) await page.screenshot({ path: join(evidence, `issue-app-plan-renewed-${viewport.width}.png`), fullPage: true });
     } finally { await page.close(); }
   }
   assert.deepEqual(errors, []);

@@ -1474,4 +1474,5 @@ export const ZH: Record<string, string> = {
   "Owner acceptance is still required.": "仍需所有者接受。",
   "Project implementation slots available: {count}": "可用的项目实现名额：{count}",
   "Implementing Assignments: {count}": "正在实现的任务：{count}",
+  "Approve retained app plan for this issue revision": "批准此议题版本保留的应用计划",
 };

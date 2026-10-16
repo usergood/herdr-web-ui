@@ -391,7 +391,7 @@ export class FactoryRuntime {
   }
   async reconcile(runId: string): Promise<FactoryRun> {
     let run = this.store.get<FactoryRun>("runs", runId); if (!run) throw new FactoryError("not_found", "Run not found", 404);
-    if (run.condition === "cancelled" && this.store.get<{ rework_requested?: boolean }>("implementation_retirement", runId)?.rework_requested) return run;
+    if (run.condition === "cancelled" && !run.implementation_completion_pending && this.store.get<{ rework_requested?: boolean }>("implementation_retirement", runId)?.rework_requested) return run;
     if (this.store.get("implementation_retirement", runId)) return this.reconcileImplementation(runId);
     if (["completed", "cancelled", "failed"].includes(run.condition)) return run.implementation_completion || run.implementation_completion_pending || run.action === "implement-spec" && run.condition === "completed" ? this.reconcileImplementation(runId) : run;
     const revision = hash(JSON.stringify(run));
@@ -406,13 +406,13 @@ export class FactoryRuntime {
     if (question && ["working", "ready"].includes(run.condition)) run = { ...run, condition: "needs_you", waiting_reason: question.question };
     this.store.put("runs", run, run.implementation_id); this.store.event(run.implementation_id, "run_reconciled", { run_id: run.id, condition: run.condition }); return run.action === "implement-spec" ? this.reconcileImplementation(runId) : run;
   }
-  async stopRun(id: string, body: Record<string, unknown>): Promise<FactoryRun> {
+  async stopRun(id: string, body: Record<string, unknown>, intent: "owner" | "retirement" = "owner"): Promise<FactoryRun> {
     if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Native control is disabled on a restored copy", 409);
     const run = this.store.get<FactoryRun>("runs", id);
     if (!run) throw new FactoryError("not_found", "Run not found", 404);
     if (body.summary !== undefined && (typeof body.summary !== "string" || body.summary.length > 100_000)) throw new FactoryError("invalid_summary", "Enter a bounded Stop summary");
     const retirement = this.store.get<{ id: string; rework_requested?: boolean }>("implementation_retirement", id);
-    if (run.condition === "cancelled" && retirement?.rework_requested) return run;
+    if (run.condition === "cancelled" && !run.implementation_completion_pending && retirement?.rework_requested) return run;
     if (!run.issue_pause && retirement && !run.implementation_completion_pending && !run.implementation_completion) {
       // An explicit owner Stop closes this invalidated attempt; reconciliation alone
       // never releases it. A successor gets a new lease and keeps this checkout.
@@ -442,8 +442,25 @@ export class FactoryRuntime {
     if (current && !current.issue_pause && (current.implementation_completion || this.store.get("implementation_retirement", id))) {
       stopped.condition = current.condition; stopped.waiting_reason = current.waiting_reason;
     }
-    if (current?.issue_pause) stopped.issue_pause = current.issue_pause;
-    this.store.db.transaction(() => { this.store.put("runs", stopped, run.implementation_id); this.store.event(run.implementation_id, "run_stopped", { run_id: id, summary: body.summary ?? "Owner stopped this attempt", worktree_retained: true }); })();
+    let retainRework = false;
+    if (current?.issue_pause) {
+      stopped.issue_pause = current.issue_pause;
+      // A confirmed Stop closes the paused lease even when its completion proof
+      // expired during retirement. Unknown termination or owned children still hold it.
+      const owned = this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers", id).some(worker => activeConditions.has(worker.condition))
+        || this.store.list<import("../shared/protocol.ts").FactoryCheck>("checks", id).some(check => ["working", "interrupted"].includes(check.condition));
+      if (intent === "owner" && ["completed", "cancelled"].includes(stopped.condition) && !owned) {
+        stopped.condition = "cancelled";
+        stopped.implementation_completion_pending = undefined;
+        stopped.implementation_completion = undefined;
+        retainRework = !!(current.implementation_completion_pending || current.implementation_completion || this.store.get("implementation_retirement", id));
+      }
+    }
+    this.store.db.transaction(() => {
+      if (retainRework) this.store.put("implementation_retirement", { ...this.store.get<{ id: string; rework_requested?: boolean }>("implementation_retirement", id), id, rework_requested: true }, run.implementation_id);
+      this.store.put("runs", stopped, run.implementation_id);
+      this.store.event(run.implementation_id, "run_stopped", { run_id: id, summary: body.summary ?? "Owner stopped this attempt", worktree_retained: true });
+    })();
     return stopped;
   }
   async finishStep(id: string): Promise<FactoryRun> {

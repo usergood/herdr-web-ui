@@ -75,7 +75,7 @@ function DependencyDelivery({ source, busy, perform }: { source: ProjectGitHubSo
   </section>;
 }
 
-export function AssignmentIssueSource({ sources, problem, busy, perform, tickets, questionRevision, preset, runs, events }: { sources: ProjectGitHubSource[]; problem: string | null; busy: boolean; perform: (action: () => Promise<void>) => Promise<void>; tickets: FactoryTicket[]; questionRevision: string; preset: import("../../shared/agent-models.ts").AgentModelSelection; runs: FactoryRun[]; events: FactoryEvent[] }) {
+export function AssignmentIssueSource({ sources, problem, busy, perform, tickets, graphHash, questionRevision, preset, runs, events }: { sources: ProjectGitHubSource[]; problem: string | null; busy: boolean; perform: (action: () => Promise<void>) => Promise<void>; tickets: FactoryTicket[]; graphHash: string; questionRevision: string; preset: import("../../shared/agent-models.ts").AgentModelSelection; runs: FactoryRun[]; events: FactoryEvent[] }) {
   const t = useT(); const issues = sources.filter(source => source.kind === "issue");
   if (!issues.length) return null;
   const latest = runs.at(-1);
@@ -109,6 +109,14 @@ export function AssignmentIssueSource({ sources, problem, busy, perform, tickets
             <p>{t("Declared dependencies")}</p><Markdown>{source.planning.dependencies}</Markdown>
             <p>{t("Testing seams")}</p><Markdown>{source.planning.testing_seams}</Markdown>
           </details>
+          {source.planning.origin === "app_plan" && source.planning.condition === "needs_you" && source.planning.specification_id && <>
+            <p>{t("Approval covers only the displayed source revision, including its plan, acceptance, dependencies and testing seams.")}</p>
+            <button className="btn" disabled={busy || !source.readiness?.eligible} onClick={() => void perform(async () => {
+              const prefix = `/implementations/${source.implementation_id}`;
+              const issueScope = { source_id: source.id, source_revision: source.revision };
+              for (const kind of ["specification", "testing_seams", ...(tickets.length ? ["ticket_graph"] : [])]) await accountRequest(prefix + "/approvals", { kind, revision: kind === "ticket_graph" ? graphHash : source.planning!.specification_id, scope: `Retain the displayed app plan and testing seams for issue ${source.id} revision ${source.revision}; Ticket graph ${graphHash}`, issue_scope: issueScope });
+            })}>{t("Approve retained app plan for this issue revision")}</button>
+          </>}
           {source.planning.condition === "prepared" && <div><h4>{t("Tickets")}</h4>{tickets.filter(ticket => ticket.specification_id === source.planning!.specification_id).map(ticket => <article key={ticket.id}>
             <strong>{ticket.title}</strong><Markdown>{ticket.acceptance}</Markdown>
             {!!ticket.dependencies.length && <p>{t("Blocked by: {tickets}", { tickets: ticket.dependencies.map(id => tickets.find(ticket => ticket.id === id)?.title ?? id).join(", ") })}</p>}

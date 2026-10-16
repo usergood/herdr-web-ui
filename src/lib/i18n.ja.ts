@@ -1472,4 +1472,5 @@ export const JA: Record<string, string> = {
   "Owner acceptance is still required.": "所有者の承認がまだ必要です。",
   "Project implementation slots available: {count}": "利用可能なプロジェクト実装枠: {count}",
   "Implementing Assignments: {count}": "実装中の割り当て: {count}",
+  "Approve retained app plan for this issue revision": "この課題のリビジョンで保持されたアプリの計画を承認",
 };

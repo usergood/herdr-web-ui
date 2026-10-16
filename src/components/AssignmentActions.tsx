@@ -53,7 +53,8 @@ export function AssignmentActions({ preset, onPresetChange, detail, project, mac
   async function start(action: FactoryAction) { await perform(() => launch(action)); }
   async function approve(kind: "shared_understanding" | "specification" | "testing_seams" | "ticket_graph", revision: string, scope: string) {
     await perform(async () => {
-      await factoryRequest(prefix + "/approvals", { kind, revision, scope });
+      const source = kind !== "shared_understanding" ? detail.github_sources?.find(source => source.kind === "issue" && source.current) : undefined;
+      await factoryRequest(prefix + "/approvals", { kind, revision, scope, ...(source ? { issue_scope: { source_id: source.id, source_revision: source.revision } } : {}) });
       const updated = await factoryDetail(detail.implementation.id);
       const spec = updated.specifications.at(-1);
       const accepted = (approvalKind: string, version: string) => updated.approvals.some(a => a.kind === approvalKind && a.revision === version);

@@ -1470,4 +1470,5 @@ export const KO: Record<string, string> = {
   "Owner acceptance is still required.": "소유자의 수락이 아직 필요합니다.",
   "Project implementation slots available: {count}": "사용 가능한 프로젝트 구현 슬롯: {count}",
   "Implementing Assignments: {count}": "구현 중인 할당: {count}",
+  "Approve retained app plan for this issue revision": "이 이슈 리비전에 보관된 앱 계획 승인",
 };

@@ -31,6 +31,175 @@ async function prepareSecond(fixture: ReturnType<typeof githubQueueFixture>, rou
   return { path: `/implementations/${source.implementation_id}`, start: { action: "implement-spec", idempotency_key: "second-issue-start", issue_scope: { source_id: source.id, source_revision: source.revision, graph_hash: detail.graph_hash } } };
 }
 
+test("fresh issue readiness cannot authorize an older app plan before its first preparation", async () => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { route, readiness } = await fixture.setup();
+    const original = (await fixture.json(route + "/sync", {})).sources[0];
+    const path = `/implementations/${original.implementation_id}`;
+    const specification = await fixture.json(path + "/specifications", { content: fixture.issue.body });
+    for (const kind of ["specification", "testing_seams"]) await fixture.json(path + "/approvals", { kind, revision: specification.id, scope: "Hello through public HTTP", issue_scope: { source_id: original.id, source_revision: original.revision } });
+    const graph = await fixture.json(path + "/tickets", { specification_id: specification.id, tickets: [{ key: "hello", title: "Hello", acceptance: "Show hello via HTTP", dependencies: [] }] });
+    await fixture.json(path + "/approvals", { kind: "ticket_graph", revision: graph.hash, scope: "Hello graph", issue_scope: { source_id: original.id, source_revision: original.revision } });
+    fixture.issue.body = fixture.issue.body.replaceAll("hello", "goodbye").replace("Public HTTP", "Public CLI");
+    fixture.save();
+    const changed = (await fixture.json(route + "/sync", {})).sources[0];
+    await fixture.json(route + "/issues/1/approve", { source_revision: changed.revision, policy_revision: readiness.revision });
+    const preview = await fixture.json(route + "/preview", {});
+    expect(preview.eligible_count).toBe(0);
+    expect(preview.entries[0].reasons).toContainEqual({ code: "planning_needs_you", detail: "" });
+    const waiting = await fixture.json(path);
+    expect(waiting.questions).toHaveLength(1);
+    expect(waiting.questions[0].question).toContain("current issue scope");
+    await fixture.json(path + `/questions/${waiting.questions[0].id}/answer`, { revision: waiting.questions[0].revision, answer: "yes" });
+    const prepare = await fixture.json(route + "/issues/1/prepare", { source_revision: changed.revision, question_revision: (await fixture.json(path)).question_revision });
+    expect(prepare.sources[0].planning.condition).toBe("needs_you");
+    expect((await fixture.json(path)).tickets).toEqual(waiting.tickets);
+    expect((await fixture.post(path + "/runs", { action: "implement-spec", idempotency_key: "old-plan-start", issue_scope: { source_id: changed.id, source_revision: changed.revision, graph_hash: graph.hash } })).status).toBe(409);
+    expect((await fixture.post(path + "/continue", { action: "implement-spec", idempotency_key: "old-plan-continue", run_id: null })).status).toBe(409);
+    expect((await fixture.json(path)).runs).toEqual([]);
+    expect((await fixture.post(path + "/approvals", { kind: "specification", revision: specification.id, scope: "Stale screen", issue_scope: { source_id: original.id, source_revision: original.revision } })).status).toBe(409);
+    const issueScope = { source_id: changed.id, source_revision: changed.revision };
+    const renewedApprovalIds: string[] = [];
+    for (const [kind, revision] of [["specification", specification.id], ["testing_seams", specification.id], ["ticket_graph", graph.hash]]) {
+      const approval = await fixture.json(path + "/approvals", { kind, revision, scope: "Explicitly retain this app plan for the displayed issue revision", issue_scope: issueScope });
+      expect(approval.issue_scope).toMatchObject(issueScope);
+      renewedApprovalIds.push(approval.id);
+    }
+    const decisions = await fixture.json(path);
+    for (const question of decisions.questions.filter((question: any) => question.answer === null)) await fixture.json(path + `/questions/${question.id}/answer`, { revision: question.revision, answer: "Retain the explicitly approved app plan." });
+    const renewed = await fixture.json(route + "/issues/1/prepare", { source_revision: changed.revision, question_revision: (await fixture.json(path)).question_revision });
+    expect(renewed.sources[0].planning).toMatchObject({ condition: "prepared", origin: "app_plan", specification_id: specification.id, graph_hash: graph.hash, testing_seams: "Public HTTP and real browser journeys." });
+    expect(renewed.sources[0].planning.app_approval_ids).toEqual(renewedApprovalIds);
+    expect((await fixture.json(route + "/preview", {})).eligible_count).toBe(1);
+    expect((await fixture.json(path)).tickets).toEqual(waiting.tickets);
+  } finally { fixture.close(); }
+}, 20_000);
+
+test.each([false, true])("generic app-plan approvals stay unbound after an incompatible issue change: %s", async change => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { route, readiness } = await fixture.setup();
+    const original = (await fixture.json(route + "/sync", {})).sources[0];
+    const path = `/implementations/${original.implementation_id}`;
+    const specification = await fixture.json(path + "/specifications", { content: fixture.issue.body });
+    if (change) { fixture.issue.body = fixture.issue.body.replace("hello", "goodbye").replace("Public HTTP", "Public CLI"); fixture.save(); }
+    const source = (await fixture.json(route + "/sync", {})).sources[0];
+    for (const kind of ["specification", "testing_seams"]) {
+      const approval = await fixture.json(path + "/approvals", { kind, revision: specification.id, scope: "Generic approval without displayed issue scope" });
+      expect(approval.issue_scope).toBeUndefined();
+    }
+    const graph = await fixture.json(path + "/tickets", { specification_id: specification.id, tickets: [{ key: "hello", title: "Hello", acceptance: "Show hello via HTTP", dependencies: [] }] });
+    expect((await fixture.json(path + "/approvals", { kind: "ticket_graph", revision: graph.hash, scope: "Generic graph approval" })).issue_scope).toBeUndefined();
+    if (change) expect((await fixture.post(path + "/approvals", { kind: "specification", revision: specification.id, scope: "Stale displayed scope", issue_scope: { source_id: original.id, source_revision: original.revision } })).status).toBe(409);
+    await fixture.json(route + "/issues/1/approve", { source_revision: source.revision, policy_revision: readiness.revision });
+    const waiting = await fixture.json(route + "/issues/1/prepare", { source_revision: source.revision });
+    expect(waiting.sources[0].planning.condition).toBe("needs_you");
+    expect((await fixture.json(route + "/preview", {})).eligible_count).toBe(0);
+    if (change) {
+      const policy = (await fixture.json(route)).policy;
+      await fixture.json(route + "/configure", { ...policy, expected_revision: policy.revision, sync_enabled: true });
+      const preview = await fixture.json(route + "/preview", {});
+      await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: true, preview_revision: preview.revision, paused: false, max_implementations: 1 });
+      await fixture.json(route + "/sync", {}); fixture.restart(); await fixture.json(route + "/sync", {});
+      expect((await fixture.json(route + "/queue")).eligible_count).toBe(0);
+      expect(fixture.launches).toEqual([]);
+    }
+    expect((await fixture.json(path)).runs).toEqual([]);
+  } finally { fixture.close(); }
+}, 20_000);
+
+test.each(["body", "testing_seams", "graph", "legacy"] as const)("prepared app planning blocks %s drift without replacing retained work", async drift => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { route, readiness } = await fixture.setup();
+    const source = (await fixture.json(route + "/sync", {})).sources[0];
+    const path = `/implementations/${source.implementation_id}`;
+    const specification = await fixture.json(path + "/specifications", { content: fixture.issue.body });
+    const issueScope = { source_id: source.id, source_revision: source.revision };
+    for (const kind of ["specification", "testing_seams"]) await fixture.json(path + "/approvals", { kind, revision: specification.id, scope: "Hello through HTTP", issue_scope: issueScope });
+    const graph = await fixture.json(path + "/tickets", { specification_id: specification.id, tickets: [{ key: "hello", title: "Hello", acceptance: "Show hello via HTTP", dependencies: [] }] });
+    await fixture.json(path + "/approvals", { kind: "ticket_graph", revision: graph.hash, scope: "Hello graph", issue_scope: issueScope });
+    await fixture.json(route + "/issues/1/approve", { source_revision: source.revision, policy_revision: readiness.revision });
+    await fixture.json(route + "/issues/1/prepare", { source_revision: source.revision });
+    if (drift === "body" || drift === "testing_seams") {
+      fixture.issue.body = drift === "body" ? fixture.issue.body.replace("hello", "goodbye") : fixture.issue.body.replace("Public HTTP", "Public CLI");
+      fixture.save(); const changed = (await fixture.json(route + "/sync", {})).sources[0];
+      await fixture.json(route + "/issues/1/approve", { source_revision: changed.revision, policy_revision: readiness.revision });
+    }
+    if (drift === "graph") await fixture.json(path + "/tickets", { specification_id: specification.id, tickets: [{ key: "expanded", title: "Unapproved graph", acceptance: "A different greeting", dependencies: [] }] });
+    if (drift === "legacy") {
+      const approvals = (await fixture.json(path)).approvals;
+      // Historical input only: retain the pre-upgrade receipts without issue provenance.
+      fixture.restart(() => {
+        const db = new Database(join(fixture.root, "factory", "records.sqlite"));
+        try { for (const { issue_scope: _scope, ...approval } of approvals) db.query("UPDATE records SET data=? WHERE kind='approvals' AND id=?").run(JSON.stringify(approval), approval.id); }
+        finally { db.close(); }
+      });
+    }
+    const before = await fixture.json(path); const current = before.github_sources[0];
+    const prepared = await fixture.json(route + "/issues/1/prepare", { source_revision: current.revision });
+    expect(prepared.sources[0].planning.condition).toBe("needs_you");
+    const waiting = await fixture.json(path);
+    expect(waiting.specifications).toEqual(before.specifications); expect(waiting.tickets).toEqual(before.tickets);
+    for (const question of waiting.questions.filter((question: any) => question.answer === null)) await fixture.json(path + `/questions/${question.id}/answer`, { revision: question.revision, answer: "yes" });
+    const retry = await fixture.json(route + "/issues/1/prepare", { source_revision: current.revision, question_revision: (await fixture.json(path)).question_revision });
+    expect(retry.sources[0].planning.condition).toBe("needs_you");
+    expect((await fixture.json(path)).runs).toEqual([]);
+  } finally { fixture.close(); }
+}, 20_000);
+
+test("bound unchanged app planning survives label and metadata observations with separately renewed readiness", async () => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { route, readiness } = await fixture.setup();
+    const source = (await fixture.json(route + "/sync", {})).sources[0];
+    const path = `/implementations/${source.implementation_id}`;
+    const specification = await fixture.json(path + "/specifications", { content: fixture.issue.body });
+    const issueScope = { source_id: source.id, source_revision: source.revision };
+    for (const kind of ["specification", "testing_seams"]) await fixture.json(path + "/approvals", { kind, revision: specification.id, scope: "Hello through HTTP", issue_scope: issueScope });
+    const graph = await fixture.json(path + "/tickets", { specification_id: specification.id, tickets: [{ key: "hello", title: "Hello", acceptance: "Show hello via HTTP", dependencies: [] }] });
+    await fixture.json(path + "/approvals", { kind: "ticket_graph", revision: graph.hash, scope: "Hello graph", issue_scope: issueScope });
+    await fixture.json(route + "/issues/1/approve", { source_revision: source.revision, policy_revision: readiness.revision });
+    await fixture.json(route + "/issues/1/prepare", { source_revision: source.revision });
+    const before = await fixture.json(path);
+    fixture.issue.labels.push({ name: "documentation" }); fixture.issue.updated_at = "2026-10-02T12:00:00Z"; fixture.save();
+    const changed = (await fixture.json(route + "/sync", {})).sources[0];
+    expect(changed.revision).not.toBe(source.revision);
+    expect(changed.readiness.eligible).toBe(false);
+    expect((await fixture.post(path + "/approvals", { kind: "specification", revision: specification.id, scope: "Stale screen despite unchanged semantics", issue_scope: issueScope })).status).toBe(409);
+    await fixture.json(route + "/issues/1/approve", { source_revision: changed.revision, policy_revision: readiness.revision });
+    const reused = await fixture.json(route + "/issues/1/prepare", { source_revision: changed.revision });
+    expect(reused.sources[0].planning).toMatchObject({ condition: "prepared", specification_id: specification.id, graph_hash: graph.hash });
+    fixture.restart(); expect((await fixture.json(route + "/preview", {})).eligible_count).toBe(1);
+    const after = await fixture.json(path);
+    expect(after.approvals).toEqual(before.approvals); expect(after.tickets).toEqual(before.tickets); expect(after.questions).toEqual([]);
+  } finally { fixture.close(); }
+}, 20_000);
+
+test("a current app specification can authorize a bounded derived graph without synthetic approvals", async () => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { route, readiness } = await fixture.setup();
+    const source = (await fixture.json(route + "/sync", {})).sources[0];
+    const path = `/implementations/${source.implementation_id}`;
+    const specification = await fixture.json(path + "/specifications", { content: fixture.issue.body });
+    const issueScope = { source_id: source.id, source_revision: source.revision };
+    for (const kind of ["specification", "testing_seams"]) {
+      const approval = await fixture.json(path + "/approvals", { kind, revision: specification.id, scope: "Greeting through public HTTP", issue_scope: issueScope });
+      expect(approval.issue_scope).toMatchObject(issueScope);
+    }
+    await fixture.json(route + "/issues/1/approve", { ...issueScope, policy_revision: readiness.revision });
+    expect((await fixture.json(route + "/issues/1/prepare", { source_revision: source.revision })).sources[0].planning.condition).toBe("prepared");
+    fixture.restart();
+    expect((await fixture.json(route + "/preview", {})).eligible_count).toBe(1);
+    const detail = await fixture.json(path);
+    expect(detail.approvals).toHaveLength(2);
+    expect(detail.tickets).toMatchObject([{ acceptance: fixture.issue.body }]);
+    expect(detail.questions).toEqual([]);
+  } finally { fixture.close(); }
+}, 20_000);
+
 test("explicit Start admits the prepared trusted plan with its frozen authorization and quality gates", async () => {
   const fixture = githubQueueFixture(true);
   try {
@@ -885,9 +1054,9 @@ test("completed planning Runs allow approved issue preparation and one guarded i
     fixture.setExecutionHandler(async request => new URL(request.url).pathname.endsWith(`/runs/${planning.id}/reconcile`) ? Response.json({ ...planning, condition: "completed" }) : null);
     await fixture.json(`/runs/${planning.id}/reconcile`, {});
     const specification = await fixture.json(path + "/specifications", { content: fixture.issue.body });
-    for (const kind of ["specification", "testing_seams"]) await fixture.json(path + "/approvals", { kind, revision: specification.id, scope: "Public HTTP and real browser journeys." });
+    for (const kind of ["specification", "testing_seams"]) await fixture.json(path + "/approvals", { kind, revision: specification.id, scope: "Public HTTP and real browser journeys.", issue_scope: { source_id: source.id, source_revision: source.revision } });
     const graph = await fixture.json(path + "/tickets", { specification_id: specification.id, tickets: [{ key: "greeting", title: "Greeting", acceptance: "Show hello.", dependencies: [] }] });
-    await fixture.json(path + "/approvals", { kind: "ticket_graph", revision: graph.hash, scope: "Approved bounded greeting" });
+    await fixture.json(path + "/approvals", { kind: "ticket_graph", revision: graph.hash, scope: "Approved bounded greeting", issue_scope: { source_id: source.id, source_revision: source.revision } });
     const preview = await fixture.json(route + "/preview", {});
     expect(preview).toMatchObject({ eligible_count: 1, entries: [expect.objectContaining({ eligible: true, reasons: [] })] });
     const prepared = (await fixture.json(route)).sources[0].planning;

@@ -125,9 +125,9 @@ test("selected issue planning reuses its retained approved app plan and blocking
   const source = (await f.post(route + "/sync", {})).body.sources[0]; const prefix = `/implementations/${source.implementation_id}`;
   const retainedContent = "## Problem Statement\nVisitors need a greeting.\n\n## Solution\nAdd a fictional greeting endpoint.\n\n## User Stories\n1. As a visitor, I want to see hello.\n\n## Implementation Decisions\nThe API Ticket blocks the browser Ticket.\n\n## Testing Decisions\nPublic HTTP and real browser journeys.\n\n## Out of Scope\nOther greetings.\n\n## Further Notes\nKeep the approved graph.";
   const specification = (await f.post(prefix + "/specifications", { content: retainedContent })).body;
-  for (const kind of ["specification", "testing_seams"]) await f.post(prefix + "/approvals", { kind, revision: specification.id, scope: "Owner reviewed retained app planning" });
+  for (const kind of ["specification", "testing_seams"]) await f.post(prefix + "/approvals", { kind, revision: specification.id, scope: "Owner reviewed retained app planning", issue_scope: { source_id: source.id, source_revision: source.revision } });
   const graph = (await f.post(prefix + "/tickets", { specification_id: specification.id, tickets: [{ key: "api", title: "Add greeting API", acceptance: "GET /hello returns hello", dependencies: [] }, { key: "browser", title: "Show greeting", acceptance: "Greeting is visible in the browser", dependencies: ["api"] }] })).body;
-  await f.post(prefix + "/approvals", { kind: "ticket_graph", revision: graph.hash, scope: "Owner reviewed graph" });
+  await f.post(prefix + "/approvals", { kind: "ticket_graph", revision: graph.hash, scope: "Owner reviewed graph", issue_scope: { source_id: source.id, source_revision: source.revision } });
   const before = await f.get(prefix);
   const prepared = await f.post(route + "/issues/12/prepare", { source_revision: source.revision });
   expect(prepared.status).toBe(200);

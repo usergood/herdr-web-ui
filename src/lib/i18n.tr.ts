@@ -1425,4 +1425,5 @@ export const TR: Record<string, string> = {
   "Owner acceptance is still required.": "Sahibin kabulü hâlâ gerekli.",
   "Project implementation slots available: {count}": "Kullanılabilir proje uygulama yuvası: {count}",
   "Implementing Assignments: {count}": "Uygulanan atamalar: {count}",
+  "Approve retained app plan for this issue revision": "Bu iş kaydı revizyonu için saklanan uygulama planını onayla",
 };

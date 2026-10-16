@@ -343,6 +343,112 @@ test("explicit Stop of a controlled pause can cancel an invalidated retired cont
   } finally { fixture.close(); }
 }, 15_000);
 
+test.each([
+  ["scope", "cancelled"], ["scope", "completed"], ["readiness", "cancelled"], ["readiness", "completed"], ["closure", "cancelled"], ["closure", "completed"],
+] as const)("owner Stop recovers %s drift overlapping %s retirement without reopening the retired lease", async (drift, terminal) => {
+  const fixture = githubReviewFixture();
+  let release: (() => void) | undefined;
+  try {
+    const { run, path, route, readiness } = await fixture.prepare();
+    await fixture.integrate(run); await fixture.json(`/runs/${run.id}/checks`, {});
+    await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    fixture.setStopCondition(terminal);
+    const gate = fixture.holdStop(); release = gate.release;
+    const retiring = fixture.post(`/runs/${run.id}/reconcile`, {});
+    await Promise.race([gate.waiting, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Stop was not reached")), 5000))]);
+    if (drift === "scope") fixture.issue.body += "\nA changed greeting requirement.";
+    if (drift === "readiness") fixture.issue.labels = [];
+    if (drift === "closure") fixture.issue.state = "closed";
+    fixture.save(); await fixture.json(route + "/sync", {});
+    gate.release();
+    expect((await retiring).status).toBe(409);
+    const beforeOwnerStop = await fixture.post(`/runs/${run.id}/retry`, { idempotency_key: "retirement-is-not-owner-stop", issue_scope: { source_id: (run.manifest as any).issue_admission.source.id, source_revision: (run.manifest as any).issue_admission.source.revision, graph_hash: run.graph_hash } });
+    expect((await beforeOwnerStop.json()).error.code).toBe("retry_unavailable");
+    const stopped = await fixture.json(`/runs/${run.id}/stop`, {});
+    expect(stopped).toMatchObject({ condition: "cancelled", issue_pause: { source_id: (run.manifest as any).issue_admission.source.id } });
+    expect(stopped.implementation_completion_pending).toBeUndefined();
+    if (drift === "scope" && terminal === "cancelled") {
+      // Historical input only: an interrupted pre-upgrade owner Stop retained its
+      // recovery marker before clearing the pending flag. Observe it through HTTP.
+      fixture.restart(() => {
+        const db = new Database(join(fixture.root, "factory", "records.sqlite"));
+        try { db.query("UPDATE records SET data=? WHERE kind='runs' AND id=?").run(JSON.stringify({ ...stopped, implementation_completion_pending: true }), run.id); }
+        finally { db.close(); }
+      });
+      expect((await fixture.json(`/runs/${run.id}/stop`, {})).implementation_completion_pending).toBeUndefined();
+    }
+    fixture.restart();
+    expect(await fixture.json(`/runs/${run.id}/reconcile`, {})).toMatchObject({ condition: "cancelled", issue_pause: stopped.issue_pause });
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 0 });
+    const detail = await fixture.json(path);
+    expect(detail.runs[0].manifest).toEqual(run.manifest);
+    expect(detail.review_evidence).toHaveLength(2);
+    expect(detail.approvals).toEqual([]);
+    for (const question of detail.questions.filter((question: any) => question.answer === null)) await fixture.json(path + `/questions/${question.id}/answer`, { revision: question.revision, answer: "Use the newly reviewed issue scope." });
+    fixture.issue.state = "open"; fixture.issue.labels = [{ name: "ready-for-agent" }]; fixture.save();
+    await fixture.json(route + "/sync", {});
+    const source = (await fixture.json(route)).sources[0];
+    await fixture.json(route + "/issues/1/approve", { source_revision: source.revision, policy_revision: readiness.revision });
+    await fixture.json(route + "/issues/1/prepare", { source_revision: source.revision, question_revision: (await fixture.json(path)).question_revision });
+    await fixture.json(route + "/sync", {});
+    const current = (await fixture.json(path));
+    const request = { idempotency_key: "renewed-paused-retirement", issue_scope: { source_id: source.id, source_revision: source.revision, graph_hash: current.graph_hash } };
+    const successor = await fixture.json(`/runs/${run.id}/retry`, request);
+    expect(successor).toMatchObject({ condition: "working", retry_of: run.id, manifest: { rework: { run_id: run.id, head: "a".repeat(40) } } });
+    expect((await fixture.json(`/runs/${run.id}/retry`, request)).id).toBe(successor.id);
+    expect((await fixture.json(path)).runs).toHaveLength(2);
+  } finally { release?.(); fixture.close(); }
+}, 20_000);
+
+test.each(["unknown", "working", "failed"] as const)("%s Stop during paused retirement retains pending ownership until confirmed termination", async outcome => {
+  const fixture = githubReviewFixture(); let release: (() => void) | undefined;
+  try {
+    const { run, path, route } = await fixture.prepare();
+    await fixture.integrate(run); await fixture.json(`/runs/${run.id}/checks`, {});
+    await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    const gate = fixture.holdStop(); release = gate.release;
+    const retiring = fixture.post(`/runs/${run.id}/reconcile`, {});
+    await Promise.race([gate.waiting, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Stop was not reached")), 5000))]);
+    fixture.issue.body += "\nA new requirement."; fixture.save(); await fixture.json(route + "/sync", {});
+    if (outcome === "unknown") fixture.setUncertainStop(true); else fixture.setStopCondition(outcome);
+    gate.release(); expect((await retiring).status).toBe(409);
+    await fixture.post(`/runs/${run.id}/stop`, {});
+    fixture.restart(); await fixture.json(`/runs/${run.id}/reconcile`, {});
+    expect((await fixture.json(path)).runs[0]).toMatchObject({ implementation_completion_pending: true, issue_pause: { reason: "scope_changed" }, manifest: run.manifest });
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1, available_slots: 0 });
+    expect((await fixture.post(`/runs/${run.id}/cleanup`, {})).status).toBe(409);
+    expect((await fixture.post(`/runs/${run.id}/retry`, { idempotency_key: "uncertain-pause-retry", issue_scope: (run.manifest as any).issue_admission })).status).toBe(409);
+    fixture.setUncertainStop(false); fixture.setStopCondition("cancelled");
+    expect((await fixture.json(`/runs/${run.id}/stop`, {})).implementation_completion_pending).toBeUndefined();
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 0 });
+  } finally { release?.(); fixture.close(); }
+}, 20_000);
+
+test.each(["worker", "build"] as const)("paused historical retirement cannot clear pending ownership while its %s remains owned", async child => {
+  const fixture = githubReviewFixture();
+  try {
+    const { run, path, route } = await fixture.prepare();
+    await fixture.integrate(run); await fixture.json(`/runs/${run.id}/checks`, {});
+    await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    if (child === "worker") await fixture.json(`/runs/${run.id}/workers`, { role: "spec", idempotency_key: "retained-review-child" });
+    else { fixture.setCheck("interrupted"); await fixture.json(`/runs/${run.id}/checks`, {}); }
+    fixture.issue.body += "\nA changed requirement."; fixture.save(); await fixture.json(route + "/sync", {});
+    const paused = (await fixture.json(path)).runs[0];
+    // Historical input only: restore an interrupted retirement with a retained child.
+    fixture.restart(() => {
+      const db = new Database(join(fixture.root, "factory", "records.sqlite"));
+      try { db.query("UPDATE records SET data=? WHERE kind='runs' AND id=?").run(JSON.stringify({ ...paused, implementation_completion_pending: true }), run.id); }
+      finally { db.close(); }
+    });
+    const stopped = await fixture.json(`/runs/${run.id}/stop`, {});
+    expect(stopped).toMatchObject({ condition: "cancelled", implementation_completion_pending: true, issue_pause: paused.issue_pause });
+    fixture.restart();
+    expect((await fixture.json(`/runs/${run.id}/reconcile`, {})).implementation_completion_pending).toBe(true);
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1, available_slots: 0 });
+    expect((await fixture.post(`/runs/${run.id}/cleanup`, {})).status).toBe(409);
+  } finally { fixture.close(); }
+}, 20_000);
+
 test("an uncertain stop response retains capacity despite finished checks and reviews", async () => {
   const fixture = githubReviewFixture();
   try {

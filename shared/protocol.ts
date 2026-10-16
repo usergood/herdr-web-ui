@@ -1155,6 +1155,8 @@ export const DEFAULT_PORT = 7317;
  * POST /api/factory/implementations/:id/specifications (specification) -> SpecificationVersion, 201;
  * POST .../tickets (tickets) -> {hash:string,tickets:FactoryTicket[]}, 201; accepted current revision, acyclic.
  * POST .../approvals (approval) -> FactoryApproval, 201; stale scope=409.
+ * Planning receipts bind semantic issue scope only with an exact displayed request
+ * issue_scope. Generic/legacy approvals stay unbound; readiness remains revision-scoped.
  * POST .../questions (question) -> FactoryQuestion, 201; POST .../questions/:question/answer (answer)
  * -> FactoryQuestion; revision-bound, never invents answers. Missing answer_kind means text.
  * Explicit shared_understanding approval confirms pending confirmation questions atomically
@@ -1301,7 +1303,7 @@ export interface FactoryRequests {
   reference_prepare: { expected_revision: string; machine_id: string };
   specification: { content: string };
   tickets: { specification_id: string; tickets: { key: string; title: string; acceptance: string; dependencies: string[] }[] };
-  approval: { kind: Exclude<import("./factory.ts").FactoryApproval["kind"], "review">; revision: string; scope: string };
+  approval: { kind: Exclude<import("./factory.ts").FactoryApproval["kind"], "review">; revision: string; scope: string; issue_scope?: { source_id: string; source_revision: string } };
   question: { question: string; run_id?: string; answer_kind?: "text" | "confirmation" };
   answer: { revision: string; answer: string };
   order: { direction: -1 | 1 } | { before_id: string };
