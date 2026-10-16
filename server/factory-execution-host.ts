@@ -501,6 +501,7 @@ export class FactoryExecutionHost {
     return this.capabilities(accountSnapshot);
   }
   async reconcile(id: string): Promise<FactoryRun> {
+    this.assertNotDeleting(id);
     const lease = this.store.get<{ id: string; signature: string; run: FactoryRun }>("host_leases", id);
     if (!lease) throw new FactoryError("native_identity_uncertain", "This host has no recorded lease; reconcile ownership before retrying", 409);
     let run = lease.run;
@@ -515,11 +516,14 @@ export class FactoryExecutionHost {
       const resting = await factoryPaneResting(this.native, pane, run.provider);
       run = { ...run, pane_id: pane.pane_id, workspace_id: workspace.workspace_id, condition: pane.agent !== run.provider ? "interrupted" : pane.agent_status === "blocked" ? "needs_you" : resting ? "ready" : "working", waiting_reason: pane.agent !== run.provider ? "The workspace exists but native provider launch is unconfirmed; no retry was sent" : pane.agent_status === "blocked" ? "The native agent is waiting for an owner answer" : null };
     } catch (error) { run = { ...run, condition: "disconnected", waiting_reason: error instanceof FactoryError ? error.message : "The native Machine cannot be observed; ownership is retained" }; }
+    this.assertNotDeleting(id);
     const current = this.store.get<typeof lease>("host_leases", id);
-    if (current && JSON.stringify(current) !== JSON.stringify(lease)) return current.run;
+    if (!current) throw new FactoryError("native_identity_uncertain", "The observed lease no longer owns this native attempt", 409);
+    if (JSON.stringify(current) !== JSON.stringify(lease)) return current.run;
     run.updated_at = new Date().toISOString(); this.store.put("host_leases", { ...lease, run }); return run;
   }
   async stopRun(id: string, childrenAttempted = false, deleting = false): Promise<FactoryRun> {
+    if (!deleting) this.assertNotDeleting(id);
     if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Native control is disabled on a restored copy", 409);
     const lease = this.store.get<{ id: string; signature: string; run: FactoryRun }>("host_leases", id);
     if (!lease) throw new FactoryError("native_identity_uncertain", "This host has no owned lease to stop", 409);
@@ -550,6 +554,7 @@ export class FactoryExecutionHost {
     if (!alreadyClosed && !neverAllocated) await this.native.closeWorkspace(workspace!.workspace_id);
     await this.worktrees.stopChecks(id);
     await Promise.allSettled([...(this.operations.get(id) ?? [])]);
+    if (!deleting) this.assertNotDeleting(id);
     const stopped: FactoryRun = { ...run, condition: "cancelled", waiting_reason: null, updated_at: new Date().toISOString() };
     this.store.put("host_leases", { ...lease, closing: true, run: stopped }); return stopped;
   }
