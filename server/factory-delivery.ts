@@ -1,6 +1,18 @@
-import type { FactoryRun, FactoryWorker, FactoryCheck, ReviewSnapshot, Implementation } from "../shared/factory.ts";
+import type { FactoryRun, FactoryWorker, FactoryCheck, FactoryQuestion, ReviewSnapshot, Implementation } from "../shared/factory.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { FactoryRuntime } from "./factory-runtime.ts";
+
+/** A later owner question cannot revive execution already accepted and stopped.
+ * This observes physical retirement only; completion and delivery keep their gates. */
+export function deliveryExecutionEnded(store: FactoryStore, run: FactoryRun): boolean {
+  if (["completed", "cancelled", "failed"].includes(run.condition)) return !run.implementation_completion_pending;
+  if (run.condition !== "needs_you" || run.implementation_completion_pending || run.scope_pause || run.issue_pause || !run.accepted_result) return false;
+  const retirement = store.get<{ completion?: FactoryRun["implementation_completion"]; rework_requested?: boolean }>("implementation_retirement", run.id);
+  const proof = retirement?.completion, accepted = run.accepted_result;
+  if (retirement?.rework_requested || !proof || proof.head !== accepted.head || proof.workspace_hash !== accepted.workspace_hash || proof.check_id !== accepted.check_id
+    || accepted.review_ids.length !== 2 || proof.standards_id !== accepted.review_ids[0] || proof.spec_id !== accepted.review_ids[1]) return false;
+  return store.list<FactoryQuestion>("questions", run.implementation_id).some(question => question.answer === null && (!question.run_id || store.get<FactoryRun>("runs", question.run_id)?.action !== "verify-provider"));
+}
 
 /** Completion evidence spans every retained attempt, including committed repository work. */
 export class FactoryDelivery {
@@ -13,7 +25,7 @@ export class FactoryDelivery {
     try {
       for (const run of runs) {
         const observed = await this.runtime.reconcile(run.id);
-        if (!["ready", "completed", "cancelled", "failed"].includes(observed.condition)) quiescent = false;
+        if (observed.condition !== "ready" && !deliveryExecutionEnded(this.store, observed)) quiescent = false;
         if (!run.checkout) continue;
         if (!run.worktree || !idea.delivery_scope?.base || !idea.delivery_scope.repository) throw new Error("Missing repository baseline");
         const workers = this.store.list<FactoryWorker>("workers", run.id);

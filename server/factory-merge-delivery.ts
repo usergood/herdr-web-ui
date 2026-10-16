@@ -4,7 +4,7 @@ import type { DeliveryReadRequest } from "../shared/factory-delivery.ts";
 import { FactoryError, hash } from "./factory-host.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { FactoryRuntime } from "./factory-runtime.ts";
-import { FactoryDelivery } from "./factory-delivery.ts";
+import { deliveryExecutionEnded, FactoryDelivery } from "./factory-delivery.ts";
 
 interface Pull { number: number; html_url: string; state: string; merged: boolean; merge_commit_sha: string | null; base: { ref: string; repo: { full_name: string } }; head: { sha: string } }
 interface Tree { truncated: boolean; tree: { path: string; mode: string; type: string; sha: string }[] }
@@ -152,7 +152,7 @@ export class FactoryMergeDelivery {
         if (this.scope(id) !== scope) throw new FactoryError("delivery_changed", "The Assignment changed during delivery verification", 409);
         if (idea.delivery_scope?.milestone === "release") delivery.condition = "merged";
         for (const run of this.store.list<FactoryRun>("runs", id)) {
-          if (["completed", "cancelled", "failed"].includes(run.condition)) continue;
+          if (deliveryExecutionEnded(this.store, run)) continue;
           if (run.action === "implement-spec" || run.action === "apply-retro") throw new FactoryError("delivery_active", "Complete the implementation's checks and review before finishing delivery", 409);
           await this.retainHandoff(run.id);
           await this.runtime.finishStep(run.id);
