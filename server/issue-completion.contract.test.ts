@@ -3,6 +3,71 @@ import { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { githubReviewFixture } from "../scripts/fixtures/github-review.ts";
 
+async function prepareManual(fixture: ReturnType<typeof githubReviewFixture>) {
+  const { project } = await fixture.setup();
+  const assignment = await fixture.json("/implementations", { title: "Owned manual Assignment", description: "Show a greeting", project_id: project.id });
+  const path = `/implementations/${assignment.id}`;
+  const specification = await fixture.json(path + "/specifications", { content: "Show hello through the public HTTP interface." });
+  for (const kind of ["specification", "testing_seams"]) await fixture.json(path + "/approvals", { kind, revision: specification.id, scope: "Owned fixture approval for public HTTP" });
+  const graph = await fixture.json(path + "/tickets", { specification_id: specification.id, tickets: [{ key: "greeting", title: "Greeting", acceptance: "Show hello", dependencies: [] }] });
+  await fixture.json(path + "/approvals", { kind: "ticket_graph", revision: graph.hash, scope: "Owned fixture graph approval" });
+  const run = await fixture.json(path + "/runs", { action: "implement-spec", idempotency_key: "owned-manual-implementation" });
+  return { path, run };
+}
+
+test("owner acceptance completes a manual Assignment and allows archiving without GitHub delivery evidence", async () => {
+  const fixture = githubReviewFixture();
+  try {
+    const { run, path } = await prepareManual(fixture);
+    await fixture.integrate(run);
+    const check = await fixture.json(`/runs/${run.id}/checks`, {});
+    await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    await fixture.json(`/runs/${run.id}/accept`, { head: check.head });
+    const detail = await fixture.json(path);
+    expect(detail.github_sources).toEqual([]);
+    expect(detail.implementation).toMatchObject({ stage: "done", outcome: "implementation_complete" });
+    expect(detail.implementation.activity).toBeUndefined();
+    expect(detail.approvals).toContainEqual(expect.objectContaining({ kind: "review", revision: check.head }));
+    expect((await fixture.json(path + "/archive", {})).archived_at).toEqual(expect.any(String));
+  } finally { fixture.close(); }
+}, 20_000);
+
+test("automatic retirement of manual execution still requires owner acceptance before completion and archiving", async () => {
+  const fixture = githubReviewFixture();
+  try {
+    const { run, path } = await prepareManual(fixture);
+    await fixture.integrate(run);
+    const check = await fixture.json(`/runs/${run.id}/checks`, {});
+    await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    expect((await fixture.json(`/runs/${run.id}/reconcile`, {})).condition).toBe("completed");
+    fixture.restart();
+    const detail = await fixture.json(path);
+    expect(detail.implementation).toMatchObject({ stage: "review", outcome: "none" });
+    expect(detail.implementation.activity).toBeUndefined();
+    expect(detail.approvals.some((approval: any) => approval.kind === "review")).toBe(false);
+    const archive = await fixture.post(path + "/archive", {});
+    expect(archive.status).toBe(409); expect((await archive.json()).error.code).toBe("assignment_unfinished");
+    await fixture.json(`/runs/${run.id}/accept`, { head: check.head });
+    expect((await fixture.json(path)).implementation).toMatchObject({ stage: "done", outcome: "implementation_complete" });
+    expect((await fixture.json(path + "/archive", {})).archived_at).toEqual(expect.any(String));
+  } finally { fixture.close(); }
+}, 20_000);
+
+test("ordinary manual work retains its explicit completion and archiving path", async () => {
+  const fixture = githubReviewFixture();
+  try {
+    const { project } = await fixture.setup();
+    const assignment = await fixture.json("/implementations", { title: "Owned direct work", description: "Fictional manual work", project_id: project.id });
+    const path = `/implementations/${assignment.id}`;
+    fixture.setNativeIdentity();
+    const run = await fixture.json(path + "/runs", { action: "work", idempotency_key: "owned-direct-work" });
+    expect((await fixture.json(`/runs/${run.id}/reconcile`, {})).condition).toBe("ready");
+    expect((await fixture.json(path)).implementation.stage).toBe("running");
+    expect(await fixture.json(path + "/complete-work", { run_id: run.id })).toMatchObject({ stage: "done", outcome: "implementation_complete" });
+    expect((await fixture.json(path + "/archive", {})).archived_at).toEqual(expect.any(String));
+  } finally { fixture.close(); }
+}, 20_000);
+
 test("accepting a checked and independently reviewed issue implementation awaits merge without establishing Done", async () => {
   const fixture = githubReviewFixture();
   try {

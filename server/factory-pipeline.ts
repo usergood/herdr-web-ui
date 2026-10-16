@@ -1,5 +1,5 @@
 import { factoryCapacity } from "./factory-capacity.ts";
-import type { FactoryCheck, FactoryProject, FactoryReviewEvidence, FactoryRun, FactorySettings, FactoryTicket, FactoryWorker, Implementation } from "../shared/protocol.ts";
+import type { FactoryCheck, FactoryProject, FactoryReviewEvidence, FactoryRun, FactorySettings, FactoryTicket, FactoryWorker, Implementation, ProjectGitHubSource } from "../shared/protocol.ts";
 import { FactoryError } from "./factory-host.ts";
 import { FactoryRuntime } from "./factory-runtime.ts";
 import { FactoryStore } from "./factory-store.ts";
@@ -9,6 +9,9 @@ const owns = (condition: string): boolean => !["completed", "cancelled", "failed
 /** Admission reservations cover all native contexts and builds, including uncertain remote work. */
 export class FactoryPipeline {
   constructor(private readonly store: FactoryStore, private readonly runtime: FactoryRuntime, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly retainBeforeStop: (id: string) => Promise<void>) {}
+  private hasIssueSource(implementationId: string): boolean {
+    return this.store.list<ProjectGitHubSource>("github_sources").some(source => source.kind === "issue" && source.implementation_id === implementationId);
+  }
   private run(id: string, factoryRequired = true, completedAllowed = false): FactoryRun {
     const run = this.store.get<FactoryRun>("runs", id);
     if (run?.implementation_completion_pending) throw new FactoryError("execution_finishing", "Reconcile the retained implementation retirement before allocating more work", 409);
@@ -175,7 +178,7 @@ export class FactoryPipeline {
     await this.retainBeforeStop(id);
     const finished = await this.retireImplementation(run, completion);
     const implementation = this.store.get<Implementation>("implementations", run.implementation_id)!;
-    if (!["merged", "released"].includes(implementation.outcome)) this.store.put("implementations", { ...implementation, stage: "review", activity: "awaiting_merge" });
+    if (!["merged", "released"].includes(implementation.outcome)) this.store.put("implementations", { ...implementation, stage: "review", activity: this.hasIssueSource(run.implementation_id) ? "awaiting_merge" : undefined });
     this.store.event(run.implementation_id, "implementation_execution_finished", { run_id: id, ...completion, owner_accepted: false, delivered: false });
     return finished;
   }
@@ -221,7 +224,10 @@ export class FactoryPipeline {
     const completed: FactoryRun = { ...stopped, condition: "completed", ...(run.action === "implement-spec" ? { implementation_completion: this.completionEvidence(run, current) ?? undefined } : {}) };
     this.store.put("runs", completed, run.implementation_id);
     const implementation = this.store.get<Implementation>("implementations", run.implementation_id)!;
-    if (run.action === "implement-spec" && !["merged", "released"].includes(implementation.outcome)) this.store.put("implementations", { ...implementation, stage: "review", activity: "awaiting_merge", outcome: "implementation_complete" });
+    if (run.action === "implement-spec" && !["merged", "released"].includes(implementation.outcome)) {
+      const issueSourced = this.hasIssueSource(run.implementation_id);
+      this.store.put("implementations", { ...implementation, stage: issueSourced ? "review" : "done", activity: issueSourced ? "awaiting_merge" : undefined, outcome: "implementation_complete" });
+    }
     if (run.action === "apply-retro") {
       const scoped = (run.manifest as { retrospective: import("../shared/protocol.ts").FactoryRetrospective }).retrospective;
       const proposal = this.store.get<import("../shared/protocol.ts").FactoryRetrospective>("retrospectives", scoped.id);
