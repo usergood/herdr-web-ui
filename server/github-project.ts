@@ -96,8 +96,8 @@ export class ProjectGitHub {
   }
   queue(id: string, retryRunId?: string, planningRunId?: string): import("../shared/issue-queue.ts").IssueQueue {
     this.project(id);
-    const policy = this.store.get<import("../shared/issue-queue.ts").ProjectQueuePolicy & { id: string }>("github_queue_policies", id) ?? { project_id: id, revision: null, automatic_implementation: false, paused: false, max_implementations: 1 };
-    const globalLimit = this.store.get<{ value: { max_agents: number } }>("settings", "default")?.value.max_agents ?? 6;
+    const saved = this.store.get<import("../shared/issue-queue.ts").ProjectQueuePolicy>("github_queue_policies", id);
+    const policy = { project_id: id, revision: saved?.revision ?? null, automatic_implementation: saved?.automatic_implementation ?? false, paused: saved?.paused ?? false };
     const githubPolicy = this.store.get<ProjectGitHubPolicy>("github_policies", id);
     const readinessPolicy = this.store.get<ProjectReadinessPolicy>("github_readiness_policies", id);
     const profiles = this.accounts.overview().profiles.filter(profile => profile.id === githubPolicy?.account_profile_id || profile.id === readinessPolicy?.account_profile_id);
@@ -105,11 +105,11 @@ export class ProjectGitHub {
     const sources = this.sources(id).filter(source => source.kind === "issue").map(source => this.describeSource(source));
     const creation = new Map(this.store.list<Implementation>("implementations").map(idea => [idea.id, idea.created_at]));
     const entries = sources.map(source => issueQueueEntry(this.store, source, policy, accountReady, retryRunId, planningRunId)).sort((a, b) => (creation.get(a.implementation_id) ?? "").localeCompare(creation.get(b.implementation_id) ?? "") || a.implementation_id.localeCompare(b.implementation_id));
-    const revision = hash(JSON.stringify({ policy, global_limit: globalLimit, github_policy: githubPolicy, readiness_policy: readinessPolicy, profiles: profiles.map(profile => [profile.id, profile.revision, profile.state, profile.verified_identity]), scope: this.projectScope(id), sources, entries, contracts: entries.map(entry => [this.workflowScope(entry.implementation_id)]) }));
+    const revision = hash(JSON.stringify({ policy, github_policy: githubPolicy, readiness_policy: readinessPolicy, profiles: profiles.map(profile => [profile.id, profile.revision, profile.state, profile.verified_identity]), scope: this.projectScope(id), sources, entries, contracts: entries.map(entry => [this.workflowScope(entry.implementation_id)]) }));
     const preview = this.store.get<{ id: string; revision: string; created_at: string; eligible_count: number }>("github_queue_previews", id);
     const implementingCount = implementingAssignments(this.store, this.store.list<import("../shared/factory.ts").FactoryRun>("runs").filter(run => run.action === "implement-spec" && (run.manifest as { project?: FactoryProject }).project?.id === id)).size;
     const dispatchProblem = this.store.get<{ code: string; message: string; source_id: string | null }>("github_queue_problems", id);
-    return { policy, dispatch_problem: dispatchProblem ? { code: dispatchProblem.code, message: dispatchProblem.message, source_id: dispatchProblem.source_id } : null, global_limit: globalLimit, effective_limit: Math.min(policy.max_implementations, globalLimit), implementing_count: implementingCount, available_slots: Math.max(0, Math.min(policy.max_implementations, globalLimit) - implementingCount), revision, eligible_count: entries.filter(entry => entry.eligible).length, entries, preview: preview ? { revision: preview.revision, created_at: preview.created_at, eligible_count: preview.eligible_count } : null, preview_current: preview?.revision === revision };
+    return { policy, dispatch_problem: dispatchProblem ? { code: dispatchProblem.code, message: dispatchProblem.message, source_id: dispatchProblem.source_id } : null, implementing_count: implementingCount, revision, eligible_count: entries.filter(entry => entry.eligible).length, entries, preview: preview ? { revision: preview.revision, created_at: preview.created_at, eligible_count: preview.eligible_count } : null, preview_current: preview?.revision === revision };
   }
   private workflowScope(id: string): unknown {
     const workflow = new FactoryWorkflow(this.store);
@@ -142,9 +142,6 @@ export class ProjectGitHub {
     const entry = queue.entries.find(entry => entry.source_id === source.id);
     if (!entry?.eligible || source.planning?.condition !== "prepared") throw new FactoryError("issue_not_eligible", "Resolve current issue eligibility before starting", 409);
     if (queue.entries.find(entry => entry.eligible)?.source_id !== source.id) throw new FactoryError("queue_priority_changed", "Start the oldest eligible issue in creation order", 409);
-    const runs = this.store.list<import("../shared/factory.ts").FactoryRun>("runs").filter(run => run.action === "implement-spec" && (run.manifest as { project?: FactoryProject }).project?.id === idea.project_id);
-    const owners = implementingAssignments(this.store, runs);
-    if (owners.size >= queue.effective_limit) throw new FactoryError("project_capacity_exhausted", "Project implementation capacity is reserved; reconcile active and uncertain work", 409);
     return { source, planning: source.planning, github_policy: this.store.get<ProjectGitHubPolicy>("github_policies", idea.project_id)!, readiness_policy: this.store.get<ProjectReadinessPolicy>("github_readiness_policies", idea.project_id)!, queue_policy: queue.policy, queue_revision: queue.revision };
   }
 
@@ -180,7 +177,7 @@ export class ProjectGitHub {
     await this.locked(id, async () => {
       const current = this.queue(id);
       if (body.expected_revision !== current.policy.revision) throw new FactoryError("queue_policy_changed", "Refresh the Project queue settings", 409);
-      if (Object.keys(body).some(key => !["expected_revision", "automatic_implementation", "preview_revision", "paused", "max_implementations"].includes(key)) || typeof body.automatic_implementation !== "boolean" || typeof body.paused !== "boolean" || !Number.isInteger(body.max_implementations) || (body.max_implementations as number) < 1 || (body.max_implementations as number) > current.global_limit) throw new FactoryError("invalid_queue_policy", "Select pause and an implementing Assignment limit within the global limit");
+      if (Object.keys(body).some(key => !["expected_revision", "automatic_implementation", "preview_revision", "paused"].includes(key)) || typeof body.automatic_implementation !== "boolean" || typeof body.paused !== "boolean") throw new FactoryError("invalid_queue_policy", "Configure only automatic implementation and the explicit queue pause setting");
       if (body.automatic_implementation && !current.policy.automatic_implementation) {
         if (!current.preview_current || body.preview_revision !== current.revision) throw new FactoryError("queue_preview_required", "Review the current eligible backlog before enabling automatic implementation", 409);
         const github = this.store.get<ProjectGitHubPolicy>("github_policies", id);
@@ -191,7 +188,7 @@ export class ProjectGitHub {
         if (owner.account_id !== readiness.owner.account_id || owner.login.toLowerCase() !== readiness.owner.login.toLowerCase()) throw new FactoryError("readiness_changed", "Verify the selected readiness identity again", 409);
         if (this.queue(id).revision !== current.revision) throw new FactoryError("queue_preview_required", "Review the current eligible backlog before enabling automatic implementation", 409);
       }
-      const policy = { id, project_id: id, revision: randomUUID(), automatic_implementation: body.automatic_implementation, paused: body.paused, max_implementations: body.max_implementations as number };
+      const policy = { id, project_id: id, revision: randomUUID(), automatic_implementation: body.automatic_implementation, paused: body.paused };
       this.store.put("github_queue_policies", policy, id);
       this.store.remove("github_queue_problems", id);
       this.store.event(null, "github_queue_configured", { project_id: id, revision: policy.revision });

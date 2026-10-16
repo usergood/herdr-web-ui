@@ -1456,9 +1456,9 @@ export interface FactoryRequests {
 export type FactoryRequestBody = FactoryRequests[keyof FactoryRequests];
 /** GET /api/factory/projects/:id/github/queue -> IssueQueue, one current eligibility result
  * shared by previews, source detail and board intake badges. Each excluded issue retains reason codes
- * and dependency identities. Policy defaults to automatic_implementation:false, paused:false,
- * max_implementations:1. effective_limit also respects the current global limit. implementing_count
- * includes uncertain execution and builds; available_slots reports remaining Project capacity.
+ * and dependency identities. Policy defaults to automatic_implementation:false and paused:false.
+ * implementing_count reports accepted Assignments, including uncertain execution and builds;
+ * it is informational. Global agent/build pools control execution; there is no Assignment quota.
  * POST .../github/queue (QueueConfiguration) -> IssueQueue; expected_revision guards replacement.
  * Enabling automatic_implementation requires preview_revision from the exact current preview,
  * an explicitly selected readiness identity, enabled sync and issue imports. Existing and future
@@ -1503,7 +1503,8 @@ export type FactoryRequestBody = FactoryRequests[keyof FactoryRequests];
  */
 /** GET /api/factory/projects/:id/queue -> ProjectQueueOverview; observes, never dispatches.
  * POST /api/factory/projects/:id/queue/configure -> ProjectQueueOverview;
- * ProjectQueueConfiguration requires the current revision and x-herdr-factory: 1.
+ * ProjectQueueConfiguration accepts only expected_revision and paused, with x-herdr-factory: 1.
+ * Obsolete Assignment quotas are rejected; saved quota values do not restrict admission.
  * Pause stops new admissions while accepted work continues.
  * POST /api/factory/implementations/:id/retry ({run_id}) -> ProjectQueueOverview;
  * authorizes one replacement for the current failed attempt without dispatching. */
