@@ -318,3 +318,42 @@ it("pending required CI remains recoverable while GitHub reports unstable or unk
     } finally { f.close(); }
   }
 }, 20000);
+
+
+it("the owned Machine retains one approval while branch-only required CI is running", async () => {
+  const f = await mergeFixture();
+  try {
+    const protection = { isAdminEnforced: true, requiredApprovingReviewCount: 1, requiredStatusCheckContexts: ["Repository CI"] };
+    const commits = (status: string, conclusion: string | null) => ({ nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [
+      { name: "Required CI", status: "COMPLETED", conclusion: "SUCCESS" },
+      { name: "Repository CI", status, conclusion },
+    ], pageInfo: { hasNextPage: false } } } } }], pageInfo: { hasNextPage: false } });
+    f.pull({ baseRef: { branchProtectionRule: protection }, mergeStateStatus: "BLOCKED", commits: commits("IN_PROGRESS", null) });
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ error: { code: "merge_waiting" } });
+    expect(f.git(["rev-parse", "main"])).toBe(f.base);
+    expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(0);
+    f.restart();
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ error: { code: "merge_waiting" } });
+    f.pull({ mergeStateStatus: "CLEAN", commits: commits("COMPLETED", "SUCCESS") });
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "merged" });
+    f.restart();
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "merged" });
+    expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { f.close(); }
+}, 20000);
+
+
+it("the owned Machine observes missing or pending branch checks and blocks genuine failures even during review waits", async () => {
+  for (const context of [null, { context: "Repository CI", state: "PENDING" }, { context: "Repository CI", state: "EXPECTED" }, { context: "Repository CI", state: "FAILURE" }, { name: "Repository CI", status: "COMPLETED", conclusion: "CANCELLED" }]) {
+    const f = await mergeFixture();
+    try {
+      f.pull({ mergeStateStatus: "BLOCKED", reviewDecision: "REVIEW_REQUIRED", baseRef: { branchProtectionRule: { isAdminEnforced: true, requiredApprovingReviewCount: 1, requiredStatusCheckContexts: ["Repository CI"] } }, commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [
+        { name: "Required CI", status: "COMPLETED", conclusion: "SUCCESS" }, ...(context ? [context] : []),
+      ], pageInfo: { hasNextPage: false } } } } }], pageInfo: { hasNextPage: false } } });
+      const failed = context && ("state" in context && context.state === "FAILURE" || "conclusion" in context && context.conclusion === "CANCELLED");
+      expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ error: { code: failed ? "merge_blocked" : "merge_waiting" } });
+      expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(0);
+      expect(f.git(["rev-parse", "main"])).toBe(f.base);
+    } finally { f.close(); }
+  }
+}, 20000);

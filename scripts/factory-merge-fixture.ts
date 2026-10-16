@@ -28,7 +28,9 @@ else if(path==='graphql'){
  if(state.hold_graphql){ state.graphql_waiting=true;writeFileSync(file,JSON.stringify(state)); const deadline=Date.now()+8000;
  while(JSON.parse(readFileSync(file,'utf8')).hold_graphql){if(Date.now()>deadline)throw new Error('Owned GitHub lookup deadline');await new Promise(resolve=>setTimeout(resolve,20));}
  Object.assign(state,JSON.parse(readFileSync(file,'utf8'))); }
- out={data:{repository:{pullRequest:state.pull}}};
+ const selected=structuredClone(state.pull);
+ if(selected.baseRef?.branchProtectionRule&&!args.some(arg=>arg.includes('requiredStatusCheckContexts')))delete selected.baseRef.branchProtectionRule.requiredStatusCheckContexts;
+ out={data:{repository:{pullRequest:selected}}};
 }
 else if(path?.endsWith('/merge')){ if(state.deny) { console.log(JSON.stringify({merged:false,message:state.deny}));process.exit(0); }
 const sha=git(['commit-tree',git(['rev-parse',${JSON.stringify(head + "^{tree}")}]),'-p',git(['rev-parse','main']),'-m','Owned squash merge']); git(['update-ref','refs/heads/main',sha]); state.pull.state='MERGED';state.pull.merged=true;state.pull.mergeCommit={oid:sha};writeFileSync(file,JSON.stringify(state));if(state.lose)process.exit(1);out={merged:true,sha};}

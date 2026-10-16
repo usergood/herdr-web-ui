@@ -8,7 +8,7 @@ import { published, until } from "./factory-human-review-fixture.ts";
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
-    for (const scenario of ["merge", "release", "stale", "failing", "protected", "denied", "lost"] as const) {
+    for (const scenario of ["merge", "release", "stale", "failing", "protected", "denied", "lost", "pending"] as const) {
       const f = await capacityFixture({ advancingHeads: true });
       const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
       try {
@@ -25,6 +25,7 @@ try {
         if (scenario === "protected") f.mergeFailure("merge_blocked");
         if (scenario === "denied") f.mergeFailure("merge_denied");
         if (scenario === "lost") f.loseNextMerge();
+        if (scenario === "pending") f.mergeFailure("merge_waiting");
         const origin = `http://localhost:${f.app.port}`;
         assert.equal((await context.request.post(`${origin}/api/auth`, { data: { token: f.token } })).status(), 204);
         const page = await context.newPage(); page.setDefaultTimeout(10000);
@@ -64,6 +65,15 @@ try {
           await review.getByRole("alert").filter({ hasText: reason }).waitFor();
           assert.notEqual((await detail()).implementation.stage, "done");
           assert.equal(f.mergeEffects.length, 0);
+        } else if (scenario === "pending") {
+          const waiting = await until(detail, d => d.human_review_approvals?.[0]?.condition === "pending");
+          assert.equal(waiting.human_review_approvals.length, 1);
+          assert.equal(f.mergeEffects.length, 0);
+          assert.equal(await review.getByRole("alert").count(), 0);
+          await page.reload();
+          f.mergeFailure(null);
+          await review.getByText("Merge verified", { exact: true }).waitFor();
+          assert.equal((await detail()).implementation.stage, "done");
         } else if (scenario === "release") {
           await review.getByText("Merge verified; waiting for a published release containing it", { exact: true }).waitFor();
           assert.equal((await detail()).implementation.stage, "review");
@@ -76,12 +86,12 @@ try {
         }
         await page.reload();
         assert.equal((await detail()).human_review_approvals.length, scenario === "failing" ? 0 : 1);
-        if (["merge", "lost", "release"].includes(scenario)) assert.equal(f.mergeEffects.length, 1);
+        if (["merge", "lost", "release", "pending"].includes(scenario)) assert.equal(f.mergeEffects.length, 1);
         assert.equal(f.launches.length, 2);
         assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
         assert.deepEqual(errors, []);
       } finally { await context.close(); f.close(); }
     }
   }
-  console.log("PASS Human Review merge authority, stale/protected/denied targets, lost replies and release completion on desktop/mobile");
+  console.log("PASS Human Review merge authority, stale/protected/denied targets, lost replies, retained CI waits and release completion on desktop/mobile");
 } finally { await browser.close(); }

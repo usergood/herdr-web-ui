@@ -14,10 +14,10 @@ interface Pull {
   reviews: Connection<{ state: string; author: { login: string } | null; commit: { oid: string } | null; submittedAt: string }>;
   reviewThreads: Connection<{ isResolved: boolean }>; reviewRequests: Connection<unknown>;
   commits: Connection<{ commit: { statusCheckRollup: { contexts: Connection<{ name?: string; context?: string; state?: string; status?: string; conclusion?: string }> } | null } }>;
-  baseRef?: { branchProtectionRule?: { isAdminEnforced: boolean; requiredApprovingReviewCount: number } | null };
+  baseRef?: { branchProtectionRule?: { isAdminEnforced: boolean; requiredApprovingReviewCount: number; requiredStatusCheckContexts?: string[] } | null };
 }
 interface Intent { id: string; approval: FactoryHumanApproval; pr: FactoryPullRequest; condition: "prepared" | "sending" | "verified"; merge_sha?: string }
-const fields = `author { login } number url state isDraft headRefOid headRefName baseRefName headRepository { nameWithOwner } baseRepository { nameWithOwner } merged mergeCommit { oid } mergeStateStatus reviewDecision baseRef { branchProtectionRule { isAdminEnforced requiredApprovingReviewCount } }
+const fields = `author { login } number url state isDraft headRefOid headRefName baseRefName headRepository { nameWithOwner } baseRepository { nameWithOwner } merged mergeCommit { oid } mergeStateStatus reviewDecision baseRef { branchProtectionRule { isAdminEnforced requiredApprovingReviewCount requiredStatusCheckContexts } }
 reviews(first:100) { nodes { state author { login } commit { oid } submittedAt } pageInfo { hasNextPage } }
 reviewThreads(first:100) { nodes { isResolved } pageInfo { hasNextPage } }
 reviewRequests(first:100) { nodes { __typename } pageInfo { hasNextPage } }
@@ -104,9 +104,9 @@ export class FactoryMerge {
       const trustedApprovals = [...opinions.values()].filter(r => r.state === "APPROVED" && r.commit?.oid === pr.head && r.author?.login.toLowerCase() !== pull.author?.login.toLowerCase() && githubPolicy?.trusted_reviewers.some(login => login.toLowerCase() === r.author?.login.toLowerCase()));
       if (githubPolicy && githubPolicy.repository !== pr.repository) throw new FactoryError("merge_blocked", "The frozen Project repository differs from this candidate", 409);
       let waiting = pull.mergeStateStatus === "UNKNOWN" || pull.reviewDecision === "REVIEW_REQUIRED" || pull.reviewRequests.nodes.length > 0 || !!(githubPolicy?.trusted_reviewers.length && trustedApprovals.length < Math.max(1, pull.baseRef?.branchProtectionRule?.requiredApprovingReviewCount ?? 1));
-      for (const name of githubPolicy?.required_checks ?? []) {
+      for (const name of new Set([...githubPolicy?.required_checks ?? [], ...pull.baseRef?.branchProtectionRule?.requiredStatusCheckContexts ?? []])) {
         const matching = contexts?.nodes.filter(c => (c.name ?? c.context) === name) ?? [];
-        if (matching.some(c => c.context ? !["SUCCESS", "PENDING", "EXPECTED"].includes(c.state ?? "") : c.status === "COMPLETED" && c.conclusion !== "SUCCESS")) throw new FactoryError("merge_blocked", `Required Project check failed: ${name}`, 409);
+        if (matching.some(c => c.context ? !["SUCCESS", "PENDING", "EXPECTED"].includes(c.state ?? "") : c.status === "COMPLETED" && c.conclusion !== "SUCCESS")) throw new FactoryError("merge_blocked", `Required check failed: ${name}`, 409);
         if (!matching.length || matching.some(c => c.context ? c.state !== "SUCCESS" : c.status !== "COMPLETED")) waiting = true;
       }
       if (waiting) throw new FactoryError("merge_waiting", "Waiting for required GitHub checks or reviews; retained approval will be observed automatically", 409);
