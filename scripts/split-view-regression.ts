@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Browser, BrowserContext, Page, Route, WebSocket } from "playwright-core";
@@ -448,6 +448,8 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
     {
       const [first] = await panesFor("overlap") as [string];
       const beside = (await paneSplit(first, "right", false)).pane_id;
+      const deliveryFile = join(root, "overlap-executed.txt");
+      const quotedDeliveryFile = "'" + deliveryFile.replaceAll("'", "'\\''") + "'";
       const frames: string[] = [];
       const { page, errors } = await open([first, beside], "terminal", async (context) => {
         await context.addInitScript(([other]) => {
@@ -507,26 +509,27 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
       // typed before the PC says the pane takes input, a line is held for the user to send: wait for that word
       await until(page, () => frames.some((frame) => frame === `< input-ready ${first}`), "the surviving terminal's input-ready");
       await current.locator(".xterm-helper-textarea").focus();
-      /** waits, with a bound, for a typed line to show in the pane */
-      const reaches = async (text: string, when: string): Promise<void> => {
+      // A concurrent grid resize can erase a completed answer from pane.read. The
+      // owned shell's exact file output proves execution, including order and duplicates.
+      const reaches = async (expected: string, when: string): Promise<void> => {
         const end = Date.now() + 15_000;
-        let shown = await screen();
-        while (!shown.includes(text)) {
-          if (Date.now() > end) throw new Error(`Timed out: the typed line did not reach the pane ${when}; the pane shows:\n${shown}\nframes: ${frames.join(" | ")}`);
+        for (;;) {
+          const actual = existsSync(deliveryFile) ? readFileSync(deliveryFile, "utf8") : "";
+          if (actual === expected) return;
+          if (Date.now() > end) throw new Error(`Timed out: the typed line did not execute ${when}; output=${JSON.stringify(actual)}; the pane shows:\n${await screen()}\nframes: ${frames.join(" | ")}`);
           await page.waitForTimeout(100);
-          shown = await screen();
         }
       };
-      await page.keyboard.type("echo split-ok-42\n");
-      await reaches("split-ok-42", "drawn in both halves");
+      await page.keyboard.type(`printf 'split-ok-%s\\n' 42 > ${quotedDeliveryFile}\n`);
+      await reaches("split-ok-42\n", "drawn in both halves");
       // the duplicate closed: its socket's detach is its own, the left half's terminal still types
       await half(page, "right").getByRole("button", { name: "Close this half", exact: true }).click();
       await page.waitForFunction(() => document.querySelectorAll(".pane-slot").length === 1);
       await settled(page);
       // one pane again: its slot has no side
       await page.locator(".pane-frame.is-current .pane-terminal:not(.is-idle) .xterm-helper-textarea").focus();
-      await page.keyboard.type("echo split-ok-43\n");
-      await reaches("split-ok-43", "after the duplicate half closed");
+      await page.keyboard.type(`printf 'split-ok-%s\\n' 43 >> ${quotedDeliveryFile}\n`);
+      await reaches("split-ok-42\nsplit-ok-43\n", "after the duplicate half closed");
       assert.deepEqual(errors, []);
       console.log("PASS a split drawing one tab in both halves types into it, and closing the duplicate keeps the survivor attached");
     }
