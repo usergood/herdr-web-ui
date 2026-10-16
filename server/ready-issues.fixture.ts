@@ -59,9 +59,13 @@ export async function readyIssuesFixture(behavior: { reviewOutcome?: "passed" | 
       const launched = { ...run, worktree, branch: `owned/${run.id}`, workspace_id: `owned-${run.id}`, pane_id: `owned-${run.id}:p1`, condition: "working" as const };
       runs.set(run.id, launched); return Response.json(launched);
     }
-    if (/\/runs\/[^/]+\/send$/.test(url.pathname)) {
+    const send = /\/runs\/([^/]+)\/send$/.exec(url.pathname);
+    if (send) {
       if (body.text.length > 250_000 || new TextEncoder().encode(JSON.stringify(body)).length > 512 * 1024) return Response.json({ error: { code: "invalid_input", message: "Owned remote send limit" } }, { status: 400 });
+      const run = runs.get(send[1]!);
+      if (!run || ["completed", "cancelled", "failed"].includes(run.condition)) return Response.json({ error: { code: "run_unavailable", message: "Owned native Run has ended" } }, { status: 409 });
       deliveries.push(body.text);
+      runs.set(run.id, { ...run, condition: "working", waiting_reason: null });
       return uncertainDelivery ? new Response(null, { status: 503 }) : Response.json({ ok: true });
     }
     const nativeOperation = /\/runs\/([^/]+)\/operations\/([^/]+)$/.exec(url.pathname);

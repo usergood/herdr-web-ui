@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { readyIssuesFixture } from "./ready-issues.fixture.ts";
+import { reviewReworkFixture } from "./factory-review-rework.fixture.ts";
 
 test("a trusted ready issue automatically implements its accepted plan in an isolated factory Run", async () => {
   const f = await readyIssuesFixture();
@@ -112,7 +113,14 @@ test.each(["verified", "stale_head", "uncertain_check"])("only current verified 
       integration = await f.request(`${workerRoute}/${worker.id}/integrate`, {});
     }
     expect(integration).toMatchObject({ status: 200, body: { condition: "completed" } });
-    expect((await f.request(`/runs/${run.id}/checks`, {})).body.condition).toBe("passed");
+    let resumed = (await f.request(`/runs/${run.id}/reconcile`, {})).body;
+    const resumedDeadline = Date.now() + 5000;
+    while (resumed.condition !== "working" && Date.now() < resumedDeadline) {
+      await f.tick(); await Bun.sleep(10);
+      resumed = (await f.request(`/runs/${run.id}/reconcile`, {})).body;
+    }
+    expect(resumed).toMatchObject({ id: run.id, condition: "working" });
+    expect(await f.request(`/runs/${run.id}/checks`, {})).toMatchObject({ status: 200, body: { condition: "passed" } });
     const standards = (await f.request(workerRoute, { role: "standards", idempotency_key: "independent-standards" })).body;
     await f.request(`${workerRoute}/${standards.id}/review-evidence`, {});
     await f.tick();
@@ -129,6 +137,9 @@ test.each(["verified", "stale_head", "uncertain_check"])("only current verified 
     const finalReview = await f.request(`${workerRoute}/${spec.id}/review-evidence`, {});
     expect(finalReview.status).toBe(mode === "stale_head" ? 409 : 200);
     if (mode === "stale_head") expect(finalReview.body.error.code).toBe("review_stale");
+    // Native Send executes the resumed parent until this explicit end of its turn.
+    // Negative evidence is already arranged before native rest can permit retirement.
+    f.rest(run.id);
     await f.tick();
     let complete = (await f.request(`/implementations/${a.implementation_id}`)).body;
     if (mode === "verified") {
@@ -251,5 +262,21 @@ test("an owner-stopped automatic attempt is not relaunched by the same readiness
     f.restart(); await f.tick();
     expect(f.launches).toHaveLength(1);
     expect((await f.request(`/implementations/${source.implementation_id}`)).body.runs[0].condition).toBe("cancelled");
+  } finally { f.close(); }
+}, 30_000);
+
+test.each([false, true])("an accepted native review notification executes once even when its acknowledgment is lost (%s)", async lost => {
+  const f = await reviewReworkFixture();
+  try {
+    f.rest(f.run.id); f.uncertainDelivery(lost);
+    const sent = await f.request(f.prefix + "/request-changes", f.submission);
+    expect(sent).toMatchObject({ status: 200, body: { status: lost ? "uncertain" : "sent" } });
+    expect((await f.request(`/runs/${f.run.id}/reconcile`, {})).body.condition).toBe("working");
+    expect((await f.request(f.prefix + "/request-changes", f.submission)).body.id).toBe(sent.body.id);
+    expect(f.deliveries).toHaveLength(1);
+    expect((await f.request(`/runs/${f.run.id}/stop`, {})).body.condition).toBe("cancelled");
+    f.rest(f.run.id);
+    expect((await f.request(`/runs/${f.run.id}/reconcile`, {})).body.condition).toBe("cancelled");
+    expect(f.deliveries).toHaveLength(1);
   } finally { f.close(); }
 }, 30_000);
