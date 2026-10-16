@@ -141,12 +141,13 @@ test("rejected coverage writes preserve verified current completion and dependen
     const path = `/implementations/${f.target.implementation_id}`;
     const completed = await f.fixture.json(path);
     const prior = (await f.fixture.json(f.route)).sources.find((source: any) => source.number === 2).delivery;
+    const currentCoverage = { ...f.coverage, expected_revision: prior.revision };
     for (const [change, status] of [
       [{ expected_revision: null }, 409], [{ source_revision: "stale" }, 409],
       [{ intended_prs: [{ number: 27, head: "invalid" }] }, 400],
       [{ target_branch: "bad..branch" }, 400], [{ release_tag: "bad tag" }, 400],
     ] as const) {
-      expect((await f.fixture.post(f.route + "/issues/2/delivery", { ...f.coverage, expected_revision: prior.revision, ...change })).status).toBe(status);
+      expect((await f.fixture.post(f.route + "/issues/2/delivery", { ...currentCoverage, ...change })).status).toBe(status);
       const detail = await f.fixture.json(path);
       expect(detail.implementation).toEqual(completed.implementation);
       expect(detail.events).toEqual(completed.events);
