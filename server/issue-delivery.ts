@@ -7,6 +7,11 @@ import { dependencyPlan } from "./issue-dependencies.ts";
 const sha = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
 const ref = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 200 && !/[\s~^:?*\[\\\x00-\x1f]/.test(value) && !value.includes("..") && !value.includes("@{") && !value.startsWith("/") && !value.endsWith("/") && !value.endsWith(".") && !value.split("/").some(part => !part || part.startsWith(".") || part.endsWith(".lock"));
 
+/** Issue delivery applies regardless of whether execution used guarded admission or ordinary Work. */
+export function hasIssueSource(store: FactoryStore, implementationId: string): boolean {
+  return store.list<ProjectGitHubSource>("github_sources").some(source => source.kind === "issue" && source.implementation_id === implementationId);
+}
+
 /** Both branch and release evidence must prove ancestry of the exact merge commit. */
 function containsMerge(comparison: unknown, mergeCommit: string): boolean {
   return isJsonObject(comparison) && ["ahead", "identical"].includes(String(comparison.status))

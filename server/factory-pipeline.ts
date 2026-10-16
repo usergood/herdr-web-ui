@@ -1,17 +1,16 @@
 import { factoryCapacity } from "./factory-capacity.ts";
-import type { FactoryCheck, FactoryProject, FactoryReviewEvidence, FactoryRun, FactorySettings, FactoryTicket, FactoryWorker, Implementation, ProjectGitHubSource } from "../shared/protocol.ts";
+import { hasIssueSource } from "./issue-delivery.ts";
+import type { FactoryCheck, FactoryProject, FactoryReviewEvidence, FactoryRun, FactorySettings, FactoryTicket, FactoryWorker, Implementation } from "../shared/protocol.ts";
 import { FactoryError } from "./factory-host.ts";
 import { FactoryRuntime } from "./factory-runtime.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { FactoryWorkflow } from "./factory-workflow.ts";
 
 const owns = (condition: string): boolean => !["completed", "cancelled", "failed"].includes(condition);
+type CompletionCleanup = { id: string; machine_id: string; worktree: string; branch: string | null; completion: NonNullable<FactoryRun["implementation_completion"]> };
 /** Admission reservations cover all native contexts and builds, including uncertain remote work. */
 export class FactoryPipeline {
   constructor(private readonly store: FactoryStore, private readonly runtime: FactoryRuntime, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly retainBeforeStop: (id: string) => Promise<void>) {}
-  private hasIssueSource(implementationId: string): boolean {
-    return this.store.list<ProjectGitHubSource>("github_sources").some(source => source.kind === "issue" && source.implementation_id === implementationId);
-  }
   private run(id: string, factoryRequired = true, completedAllowed = false): FactoryRun {
     const run = this.store.get<FactoryRun>("runs", id);
     if (run?.implementation_completion_pending) throw new FactoryError("execution_finishing", "Reconcile the retained implementation retirement before allocating more work", 409);
@@ -165,6 +164,10 @@ export class FactoryPipeline {
     if (run.action !== "implement-spec" || run.issue_pause || !["ready", "completed"].includes(run.condition) && !run.implementation_completion_pending) return run;
     let current: { head: string; workspace_hash: string } | null = null;
     try { current = await this.runtime.operation(run, "head"); } catch { /* Unobservable evidence retains capacity. */ }
+    const cleaned = this.store.get<CompletionCleanup>("implementation_cleanup", id);
+    if (!current && run.condition === "completed" && !run.implementation_completion_pending && run.implementation_completion
+      && cleaned?.machine_id === run.machine_id && cleaned.worktree === run.worktree && cleaned.branch === run.branch
+      && JSON.stringify(cleaned.completion) === JSON.stringify(run.implementation_completion)) current = cleaned.completion;
     const completion = current && this.completionEvidence(run, current);
     if (!completion) {
       if (!run.implementation_completion && !run.implementation_completion_pending) return run;
@@ -178,9 +181,27 @@ export class FactoryPipeline {
     await this.retainBeforeStop(id);
     const finished = await this.retireImplementation(run, completion);
     const implementation = this.store.get<Implementation>("implementations", run.implementation_id)!;
-    if (!["merged", "released"].includes(implementation.outcome)) this.store.put("implementations", { ...implementation, stage: "review", activity: this.hasIssueSource(run.implementation_id) ? "awaiting_merge" : undefined });
+    if (!["merged", "released"].includes(implementation.outcome)) this.store.put("implementations", { ...implementation, stage: "review", activity: hasIssueSource(this.store, run.implementation_id) ? "awaiting_merge" : undefined });
     this.store.event(run.implementation_id, "implementation_execution_finished", { run_id: id, ...completion, owner_accepted: false, delivered: false });
     return finished;
+  }
+  async cleanup(id: string): Promise<unknown> {
+    let run = this.store.get<FactoryRun>("runs", id);
+    if (!run || run.implementation_completion_pending || !["completed", "cancelled", "failed"].includes(run.condition)) throw new FactoryError("run_owned", "Stop and observe this Run before cleanup", 409);
+    // Verify the proof while the checkout still exists; cleanup cannot bless stale evidence.
+    if (run.implementation_completion) run = await this.reconcileCompletion(id);
+    if (!["completed", "cancelled", "failed"].includes(run.condition)) throw new FactoryError("run_owned", "Reconcile this Run's current evidence before cleanup", 409);
+    const result = await this.runtime.operation<{ removed: string[]; branches_retained: boolean; notes_retained: boolean }>(run, "cleanup");
+    const live = this.store.get<FactoryRun>("runs", id)!;
+    if (run.implementation_completion && run.worktree && result?.branches_retained === true && result.notes_retained === true
+      && Array.isArray(result.removed) && result.removed.includes(run.worktree)
+      && live.condition === "completed" && !live.implementation_completion_pending && live.machine_id === run.machine_id && live.worktree === run.worktree && live.branch === run.branch
+      && JSON.stringify(live.implementation_completion) === JSON.stringify(run.implementation_completion)
+      && JSON.stringify(this.completionEvidence(live, run.implementation_completion)) === JSON.stringify(run.implementation_completion)) {
+      this.store.put<CompletionCleanup>("implementation_cleanup", { id, machine_id: run.machine_id, worktree: run.worktree, branch: run.branch, completion: run.implementation_completion }, run.implementation_id);
+    }
+    this.store.event(run.implementation_id, "clean_checkouts_removed", { run_id: id, result });
+    return result;
   }
   private async retireImplementation(run: FactoryRun, expected: NonNullable<FactoryRun["implementation_completion"]>): Promise<FactoryRun> {
     const live = this.store.get<FactoryRun>("runs", run.id)!;
@@ -225,7 +246,7 @@ export class FactoryPipeline {
     this.store.put("runs", completed, run.implementation_id);
     const implementation = this.store.get<Implementation>("implementations", run.implementation_id)!;
     if (run.action === "implement-spec" && !["merged", "released"].includes(implementation.outcome)) {
-      const issueSourced = this.hasIssueSource(run.implementation_id);
+      const issueSourced = hasIssueSource(this.store, run.implementation_id);
       this.store.put("implementations", { ...implementation, stage: issueSourced ? "review" : "done", activity: issueSourced ? "awaiting_merge" : undefined, outcome: "implementation_complete" });
     }
     if (run.action === "apply-retro") {

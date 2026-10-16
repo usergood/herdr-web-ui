@@ -24,6 +24,7 @@ import { projectReferenceTemplate } from "../shared/project-references.ts";
 import { MachineAccounts } from "./accounts.ts";
 import type { AccountTools } from "./account-tools.ts";
 import { ProjectGitHub } from "./github-project.ts";
+import { hasIssueSource } from "./issue-delivery.ts";
 import { sameOrigin } from "./machine-security.ts";
 import { parseModelSelection, resolveModelSelection } from "./agent-model-selection.ts";
 
@@ -555,9 +556,7 @@ export class FactoryService {
       }
       const cleanup = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/cleanup$/.exec(url.pathname);
       if (cleanup && request.method === "POST") {
-        const run = this.store.get<FactoryRun>("runs", cleanup[1]!);
-        if (!run || !["completed", "cancelled", "failed"].includes(run.condition)) throw new FactoryError("run_owned", "Stop and observe this Run before cleanup", 409);
-        const result = await this.runtime.operation(run, "cleanup"); this.store.event(run.implementation_id, "clean_checkouts_removed", { run_id: run.id, result }); return jsonResponse(result);
+        return jsonResponse(await this.pipeline.cleanup(cleanup[1]!));
       }
       const importRoute = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/import-artifacts$/.exec(url.pathname);
       if (importRoute && request.method === "POST") {
@@ -660,9 +659,9 @@ export class FactoryService {
         return jsonResponse(this.store.db.transaction(() => {
           const current = this.store.get<Implementation>("implementations", id)!;
           if (this.store.list<FactoryRun>("runs", id).at(-1)?.id !== run.id || this.activeWork(id) || hash(JSON.stringify({project_id:current.project_id,provider:current.provider,machine_id:current.machine_id,archived_at:current.archived_at})) !== scope) throw new FactoryError("scope_changed", "The Assignment changed during completion; refresh it before continuing", 409);
-          const admittedIssue = this.store.list<FactoryRun>("runs", id).some(attempt => !!(attempt.manifest as { issue_admission?: unknown }).issue_admission);
+          const issueSourced = hasIssueSource(this.store, id);
           const delivered = ["merged", "released"].includes(current.outcome) && !!current.delivery_evidence;
-          const next: Implementation = {...current,...(delivered ? {} : admittedIssue ? {stage:"review" as const,activity:"awaiting_merge" as const,outcome:"implementation_complete" as const} : {stage:"done" as const,outcome:"implementation_complete" as const}),updated_at:new Date().toISOString()};
+          const next: Implementation = {...current,...(delivered ? {} : issueSourced ? {stage:"review" as const,activity:"awaiting_merge" as const,outcome:"implementation_complete" as const} : {stage:"done" as const,outcome:"implementation_complete" as const}),updated_at:new Date().toISOString()};
           this.store.put("implementations",next);this.store.event(id,"direct_work_completed",{run_id:run.id,owner_accepted:true});return next;
         })());
       }

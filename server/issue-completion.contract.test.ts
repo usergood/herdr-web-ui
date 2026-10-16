@@ -2,6 +2,8 @@ import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { githubReviewFixture } from "../scripts/fixtures/github-review.ts";
+import { githubDeliveryResponses } from "../scripts/fixtures/github-delivery.ts";
+import type { ProjectPullRequest } from "../shared/github-project.ts";
 
 async function prepareManual(fixture: ReturnType<typeof githubReviewFixture>) {
   const { project } = await fixture.setup();
@@ -68,6 +70,62 @@ test("ordinary manual work retains its explicit completion and archiving path", 
   } finally { fixture.close(); }
 }, 20_000);
 
+test.each(["merge", "release"])("ordinary Start work on an imported issue awaits verified %s delivery and cannot archive from closure", async requires => {
+  const fixture = githubReviewFixture();
+  try {
+    const { route } = await fixture.setup();
+    const source = (await fixture.json(route + "/sync", {})).sources[0];
+    const path = `/implementations/${source.implementation_id}`;
+    fixture.setNativeIdentity();
+    const run = await fixture.json(path + "/runs", { action: "work", idempotency_key: "manual-imported-issue" });
+    expect(run.manifest.issue_admission).toBeUndefined();
+    await fixture.json(path + "/complete-work", { run_id: run.id });
+    expect((await fixture.json(path)).implementation).toMatchObject({ stage: "review", activity: "awaiting_merge", outcome: "implementation_complete" });
+    expect((await fixture.post(path + "/archive", {})).status).toBe(409);
+    fixture.issue.state = "closed"; fixture.save();
+    await fixture.json(route + "/sync", {}); fixture.restart();
+    expect((await fixture.json(path)).implementation).toMatchObject({ stage: "review", activity: "awaiting_merge" });
+    expect((await fixture.post(path + "/archive", {})).status).toBe(409);
+    const current = (await fixture.json(route)).sources[0];
+    await fixture.json(route + "/issues/1/delivery", { source_revision: current.revision, expected_revision: null, target_branch: "main", intended_prs: [{ number: 27, head: "a".repeat(40) }], release_tag: requires === "release" ? "v1" : null });
+    fixture.setApiResponses(githubDeliveryResponses({ targetBranch: "other" }));
+    await fixture.json(route + "/sync", {});
+    expect((await fixture.post(path + "/archive", {})).status).toBe(409);
+    fixture.setApiResponses(githubDeliveryResponses({ merged: false }));
+    await fixture.json(route + "/sync", {});
+    expect((await fixture.post(path + "/archive", {})).status).toBe(409);
+    if (requires === "release") {
+      fixture.setApiResponses(githubDeliveryResponses({ containsRelease: false }));
+      await fixture.json(route + "/sync", {});
+      expect((await fixture.post(path + "/archive", {})).status).toBe(409);
+    }
+    fixture.setApiResponses(githubDeliveryResponses());
+    await fixture.json(route + "/sync", {});
+    expect((await fixture.json(path)).implementation).toMatchObject({ stage: "done", outcome: requires === "release" ? "released" : "merged", delivery_evidence: { source_id: source.id, requires, merges: [{ number: 27, head: "a".repeat(40), target_branch: "main" }] } });
+    expect((await fixture.json(path + "/archive", {})).archived_at).toEqual(expect.any(String));
+  } finally { fixture.close(); }
+}, 20_000);
+
+test("ordinary Work on a PR fix source preserves manual completion and archiving", async () => {
+  const fixture = githubReviewFixture();
+  try {
+    const { route, configuration } = await fixture.setup();
+    const connection = <T,>(nodes: T[]) => ({ nodes, pageInfo: { hasNextPage: false, endCursor: null } });
+    const pull: ProjectPullRequest = { number: 27, id: "fictional-fix-27", title: "Owned review fix", body: "Fictional patch", url: "https://github.com/fictional/project/pull/27", state: "OPEN", isDraft: false, headRefOid: "a".repeat(40), baseRefOid: "b".repeat(40), author: { login: "fictional-owner" }, headRefName: "owned-fix", baseRefName: "main", headRepository: { nameWithOwner: "fictional/project" }, viewerCanUpdate: true, mergeStateStatus: "CLEAN", reviewDecision: "CHANGES_REQUESTED", baseRef: null,
+      reviews: connection([{ id: "review-1", state: "CHANGES_REQUESTED", body: "Show a greeting", submittedAt: "2026-10-03T12:00:00Z", author: { login: "fictional-reviewer" }, commit: { oid: "a".repeat(40) } }]), reviewRequests: connection([]), reviewThreads: connection([]), commits: { nodes: [] } };
+    fixture.setApiResponses({ graphql: { data: { repository: { pullRequests: connection([pull]) } } } });
+    const policy = (await fixture.json(route)).policy;
+    await fixture.json(route + "/configure", { ...configuration, expected_revision: policy.revision, import_issues: false, import_fixes: true, trusted_reviewers: ["fictional-reviewer"] });
+    const source = (await fixture.json(route + "/sync", {})).sources[0];
+    expect(source.kind).toBe("fix");
+    const path = `/implementations/${source.implementation_id}`;
+    fixture.setNativeIdentity();
+    const run = await fixture.json(path + "/runs", { action: "work", idempotency_key: "owned-pr-fix-work" });
+    expect(await fixture.json(path + "/complete-work", { run_id: run.id })).toMatchObject({ stage: "done", outcome: "implementation_complete" });
+    expect((await fixture.json(path + "/archive", {})).archived_at).toEqual(expect.any(String));
+  } finally { fixture.close(); }
+}, 20_000);
+
 test("accepting a checked and independently reviewed issue implementation awaits merge without establishing Done", async () => {
   const fixture = githubReviewFixture();
   try {
@@ -113,6 +171,21 @@ test("restart keeps uncertain retirement recoverable through public controls whi
     fixture.setUncertainStop(false);
     expect((await fixture.json(`/runs/${run.id}/reconcile`, {})).condition).toBe("completed");
     expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 0, available_slots: 1 });
+  } finally { fixture.close(); }
+}, 20_000);
+
+test("uncertain implementation retirement cannot authorize cleanup or release its slot", async () => {
+  const fixture = githubReviewFixture();
+  try {
+    const { run, path, route } = await fixture.prepare();
+    await fixture.integrate(run); await fixture.json(`/runs/${run.id}/checks`, {});
+    await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    fixture.setStopCondition("failed");
+    expect((await fixture.post(`/runs/${run.id}/reconcile`, {})).status).toBe(409);
+    expect((await fixture.post(`/runs/${run.id}/cleanup`, {})).status).toBe(409);
+    fixture.restart();
+    expect((await fixture.json(path)).runs[0].implementation_completion_pending).toBe(true);
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1, available_slots: 0 });
   } finally { fixture.close(); }
 }, 20_000);
 
@@ -219,6 +292,65 @@ test("a changed checked workspace reclaims released capacity before unrelated ad
     expect(refused.status).toBe(409);
     expect((await fixture.json(second.path)).runs).toEqual([]);
     expect((await fixture.json(path)).implementation.activity).toBeUndefined();
+  } finally { fixture.close(); }
+}, 20_000);
+
+test("verified owner cleanup preserves exact completion and released capacity across restart and repeated reconciliation", async () => {
+  const fixture = githubReviewFixture();
+  try {
+    fixture.save([fixture.issue, { ...fixture.issue, number: 2, node_id: "fictional-2", title: "After cleanup" }]);
+    const { run, path, route, readiness } = await fixture.prepare();
+    const second = await fixture.second(route, readiness);
+    await fixture.integrate(run); const check = await fixture.json(`/runs/${run.id}/checks`, {});
+    await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    await fixture.json(`/runs/${run.id}/accept`, { head: check.head });
+    const completion = (await fixture.json(path)).runs[0].implementation_completion;
+    expect(await fixture.json(`/runs/${run.id}/cleanup`, {})).toMatchObject({ removed: [run.worktree], branches_retained: true, notes_retained: true });
+    fixture.restart();
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const reconciled = await fixture.json(`/runs/${run.id}/reconcile`, {});
+      expect(reconciled.condition).toBe("completed");
+      expect(reconciled.implementation_completion).toEqual(completion);
+      expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 0, available_slots: 1 });
+    }
+    await fixture.json("/settings", { max_implementations: 1 });
+    expect((await fixture.post(second.path + "/runs", second.start)).status).toBe(202);
+    expect((await fixture.json(path)).implementation).toMatchObject({ stage: "review", activity: "awaiting_merge" });
+  } finally { fixture.close(); }
+}, 20_000);
+
+test.each(["unexpected", "lost", "unconfirmed", "other_checkout"] as const)("%s checkout loss cannot establish a completion cleanup receipt", async kind => {
+  const fixture = githubReviewFixture();
+  try {
+    const { run, path, route } = await fixture.prepare();
+    await fixture.integrate(run); const check = await fixture.json(`/runs/${run.id}/checks`, {});
+    await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    await fixture.json(`/runs/${run.id}/accept`, { head: check.head });
+    if (kind === "unexpected") fixture.setHeadUnavailable();
+    else {
+      fixture.setCleanupOutcome(kind);
+      expect((await fixture.post(`/runs/${run.id}/cleanup`, {})).status).toBe(kind === "lost" ? 503 : 200);
+    }
+    fixture.restart();
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1, available_slots: 0 });
+    const detail = await fixture.json(path);
+    expect(detail.runs[0].implementation_completion).toBeUndefined();
+    expect(detail.implementation.activity).toBeUndefined();
+  } finally { fixture.close(); }
+}, 20_000);
+
+test.each(["before", "after"])("a workspace changed %s cleanup cannot establish or retain its completion proof", async when => {
+  const fixture = githubReviewFixture();
+  try {
+    const { run, path, route } = await fixture.prepare();
+    await fixture.integrate(run); await fixture.json(`/runs/${run.id}/checks`, {});
+    await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    await fixture.json(`/runs/${run.id}/reconcile`, {});
+    if (when === "after") await fixture.json(`/runs/${run.id}/cleanup`, {});
+    fixture.setHeadUnavailable(false); fixture.setWorkspaceHash("changed-checkout");
+    expect((await fixture.post(`/runs/${run.id}/cleanup`, {})).status).toBe(409);
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1, available_slots: 0 });
+    expect((await fixture.json(path)).runs[0].implementation_completion).toBeUndefined();
   } finally { fixture.close(); }
 }, 20_000);
 

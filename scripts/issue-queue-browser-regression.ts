@@ -6,11 +6,60 @@ import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { githubQueueFixture } from "./fixtures/github-queue.ts";
 import { githubReviewFixture } from "./fixtures/github-review.ts";
+import { githubDeliveryResponses } from "./fixtures/github-delivery.ts";
 
 const fixture = githubQueueFixture();
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 const errors: string[] = [];
 try {
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    for (const issueSourced of [true, false]) {
+      const direct = githubReviewFixture();
+      const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });
+      page.setDefaultTimeout(10_000); page.on("pageerror", error => errors.push(error.message));
+      try {
+        const { project, route } = await direct.setup();
+        const source = issueSourced ? (await direct.json(route + "/sync", {})).sources[0] : null;
+        const assignment = source ? { id: source.implementation_id } : await direct.json("/implementations", { title: "Owned ordinary Work", description: "Fictional manual work", project_id: project.id });
+        const path = `/implementations/${assignment.id}`;
+        direct.setNativeIdentity();
+        await page.goto(direct.origin + `/#factory/${assignment.id}`);
+        const actions = page.getByRole("region", { name: "Next step", exact: true });
+        const started = page.waitForResponse(response => response.url().endsWith(path + "/runs") && response.request().method() === "POST");
+        await actions.getByRole("button", { name: "Start work", exact: true }).click();
+        const response = await started; assert.equal(response.status(), 202);
+        const run = await response.json();
+        assert.equal(run.action, "work"); assert.equal(run.manifest.issue_admission, undefined);
+        await page.goto(direct.origin + `/#factory/${assignment.id}`);
+        await actions.getByRole("button", { name: "Mark work done", exact: true }).click();
+        if (issueSourced) {
+          await actions.getByText("Awaiting merge", { exact: true }).waitFor();
+          assert.equal(await page.getByRole("button", { name: "Archive task", exact: true }).count(), 0);
+          assert.equal((await direct.post(path + "/archive", {})).status, 409);
+          direct.issue.state = "closed"; direct.save(); await direct.json(route + "/sync", {});
+          await page.reload();
+          await actions.getByText("Awaiting merge", { exact: true }).waitFor();
+          assert.equal((await direct.post(path + "/archive", {})).status, 409);
+          const current = (await direct.json(route)).sources[0];
+          await direct.json(route + "/issues/1/delivery", { source_revision: current.revision, expected_revision: null, target_branch: "main", intended_prs: [{ number: 27, head: "a".repeat(40) }], release_tag: "v1" });
+          direct.setApiResponses(githubDeliveryResponses({ containsRelease: false }));
+          await direct.json(route + "/sync", {}); await page.reload();
+          await actions.getByText("Awaiting merge", { exact: true }).waitFor();
+          assert.equal((await direct.post(path + "/archive", {})).status, 409);
+          direct.setApiResponses(githubDeliveryResponses()); await direct.json(route + "/sync", {});
+          await page.reload();
+          assert.equal((await direct.json(path)).implementation.outcome, "released");
+        }
+        await page.getByRole("button", { name: "Archive task", exact: true }).click();
+        await page.getByRole("button", { name: "Restore", exact: true }).waitFor();
+        const detail = await direct.json(path);
+        assert.equal(detail.implementation.stage, "done"); assert(detail.implementation.archived_at);
+        assert.equal(detail.implementation.outcome, issueSourced ? "released" : "implementation_complete");
+      } finally { await page.close(); direct.close(); }
+    }
+  }
+  assert.deepEqual(errors, []);
+  console.log("PASS: desktop/mobile ordinary Start work and Mark work done preserve issue delivery and manual archive boundaries");
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
     const manual = githubReviewFixture();
     const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });

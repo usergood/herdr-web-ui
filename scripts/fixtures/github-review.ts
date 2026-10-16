@@ -15,6 +15,7 @@ export function githubReviewFixture() {
   let stopHead: string | null = null;
   let nativeIdentity = false;
   let headUnavailable = false;
+  let cleanupOutcome: "confirmed" | "lost" | "unconfirmed" | "other_checkout" = "confirmed";
   fixture.setExecutionHandler(async request => {
     const path = new URL(request.url).pathname;
     const body = request.method === "POST" ? await request.json() as Record<string, any> : {};
@@ -26,6 +27,11 @@ export function githubReviewFixture() {
     if (!run) return null;
     const action = path.split("/").at(-1);
     if (action === "head") return headUnavailable ? Response.json({ error: { code: "workspace_gone", message: "Owned historical workspace was cleaned" } }, { status: 409 }) : Response.json({ head, workspace_hash: workspaceHash });
+    if (action === "cleanup") {
+      headUnavailable = true;
+      if (cleanupOutcome === "lost") return Response.json({ error: { code: "unreachable", message: "Owned cleanup response lost" } }, { status: 503 });
+      return Response.json({ removed: cleanupOutcome === "unconfirmed" ? [] : cleanupOutcome === "other_checkout" ? [fixture.root + "/other"] : [run.worktree], branches_retained: true, notes_retained: true });
+    }
     if (action === "reconcile") return Response.json({ ...run, condition: coordinator });
     if (action === "stop") {
       if (uncertainStop) return Response.json({ error: { code: "unreachable", message: "Owned stop outcome uncertain" } }, { status: 409 });
@@ -73,5 +79,5 @@ export function githubReviewFixture() {
     const detail = await fixture.json(path);
     return { path, start: { action: "implement-spec", idempotency_key: "unrelated-issue", issue_scope: { source_id: source.id, source_revision: source.revision, graph_hash: detail.graph_hash } } };
   }
-  return { ...fixture, prepare, integrate, review, second, setHeadUnavailable() { headUnavailable = true; }, setHead(value: string) { head = value; }, setWorkspaceHash(value: string) { workspaceHash = value; }, setCoordinator(value: typeof coordinator) { coordinator = value; }, setCheck(value: typeof checkCondition) { checkCondition = value; }, setCheckCommands(value: string[][] | null) { checkCommands = value; }, setReview(value: typeof reviewOutcome) { reviewOutcome = value; }, setUncertainStop(value: boolean) { uncertainStop = value; }, setStopCondition(value: typeof stopCondition) { stopCondition = value; }, setStopHead(value: string) { stopHead = value; }, setNativeIdentity() { nativeIdentity = true; } };
+  return { ...fixture, prepare, integrate, review, second, setCleanupOutcome(value: typeof cleanupOutcome) { cleanupOutcome = value; }, setHeadUnavailable(value = true) { headUnavailable = value; }, setHead(value: string) { head = value; }, setWorkspaceHash(value: string) { workspaceHash = value; }, setCoordinator(value: typeof coordinator) { coordinator = value; }, setCheck(value: typeof checkCondition) { checkCondition = value; }, setCheckCommands(value: string[][] | null) { checkCommands = value; }, setReview(value: typeof reviewOutcome) { reviewOutcome = value; }, setUncertainStop(value: boolean) { uncertainStop = value; }, setStopCondition(value: typeof stopCondition) { stopCondition = value; }, setStopHead(value: string) { stopHead = value; }, setNativeIdentity() { nativeIdentity = true; } };
 }

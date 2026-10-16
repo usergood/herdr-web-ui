@@ -23,6 +23,7 @@ export function githubQueueFixture(execution = false) {
   save();
   writeFileSync(cli, `import { existsSync, readFileSync, writeFileSync } from "node:fs";
 const data = JSON.parse(readFileSync(${JSON.stringify(responses)}, "utf8")); const endpoint = process.argv[3];
+if (Object.hasOwn(data.apiResponses ?? {}, endpoint)) { console.log(JSON.stringify(data.apiResponses[endpoint])); process.exit(0); }
 const gate = existsSync(${JSON.stringify(syncGate)}) ? readFileSync(${JSON.stringify(syncGate)}, "utf8") : null;
 if (gate && (gate.startsWith("=") ? endpoint === gate.slice(1) : endpoint.includes(gate))) {
   writeFileSync(${JSON.stringify(syncEntered)}, "entered"); const deadline = Date.now() + 8000;
@@ -128,6 +129,10 @@ console.log(JSON.stringify(endpoint === "user" ? {login:"fictional-owner",id:104
     writeFileSync(responses, JSON.stringify(data));
   }
   function restart(beforeStart?: () => void) { app.stop(); beforeStart?.(); app = createServer({ port: 0, stateDir: root, machines: false, token: "fixture-owner", factory: options }); origin = `http://localhost:${app.port}`; }
+  function setApiResponses(apiResponses: Record<string, unknown>) {
+    const data = JSON.parse(readFileSync(responses, "utf8"));
+    writeFileSync(responses, JSON.stringify({ ...data, apiResponses }));
+  }
   function holdCapabilities() {
     let entered!: () => void; let release!: () => void;
     const waiting = new Promise<void>(resolve => entered = resolve);
@@ -152,5 +157,5 @@ console.log(JSON.stringify(endpoint === "user" ? {login:"fictional-owner",id:104
     const response = await fetch(origin + `/api/factory-agent/${runId}/contract`, { headers: { authorization: `Bearer ${access.token}` } });
     if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<any>;
   };
-  return { setExecutionHandler(handler: typeof executionHandler) { executionHandler = handler; }, tracker, failNativeRun: (id: string) => { const run = nativeRuns.get(id); if (!run) throw new Error("Unknown fictional Run"); nativeRuns.set(id, { ...run, condition: "failed", waiting_reason: "Fictional native failure" }); }, setHostOffline: (offline: boolean) => { hostOffline = offline; }, holdLaunch, setLaunchOutcome: (outcome: typeof launchOutcome) => { launchOutcome = outcome; }, launches, root, issue, save, renewLabels, post, get, json, setup, restart, headers, holdCapabilities, holdSync, get origin() { return origin; }, close() { app.stop(); host?.stop(true); rmSync(root, { recursive: true, force: true }); } };
+  return { setApiResponses, setExecutionHandler(handler: typeof executionHandler) { executionHandler = handler; }, tracker, failNativeRun: (id: string) => { const run = nativeRuns.get(id); if (!run) throw new Error("Unknown fictional Run"); nativeRuns.set(id, { ...run, condition: "failed", waiting_reason: "Fictional native failure" }); }, setHostOffline: (offline: boolean) => { hostOffline = offline; }, holdLaunch, setLaunchOutcome: (outcome: typeof launchOutcome) => { launchOutcome = outcome; }, launches, root, issue, save, renewLabels, post, get, json, setup, restart, headers, holdCapabilities, holdSync, get origin() { return origin; }, close() { app.stop(); host?.stop(true); rmSync(root, { recursive: true, force: true }); } };
 }
