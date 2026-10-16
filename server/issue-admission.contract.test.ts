@@ -4,8 +4,9 @@ import { join } from "node:path";
 import { githubQueueFixture } from "../scripts/fixtures/github-queue.ts";
 import { githubReviewFixture } from "../scripts/fixtures/github-review.ts";
 
-async function prepared(fixture: ReturnType<typeof githubQueueFixture>, githubLabel = false) {
+async function prepared(fixture: ReturnType<typeof githubQueueFixture>, githubLabel = false, labels?: { triage_labels: Record<string, string>; blocked_label: string }) {
   const setup = await fixture.setup();
+  if (labels) setup.readiness = await fixture.json(setup.route + "/readiness", { expected_revision: setup.readiness.revision, account_profile_id: setup.account.id, ...labels });
   let view = await fixture.json(setup.route + "/sync", {});
   let source = view.sources[0];
   if (githubLabel) {
@@ -839,6 +840,108 @@ test("readiness removal detected during collection pauses frozen work despite in
     expect(detail.runs[0].manifest).toEqual(run.manifest);
     await fixture.json(route + "/sync", {});
     expect((await fixture.json(path)).questions).toHaveLength(detail.questions.length);
+  } finally { fixture.close(); }
+}, 20_000);
+
+test("an unrelated label added at the readiness fence leaves frozen execution and ownership unchanged", async () => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { path, start, route } = await prepared(fixture);
+    const run = await fixture.json(path + "/runs", start);
+    const worker = await fixture.json(`/runs/${run.id}/workers`, { role: "implementer", ticket_id: run.manifest.tickets[0].id, idempotency_key: "owned-label-fence-worker" });
+    const fresh = { ...fixture.issue, labels: [...fixture.issue.labels, { name: "documentation" }], updated_at: "2026-10-02T12:00:00Z" };
+    fixture.save([fixture.issue], false, {}, false, [fresh]);
+    await fixture.json(route + "/sync", {});
+    const detail = await fixture.json(path);
+    expect(detail.github_sources[0].readiness_evidence.complete).toBe(false);
+    expect(detail.github_sources[0].readiness.blockers).toContain("evidence_incomplete");
+    expect(detail.runs[0]).toEqual(run);
+    expect(detail.workers).toEqual([worker]);
+    expect(detail.questions).toEqual([]);
+    fixture.issue.labels = fresh.labels; fixture.issue.updated_at = fresh.updated_at; fixture.save();
+    await fixture.json(route + "/sync", {});
+    fixture.restart();
+    const recovered = await fixture.json(path);
+    expect(recovered.github_sources[0].readiness_evidence.complete).toBe(true);
+    expect(recovered.github_sources[0].readiness.eligible).toBe(false);
+    expect(recovered.runs[0]).toEqual(run);
+    expect(recovered.workers).toEqual([worker]);
+    expect(recovered.questions).toEqual([]);
+  } finally { fixture.close(); }
+}, 20_000);
+
+const customReadinessLabels = { triage_labels: { "needs-triage": "Triage", "needs-info": "Question", "ready-for-agent": "Go", "ready-for-human": "Human", "wontfix": "Declined" }, blocked_label: "Hold" };
+
+test.each(["body edit", "rename"])("a proven later %s still pauses restored scope after unrelated metadata observations", async change => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { path, start, route } = await prepared(fixture);
+    const run = await fixture.json(path + "/runs", start);
+    fixture.issue.labels.push({ name: "documentation" }); fixture.save();
+    await fixture.json(route + "/sync", {});
+    expect((await fixture.json(path)).runs[0]).toEqual(run);
+    const at = new Date(Date.now() + 2000).toISOString();
+    fixture.issue.updated_at = at;
+    fixture.save([fixture.issue], false, {}, false, [fixture.issue], {
+      events: change === "rename" ? [{ id: 200, event: "renamed", created_at: at }] : [],
+      proof: { id: fixture.issue.node_id, title: fixture.issue.title, body: fixture.issue.body, state: "OPEN", createdAt: "2026-09-30T12:00:00Z", updatedAt: at, lastEditedAt: change === "body edit" ? at : null },
+    });
+    await fixture.json(route + "/sync", {});
+    const detail = await fixture.json(path);
+    expect(detail.github_sources[0].readiness_evidence.complete).toBe(true);
+    expect(detail.runs[0]).toMatchObject({ id: run.id, condition: "needs_you", issue_pause: { reason: "scope_changed" } });
+    expect(detail.runs[0].manifest).toEqual(run.manifest);
+  } finally { fixture.close(); }
+}, 20_000);
+
+test.each(["addition", "removal", "reorder", "case"])("custom readiness labels tolerate irrelevant %s at the REST fence and later complete observations", async change => {
+  const fixture = githubQueueFixture(true);
+  try {
+    fixture.issue.labels = [{ name: "Go" }, { name: "documentation" }, { name: "backend" }]; fixture.save();
+    const { path, start, route } = await prepared(fixture, false, customReadinessLabels);
+    const run = await fixture.json(path + "/runs", start);
+    const worker = await fixture.json(`/runs/${run.id}/workers`, { role: "implementer", ticket_id: run.manifest.tickets[0].id, idempotency_key: "owned-custom-label-worker" });
+    const labels = change === "addition" ? [...fixture.issue.labels, { name: "blocked" }, { name: "needs-info" }]
+      : change === "removal" ? fixture.issue.labels.filter(label => label.name !== "documentation")
+      : change === "reorder" ? fixture.issue.labels.slice().reverse()
+      : fixture.issue.labels.map(label => ({ name: label.name.toUpperCase() }));
+    const fresh = { ...fixture.issue, labels };
+    fixture.save([fixture.issue], false, {}, false, [fresh]);
+    await fixture.json(route + "/sync", {});
+    const detail = await fixture.json(path);
+    expect(detail.github_sources[0].readiness_evidence.complete).toBe(change === "reorder");
+    expect(detail.runs[0]).toEqual(run);
+    expect(detail.workers).toEqual([worker]); expect(detail.questions).toEqual([]);
+    fixture.issue.labels = labels; fixture.save();
+    await fixture.json(route + "/sync", {}); fixture.restart();
+    const recovered = await fixture.json(path);
+    expect(recovered.github_sources[0].readiness_evidence.complete).toBe(true);
+    expect(recovered.github_sources[0].readiness.eligible).toBe(change === "reorder");
+    expect(recovered.runs[0]).toEqual(run);
+    expect(recovered.workers).toEqual([worker]); expect(recovered.questions).toEqual([]);
+  } finally { fixture.close(); }
+}, 20_000);
+
+test.each(["ready removal", "hold", "triage", "question", "human", "declined", "nonready"])("custom %s with an unrelated label still requests a durable controlled pause at the fence", async change => {
+  const fixture = githubQueueFixture(true);
+  try {
+    fixture.issue.labels = [{ name: "Go" }]; fixture.save();
+    const { path, start, route } = await prepared(fixture, false, customReadinessLabels);
+    const run = await fixture.json(path + "/runs", start);
+    const labels = [{ name: "documentation" }, ...(change === "ready removal" || change === "nonready" ? [] : [{ name: "GO" }]), ...(change === "ready removal" ? [] : [{ name: change === "nonready" ? "QUESTION" : change.toUpperCase() }])];
+    fixture.save([fixture.issue], false, {}, false, [{ ...fixture.issue, labels }]);
+    await fixture.json(route + "/sync", {});
+    const detail = await fixture.json(path);
+    expect(detail.github_sources[0].readiness_evidence.complete).toBe(false);
+    expect(detail.runs[0]).toMatchObject({ id: run.id, condition: "needs_you", issue_pause: { reason: "readiness_revoked" } });
+    expect(detail.runs[0].manifest).toEqual(run.manifest);
+    const questions = detail.questions.filter((question: any) => question.run_id === run.id && question.answer === null);
+    expect(questions).toHaveLength(1);
+    // Complete unchanged scope cannot automatically clear a real revocation.
+    fixture.save(); await fixture.json(route + "/sync", {}); fixture.restart();
+    const recovered = await fixture.json(path);
+    expect(recovered.runs[0]).toEqual({ ...detail.runs[0], updated_at: expect.any(String) });
+    expect(recovered.questions.filter((question: any) => question.run_id === run.id && question.answer === null)).toEqual(questions);
   } finally { fixture.close(); }
 }, 20_000);
 

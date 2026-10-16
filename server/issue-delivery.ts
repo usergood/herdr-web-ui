@@ -3,6 +3,7 @@ import { FactoryError, hash } from "./factory-host.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { isJsonObject } from "./http.ts";
 import { dependencyPlan } from "./issue-dependencies.ts";
+import type { Implementation } from "../shared/factory.ts";
 
 const sha = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
 const ref = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 200 && !/[\s~^:?*\[\\\x00-\x1f]/.test(value) && !value.includes("..") && !value.includes("@{") && !value.startsWith("/") && !value.endsWith("/") && !value.endsWith(".") && !value.split("/").some(part => !part || part.startsWith(".") || part.endsWith(".lock"));
@@ -25,12 +26,26 @@ export function coverageRevision(store: FactoryStore, projectId: string): string
   return hash(JSON.stringify(store.list<ProjectGitHubSource>("github_sources", projectId).filter(source => source.kind === "issue").map(source => [source.id, source.revision, dependencyPlan(store, source).revision, store.get<IssueDeliveryLink>("github_delivery_links", source.id)?.revision ?? null, source.readiness_evidence?.complete ?? null, source.readiness_evidence?.source_revision ?? null])));
 }
 
+/** Retain superseded proof as history, never as current Assignment completion. */
+export function invalidateIssueDelivery(store: FactoryStore, source: ProjectGitHubSource, reason: "scope_changed" | "coverage_changed" = "scope_changed"): void {
+  store.db.transaction(() => {
+    const idea = store.get<Implementation>("implementations", source.implementation_id);
+    if (idea?.delivery_evidence?.source_id !== source.id) return;
+    const { delivery_evidence: evidence, ...retained } = idea;
+    store.event(idea.id, "issue_delivery_invalidated", { source_id: source.id, evidence });
+    store.put("implementations", { ...retained, ...(reason === "coverage_changed"
+      ? { stage: "review", activity: "awaiting_merge", outcome: "implementation_complete" }
+      : { stage: "inbox", activity: undefined, outcome: "none" }) });
+  })();
+}
+
 export function linkIssueDelivery(store: FactoryStore, source: ProjectGitHubSource, body: Record<string, unknown>): void {
   const prior = store.get<IssueDeliveryLink>("github_delivery_links", source.id);
   if (body.source_revision !== source.revision || body.expected_revision !== (prior?.revision ?? null)) throw new FactoryError("delivery_changed", "Refresh the issue and its intended coverage before linking delivery", 409);
   if (Object.keys(body).some(key => !["source_revision", "expected_revision", "target_branch", "intended_prs", "release_tag"].includes(key)) || !ref(body.target_branch) || body.release_tag !== null && !ref(body.release_tag) || !Array.isArray(body.intended_prs) || body.intended_prs.length > 50 || body.intended_prs.some(pull => !isJsonObject(pull) || !Number.isSafeInteger(pull.number) || (pull.number as number) < 1 || !sha(pull.head) || Object.keys(pull).some(key => !["number", "head"].includes(key))) || new Set(body.intended_prs.map(pull => pull.number)).size !== body.intended_prs.length) throw new FactoryError("invalid_delivery_link", "Select a target branch and the complete intended PR numbers and exact heads; a release tag is optional");
   const link: IssueDeliveryLink = { ...store.record(), source_id: source.id, source_revision: source.revision, revision: store.record().id, target_branch: body.target_branch, intended_prs: body.intended_prs as IssueDeliveryLink["intended_prs"], release_tag: body.release_tag as string | null };
   store.db.transaction(() => {
+    invalidateIssueDelivery(store, source, "coverage_changed");
     store.put("github_sources", { ...source, delivery_requires: source.delivery_requires === "release" || body.release_tag ? "release" : "merge" }, source.project_id);
     store.put("github_delivery_links", { ...link, id: source.id }, source.project_id);
     store.put("github_delivery_link_versions", link, source.implementation_id);

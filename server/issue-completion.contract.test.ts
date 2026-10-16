@@ -156,6 +156,31 @@ test("ordinary Work on a PR fix source preserves manual completion and archiving
   } finally { fixture.close(); }
 }, 20_000);
 
+test("replacement delivery coverage returns completed ordinary issue Work to Awaiting merge without changing its Run", async () => {
+  const fixture = githubReviewFixture();
+  try {
+    const { route } = await fixture.setup();
+    const source = (await fixture.json(route + "/sync", {})).sources[0];
+    const path = `/implementations/${source.implementation_id}`;
+    fixture.setNativeIdentity();
+    const run = await fixture.json(path + "/runs", { action: "work", idempotency_key: "owned-replaced-delivery" });
+    await fixture.json(path + "/complete-work", { run_id: run.id });
+    await fixture.json(route + "/issues/1/delivery", { source_revision: source.revision, expected_revision: null, target_branch: "main", intended_prs: [{ number: 27, head: "a".repeat(40) }], release_tag: null });
+    fixture.setApiResponses(githubDeliveryResponses());
+    const delivered = await fixture.json(route + "/sync", {});
+    const completed = await fixture.json(path);
+    expect(completed.implementation.stage).toBe("done");
+    const link = delivered.sources[0].delivery;
+    await fixture.json(route + "/issues/1/delivery", { source_revision: source.revision, expected_revision: link.revision, target_branch: "main", intended_prs: [], release_tag: null });
+    fixture.restart();
+    const replaced = await fixture.json(path);
+    expect(replaced.implementation).toMatchObject({ stage: "review", activity: "awaiting_merge", outcome: "implementation_complete" });
+    expect(replaced.implementation.delivery_evidence).toBeUndefined();
+    expect(replaced.runs).toEqual(completed.runs);
+    expect((await fixture.post(path + "/archive", {})).status).toBe(409);
+  } finally { fixture.close(); }
+}, 20_000);
+
 test("accepting a checked and independently reviewed issue implementation awaits merge without establishing Done", async () => {
   const fixture = githubReviewFixture();
   try {

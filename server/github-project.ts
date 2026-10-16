@@ -4,7 +4,7 @@ import { implementingAssignments } from "./factory-capacity.ts";
 import { FactoryWorkflow } from "./factory-workflow.ts";
 import { effectiveIssueTestingSeams, prepareIssuePlan, reconcileIssuePlan } from "./issue-planning.ts";
 import { combinedDependencies, dependencyPlan } from "./issue-dependencies.ts";
-import { coverageRevision, linkIssueDelivery, verifyIssueDelivery } from "./issue-delivery.ts";
+import { coverageRevision, invalidateIssueDelivery, linkIssueDelivery, verifyIssueDelivery } from "./issue-delivery.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -127,7 +127,10 @@ export class ProjectGitHub {
       const before = frozen.source.current!; const current = source.current;
       const reason: import("../shared/issue-admission.ts").IssuePause["reason"] | null = detectedChange?.sourceId === source.id && (!detectedChange.runId || detectedChange.runId === run.id) ? detectedChange.reason : current.state === "closed" ? "issue_closed"
         : current.title !== before.title || current.body !== before.body || JSON.stringify(current.native_dependencies) !== JSON.stringify(before.native_dependencies) || workflow.specification(run.implementation_id)?.id !== run.specification_id || workflow.graphHash(run.implementation_id) !== run.graph_hash || effectiveIssueTestingSeams(this.store, source, workflow.specification(run.implementation_id)) !== frozen.planning.testing_seams ? "scope_changed"
-        : policy?.revision !== frozen.readiness_policy.revision || policy.project_scope !== this.projectScope(id) || readiness.blockers.some(blocker => ["closed", "blocked", "triage_conflict", "role_not_ready", "mapping_conflict"].includes(blocker)) || source.readiness_evidence?.complete && !readiness.approval ? "readiness_revoked" : null;
+        // An approval missing for a newer metadata revision is not positive
+        // revocation of frozen work. Label-history revocations are observed
+        // separately; new admission still requires current complete approval.
+        : policy?.revision !== frozen.readiness_policy.revision || policy.project_scope !== this.projectScope(id) || readiness.blockers.some(blocker => ["closed", "blocked", "triage_conflict", "role_not_ready", "mapping_conflict"].includes(blocker)) ? "readiness_revoked" : null;
       if (!reason) continue;
       const pause = { source_id: source.id, source_revision: source.revision, reason, requested_at: new Date().toISOString() };
       const question = "Controlled pause requested: " + reason + ". Preserve produced work and reconcile active or unreachable workers. Review the changed issue scope and readiness before authorizing another attempt. Answering does not resume this Run.";
@@ -373,23 +376,13 @@ export class ProjectGitHub {
     const value = await this.accounts.github(scope, ["api", path, "-H", "X-GitHub-Api-Version: 2026-03-10", ...extra], () => this.current(policy));
     this.current(policy); this.accounts.assertPublic(JSON.stringify(value)); return value;
   }
-  /** Keep the superseded proof in history, without presenting current completion. */
-  private invalidateDelivery(source: ProjectGitHubSource): void {
-    this.store.db.transaction(() => {
-      const idea = this.store.get<Implementation>("implementations", source.implementation_id);
-      if (idea?.delivery_evidence?.source_id !== source.id) return;
-      const { delivery_evidence: evidence, ...retained } = idea;
-      this.store.event(idea.id, "issue_delivery_invalidated", { source_id: source.id, evidence });
-      this.store.put("implementations", { ...retained, stage: "inbox", activity: undefined, outcome: "none" });
-    })();
-  }
   /** A validated row can prove drift even when the remaining inventory is unavailable. */
   private observeIssue(policy: ProjectGitHubPolicy, issue: Issue): void {
     const source = this.store.list<ProjectGitHubSource>("github_sources", policy.id).find(source => source.kind === "issue" && source.external_id === issue.node_id && source.number === issue.number);
     if (!source?.current) return;
     if (issue.state !== source.current.state || issue.title !== source.current.title || (issue.body ?? "") !== source.current.body) {
       this.current(policy);
-      this.invalidateDelivery(source);
+      invalidateIssueDelivery(this.store, source);
     }
     const readiness = issueReadiness(this.store.get<ProjectReadinessPolicy>("github_readiness_policies", policy.id), { ...source, current: { ...source.current, labels: issue.labels.map(label => label.name) } });
     const reason = issue.state === "closed" ? "issue_closed"
@@ -467,24 +460,9 @@ export class ProjectGitHub {
       // Fence changes while history is fetched. A label event cannot attest a later issue edit.
       const fresh = await this.api(policy, scope, `repos/${policy.repository}/issues/${source.number}`) as Issue;
       const validFresh = fresh?.node_id === source.external_id && fresh.number === source.number && typeof fresh.title === "string" && (fresh.body === null || typeof fresh.body === "string") && ["open", "closed"].includes(fresh.state) && typeof fresh.updated_at === "string" && Number.isFinite(Date.parse(fresh.updated_at)) && Array.isArray(fresh.labels) && fresh.labels.every(label => label && typeof label.name === "string");
-      if (validFresh && (fresh.state !== source.current.state || fresh.title !== source.current.title || (fresh.body ?? "") !== source.current.body)) {
-        this.current(policy);
-        this.invalidateDelivery(source);
-      }
       // Positive drift survives an incomplete evidence result; it must pause frozen
       // work now without replacing the admitted manifest or trusting another sync.
-      if (validFresh && fresh.state === "closed") {
-        this.current(policy);
-        this.reconcileAdmissions(policy.id, { sourceId: source.id, reason: "issue_closed" });
-      }
-      if (validFresh && (fresh.title !== source.current.title || (fresh.body ?? "") !== source.current.body)) {
-        this.current(policy);
-        this.reconcileAdmissions(policy.id, { sourceId: source.id, reason: "scope_changed" });
-      }
-      if (validFresh && JSON.stringify(fresh.labels.map(label => label.name).sort()) !== JSON.stringify(source.current.labels)) {
-        this.current(policy);
-        this.reconcileAdmissions(policy.id, { sourceId: source.id, reason: "readiness_revoked" });
-      }
+      if (validFresh) this.observeIssue(policy, fresh);
       if (!validFresh || fresh.title !== source.current.title || (fresh.body ?? "") !== source.current.body || fresh.updated_at !== source.current.source_updated_at || fresh.state !== source.current.state || JSON.stringify(fresh.labels.map(label => label.name).sort()) !== JSON.stringify(source.current.labels)) throw new FactoryError("readiness_changed", "The issue changed while collecting readiness; sync again");
       if (source.current.native_dependencies) {
         const native = (await this.dependencies(policy, scope, fresh)).map(({ external_id, repository, number, url }) => ({ external_id, repository, number, url }));
@@ -504,8 +482,21 @@ export class ProjectGitHub {
       const validProof = !result.errors && proof?.id === source.external_id && typeof proof.title === "string" && typeof proof.body === "string" && ["OPEN", "CLOSED"].includes(proof.state) && typeof proof.createdAt === "string" && Number.isFinite(Date.parse(proof.createdAt)) && typeof proof.updatedAt === "string" && Number.isFinite(Date.parse(proof.updatedAt)) && (proof.lastEditedAt === null || typeof proof.lastEditedAt === "string" && Number.isFinite(Date.parse(proof.lastEditedAt)));
       if (validProof && (proof.state.toLowerCase() !== source.current.state || proof.title !== source.current.title || proof.body !== source.current.body)) {
         this.current(policy);
-        this.invalidateDelivery(source);
+        invalidateIssueDelivery(this.store, source);
         this.reconcileAdmissions(policy.id, { sourceId: source.id, reason: proof.state === "CLOSED" ? "issue_closed" : "scope_changed" });
+      }
+      // Edit history can prove a later scope change even after the text was
+      // restored. Observe that positive signal rather than treating missing
+      // approval for a metadata-only revision as revocation.
+      if (validProof) {
+        const changedAt = Math.max(scopeChangedAt, proof.lastEditedAt === null ? -Infinity : Date.parse(proof.lastEditedAt));
+        for (const run of this.store.list<import("../shared/factory.ts").FactoryRun>("runs", source.implementation_id)) {
+          const frozen = (run.manifest as { issue_admission?: import("../shared/issue-admission.ts").IssueAdmission }).issue_admission;
+          if (frozen?.source.id === source.id && changedAt > Date.parse(frozen.planning.authorization.approval.approved_at)) {
+            this.current(policy);
+            this.reconcileAdmissions(policy.id, { sourceId: source.id, runId: run.id, reason: "scope_changed" });
+          }
+        }
       }
       if (!validProof || proof.title !== source.current.title || proof.body !== source.current.body || proof.state.toLowerCase() !== source.current.state || Date.parse(proof.updatedAt) !== Date.parse(source.current.source_updated_at)) throw new FactoryError("readiness_incomplete", "Issue edit evidence is incomplete or changed; sync again");
       const event = evidence.label_event;
@@ -554,7 +545,7 @@ export class ProjectGitHub {
         // An added relationship proves drift on its own; absence needs every page.
         if (source?.current?.native_dependencies && !source.current.native_dependencies.some(edge => edge.external_id === item.node_id && edge.repository === repository && edge.number === item.number && edge.url === item.html_url)) {
           this.current(policy);
-          this.invalidateDelivery(source);
+          invalidateIssueDelivery(this.store, source);
           this.reconcileAdmissions(policy.id, { sourceId: source.id, reason: "scope_changed" });
         }
       }
@@ -563,7 +554,7 @@ export class ProjectGitHub {
         const native = all.map(({ external_id, repository, number, url }) => ({ external_id, repository, number, url }));
         if (source?.current?.native_dependencies && JSON.stringify(native) !== JSON.stringify(source.current.native_dependencies)) {
           this.current(policy);
-          this.invalidateDelivery(source);
+          invalidateIssueDelivery(this.store, source);
           this.reconcileAdmissions(policy.id, { sourceId: source.id, reason: "scope_changed" });
         }
         return all;

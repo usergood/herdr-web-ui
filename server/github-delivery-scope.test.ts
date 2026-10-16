@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test";
 import { githubQueueFixture } from "../scripts/fixtures/github-queue.ts";
+import { githubDeliveryResponses } from "../scripts/fixtures/github-delivery.ts";
 
 async function deliveryFixture({ requires = "merge", closed = false, readyLabel = false }: { requires?: "merge" | "release"; closed?: boolean; readyLabel?: boolean } = {}) {
   const fixture = githubQueueFixture(true);
   try {
     const { route, configuration } = await fixture.setup();
     const prerequisite = { ...fixture.issue, number: 2, node_id: "fictional-prerequisite", title: "Prerequisite", labels: readyLabel ? [{ name: "ready-for-agent" }] : [] as { name: string }[], state: closed ? "closed" : "open", html_url: "https://github.com/fictional/project/issues/2" };
+    if (requires === "release") fixture.issue.body = fixture.issue.body.replace("## Dependencies\nNone.", '## Dependencies\n[{"repository":"fictional/project","number":2,"requires":"release"}]');
     const issues = [fixture.issue, prerequisite];
     const dependencies = { 1: [prerequisite] };
     const pull = { number: 27, html_url: "https://github.com/fictional/project/pull/27", merged: false, merged_at: "2026-10-03T12:00:00Z", merge_commit_sha: "c".repeat(40), head: { sha: "a".repeat(40) }, base: { ref: "main", repo: { full_name: "fictional/project" } } };
@@ -48,6 +50,110 @@ test("a prerequisite body changed at the readiness fence cannot complete or auto
     expect(detail.implementation.outcome).toBe("none");
     expect((await f.fixture.json(f.route + "/queue")).entries.find((entry: any) => entry.number === 1)).toMatchObject({ eligible: false, reasons: [{ code: "dependency_delivery_unverified", detail: "fictional/project #2" }] });
     expect(f.fixture.launches).toEqual([]);
+  } finally { f.fixture.close(); }
+});
+
+test("replacement coverage retires old completion until its current PRs and containing release are verified", async () => {
+  const f = await deliveryFixture();
+  try {
+    f.pull.merged = true; f.coverageResponses();
+    await f.fixture.json(f.route + "/sync", {});
+    const path = `/implementations/${f.target.implementation_id}`;
+    const completed = (await f.fixture.json(path)).implementation;
+    expect(completed).toMatchObject({ stage: "done", outcome: "merged" });
+    expect((await f.fixture.json(f.route + "/queue")).entries.find((entry: any) => entry.number === 1).eligible).toBe(true);
+    const prior = (await f.fixture.json(f.route)).sources.find((source: any) => source.number === 2).delivery;
+    const view = await f.fixture.json(f.route + "/issues/2/delivery", { ...f.coverage, expected_revision: prior.revision, intended_prs: [...f.coverage.intended_prs, { number: 28, head: "b".repeat(40) }], release_tag: "v1" });
+    const replacement = view.sources.find((source: any) => source.number === 2).delivery;
+    expect(replacement.revision).not.toBe(prior.revision);
+    const retired = await f.fixture.json(path);
+    expect(retired.implementation.stage).not.toBe("done");
+    expect(retired.implementation.delivery_evidence).toBeUndefined();
+    expect(retired.events).toContainEqual(expect.objectContaining({ kind: "issue_delivery_invalidated", data: { source_id: f.target.id, evidence: completed.delivery_evidence } }));
+    expect(view.sources.find((source: any) => source.number === 2).delivery_history).toContainEqual(expect.objectContaining({ revision: prior.revision }));
+    expect(view.sources.find((source: any) => source.number === 1).dependencies.satisfied).toBe(false);
+    const responses = {
+      "repos/fictional/project/pulls/28": { ...f.pull, number: 28, html_url: "https://github.com/fictional/project/pull/28", head: { sha: "b".repeat(40) }, merged: false },
+    };
+    f.fixture.setApiResponses({ ...githubDeliveryResponses(), ...responses });
+    await f.fixture.json(f.route + "/sync", {});
+    expect((await f.fixture.json(path)).implementation.stage).not.toBe("done");
+    f.fixture.restart();
+    f.fixture.save(f.issues, true, f.dependencies); f.coverageResponses();
+    expect((await f.fixture.post(f.route + "/sync", {})).status).toBe(409);
+    expect((await f.fixture.json(path)).implementation.delivery_evidence).toBeUndefined();
+    expect((await f.fixture.json(f.route + "/queue")).entries.find((entry: any) => entry.number === 1).eligible).toBe(false);
+    f.fixture.save(f.issues, false, f.dependencies); f.coverageResponses();
+    responses["repos/fictional/project/pulls/28"].merged = true;
+    f.fixture.setApiResponses({ ...githubDeliveryResponses(), ...responses, "repos/fictional/project/releases/tags/v1": null });
+    await f.fixture.json(f.route + "/sync", {});
+    expect((await f.fixture.json(path)).implementation.stage).not.toBe("done");
+    f.fixture.setApiResponses({ ...githubDeliveryResponses(), ...responses });
+    await f.fixture.json(f.route + "/sync", {});
+    expect((await f.fixture.json(path)).implementation).toMatchObject({ stage: "done", outcome: "released", delivery_evidence: { coverage_revision: replacement.revision, requires: "release", merges: [{ number: 27 }, { number: 28 }], release: { tag: "v1" } } });
+    expect((await f.fixture.json(f.route + "/queue")).entries.find((entry: any) => entry.number === 1).eligible).toBe(true);
+  } finally { f.fixture.close(); }
+});
+
+test.each(["head", "branch", "release", "empty", "same coverage"] as const)("successful %s replacement cannot retain proof for its prior coverage revision", async change => {
+  const f = await deliveryFixture({ requires: "release" });
+  try {
+    f.pull.merged = true; f.coverageResponses();
+    await f.fixture.json(f.route + "/sync", {});
+    const path = `/implementations/${f.target.implementation_id}`;
+    const completed = (await f.fixture.json(path)).implementation;
+    expect(completed).toMatchObject({ stage: "done", outcome: "released" });
+    const prior = (await f.fixture.json(f.route)).sources.find((source: any) => source.number === 2).delivery;
+    const view = await f.fixture.json(f.route + "/issues/2/delivery", {
+      ...f.coverage, expected_revision: prior.revision,
+      ...(change === "head" ? { intended_prs: [{ number: 27, head: "b".repeat(40) }] } : {}),
+      ...(change === "branch" ? { target_branch: "other" } : {}),
+      ...(change === "release" ? { release_tag: null } : {}),
+      ...(change === "empty" ? { intended_prs: [] } : {}),
+    });
+    const target = view.sources.find((source: any) => source.number === 2);
+    expect(target.delivery.revision).not.toBe(prior.revision);
+    expect(target.delivery_requires).toBe("release");
+    const retired = await f.fixture.json(path);
+    expect(retired.implementation).toMatchObject({ stage: "review", activity: "awaiting_merge", outcome: "implementation_complete" });
+    expect(retired.implementation.delivery_evidence).toBeUndefined();
+    expect(retired.events).toContainEqual(expect.objectContaining({ kind: "issue_delivery_invalidated", data: { source_id: f.target.id, evidence: completed.delivery_evidence } }));
+    expect(view.sources.find((source: any) => source.number === 1).dependencies.satisfied).toBe(false);
+    await f.fixture.json(f.route + "/sync", {});
+    f.fixture.restart();
+    const current = (await f.fixture.json(path)).implementation;
+    if (change === "same coverage") {
+      expect(current).toMatchObject({ stage: "done", outcome: "released", delivery_evidence: { coverage_revision: target.delivery.revision } });
+      expect((await f.fixture.json(f.route + "/queue")).entries.find((entry: any) => entry.number === 1).eligible).toBe(true);
+    } else {
+      expect(current).toMatchObject({ stage: "review", activity: "awaiting_merge", outcome: "implementation_complete" });
+      expect(current.delivery_evidence).toBeUndefined();
+      expect((await f.fixture.json(f.route + "/queue")).entries.find((entry: any) => entry.number === 1).eligible).toBe(false);
+    }
+  } finally { f.fixture.close(); }
+});
+
+test("rejected coverage writes preserve verified current completion and dependent delivery", async () => {
+  const f = await deliveryFixture();
+  try {
+    f.pull.merged = true; f.coverageResponses();
+    await f.fixture.json(f.route + "/sync", {});
+    const path = `/implementations/${f.target.implementation_id}`;
+    const completed = await f.fixture.json(path);
+    const prior = (await f.fixture.json(f.route)).sources.find((source: any) => source.number === 2).delivery;
+    for (const [change, status] of [
+      [{ expected_revision: null }, 409], [{ source_revision: "stale" }, 409],
+      [{ intended_prs: [{ number: 27, head: "invalid" }] }, 400],
+      [{ target_branch: "bad..branch" }, 400], [{ release_tag: "bad tag" }, 400],
+    ] as const) {
+      expect((await f.fixture.post(f.route + "/issues/2/delivery", { ...f.coverage, expected_revision: prior.revision, ...change })).status).toBe(status);
+      const detail = await f.fixture.json(path);
+      expect(detail.implementation).toEqual(completed.implementation);
+      expect(detail.events).toEqual(completed.events);
+      const view = await f.fixture.json(f.route);
+      expect(view.sources.find((source: any) => source.number === 2).delivery).toEqual(prior);
+      expect(view.sources.find((source: any) => source.number === 1).dependencies.satisfied).toBe(true);
+    }
   } finally { f.fixture.close(); }
 });
 
