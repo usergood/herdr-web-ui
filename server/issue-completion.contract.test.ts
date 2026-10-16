@@ -197,6 +197,7 @@ test("accepting a checked and independently reviewed issue implementation awaits
     await fixture.integrate(run);
     const check = await fixture.json(`/runs/${run.id}/checks`, {});
     await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    await observeReviewedRest(fixture, run, check.head);
     expect((await fixture.post(`/runs/${run.id}/accept`, { head: check.head })).status).toBe(200);
     const detail = await fixture.json(path);
     expect(detail.implementation).toMatchObject({ stage: "review", outcome: "implementation_complete" });
@@ -543,6 +544,7 @@ test("verified owner cleanup preserves exact completion and released capacity ac
     const second = await fixture.second(route, readiness);
     await fixture.integrate(run); const check = await fixture.json(`/runs/${run.id}/checks`, {});
     await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    await observeReviewedRest(fixture, run, check.head);
     await fixture.json(`/runs/${run.id}/accept`, { head: check.head });
     const completion = (await fixture.json(path)).runs[0].implementation_completion;
     expect(await fixture.json(`/runs/${run.id}/cleanup`, {})).toMatchObject({ removed: [run.worktree], branches_retained: true, notes_retained: true });
@@ -632,6 +634,7 @@ test("accepting an earlier Run at the same head does not authorize cleanup of it
     const { run, path } = await prepareManual(fixture);
     await fixture.integrate(run); const check = await fixture.json(`/runs/${run.id}/checks`, {});
     await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    await observeReviewedRest(fixture, run, check.head);
     await fixture.json(`/runs/${run.id}/accept`, { head: check.head });
     const successor = await fixture.json(path + "/runs", { action: "implement-spec", idempotency_key: "unaccepted-successor" });
     await fixture.integrate(successor); await fixture.json(`/runs/${successor.id}/checks`, {});
@@ -672,6 +675,7 @@ test.each(["before", "after"])("a workspace changed %s cleanup cannot establish 
     const { run, path, route } = await fixture.prepare();
     await fixture.integrate(run); const check = await fixture.json(`/runs/${run.id}/checks`, {});
     await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    await observeReviewedRest(fixture, run, check.head);
     await fixture.json(`/runs/${run.id}/accept`, { head: check.head });
     if (when === "after") await fixture.json(`/runs/${run.id}/cleanup`, {});
     fixture.setHeadUnavailable(false); fixture.setWorkspaceHash("changed-checkout");
