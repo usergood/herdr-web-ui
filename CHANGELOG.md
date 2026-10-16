@@ -7,28 +7,46 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-16
+
 ### Fixed
 - Approve all saved Human Review comments together, repair and independently validate their exact lineage, then merge without another approval; retain authorization across restart and Pause while blocking unrelated changes and unsafe delivery.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
 - Approve checked Human Review candidates with an explicit, repeat-safe merge control, preserve stale/protected/denied outcomes, and verify merge or containing-release delivery before Done.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
 - Submit Human Review Decline with all saved comments, dispatch fresh repairs and independent validation, and return the updated PR to the same conversation awaiting explicit approval.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
 - Draft line and range comments directly in Human Review on desktop and mobile, retain saved drafts across reloads, and edit/remove drafts while preserving original revision anchors and visible staleness.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
 - Hand off checked PRs to Human Review with captured file navigation, bounded Git diffs and an assistant discussion that uses normal capacity only while executing.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
 - Permanently delete linked GitHub issues with safe pending recovery, and prevent deleted Assignments from returning through stale issue sync or retained PR automation, including app-published PRs with unconfirmed publication replies.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
 - Purge deleted Assignment records and exclusive blobs from app-managed backups and recovery copies while preserving shared Project evidence and unrelated recovery data.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
 - Continue checked factory work through independent Standards/Spec reviews, bounded automatic repairs and repeat-safe PR publication, with retained reports and desktop/mobile progress.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
 - Show named Ticket progress, concurrent workflow activities and blocking reasons across five Assignment board lanes; preserve paused progress and use automatic queue age instead of manual priority.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
 - Add permanent Assignment Delete with owned-resource cleanup, durable pending reasons and automatic Machine reconciliation; linked issues and app-managed recovery copies remain pending until their cleanup is confirmed.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
 - Execute accepted Ticket frontiers automatically with fresh workers, backend integration,
   reserved checks and restart recovery. Show named workers, gates and check results in the Assignment.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
 - Pause and resume whole Assignments, preserving unfinished work and history across restart, with visible pending Machine shutdown and automatic queued continuation.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
 - Start internal Ticket and test planning automatically after Specification approval,
   retaining an inspectable plan without repeated planning approvals.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
 - Let waiting factory conversations release execution capacity after verified native rest
   and resume through the global queue, preserving history, exact answer revisions and
   reservations for uncertain execution. Show waiting and resuming conversations in Inbox.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
 - Accept the presented Specification directly in Specifications with one button or an explicit owner reply. Retain revision and source evidence, reject stale decisions, and keep pending shared-understanding confirmations from blocking later attributable answers.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
 - Queue factory Start and child requests durably at capacity and dispatch eligible work
   oldest-first automatically, with restart recovery and visible bounded Machine retries.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
 
 ## [0.6.0] - 2026-10-16
 
