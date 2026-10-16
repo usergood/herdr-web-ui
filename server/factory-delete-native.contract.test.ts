@@ -122,6 +122,21 @@ describe("permanent Delete of owned native/Machine resources", () => {
       expect((await f.readFile(join(f.repo, ".git", "refs", "heads", run.branch))).status).toBe(404);
     } finally { await f.close(); }
   }, 60_000);
+  it("keeps Delete pending when a cleaned attempt's native label is present again", async () => {
+    const f = await fixture(); let replacement: string | undefined;
+    try {
+      const id = (await f.assignment("Cleaned native identity reappeared")).id;
+      const run = await f.api(`/implementations/${id}/runs`, { action: "work", idempotency_key: "cleaned-native" }).then(r => r.json());
+      expect((await f.api(`/runs/${run.id}/stop`, {})).status).toBe(200);
+      expect((await f.api(`/runs/${run.id}/cleanup`, {})).status).toBe(200);
+      const native = await herdrRpc<WorkspaceCreateResult>("workspace.create", { label: `saurons-eye-run-${run.id}`, cwd: f.repo, focus: false });
+      replacement = native.workspace.workspace_id;
+      expect((await f.api(`/implementations/${id}/delete`, {}).then(r => r.json())).condition).toBe("pending");
+      expect(await f.readFile(join(f.repo, "README.md")).then(r => r.text())).toBe("Protected primary checkout\n");
+      await workspaceClose(replacement); replacement = undefined;
+      expect((await f.api(`/implementations/${id}/delete`, {}).then(r => r.json())).condition).toBe("deleted");
+    } finally { if (replacement) await workspaceClose(replacement).catch(() => {}); await f.close(); }
+  }, 60_000);
   it("removes dirty and ignored work across every attempt while preserving primary and sibling work", async () => {
     const f = await fixture();
     try {

@@ -595,7 +595,8 @@ export class FactoryExecutionHost {
     const pane = snapshot.panes.find((entry) => entry.pane_id === run.pane_id);
     let unchangedWorktree = false;
     try { unchangedWorktree = !!run.worktree && realpathSync(run.worktree) === run.worktree; } catch { /* Changed or unavailable worktrees retain ownership. */ }
-    if (deleting && run.worktree && !existsSync(run.worktree) && this.store.get<{ path: string }>("cleaned_checkouts", id)?.path === run.worktree) unchangedWorktree = true;
+    const cleanedWorktree = () => deleting && !!run.worktree && !existsSync(run.worktree) && this.store.get<{ path: string }>("cleaned_checkouts", id)?.path === run.worktree;
+    if (cleanedWorktree()) unchangedWorktree = true;
     const couldOwnDirectory = (cwd: string | null | undefined): boolean => {
       if (!cwd || !run.worktree) return false;
       const lexical = resolve(cwd);
@@ -605,14 +606,16 @@ export class FactoryExecutionHost {
     };
     // A complete fresh snapshot can prove recorded identities have ended. Missing IDs,
     // a moved pane or another candidate retain ownership instead of guessing a target.
-    const alreadyClosed = unchangedWorktree && !!run.workspace_id && !!run.pane_id && !workspace && !pane
-      && !snapshot.workspaces.some(entry => entry.label === `saurons-eye-run-${id}`)
-      && !snapshot.panes.some(entry => !entry.cwd && !entry.foreground_cwd || couldOwnDirectory(entry.cwd) || couldOwnDirectory(entry.foreground_cwd));
+    const recordedNativeGone = (observed: Awaited<ReturnType<FactoryNative["snapshot"]>>) => !!run.workspace_id && !!run.pane_id
+      && !observed.workspaces.some(entry => entry.workspace_id === run.workspace_id || entry.label === `saurons-eye-run-${id}`)
+      && !observed.panes.some(entry => entry.pane_id === run.pane_id || entry.workspace_id === run.workspace_id || !entry.cwd && !entry.foreground_cwd || couldOwnDirectory(entry.cwd) || couldOwnDirectory(entry.foreground_cwd));
+    const alreadyClosed = unchangedWorktree && recordedNativeGone(snapshot);
     const neverAllocated = deleting && (lease as { native_attempted?: boolean }).native_attempted === false && !run.workspace_id && !run.pane_id && !snapshot.workspaces.some(entry => entry.label === `saurons-eye-run-${id}`);
     if (!alreadyClosed && !neverAllocated && (!workspace || workspace.label !== `saurons-eye-run-${id}` || !pane?.cwd || realpathSync(pane.cwd) !== run.worktree)) throw new FactoryError("native_identity_uncertain", "Verify the recorded native identity before stopping it; ownership is retained", 409);
     if (!childrenAttempted) await this.worktrees.stopWorkers(id);
     if (!alreadyClosed && !neverAllocated) await this.native.closeWorkspace(workspace!.workspace_id);
-    if (!neverAllocated && !factoryWorkspaceGone(await this.native.snapshot(), run, `saurons-eye-run-${id}`)) throw new FactoryError("native_stop_uncertain", "The native Run has not been confirmed stopped; ownership is retained", 409);
+    const observed = await this.native.snapshot();
+    if (!neverAllocated && !factoryWorkspaceGone(observed, run, `saurons-eye-run-${id}`) && !(cleanedWorktree() && recordedNativeGone(observed))) throw new FactoryError("native_stop_uncertain", "The native Run has not been confirmed stopped; ownership is retained", 409);
     await this.worktrees.stopChecks(id);
     await Promise.allSettled([...(this.operations.get(id) ?? [])]);
     if (!deleting) this.assertNotDeleting(id);
