@@ -5,6 +5,19 @@ import { githubReviewFixture } from "../scripts/fixtures/github-review.ts";
 import { githubDeliveryResponses } from "../scripts/fixtures/github-delivery.ts";
 import type { ProjectPullRequest } from "../shared/github-project.ts";
 
+test("review browser origin reaches retained Assignment state after restart", async () => {
+  const fixture = githubReviewFixture();
+  let retired: ReturnType<typeof Bun.serve> | undefined;
+  try {
+    const assignment = await fixture.json("/implementations", { title: "Retained review Assignment", description: "Fictional restart state" });
+    const port = Number(new URL(fixture.origin).port);
+    fixture.restart(() => { retired = Bun.serve({ port, fetch: () => new Response("Retired fixture address", { status: 410 }) }); });
+    const response = await fetch(fixture.origin + `/api/factory/implementations/${assignment.id}`, { headers: fixture.headers, signal: AbortSignal.timeout(5000) });
+    expect(response.status).toBe(200);
+    expect((await response.json()).implementation).toMatchObject({ id: assignment.id, title: "Retained review Assignment" });
+  } finally { retired?.stop(true); fixture.close(); }
+});
+
 async function prepareManual(fixture: ReturnType<typeof githubReviewFixture>) {
   const { project, route } = await fixture.setup();
   const assignment = await fixture.json("/implementations", { title: "Owned manual Assignment", description: "Show a greeting", project_id: project.id });

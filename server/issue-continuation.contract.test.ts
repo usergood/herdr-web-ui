@@ -1,6 +1,19 @@
 import { expect, test } from "bun:test";
 import { issueContinuationFixture } from "../scripts/fixtures/issue-continuation.ts";
 
+test("continuation browser origin reaches retained Assignment state after restart", async () => {
+  const fixture = issueContinuationFixture();
+  let retired: ReturnType<typeof Bun.serve> | undefined;
+  try {
+    const assignment = await fixture.json("/implementations", { title: "Retained continuation Assignment", description: "Fictional restart state" });
+    const port = Number(new URL(fixture.origin).port);
+    fixture.restart(() => { retired = Bun.serve({ port, fetch: () => new Response("Retired fixture address", { status: 410 }) }); });
+    const response = await fetch(fixture.origin + `/api/factory/implementations/${assignment.id}`, { headers: fixture.headers, signal: AbortSignal.timeout(5000) });
+    expect(response.status).toBe(200);
+    expect((await response.json()).implementation).toMatchObject({ id: assignment.id, title: "Retained continuation Assignment" });
+  } finally { retired?.stop(true); fixture.close(); }
+});
+
 test("Continue retires only the exact ready planning step and freezes guarded issue admission with its retained handoff", async () => {
   const fixture = issueContinuationFixture();
   try {
