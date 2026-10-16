@@ -186,3 +186,32 @@ test("historical child waits and finished work retain their board lanes", async 
     }
   } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
 });
+
+
+test("compact failed-check reasons retain command arguments and exit codes without output bodies", async () => {
+  const state = mkdtempSync(join(tmpdir(), "factory-check-summary-"));
+  const f = seedWorkflowConversations(state);
+  const store = new FactoryStore(state);
+  const output = "Owned large check output".repeat(50_000);
+  store.put("checks", { ...store.record(), id: "owned-failed-check", run_id: f.human.id, worker_id: null, head: "owned-head", workspace_hash: "owned-hash", condition: "failed", commands: [{ args: ["bun", "test", "--passed"], exit_code: 0, output }, { args: ["bun", "test", "--owned-fixture"], exit_code: 7, output }] }, f.human.id);
+  store.close();
+  const app = createServer({ port: 0, stateDir: state, token: "owned-check-summary", machines: false, factory: { accountDiscoveryHome: state, native: { version: async () => null } } });
+  const read = async (path: string) => {
+    const response = await fetch(`http://localhost:${app.port}/api/factory${path}`, { headers: { authorization: "Bearer owned-check-summary" } });
+    const text = await response.text(); return { text, body: JSON.parse(text) };
+  };
+  try {
+    for (const path of ["", "?navigation=1"]) {
+      const overview = await read(path);
+      expect(overview.body.progress.find((item: any) => item.implementation_id === f.assignment.id).reasons).toContain("Checks failed: bun test --owned-fixture (exit 7)");
+      expect(overview.text).not.toContain("Owned large check output");
+      expect(overview.text).not.toContain("--passed");
+      expect(Buffer.byteLength(overview.text)).toBeLessThan(25_000);
+    }
+    const current = await read(`/implementations/${f.assignment.id}?view=current`);
+    expect(current.body.checks[0]).not.toHaveProperty("commands");
+    expect(current.text).not.toContain("Owned large check output");
+    const full = await read(`/implementations/${f.assignment.id}`);
+    expect(full.body.checks[0].commands[1].output).toBe(output);
+  } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+});
