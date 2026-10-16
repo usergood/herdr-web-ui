@@ -27,6 +27,22 @@ test("a trusted ready issue automatically implements its accepted plan in an iso
   } finally { f.close(); }
 }, 30_000);
 
+test("unconfigured Projects admit independent ready Assignments through available agent slots", async () => {
+  const f = await readyIssuesFixture();
+  try {
+    const policy = (await f.request(f.route + "/configure", f.policy)).body;
+    f.respond({ issues: [f.issue(1), f.issue(2)] });
+    const sources = (await f.request(f.route + "/sync", {})).body.sources;
+    for (const source of sources) await f.request(f.route + `/issues/${source.number}/approve`, { issue_revision: source.revision, policy_revision: policy.revision, plan: f.plan });
+    await f.tick();
+    for (const source of sources) expect((await f.request(`/implementations/${source.implementation_id}`)).body.runs).toMatchObject([{ action: "implement-spec", condition: "working" }]);
+    expect(f.launches).toHaveLength(2);
+    const queue = (await f.request(`/projects/${f.project.id}/queue`)).body;
+    expect(queue.revision).toBeNull();
+    expect(queue.capacity.agents).toBe(2);
+  } finally { f.close(); }
+}, 30_000);
+
 test.each(["merge", "release", "wrong_branch", "old_checkout"])("a prerequisite awaiting release admits only a dependent with merged changes in its target checkout (%s)", async mode => {
   const f = await readyIssuesFixture();
   try {
@@ -65,9 +81,10 @@ test.each(["merge", "release", "wrong_branch", "old_checkout"])("a prerequisite 
   } finally { f.close(); }
 }, 30_000);
 
-test.each(["verified", "stale_head", "uncertain_check"])("only current verified implementation releases the slot before manual merge (%s)", async mode => {
+test.each(["verified", "stale_head", "uncertain_check"])("only current verified implementation releases an explicitly configured Project slot before manual merge (%s)", async mode => {
   const f = await readyIssuesFixture();
   try {
+    expect((await f.request(`/projects/${f.project.id}/queue/configure`, { expected_revision: null, max_implementations: 1, paused: false })).status).toBe(200);
     const policy = (await f.request(f.route + "/configure", f.policy)).body;
     f.respond({ issues: [f.issue(1), f.issue(2)] });
     const sources = (await f.request(f.route + "/sync", {})).body.sources;
@@ -84,14 +101,13 @@ test.each(["verified", "stale_head", "uncertain_check"])("only current verified 
     f.restWorker(worker.id);
     await f.request(`${workerRoute}/${worker.id}/reconcile`, {});
     expect((await f.request(`${workerRoute}/${worker.id}/check`, {})).body.condition).toBe("passed");
-    expect((await f.request(`${workerRoute}/${worker.id}/integrate`, {})).body.condition).toBe("completed");
+    expect(await f.request(`${workerRoute}/${worker.id}/integrate`, {})).toMatchObject({ status: 200, body: { condition: "completed" } });
     expect((await f.request(`/runs/${run.id}/checks`, {})).body.condition).toBe("passed");
     const standards = (await f.request(workerRoute, { role: "standards", idempotency_key: "independent-standards" })).body;
     await f.request(`${workerRoute}/${standards.id}/review-evidence`, {});
     await f.tick();
     expect((await f.request(`/implementations/${b.implementation_id}`)).body.runs).toHaveLength(0);
     const spec = (await f.request(workerRoute, { role: "spec", idempotency_key: "independent-spec" })).body;
-    await f.request(`${workerRoute}/${spec.id}/review-evidence`, {});
     if (mode === "stale_head") {
       writeFileSync(run.worktree + "/later.txt", "An unreviewed later change\n");
       for (const args of [["add", "later.txt"], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "later change"]]) execFileSync("git", ["-C", run.worktree, ...args], { stdio: "ignore" });
@@ -100,8 +116,19 @@ test.each(["verified", "stale_head", "uncertain_check"])("only current verified 
       f.offline(true); await f.request(`/runs/${run.id}/checks`, {}); f.offline(false);
       f.restart();
     }
+    const finalReview = await f.request(`${workerRoute}/${spec.id}/review-evidence`, {});
+    expect(finalReview.status).toBe(mode === "stale_head" ? 409 : 200);
+    if (mode === "stale_head") expect(finalReview.body.error.code).toBe("review_stale");
     await f.tick();
-    const complete = (await f.request(`/implementations/${a.implementation_id}`)).body;
+    let complete = (await f.request(`/implementations/${a.implementation_id}`)).body;
+    if (mode === "verified") {
+      const deadline = Date.now() + 5000;
+      while (complete.runs[0].condition !== "completed" && Date.now() < deadline) {
+        await f.tick();
+        complete = (await f.request(`/implementations/${a.implementation_id}`)).body;
+        if (complete.runs[0].condition !== "completed") await Bun.sleep(10);
+      }
+    }
     if (mode !== "verified") {
       expect(complete.runs[0].condition).not.toBe("completed");
       expect((await f.request(`/implementations/${b.implementation_id}`)).body.runs).toHaveLength(0);
@@ -113,7 +140,13 @@ test.each(["verified", "stale_head", "uncertain_check"])("only current verified 
     expect(complete.runs[0].condition).toBe("completed");
     expect(complete.implementation).toMatchObject({ stage: "review", outcome: "implementation_complete" });
     expect(complete.board).toMatchObject({ lane: "needs_you", activity: "awaiting_merge" });
-    expect((await f.request(`/implementations/${b.implementation_id}`)).body.runs[0]).toMatchObject({ action: "implement-spec", condition: "working" });
+    let next = (await f.request(`/implementations/${b.implementation_id}`)).body;
+    const deadline = Date.now() + 5000;
+    while (!next.runs.length && Date.now() < deadline) {
+      await f.tick(); next = (await f.request(`/implementations/${b.implementation_id}`)).body;
+      if (!next.runs.length) await Bun.sleep(10);
+    }
+    expect(next.runs[0]).toMatchObject({ action: "implement-spec", condition: "working" });
     expect(f.calls().some(args => args.includes("--method"))).toBe(false);
   } finally { f.close(); }
 }, 30_000);

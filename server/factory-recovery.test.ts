@@ -19,6 +19,7 @@ test("accepted integration supersedes earlier worker content, while missing deli
       await f.request(`${f.workerRoute}/${reviewer.id}/review-evidence`, {});
     }
     f.rest(f.run.id);
+    await f.request(`/runs/${f.run.id}/reconcile`, {});
     expect((await f.request(`/runs/${f.run.id}/accept`, { head: check.head })).status).toBe(200);
     const oid = execFileSync("git", ["-C", f.run.worktree!, "rev-parse", "HEAD:ready.txt"], { encoding: "utf8" }).trim();
     const head = check.head;
