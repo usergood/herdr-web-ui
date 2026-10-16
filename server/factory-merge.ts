@@ -52,6 +52,13 @@ export class FactoryMerge {
       if (this.stopped) throw new FactoryError("stopping", "The bridge is stopping; retain the merge intent for reconciliation", 409);
       const lease = this.store.get<{ run: FactoryRun; closing?: boolean }>("host_leases", id);
       if (!lease || lease.closing || lease.run.suspension || this.store.get("host_delete_requests", id)) throw new FactoryError("run_stopping", "Pause or Delete stopped this merge operation", 409);
+      const latestCheck = this.store.list<FactoryCheck>("host_checks", id).filter(c => c.worker_id === null).at(-1);
+      const currentReports = this.store.list<FactoryReviewEvidence>("host_review_evidence", id);
+      if (!latestCheck || latestCheck.id !== check.id || latestCheck.condition !== "passed" || latestCheck.head !== pr.head || latestCheck.workspace_hash !== check.workspace_hash || !["standards", "spec"].every(axis => {
+        const expected = reports.find(r => r?.axis === axis);
+        const current = currentReports.filter(r => r.axis === axis).at(-1);
+        return current?.worker_id === expected?.worker_id && current?.source_id === expected?.source_id && current?.head === pr.head && current?.outcome === "passed";
+      })) throw new FactoryError("fresh_evidence_required", "The checked evidence changed during merge reconciliation", 409);
       if (this.store.list<FactoryWorker>("host_workers", id).some(w => !["completed", "cancelled", "failed"].includes(w.condition))) throw new FactoryError("writers_active", "Quiesce all owned workers before merging", 409);
     };
     const assertCurrent = async () => {

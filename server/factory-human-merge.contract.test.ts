@@ -223,3 +223,21 @@ it("verifies coverage of the authorized target branch even when a tag has the sa
     expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
   } finally { f.close(); }
 }, 20000);
+
+it("blocks a pending merge when its checked evidence is superseded during GitHub observation", async () => {
+  const f = await mergeFixture(); let pending: Promise<Response> | undefined;
+  try {
+    f.change({ hold_graphql: true });
+    pending = f.post(f.route + "merge", f.body);
+    await until(async () => f.githubState(), s => s.graphql_waiting === true);
+    f.change({ fail_check: true });
+    const next = await f.post(f.route + "check", { check: { ...f.check, id: crypto.randomUUID(), head: "", workspace_hash: "", commands: [], condition: "working" } });
+    expect((await next.json()).condition).toBe("failed");
+    f.change({ hold_graphql: false });
+    const response = await pending;
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: "fresh_evidence_required" } });
+    expect(f.git(["rev-parse", "refs/heads/main"])).toBe(f.base);
+    expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(0);
+  } finally { f.change({ hold_graphql: false }); await pending?.catch(() => {}); f.close(); }
+}, 20000);
