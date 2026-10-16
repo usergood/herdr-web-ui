@@ -94,6 +94,9 @@ jobs:
         if: needs.changes.outputs.draft != 'true'
       - run: bun install --frozen-lockfile
         if: needs.changes.outputs.draft != 'true'
+      - name: Build browser client for native plugin test
+        if: needs.changes.outputs.draft != 'true'
+        run: bun run build
       - run: bun test ./scripts/windows-plugin.test.ts ./scripts/plugin-runtime.test.ts ./scripts/phone-setup.test.ts ./server/windows-native.test.ts
         if: needs.changes.outputs.draft != 'true'
   macos-session:

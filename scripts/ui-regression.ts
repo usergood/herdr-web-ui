@@ -485,6 +485,14 @@ try {
   }
   backgroundPeer = null;
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await page.keyboard.press("ControlOrMeta+Shift+Comma");
+  await openSettingsPage(page, "Appearance");
+  const quietFinishes = page.getByRole("switch", { name: "Quiet opened finishes", exact: true });
+  const quietBefore = await quietFinishes.getAttribute("aria-checked");
+  if (quietBefore !== "true") await quietFinishes.click();
+  await page.getByRole("button", { name: "Close settings", exact: true }).click();
+  await waitingBadge.waitFor();
+  assert.equal((await waitingBadge.textContent())?.trim(), "BG", "Quiet opened finishes cannot hide a background hold");
   if (process.env.UI_EVIDENCE_DIR) {
     const viewport = page.viewportSize()!;
     const themeBefore = await page.evaluate(() => document.documentElement.dataset.theme);

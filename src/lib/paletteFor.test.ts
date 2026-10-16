@@ -28,10 +28,23 @@ describe("paletteFor", () => {
     expect(settings.paletteDark).toBe("charcoal");
   });
 
-  test("a removed palette in the pair loads as amber", () => {
-    const settings = sanitizeSettings({ theme: "system", palette: "report", paletteLight: "lilac", paletteDark: "forest" });
+  test("an unknown palette and unknown pair load as amber", () => {
+    const settings = sanitizeSettings({ theme: "system", palette: "pink", paletteLight: "pink", paletteDark: "pink" });
     expect(settings.palette).toBe("amber");
     expect(settings.paletteLight).toBe("amber");
     expect(settings.paletteDark).toBe("amber");
+    expect(paletteFor(settings, "light")).toBe("amber");
+    expect(paletteFor(settings, "dark")).toBe("amber");
+  });
+
+  test("retains Report and its theme-specific Lilac and Forest pair", () => {
+    const settings = sanitizeSettings({ theme: "system", palette: "report", paletteLight: "lilac", paletteDark: "forest" });
+    expect(settings.palette).toBe("report");
+    expect(settings.paletteLight).toBe("lilac");
+    expect(settings.paletteDark).toBe("forest");
+    expect(paletteFor(settings, "light")).toBe("lilac");
+    expect(paletteFor(settings, "dark")).toBe("forest");
+    expect(paletteFor({ ...settings, theme: "light" }, "light")).toBe("report");
+    expect(paletteFor({ ...settings, theme: "dark" }, "dark")).toBe("report");
   });
 });

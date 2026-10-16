@@ -247,7 +247,22 @@ shortIt("resolves its exact first exchange beside a different same-directory con
   shortRollout(other, "Other fixture", "A different short reply.");
   addShortThread("other", other, created - 60_000, "Other fixture");
   peerScreens.set("peer", "OpenAI Codex (v1.0)\n› Other fixture\n• A different short reply.\n› ");
-  expect(await codexTranscriptPath(root, root, home, [fixturePane(root), fixturePane("peer")])).toBe(path);
+  const panes = [fixturePane(root), fixturePane("peer")];
+  expect(await codexTranscriptPath(root, root, home, panes)).toBe(path);
+  // A successful weak match must not survive a peer changing to the same exchange.
+  peerScreens.set("peer", shortScreen);
+  expect(await codexTranscriptPath(root, root, home, panes)).toBeNull();
+  peerScreens.set("peer", "OpenAI Codex (v1.0)\n› Other fixture\n• A different short reply.\n› ");
+  expect(await codexTranscriptPath(root, root, home, panes)).toBe(path);
+});
+
+shortIt("keeps unknown peer directories ambiguous despite a different readable conversation", async () => {
+  const created = await shortSession();
+  const other = join(home, "sessions", "other.jsonl");
+  shortRollout(other, "Other fixture", answer);
+  addShortThread("other", other, created - 60_000, "Other fixture");
+  peerScreens.set("peer", `OpenAI Codex (v1.0)\n› Other fixture\n• ${answer}\n› `);
+  expect(await codexTranscriptPath(root, root, home, [fixturePane(root), { ...fixturePane("peer"), cwd: null }])).toBeNull();
 });
 
 shortIt("rejects unknown or matching peer screens when a header has scrolled away", async () => {

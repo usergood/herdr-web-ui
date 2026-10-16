@@ -1306,9 +1306,10 @@ async function shortThreadFromProcess(
   let db: Database | undefined;
   try {
     const peers = panes ?? (await sessionSnapshot()).panes;
+    // A peer without a cwd cannot be scoped safely; known same-directory peers are
+    // checked against their current exchanges below before any short match is returned.
     if (peers.some((pane) => pane.pane_id !== paneId
-      && (pane.agent ?? pane.agent_session?.agent) === "codex"
-      && (pane.cwd == null || sameDirectory(pane.cwd, cwd)))) return null;
+      && (pane.agent ?? pane.agent_session?.agent) === "codex" && pane.cwd == null)) return null;
     db = new Database(join(home, "state_5.sqlite"), { readonly: true, create: false });
     const columns = new Set(db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('threads')").all().map((column) => column.name));
     if (!columns.has("first_user_message") || !columns.has("source")) return null;
