@@ -230,3 +230,96 @@ describe("Human Review Decline through authenticated HTTP", () => {
     } finally { f.close(); }
   }, 30000);
 });
+
+for (const answered of [false, true]) it(`does not authorize conditional repairs against a new ${answered ? "answered" : "unanswered"} owner scope`, async () => {
+  const f = await capacityFixture({ advancingHeads: true });
+  try {
+    const { prefix, detail } = await published(f);
+    const ready = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
+    const review = ready.human_reviews[0];
+    const comment = await f.api(`${prefix}/comments`, { snapshot_id: review.snapshot_id, path: "progress.ts", side: "new", line_start: 1, line_end: 1, content: "Retain this exact feedback draft" }).then(r => r.json());
+    const question = await f.api(`${prefix}/questions`, { question: "Owner scope decision before conditional approval: export progress?" }).then(r => r.json());
+    if (answered) expect((await f.api(`${prefix}/questions/${question.id}/answer`, { revision: question.revision, answer: "No; retain the accepted behavior" })).status).toBe(200);
+    const launches = [...f.workerLaunches];
+    const response = await f.api(`${prefix}/human-review/submit`, { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, disposition: "approve", comment_ids: [comment.id], idempotency_key: `new-owner-scope-${answered}` });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: answered ? "fresh_evidence_required" : "answers_unready" } });
+    const blocked = await detail();
+    expect(blocked.comments).toContainEqual(expect.objectContaining({ id: comment.id, status: "draft", batch_id: null }));
+    expect(blocked.human_review_approvals).toHaveLength(0);
+    expect(blocked.human_feedback_batches).toHaveLength(0);
+    expect(blocked.questions).toContainEqual(expect.objectContaining({ id: question.id, answer: answered ? "No; retain the accepted behavior" : null }));
+    expect(f.workerLaunches).toEqual(launches);
+    expect(f.mergeEffects).toHaveLength(0);
+  } finally { f.close(); }
+}, 20000);
+
+it("recovers changed owner context through explicit Decline, consumed fresh reviews and a new approval without reviving old authority", async () => {
+  const f = await capacityFixture({ advancingHeads: true });
+  try {
+    const { prefix, detail, run } = await published(f);
+    const ready = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
+    const review = ready.human_reviews[0];
+    const original = { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, idempotency_key: "before-owner-decision" };
+    f.mergeFailure("merge_waiting");
+    const receipt = await f.api(`${prefix}/human-review/approve`, original).then(r => r.json());
+    expect(receipt).toMatchObject({ condition: "pending", merge_not_sent: true, context_revision: ready.question_revision });
+    const question = await f.api(`${prefix}/questions`, { question: "Owner decision: should the accepted result also export progress?" }).then(r => r.json());
+    expect((await f.api(`${prefix}/questions/${question.id}/answer`, { revision: question.revision, answer: "No export; keep and freshly review the original behavior" })).status).toBe(200);
+    const stopped = await until(detail, d => d.human_review_approvals[0]?.condition === "blocked");
+    expect(stopped.human_review_approvals[0]).toMatchObject({ id: receipt.id, context_revision: ready.question_revision, merge_not_sent: true });
+    expect(f.mergeEffects).toHaveLength(0);
+    f.mergeFailure(null);
+    const context = await f.agent(run.id, "contract").then(r => r.json());
+    expect((await f.agent(run.id, "consume", { revision: context.question_revision })).status).toBe(200);
+    const comment = await f.api(`${prefix}/comments`, { snapshot_id: review.snapshot_id, path: "progress.ts", side: "new", line_start: 1, line_end: 1, content: "Recheck the original behavior after this owner decision" }).then(r => r.json());
+    const declined = await f.api(`${prefix}/human-review/submit`, { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, disposition: "decline", comment_ids: [comment.id], idempotency_key: "fresh-owner-review" });
+    expect(declined.status).toBe(202);
+    const batch = await declined.json();
+    expect(batch.merge_authorized).toBe(false);
+    for (const role of ["implementer", "standards", "spec"]) {
+      const current = await until(detail, d => d.workers.some((w: any) => w.role === role && w.condition === "working"));
+      const worker = current.workers.find((w: any) => w.role === role && w.condition === "working");
+      const contract = await f.agent(run.id, "contract").then(r => r.json());
+      expect((await f.agent(run.id, "consume", { revision: contract.question_revision, worker_id: worker.id })).status).toBe(200);
+      f.workers.get(worker.id)!.condition = "ready";
+    }
+    const fresh = await until(detail, d => d.human_reviews[0]?.condition === "ready" && d.human_feedback_batches[0]?.resolution);
+    expect(f.mergeEffects).toHaveLength(0);
+    const candidate = fresh.human_reviews[0];
+    expect(candidate.snapshot_id).not.toBe(review.snapshot_id);
+    expect(fresh.human_review_approvals[0]).toMatchObject({ id: receipt.id, context_revision: ready.question_revision, condition: "blocked", superseded_by_batch_id: batch.id });
+    expect((await f.api(`${prefix}/human-review/approve`, original)).status).toBe(409);
+    const response = await f.api(`${prefix}/human-review/approve`, { review_id: candidate.id, snapshot_id: candidate.snapshot_id, head: candidate.head, idempotency_key: "approve-new-owner-context" });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ context_revision: context.question_revision, condition: "merged" });
+    const done = await until(detail, d => d.implementation.stage === "done");
+    expect(done.human_review_approvals).toHaveLength(2);
+    expect(done.human_review_approvals[0]).toMatchObject({ id: receipt.id, context_revision: ready.question_revision, condition: "blocked", superseded_by_batch_id: batch.id });
+    expect(done.questions).toContainEqual(expect.objectContaining({ id: question.id, answer: "No export; keep and freshly review the original behavior" }));
+    expect(f.mergeEffects).toHaveLength(1);
+  } finally { f.close(); }
+}, 30000);
+
+it("binds conditional repair authority to the original owner context and merges unchanged-context repairs without another approval", async () => {
+  const f = await capacityFixture({ advancingHeads: true });
+  try {
+    const { prefix, detail } = await published(f);
+    const ready = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
+    const review = ready.human_reviews[0];
+    const comment = await f.api(`${prefix}/comments`, { snapshot_id: review.snapshot_id, path: "progress.ts", side: "new", line_start: 1, line_end: 1, content: "Retain this approved repair lineage" }).then(r => r.json());
+    const response = await f.api(`${prefix}/human-review/submit`, { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, disposition: "approve", comment_ids: [comment.id], idempotency_key: "bound-conditional-context" });
+    expect(response.status).toBe(202);
+    const batch = await response.json();
+    expect((await detail()).human_review_approvals[0]).toMatchObject({ repair_batch_id: batch.id, context_revision: ready.question_revision, condition: "repairing" });
+    for (const role of ["implementer", "standards", "spec"]) {
+      const current = await until(detail, d => d.workers.some((w: any) => w.role === role && w.condition === "working"));
+      f.workers.get(current.workers.find((w: any) => w.role === role && w.condition === "working").id)!.condition = "ready";
+    }
+    const done = await until(detail, d => d.implementation.stage === "done");
+    expect(done.human_review_approvals).toHaveLength(1);
+    expect(done.human_review_approvals[0]).toMatchObject({ repair_batch_id: batch.id, context_revision: ready.question_revision, condition: "merged" });
+    expect(done.questions).toEqual(ready.questions);
+    expect(f.mergeEffects).toHaveLength(1);
+  } finally { f.close(); }
+}, 30000);

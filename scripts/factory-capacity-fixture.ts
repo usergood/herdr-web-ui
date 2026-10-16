@@ -39,6 +39,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; work
   const publications = new Map<string, any>();
   let losePublication = false;
   let publicationGate: { entered: () => void; wait: Promise<void> } | null = null;
+  let headGate: { entered: () => void; wait: Promise<void> } | null = null;
   let loseStop = false; let loseRunStop = false; let unavailableRunStop = false;
   let denyPublication = false;
   let mergeFailure: string | null = null; let loseMerge = false;
@@ -141,7 +142,10 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; work
         if (unavailableCheckObservation) return Response.json({ error: { code: "disconnected", message: "Owned check observation is unavailable" } }, { status: 503 });
         return Response.json(checks.get(body.check_id));
       }
-      if (action === "operations/head") return Response.json({ head: tips.get(run.id) ?? "1".repeat(40), workspace_hash: scenario.workspaceHash ?? "owned-check" });
+      if (action === "operations/head") {
+        if (headGate) { const gate = headGate; headGate = null; gate.entered(); await gate.wait; }
+        return Response.json({ head: tips.get(run.id) ?? "1".repeat(40), workspace_hash: scenario.workspaceHash ?? "owned-check" });
+      }
       if (action === "operations/review-evidence") {
         const worker = workers.get(body.worker_id)!;
         const outcome = reviewOutcomes.get(worker.id) ?? "passed";
@@ -215,6 +219,12 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; work
       if (!run) throw new Error("Select an owned fixture Run before marking research ready");
       run.condition = "ready"; researchReadyRuns.add(runId);
     },
+    holdNextHead: () => {
+      let entered!: () => void; let release!: () => void;
+      const started = new Promise<void>(resolve => { entered = resolve; });
+      const wait = new Promise<void>(resolve => { release = resolve; });
+      headGate = { entered, wait }; return { started, release };
+    },
     holdNextPublication: () => {
       let entered!: () => void; let release!: () => void;
       const started = new Promise<void>(resolve => { entered = resolve; });
@@ -263,7 +273,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; work
       const wait = new Promise<void>(resolve => { release = resolve; });
       checkGate = { entered, wait, release, scope }; return { started, release };
     },
-    restart: () => { app.stop(); app = createServer(options); },
+    restart: (beforeStart?: () => void) => { app.stop(); beforeStart?.(); app = createServer(options); },
     close: () => { app.stop(); machine.stop(true); rmSync(state, { recursive: true, force: true }); },
   };
 }

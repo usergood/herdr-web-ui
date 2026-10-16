@@ -1,4 +1,6 @@
 import { expect, it } from "bun:test";
+import { Database } from "bun:sqlite";
+import { join } from "node:path";
 import { capacityFixture } from "../scripts/factory-capacity-fixture.ts";
 import { published, until } from "../scripts/factory-human-review-fixture.ts";
 
@@ -535,5 +537,131 @@ it("keeps execution open until a frozen containing-release milestone is actually
     expect(released.implementation).toMatchObject({ stage: "done", outcome: "released" });
     expect((await f.api(`${prefix}/archive`, {})).status).toBe(200);
     expect(f.mergeEffects).toHaveLength(1);
+  } finally { f.close(); }
+}, 20000);
+
+it("does not retain Human Review merge authority while an owner scope question is unanswered", async () => {
+  const f = await capacityFixture({ advancingHeads: true });
+  try {
+    const { prefix, detail } = await published(f);
+    const ready = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
+    const review = ready.human_reviews[0];
+    const questionResponse = await f.api(`${prefix}/questions`, { question: "New scope: should this result also export progress?" });
+    expect(questionResponse.status).toBe(201);
+    const question = await questionResponse.json();
+    const response = await f.api(`${prefix}/human-review/approve`, { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, idempotency_key: "unanswered-owner-scope" });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: "answers_unready" } });
+    const blocked = await detail();
+    expect(blocked.questions).toContainEqual(expect.objectContaining({ id: question.id, answer: null }));
+    expect(blocked.human_review_approvals).toHaveLength(0);
+    expect(blocked.implementation.stage).toBe("review");
+    expect(blocked.runs[0].condition).not.toBe("completed");
+    expect(f.mergeObservations).toHaveLength(0);
+    expect(f.mergeEffects).toHaveLength(0);
+  } finally { f.close(); }
+}, 20000);
+
+it("requires fresh reviewed owner context after an answered scope question changes the candidate context", async () => {
+  const f = await capacityFixture({ advancingHeads: true });
+  try {
+    const { prefix, detail } = await published(f);
+    const ready = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
+    const review = ready.human_reviews[0];
+    const question = await f.api(`${prefix}/questions`, { question: "New scope: retain the original export format?" }).then(r => r.json());
+    expect((await f.api(`${prefix}/questions/${question.id}/answer`, { revision: question.revision, answer: "Retain the original format; review this decision" })).status).toBe(200);
+    const response = await f.api(`${prefix}/human-review/approve`, { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, idempotency_key: "changed-answered-context" });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: "fresh_evidence_required" } });
+    const blocked = await detail();
+    expect(blocked.questions).toContainEqual(expect.objectContaining({ id: question.id, answer: "Retain the original format; review this decision" }));
+    expect(blocked.question_revision).not.toBe(ready.question_revision);
+    expect(blocked.human_review_approvals).toHaveLength(0);
+    expect(blocked.implementation.stage).toBe("review");
+    expect(f.mergeEffects).toHaveLength(0);
+  } finally { f.close(); }
+}, 20000);
+
+it("pins retained merge authority to the exact owner context and rechecks questions after the Machine head wait", async () => {
+  const f = await capacityFixture({ advancingHeads: true }); let release = () => {}; let pending: Promise<Response> | undefined;
+  try {
+    const { prefix, detail } = await published(f);
+    const ready = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
+    const review = ready.human_reviews[0];
+    const gate = f.holdNextHead(); release = gate.release;
+    pending = f.api(`${prefix}/human-review/approve`, { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, idempotency_key: "question-during-head" });
+    await gate.started;
+    const retained = await detail();
+    const question = await f.api(`${prefix}/questions`, { question: "New scope while head is observed: export this result?" }).then(r => r.json());
+    release();
+    const response = await pending;
+    expect(response.status).toBe(200);
+    expect(retained.human_review_approvals[0]).toMatchObject({ context_revision: ready.question_revision, condition: "pending" });
+    expect(await response.json()).toMatchObject({ context_revision: ready.question_revision, condition: "blocked", reason: expect.stringContaining("pending owner questions") });
+    const blocked = await detail();
+    expect(blocked.questions).toContainEqual(expect.objectContaining({ id: question.id, answer: null }));
+    expect(blocked.implementation.stage).toBe("review");
+    expect(blocked.runs[0].condition).not.toBe("completed");
+    expect(f.mergeObservations).toHaveLength(0);
+    expect(f.mergeEffects).toHaveLength(0);
+  } finally { release(); await pending?.catch(() => {}); f.close(); }
+}, 20000);
+
+it("fails closed on restored pending authority without a frozen owner-context revision", async () => {
+  const f = await capacityFixture({ advancingHeads: true });
+  try {
+    const { prefix, detail } = await published(f);
+    const ready = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
+    const review = ready.human_reviews[0];
+    const body = { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, idempotency_key: "legacy-pending-context" };
+    f.mergeFailure("merge_waiting");
+    const receipt = await f.api(`${prefix}/human-review/approve`, body).then(r => r.json());
+    expect(receipt).toMatchObject({ condition: "pending", context_revision: ready.question_revision });
+    f.mergeFailure(null);
+    f.restart(() => {
+      // Arrange an older saved receipt only after shutdown and before createServer starts.
+      const db = new Database(join(f.state, "factory", "records.sqlite"));
+      try { db.query("UPDATE records SET data=json_remove(data, '$.context_revision') WHERE kind='human_review_approvals' AND id=?").run(receipt.id); }
+      finally { db.close(); }
+    });
+    const stopped = await until(detail, d => ["blocked", "merged"].includes(d.human_review_approvals[0]?.condition));
+    expect(stopped.human_review_approvals[0]).toMatchObject({ id: receipt.id, condition: "blocked", reason: expect.stringContaining("owner context") });
+    expect(stopped.human_review_approvals[0].context_revision).toBeUndefined();
+    expect(stopped.implementation.stage).toBe("review");
+    expect(f.mergeObservations).toHaveLength(1);
+    expect(f.mergeEffects).toHaveLength(0);
+    await f.api(`${prefix}/human-review/approve`, { ...body, idempotency_key: "do-not-rebind-legacy" });
+    expect((await detail()).human_review_approvals).toHaveLength(1);
+    expect((await detail()).human_review_approvals[0].context_revision).toBeUndefined();
+    expect(f.mergeEffects).toHaveLength(0);
+  } finally { f.close(); }
+}, 20000);
+
+for (const answered of [false, true]) it(`blocks retained pending CI authority after a new ${answered ? "answered" : "unanswered"} owner question without rebinding it`, async () => {
+  const f = await capacityFixture({ advancingHeads: true });
+  try {
+    const { prefix, detail } = await published(f);
+    const ready = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
+    const review = ready.human_reviews[0];
+    const body = { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, idempotency_key: `pending-context-${answered}` };
+    f.mergeFailure("merge_waiting");
+    const receipt = await f.api(`${prefix}/human-review/approve`, body).then(r => r.json());
+    expect(receipt).toMatchObject({ condition: "pending", context_revision: ready.question_revision, merge_not_sent: true });
+    const question = await f.api(`${prefix}/questions`, { question: "New owner decision while CI is pending: export this result?" }).then(r => r.json());
+    if (answered) expect((await f.api(`${prefix}/questions/${question.id}/answer`, { revision: question.revision, answer: "No export; review this answer before delivery" })).status).toBe(200);
+    f.mergeFailure(null);
+    f.restart();
+    const stopped = await until(detail, d => ["blocked", "merged"].includes(d.human_review_approvals[0]?.condition));
+    expect(stopped.human_review_approvals[0]).toMatchObject({ id: receipt.id, context_revision: ready.question_revision, condition: "blocked", merge_not_sent: true, reason: expect.stringContaining(answered ? "owner context" : "pending owner questions") });
+    expect(stopped.questions).toContainEqual(expect.objectContaining({ id: question.id, answer: answered ? "No export; review this answer before delivery" : null }));
+    expect(stopped.implementation.stage).toBe("review");
+    expect(stopped.events.some((event: any) => event.kind === "answers_consumed")).toBe(false);
+    expect(f.mergeObservations).toHaveLength(1);
+    expect(f.mergeEffects).toHaveLength(0);
+    const replay = await f.api(`${prefix}/human-review/approve`, body).then(r => r.json());
+    expect(replay).toMatchObject({ id: receipt.id, context_revision: ready.question_revision, condition: "blocked" });
+    expect((await detail()).human_review_approvals).toHaveLength(1);
+    expect(f.mergeObservations).toHaveLength(1);
+    expect(f.mergeEffects).toHaveLength(0);
   } finally { f.close(); }
 }, 20000);
