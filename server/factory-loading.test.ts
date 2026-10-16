@@ -91,6 +91,8 @@ test("navigation keeps visible Project conversation identities without duplicati
   try {
     const store = f.service.store;
     expect((await read<FactoryOverview>("?navigation=1")).conversations).toEqual([]);
+    const legacy = store.get<any>("runs", "run-2-0")!;
+    store.put("runs", { ...legacy, manifest: null }, legacy.implementation_id);
     const project = { ...store.record(), id: "visible-project", name: "Owned Project", repository: "owned", provider: "codex", machine_id: "local", tracker: "app", tracker_reference: "" };
     store.put("projects", project);
     const assigned = store.get<any>("implementations", f.id)!;

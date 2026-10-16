@@ -130,7 +130,7 @@ export class FactoryReads {
     const board = ideas.map(idea => projectFactoryBoard(idea, { ...context(idea.id), runs: byIdea.get(idea.id), workers, checks, tickets: tickets.get(idea.id), questions: this.questions(idea.id, byIdea.get(idea.id)!) }));
     // Navigation has no tree for unassigned, archived or finished Assignments.
     // Explicit run provenance can still put an older Assignment under a Project.
-    const visibleIdeas = navigation ? ideas.filter(idea => !idea.archived_at && !board.find(item => item.implementation_id === idea.id)?.sidebar_hidden && (projectIds.has(idea.project_id ?? "") || byIdea.get(idea.id)!.some(run => projectIds.has((run.manifest as { project?: { id?: string } }).project?.id ?? "")))) : ideas;
+    const visibleIdeas = navigation ? ideas.filter(idea => !idea.archived_at && !board.find(item => item.implementation_id === idea.id)?.sidebar_hidden && (projectIds.has(idea.project_id ?? "") || byIdea.get(idea.id)!.some(run => projectIds.has((run.manifest as { project?: { id?: string } } | null)?.project?.id ?? "")))) : ideas;
     const conversations = visibleIdeas.flatMap(idea => workflowConversations({ implementation: idea, runs: byIdea.get(idea.id)!, workers, tickets: tickets.get(idea.id)!, execution_plans: plans, native_snapshots: nativeMetadata }));
     return {
       implementations: [...ideas].sort((a,b) => (ages.get(a.id) ?? a.created_at).localeCompare(ages.get(b.id) ?? b.created_at)).map(idea => { if (!navigation) return idea; const { description, delivery, upstream_update, ...summary } = idea; return summary; }),
