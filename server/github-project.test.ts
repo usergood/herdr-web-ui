@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { githubFixture } from "../scripts/factory-github-fixture.ts";
+import { createServer } from "./index.ts";
 
 const fixtures: Awaited<ReturnType<typeof githubFixture>>[] = [];
 afterEach(() => { for (const f of fixtures.splice(0)) f.close(); });
@@ -186,6 +187,39 @@ function pull(state = "APPROVED") {
     commits: { nodes: [{ commit: { statusCheckRollup: { contexts: connection([{ name: "Fast checks", status: "COMPLETED", conclusion: "SUCCESS" }]) } } }] },
     baseRef: { branchProtectionRule: { isAdminEnforced: true, requiresApprovingReviews: true, requiredApprovingReviewCount: 1, requiresStatusChecks: true, requiresStrictStatusChecks: true, requiresConversationResolution: true, requiredStatusCheckContexts: ["Fast checks"] } } };
 }
+test("app-managed recovery keeps deletion source fences against stale issue and retained-PR synchronization", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  const stale = { issues: JSON.parse(readFileSync(f.state, "utf8")).issues, pulls: [pull("CHANGES_REQUESTED")] };
+  writeFileSync(f.state, JSON.stringify(stale));
+  expect((await f.post(route + "/configure", { ...f.policy, auto_update: true })).status).toBe(200);
+  expect((await f.post(route + "/sync", {})).status).toBe(200);
+  const ideas = (await f.get("")).implementations;
+  expect(ideas).toHaveLength(2);
+  const backup = await f.post("/backups", {}); expect(backup.status).toBe(201);
+  const before = await f.post(`/backups/${backup.body.id}/restore`, {}); expect(before.status).toBe(201);
+  for (const idea of ideas) expect((await f.post(`/implementations/${idea.id}/delete`, {})).status).toBe(200);
+  const after = await f.post(`/backups/${backup.body.id}/restore`, {}); expect(after.status).toBe(201);
+  stale.pulls[0]!.mergeStateStatus = "BEHIND";
+  writeFileSync(f.state, JSON.stringify(stale));
+  for (const restored of [after.body, before.body]) {
+    const app = createServer({ port: 0, stateDir: restored.state_dir, token: "github-test-owner", machines: false, factory: { accountTools: { github: { executable: process.execPath, args: [join(f.root, "gh.mjs")] } } } });
+    try {
+      const request = async (path: string, body?: unknown) => {
+        const response = await fetch(`http://localhost:${app.port}/api/factory${path}`, { headers: f.headers, ...(body === undefined ? {} : { method: "POST", body: JSON.stringify(body) }) });
+        return { status: response.status, body: await response.json() };
+      };
+      expect((await request("")).body.implementations).toEqual([]);
+      const profile = await request("/machines/local/accounts", { name: "Recovery fixture", service: "github", expected_login: "fictional-owner" });
+      expect(profile.status).toBe(201);
+      expect((await request(`/machines/local/accounts/${profile.body.id}/verify`, { expected_revision: profile.body.revision })).status).toBe(200);
+      const retained = (await request(route)).body.policy;
+      expect((await request(route + "/configure", { ...f.policy, auto_update: true, account_profile_id: profile.body.id, expected_revision: retained.revision })).status).toBe(200);
+      expect((await request(route + "/sync", {})).status).toBe(200);
+      expect((await request("")).body.implementations).toEqual([]);
+      expect(readFileSync(f.log, "utf8")).not.toContain('"PUT"');
+    } finally { app.stop(); }
+  }
+}, 30000);
 test("retained PRs do not automatically recreate or update deleted work; explicit owner intake stays distinct", async () => {
   const f = await fixture(); const route = `/projects/${f.project.id}/github`;
   const pr = pull("CHANGES_REQUESTED");

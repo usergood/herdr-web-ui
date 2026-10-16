@@ -29,7 +29,7 @@ export class FactoryBackup {
           const copy = new FactoryStore(dirname(root));
           try {
             copy.db.transaction(() => {
-              purgeAssignmentRecords(copy.db, assignmentId);
+              this.purgeRecords(copy.db, assignmentId);
               new FactoryBackup(copy, new FactoryArtifacts(copy)).purge(assignmentId);
               const retained = copy.db.query<{ data: string }, []>("SELECT data FROM records WHERE kind NOT IN ('backups','assignment_deletions','deleted_assignments')").all().map(row => row.data).join("\n");
               for (const digest of readdirSync(join(root, "blobs"))) {
@@ -55,7 +55,7 @@ export class FactoryBackup {
         try {
           this.verifyDatabase(database);
           database.exec("PRAGMA secure_delete=ON");
-          purgeAssignmentRecords(database, assignmentId);
+          this.purgeRecords(database, assignmentId);
           database.exec("VACUUM");
           sanitized = database.serialize();
           retained = database.query<{ data: string }, []>("SELECT data FROM records WHERE kind NOT IN ('backups','assignment_deletions','deleted_assignments')").all().map(row => row.data).join("\n");
@@ -72,6 +72,15 @@ export class FactoryBackup {
         this.store.put("backups", next);
       }
     });
+  }
+  private purgeRecords(database: Database, assignmentId: string): void {
+    purgeAssignmentRecords(database, assignmentId);
+    // Old snapshots predate Delete's source fences. Carry only content-free
+    // identities into every sanitized copy so stale sync cannot recreate work.
+    for (const source of this.store.list<{ id: string; repository: string; external_id: string; number: number; kind: string }>("github_suppressions")) {
+      const { id, repository, external_id, number, kind } = source;
+      database.query("INSERT OR REPLACE INTO records(kind,id,parent,data) VALUES('github_suppressions',?,NULL,?)").run(id, JSON.stringify({ id, repository, external_id, number, kind }));
+    }
   }
   private assertDirectory(path: string): void {
     const info = lstatSync(path);
@@ -139,7 +148,7 @@ export class FactoryBackup {
           const copy = Database.deserialize(database);
           try {
             copy.exec("PRAGMA secure_delete=ON");
-            for (const id of deleted) purgeAssignmentRecords(copy, id);
+            for (const id of deleted) this.purgeRecords(copy, id);
             copy.exec("VACUUM"); database = copy.serialize();
             references = copy.query<{ data: string }, []>("SELECT data FROM records WHERE kind NOT IN ('backups','assignment_deletions','deleted_assignments')").all().map(row => row.data).join("\n");
           } finally { copy.close(); }
