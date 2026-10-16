@@ -320,13 +320,25 @@ describe("continuing approved workflow steps", () => {
       const run = await f.start("work", "child-send-host");
       const child = await f.agent(run, "worker", { role: "standards", idempotency_key: "native-child-send" }).then(r => r.json());
       expect(child.pane_id).toBeString();
-      const send = (headers: Record<string, string> = { authorization: "Bearer owned-child-send", "x-herdr-factory": "1" }) => fetch(`http://localhost:${f.app.port}/api/factory-host/runs/${run.id}/operations/send-worker`, { method: "POST", headers, body: JSON.stringify({ worker_id: child.id, text: "Retain this exact child conversation" }) });
+      const send = (headers: Record<string, string> = { authorization: "Bearer owned-child-send", "x-herdr-factory": "1", "x-herdr-machine": "1" }, workerId = child.id) => fetch(`http://localhost:${f.app.port}/api/factory-host/runs/${run.id}/operations/send-worker`, { method: "POST", headers, body: JSON.stringify({ worker_id: workerId, text: "Retain this exact child conversation" }) });
       expect((await send({ "x-herdr-factory": "1" })).status).toBe(401);
       expect((await send({ authorization: "Bearer owned-child-send" })).status).toBe(403);
       await herdrRpc("pane.report_agent", { pane_id: child.pane_id, source: "manual", agent: "codex", state: "blocked" });
       expect((await send()).status).toBe(409);
       expect(prompts).toHaveLength(0);
       await herdrRpc("pane.report_agent", { pane_id: child.pane_id, source: "manual", agent: "codex", state: "idle" });
+      for (const headers of [
+        { authorization: "Bearer owned-child-send", "x-herdr-factory": "1" },
+        { authorization: "Bearer owned-child-send", "x-herdr-factory": "1", "x-herdr-machine": "0" },
+        { authorization: "Bearer owned-child-send", "x-herdr-factory": "1", "x-herdr-machine": "1", origin: "https://foreign.invalid" },
+      ] as Record<string, string>[]) {
+        const denied = await send(headers);
+        expect(denied.status).toBe(403);
+        expect((await denied.json()).error).toMatchObject({ code: "invalid_origin", message: expect.any(String) });
+        expect(prompts).toHaveLength(0);
+      }
+      expect((await send(undefined, "unowned-child")).status).toBe(409);
+      expect(prompts).toHaveLength(0);
       expect((await send()).status).toBe(200);
       expect(prompts).toEqual([child.pane_id]);
       await workspaceClose(child.workspace_id);
