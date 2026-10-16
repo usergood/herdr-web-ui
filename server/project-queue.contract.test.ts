@@ -44,7 +44,8 @@ describe("Project queue through the public API", () => {
         const worker = await f.request(`/runs/${run.id}/workers`, { role, idempotency_key: `queue-${role}` }).then(response => response.json());
         await f.request(`/runs/${run.id}/workers/${worker.id}/review-evidence`, {});
       }
-      expect((await f.request(`/runs/${run.id}/accept`, { head })).status).toBe(200);
+      const accepted = await f.request(`/runs/${run.id}/accept`, { head });
+      expect({ status: accepted.status, body: await accepted.json() }).toMatchObject({ status: 200, body: { condition: "completed" } });
       const queue = await f.request(`/projects/${f.project.id}/queue`).then(response => response.json());
       expect(queue.capacity.project_implementations).toBe(0);
       expect(queue.items[0].reasons).toContain("awaiting_delivery");

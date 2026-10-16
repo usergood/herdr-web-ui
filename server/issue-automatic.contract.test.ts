@@ -202,7 +202,8 @@ test.each(["disable", "pause", "scope", "outage", "priority", "readiness", "depe
       await fixture.json(route + "/queue", { expected_revision: queue.policy.revision, automatic_implementation: change !== "disable", paused: change === "pause" });
     } else if (change === "priority") {
       const entries = (await fixture.json(route + "/queue")).entries;
-      await fixture.json(`/implementations/${entries[1].implementation_id}/order`, { before_id: entries[0].implementation_id });
+      const rejected = await fixture.post(`/implementations/${entries[1].implementation_id}/order`, { before_id: entries[0].implementation_id });
+      expect(rejected.status).toBe(409);
     } else if (change === "readiness") {
       await fixture.json(route + "/readiness", { expected_revision: readiness.revision, account_profile_id: readiness.account_profile_id, triage_labels: {}, blocked_label: "on-hold" });
     } else {
@@ -212,9 +213,16 @@ test.each(["disable", "pause", "scope", "outage", "priority", "readiness", "depe
       expect(sync.status).toBe(change === "outage" ? 409 : 200);
     }
     release(); expect((await pending).status).toBe(200);
-    expect(fixture.launches).toEqual([]);
     const sources = (await fixture.json(route)).sources;
-    for (const source of sources) expect((await fixture.json(`/implementations/${source.implementation_id}`)).runs).toEqual([]);
+    if (change === "priority") {
+      const ordered = [...sources].sort((a: any, b: any) => a.number - b.number);
+      const runs = await Promise.all(ordered.map((source: any) => fixture.json(`/implementations/${source.implementation_id}`).then(detail => detail.runs[0])));
+      expect(runs.map(run => run.condition)).toEqual(["working", "working"]);
+      expect(fixture.launches).toEqual(runs.map(run => run.id));
+    } else {
+      expect(fixture.launches).toEqual([]);
+      for (const source of sources) expect((await fixture.json(`/implementations/${source.implementation_id}`)).runs).toEqual([]);
+    }
   } finally { release(); await pending?.catch(() => {}); fixture.close(); }
 }, 20_000);
 
@@ -236,9 +244,13 @@ test("failed automatic attempts await explicit Retry and uncertain attempts reta
     fixture.save([fixture.issue, later], false, {}, true); await fixture.renewLabels(route, [2]); await fixture.json(route + "/sync", {});
     expect((await fixture.json(route + "/queue")).implementing_count).toBe(1);
     expect(fixture.launches).toEqual([failed.id, next.id]);
-    fixture.setHostOffline(false); await fixture.json(`/runs/${next.id}/reconcile`, {}); await fixture.json(route + "/sync", {});
+    fixture.setLaunchOutcome("working"); fixture.setHostOffline(false); await fixture.json(`/runs/${next.id}/reconcile`, {}); await fixture.json(route + "/sync", {});
     expect((await fixture.json(path)).runs.at(-1)).toMatchObject({ id: next.id, condition: "working" });
-    expect(fixture.launches).toEqual([failed.id, next.id]);
+    const independent = (await fixture.json(route)).sources.find((source: any) => source.number === 2);
+    const independentRun = (await fixture.json(`/implementations/${independent.implementation_id}`)).runs[0];
+    expect(independentRun.condition).toBe("working");
+    expect(fixture.launches).toEqual([failed.id, next.id, independentRun.id]);
+    expect((await fixture.json(path)).runs.map((run: any) => run.id)).toEqual([failed.id, next.id]);
   } finally { fixture.close(); }
 }, 20_000);
 
@@ -287,7 +299,7 @@ test("independent queued work starts before another Assignment retires while ver
       if (next.implementation.activity === "awaiting_merge") break;
       await new Promise(resolve => setTimeout(resolve, 25));
     }
-    expect((await fixture.json(secondPath)).runs[0]).toMatchObject({ id: independent.id, condition: "working", manifest: { issue_admission: { source: { id: source.id } } } });
+    expect((await fixture.json(secondPath)).runs[0]).toMatchObject({ id: independent.id, condition: "ready", manifest: { issue_admission: { source: { id: source.id } } } });
     expect((await fixture.json(path)).implementation).toMatchObject({ stage: "review", activity: "awaiting_merge", outcome: "none" });
     expect((await fixture.json(secondPath)).runs).toHaveLength(1);
   } finally { fixture.close(); }

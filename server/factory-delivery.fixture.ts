@@ -21,6 +21,7 @@ export async function factoryDeliveryFixture(remote = false, reviewReports = fal
     version: async () => "owned-delivery-fixture",
     createWorkspace: async options => { const result = await herdrRpc<WorkspaceCreateResult>("workspace.create", { ...options, focus: false }); owned.push(result.workspace.workspace_id); return result; },
     startAgent: async options => { await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "idle" }); },
+    prompt: async (paneId, _text, _socket, authorize) => { if (authorize && !authorize()) throw new Error("Owned native delivery was cancelled"); await herdrRpc("pane.report_agent", { pane_id: paneId, source: "manual", agent: "codex", state: "working" }); },
     ...native,
   } } });
   let offline = false;

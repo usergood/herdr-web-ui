@@ -271,15 +271,16 @@ test("an owner-stopped automatic attempt is not relaunched by the same readiness
 test.each([false, true])("an accepted native review notification executes once even when its acknowledgment is lost (%s)", async lost => {
   const f = await reviewReworkFixture();
   try {
-    f.rest(f.run.id); f.uncertainDelivery(lost);
+    await f.restRun(); const priorDeliveries = f.deliveries.length; f.uncertainDelivery(lost);
     const sent = await f.request(f.prefix + "/request-changes", f.submission);
     expect(sent).toMatchObject({ status: 200, body: { status: lost ? "uncertain" : "sent" } });
     expect((await f.request(`/runs/${f.run.id}/reconcile`, {})).body.condition).toBe("working");
     expect((await f.request(f.prefix + "/request-changes", f.submission)).body.id).toBe(sent.body.id);
-    expect(f.deliveries).toHaveLength(1);
+    expect(f.deliveries).toHaveLength(priorDeliveries + 1);
+    expect(f.deliveries.at(-1)).toContain(`Request changes batch ${sent.body.id}`);
     expect((await f.request(`/runs/${f.run.id}/stop`, {})).body.condition).toBe("cancelled");
     f.rest(f.run.id);
     expect((await f.request(`/runs/${f.run.id}/reconcile`, {})).body.condition).toBe("cancelled");
-    expect(f.deliveries).toHaveLength(1);
+    expect(f.deliveries).toHaveLength(priorDeliveries + 1);
   } finally { f.close(); }
 }, 30_000);

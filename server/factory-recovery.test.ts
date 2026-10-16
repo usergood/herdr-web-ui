@@ -16,11 +16,12 @@ test("accepted integration supersedes earlier worker content, while missing deli
     f.setReviewOutcome("passed");
     for (const role of ["standards", "spec"]) {
       const reviewer = (await f.request(f.workerRoute, { role, idempotency_key: "fresh-" + role })).body;
-      await f.request(`${f.workerRoute}/${reviewer.id}/review-evidence`, {});
+      expect(await f.request(`${f.workerRoute}/${reviewer.id}/review-evidence`, {})).toMatchObject({ status: 200, body: { head: check.head, outcome: "passed", axis: role } });
     }
-    f.rest(f.run.id);
-    await f.request(`/runs/${f.run.id}/reconcile`, {});
-    expect((await f.request(`/runs/${f.run.id}/accept`, { head: check.head })).status).toBe(200);
+    const rested = await f.restRun();
+    expect(["ready", "completed"]).toContain(rested.condition);
+    const accepted = await f.request(`/runs/${f.run.id}/accept`, { head: check.head });
+    expect(accepted).toMatchObject({ status: 200, body: { condition: "completed" } });
     const oid = execFileSync("git", ["-C", f.run.worktree!, "rev-parse", "HEAD:ready.txt"], { encoding: "utf8" }).trim();
     const head = check.head;
     const resources = {

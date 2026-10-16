@@ -31,7 +31,8 @@ export function githubReviewFixture() {
     const id = path.match(/runs\/([^/]+)/)?.[1]; const run = id ? runs.get(id) : undefined;
     if (!run) return null;
     const action = path.split("/").at(-1);
-    if (["completed", "cancelled", "failed"].includes(run.condition) && ["worker", "check", "refresh", "integrate"].includes(action!)) return Response.json({ error: { code: "factory_run_required", message: "The fictional host retains a stopped native lease" } }, { status: 409 });
+    if (["completed", "cancelled", "failed"].includes(run.condition) && ["worker", "check", "refresh", "integrate", "send"].includes(action!)) return Response.json({ error: { code: "factory_run_required", message: "The fictional host retains a stopped native lease" } }, { status: 409 });
+    if (action === "send") { runs.set(run.id, { ...run, condition: "working" }); return Response.json({ ok: true }); }
     if (action === "head") return headUnavailable || cleanedRuns.has(run.id) ? Response.json({ error: { code: "workspace_gone", message: "Owned historical workspace was cleaned" } }, { status: 409 }) : Response.json({ head, workspace_hash: workspaceHash });
     if (action === "cleanup") {
       cleanedRuns.add(run.id);
@@ -56,7 +57,11 @@ export function githubReviewFixture() {
     const worker = workers.get(body.worker_id);
     if (["refresh", "reconcile-worker"].includes(action!)) return worker ? Response.json(worker) : null;
     if (action === "integrate" && worker) { const next = { ...worker, condition: "completed" } as FactoryWorker; workers.set(worker.id, next); return Response.json(next); }
-    if (action === "stop-worker") return Response.json({ ok: true });
+    if (action === "transcript") return Response.json({ ...(worker ? { worker_id: worker.id } : {}), source_id: `owned-review-history:${run.id}:${worker?.id ?? "parent"}`, version: body.before ? "earlier-v1" : "latest-v1", cursor: body.before ? null : "owned-earlier-page", turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: `${body.before ? "Earlier" : "Final"} owned review context retained before closure` }] }] });
+    if (action === "stop-worker") {
+      if (worker) workers.set(worker.id, { ...worker, condition: worker.condition === "completed" ? "completed" : "cancelled" });
+      return Response.json({ ok: true });
+    }
     if (action === "check") {
       const project = (run.manifest as { project: FactoryProject }).project;
       return Response.json({ ...body.check, head, workspace_hash: workspaceHash, condition: checkCondition, commands: (checkCommands ?? [...project.setup ?? [], ...project.checks ?? []]).map((args, index) => ({ args, exit_code: checkExitCodes[index] ?? 0, output: "Owned fixture command receipt" })) });

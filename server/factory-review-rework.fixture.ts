@@ -34,6 +34,25 @@ export async function reviewReworkFixture(reportContent?: string) {
     if (report.status !== 200) throw new Error(JSON.stringify(report));
     reports.push(report.body);
   }
-  return { ...f, prefix, run, ticket, reports, workerRoute, commit, head: check.head as string,
+  // Finish the real child-summary continuation before arranging another native turn.
+  // A ready observation alone may just have queued that required summary delivery.
+  const restRun = async () => {
+    f.rest(run.id);
+    await f.request(`/runs/${run.id}/reconcile`, {});
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const current = (await f.request(prefix)).body.runs.find((entry: FactoryRun) => entry.id === run.id) as FactoryRun;
+      if (current.condition === "completed") return current;
+      if (!current.continuation || current.continuation.condition === "resumed") {
+        f.rest(run.id);
+        const settled = await f.request(`/runs/${run.id}/reconcile`, {});
+        if (["ready", "completed"].includes(settled.body.condition)) return settled.body as FactoryRun;
+      }
+      if (["uncertain", "blocked"].includes(current.continuation?.condition ?? "")) throw new Error(`Owned child summary did not finish: ${JSON.stringify(current.continuation)}`);
+      await Bun.sleep(25);
+    }
+    throw new Error("Owned child summary did not reach verified rest before the next turn");
+  };
+  return { ...f, prefix, run, ticket, reports, workerRoute, commit, restRun, head: check.head as string,
     submission: { run_id: run.id, head: check.head as string, report_ids: reports.map(report => report.id), idempotency_key: "retained-reports" } };
 }
