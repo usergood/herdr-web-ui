@@ -32,18 +32,22 @@ try {
         const original = page.getByRole("region", { name: "Admitted issue contract", exact: true }).first();
         await original.getByText("Controlled pause requested. Issue scope changed.", { exact: true }).waitFor();
         await page.getByText("Advanced controls", { exact: true }).last().click();
-        const stoppedResponse = page.waitForResponse(response => response.url().endsWith(`/runs/${run.id}/stop`) && response.request().method() === "POST");
-        await page.getByRole("button", { name: "Stop Run", exact: true }).click();
-        assert.equal((await stoppedResponse).status(), 200);
+        const [stoppedResponse] = await Promise.all([
+          page.waitForResponse(response => response.url().endsWith(`/runs/${run.id}/stop`) && response.request().method() === "POST"),
+          page.getByRole("button", { name: "Stop Run", exact: true }).click(),
+        ]);
+        assert.equal(stoppedResponse.status(), 200);
         fixture.restart(); await page.goto(fixture.origin + `/#factory/${run.implementation_id}`);
         await page.getByText("Advanced controls", { exact: true }).last().click();
         await page.getByRole("button", { name: "Reconcile Run", exact: true }).last().click();
         const actions = page.getByRole("region", { name: "Next step", exact: true });
         for (let remaining = await actions.getByLabel("Your answer", { exact: true }).count(); remaining > 0; remaining--) {
           await actions.getByLabel("Your answer", { exact: true }).first().fill("Keep produced work and use the reviewed current issue plan in a new attempt.");
-          const saved = page.waitForResponse(response => /\/questions\/[^/]+\/answer$/.test(response.url()) && response.request().method() === "POST");
-          await actions.getByRole("button", { name: "Save answer", exact: true }).first().click();
-          assert.equal((await saved).status(), 200);
+          const [saved] = await Promise.all([
+            page.waitForResponse(response => /\/questions\/[^/]+\/answer$/.test(response.url()) && response.request().method() === "POST"),
+            actions.getByRole("button", { name: "Save answer", exact: true }).first().click(),
+          ]);
+          assert.equal(saved.status(), 200);
           await actions.getByLabel("Your answer", { exact: true }).nth(remaining - 1).waitFor({ state: "detached" });
         }
         if (drift === "issue") await page.getByRole("button", { name: "Approve this issue revision", exact: true }).click();
@@ -54,15 +58,18 @@ try {
           const retained = planning.locator("details").filter({ has: page.locator("summary", { hasText: "Reused planning" }) });
           await retained.locator("summary").click();
           await retained.getByText("Public CLI greeting", { exact: true }).waitFor();
-          const renewed = page.waitForResponse(response => response.url().endsWith(path + "/approvals") && response.request().postDataJSON().kind === "testing_seams");
-          await planning.getByRole("button", { name: "Approve retained app plan for this issue revision", exact: true }).click();
-          const approval = await renewed;
+          const [approval] = await Promise.all([
+            page.waitForResponse(response => response.url().endsWith(path + "/approvals") && response.request().postDataJSON().kind === "testing_seams"),
+            planning.getByRole("button", { name: "Approve retained app plan for this issue revision", exact: true }).click(),
+          ]);
           assert.equal(approval.status(), 201);
           assert.equal(approval.request().postDataJSON().scope, "Public CLI greeting");
           await actions.getByLabel("Your answer", { exact: true }).fill("Use the explicitly reviewed Public CLI greeting seam in the successor.");
-          const answered = page.waitForResponse(response => /\/questions\/[^/]+\/answer$/.test(response.url()) && response.request().method() === "POST");
-          await actions.getByRole("button", { name: "Save answer", exact: true }).click();
-          assert.equal((await answered).status(), 200);
+          const [answered] = await Promise.all([
+            page.waitForResponse(response => /\/questions\/[^/]+\/answer$/.test(response.url()) && response.request().method() === "POST"),
+            actions.getByRole("button", { name: "Save answer", exact: true }).click(),
+          ]);
+          assert.equal(answered.status(), 200);
           await actions.getByLabel("Your answer", { exact: true }).waitFor({ state: "detached" });
           await planning.getByRole("button", { name: "Prepare issue plan", exact: true }).click();
         }
@@ -125,10 +132,18 @@ try {
       });
       await page.reload();
       await retry.waitFor(); assert.equal(await retry.isDisabled(), true);
-      await page.getByText("Advanced controls", { exact: true }).last().click();
-      const stoppedPlanning = page.waitForResponse(response => response.url().endsWith(`/runs/${planning.id}/stop`) && response.request().method() === "POST");
-      await page.getByRole("button", { name: "Stop Run", exact: true }).click();
-      assert.equal((await stoppedPlanning).status(), 200);
+      const advanced = page.locator("details").filter({ has: page.getByRole("heading", { name: "Run history", exact: true, includeHidden: true }) });
+      await advanced.locator(":scope > summary").click();
+      const runHistory = advanced.locator("section").filter({ has: page.getByRole("heading", { name: "Run history", exact: true }) });
+      const planningRun = runHistory.getByRole("article").filter({ has: page.locator("strong").filter({ hasText: /^to-spec$/ }) });
+      assert.equal(await planningRun.count(), 1);
+      await planningRun.getByText(`${planning.provider} · ${planning.machine_id} · working`, { exact: true }).waitFor();
+      assert.deepEqual((await fixture.json(path)).runs.map((run: any) => [run.id, run.action, run.condition]), [[failed.id, "implement-spec", "failed"], [planning.id, "to-spec", "working"]]);
+      const [stoppedPlanning] = await Promise.all([
+        page.waitForResponse(response => response.url().endsWith(`/runs/${planning.id}/stop`) && response.request().method() === "POST"),
+        planningRun.getByRole("button", { name: "Stop Run", exact: true }).click(),
+      ]);
+      assert.equal(stoppedPlanning.status(), 200);
       fixture.restart(); await page.goto(fixture.origin + `/#factory/${source.implementation_id}`);
       await retry.waitFor(); assert.equal(await retry.isEnabled(), true);
       fixture.setLaunchOutcome("lost");
