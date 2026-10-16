@@ -10,6 +10,39 @@ import { tmpdir } from "node:os";
 import { createServer } from "./index.ts";
 
 describe("Human Review through authenticated HTTP", () => {
+  it("launches the captured commit from the stable Project checkout and deletes its owned context after the source worktree is gone", async () => {
+    const root = mkdtempSync(join(tmpdir(), "human-review-native-")); const repo = join(root, "repo"); mkdirSync(repo);
+    const git = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    git(["init", "-b", "main"]); git(["config", "user.name", "Fixture"]); git(["config", "user.email", "fixture@example.invalid"]);
+    writeFileSync(join(repo, "result.txt"), "before\n"); git(["add", "."]); git(["commit", "-m", "Owned base"]);
+    const source = join(root, "source"); git(["worktree", "add", "-b", "owned-candidate", source]);
+    writeFileSync(join(source, "result.txt"), "after\n"); execFileSync("git", ["-C", source, "commit", "-am", "Owned candidate"], { stdio: "ignore" });
+    const candidate = execFileSync("git", ["-C", source, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    const panes: any[] = []; const workspaces: any[] = [];
+    const app = createServer({ port: 0, token: "owned-native-review", stateDir: join(root, "state"), machines: false, factory: { accountDiscoveryHome: root, native: {
+      version: async () => "owned-native-review",
+      createWorkspace: async (options: any) => { const workspace = { workspace_id: "owned-review", label: options.label }; const pane = { pane_id: "owned-review:p1", workspace_id: workspace.workspace_id, terminal_id: "owned-terminal", cwd: options.cwd, agent: "codex", agent_status: "idle" }; workspaces.push(workspace); panes.push(pane); return { workspace, root_pane: pane } as any; },
+      startAgent: async () => ({}) as any,
+      snapshot: async () => ({ panes, workspaces }) as any,
+      closeWorkspace: async () => { panes.length = 0; workspaces.length = 0; return {} as any; },
+    } } });
+    const api = (path: string, body?: unknown) => fetch(`http://localhost:${app.port}/api/${path}`, { method: body === undefined ? "GET" : "POST", headers: { authorization: "Bearer owned-native-review", "x-herdr-factory": "1", "x-herdr-machine": "1", "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    try {
+      const checkout = await api("factory-host/inspect", { path: repo }).then(r => r.json());
+      const capabilities = await api("factory/providers").then(r => r.json());
+      const now = new Date().toISOString(); const id = crypto.randomUUID(); const assignmentId = crypto.randomUUID();
+      const run = { id, created_at: now, updated_at: now, implementation_id: assignmentId, action: "work", provider: "codex", machine_id: "local", conversation_kind: "human_review", condition: "accepted", waiting_reason: null, idempotency_key: "owned-human-native", specification_id: null, graph_hash: null, base: candidate, checkout: repo, worktree: null, branch: null, workspace_id: null, pane_id: null, manifest: { skills: { hash: capabilities.skill_manifest.hash }, provider_version: "owned-native-review", checkout, project: { permission_mode: "approve_for_me" }, implementation: { title: "Owned review", description: "Discuss the captured result" }, human_review: { review: { head: candidate } } } };
+      const response = await api("factory-host/launch", { run });
+      expect(response.status).toBe(202); const launched = await response.json();
+      expect(launched.condition).toBe("working");
+      expect((await api("factory-host/inspect", { path: launched.worktree }).then(r => r.json())).head).toBe(candidate);
+      git(["worktree", "remove", source]);
+      const deleted = await api(`factory-host/runs/${id}/operations/delete`, { deletion_id: crypto.randomUUID(), implementation_id: assignmentId });
+      expect(deleted.status).toBe(200);
+      expect(await deleted.json()).toMatchObject({ condition: "deleted" });
+      expect((await api("factory-host/inspect", { path: repo }).then(r => r.json())).head).toBe(checkout.head);
+    } finally { app.stop(); rmSync(root, { recursive: true, force: true }); }
+  }, 20000);
   it("explains an older Machine bridge without launching the discussion as unrestricted direct work", async () => {
     const f = await capacityFixture({ advancingHeads: true });
     try {
@@ -63,7 +96,7 @@ describe("Human Review through authenticated HTTP", () => {
   it("replaces a confirmed stopped native assistant while retaining the same Human Review and earlier history", async () => {
     const f = await capacityFixture({ advancingHeads: true });
     try {
-      const { id, prefix, detail } = await published(f);
+      const { id, prefix, detail, run } = await published(f);
       const ready = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
       const review = ready.human_reviews[0];
       await f.api(`${prefix}/human-review/messages`, { review_id: review.id, content: "First context", idempotency_key: "first-context" });
@@ -186,7 +219,7 @@ describe("Human Review through authenticated HTTP", () => {
   it("queues discussion on normal capacity, retains replies and parks without a competing Orchestrator", async () => {
     const f = await capacityFixture({ advancingHeads: true });
     try {
-      const { id, prefix, detail } = await published(f);
+      const { id, prefix, detail, run } = await published(f);
       const d = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
       const other = await f.assignment("Occupied normal capacity");
       await f.api(`/implementations/${other}/runs`, { action: "work", idempotency_key: "occupy" });
@@ -202,7 +235,7 @@ describe("Human Review through authenticated HTTP", () => {
       f.runs.get(f.launches.at(-1)!)!.condition = "ready";
       const started = await until(detail, d => d.runs.some((r: any) => r.conversation_kind === "human_review"));
       const assistant = started.runs.find((r: any) => r.conversation_kind === "human_review");
-      expect(assistant).toMatchObject({ action: "work", capacity_pool: "normal", base: d.human_reviews[0].head });
+      expect(assistant).toMatchObject({ action: "work", capacity_pool: "normal", base: d.human_reviews[0].head, checkout: run.checkout });
       expect(started.runs.filter((r: any) => r.action === "implement-spec")).toHaveLength(1);
       const overview = await f.api("").then(r => r.json());
       expect(overview.progress.find((p: any) => p.implementation_id === id).activities).not.toContain("implementing");

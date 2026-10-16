@@ -326,12 +326,12 @@ export class FactoryExecutionHost {
     };
     try {
       const skills = verifySkills(this.skillPath());
-      const expected = run.manifest as { skills?: { hash?: string }; checkout?: { repository?: string }; provider_version?: string };
+      const expected = run.manifest as { skills?: { hash?: string }; checkout?: { repository?: string; head?: string }; provider_version?: string };
       if (expected.skills?.hash !== skills.hash || expected.provider_version !== await this.native.version(run.provider)) throw new FactoryError("host_changed", "The Machine's provider version or skill source changed after admission", 409);
       if (run.action === "implement-spec" && !(await this.capabilities((run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot)).providers.find((entry) => entry.provider === run.provider)?.factory_ready) throw new FactoryError("provider_unavailable", "The native factory contract has not passed on this Machine", 409);
       if (run.checkout) {
         const checkout = await inspectCheckout(run.checkout);
-        if (checkout.repository !== expected.checkout?.repository || checkout.head !== run.base || run.action === "implement-spec" && (await git(checkout.path, ["status", "--porcelain", "--untracked-files=all"])).trim()) throw new FactoryError("checkout_changed", "The verified checkout changed or has unpublished work; preserve it", 409);
+        if (checkout.repository !== expected.checkout?.repository || checkout.head !== (run.conversation_kind === "human_review" ? expected.checkout?.head : run.base) || run.action === "implement-spec" && (await git(checkout.path, ["status", "--porcelain", "--untracked-files=all"])).trim()) throw new FactoryError("checkout_changed", "The verified checkout changed or has unpublished work; preserve it", 409);
       }
       const root = run.checkout ? join(this.store.root, "worktrees", run.id) : join(this.store.root, "inbox", run.implementation_id, run.id);
       const worktree = join(root, run.checkout ? "integration" : "workspace");
