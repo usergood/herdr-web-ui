@@ -142,8 +142,12 @@ export class FactoryRuntime {
       return reservation;
     }).immediate();
     try {
-      const snapshot = this.store.list<import("../shared/factory.ts").NativeConversationSnapshot>("native_snapshots", id).filter(entry => (entry.worker_id ?? null) === workerId).at(-1);
-      const history = snapshot ? `Retained native snapshot ${snapshot.id} (${snapshot.source_id}).${snapshot.cursor ? " Earlier pages remain in retained Assignment history." : ""}\n` + snapshot.turns.map(turn => `${turn.role}: ${turn.parts.flatMap(part => part.kind === "text" || part.kind === "compact" ? [part.text] : []).join("\n")}`).join("\n\n").slice(-48_000) : "No native transcript page could be captured; the original provider store and all previously retained Assignment history remain preserved. Inspect the retained files and current tracker evidence before continuing.";
+      const snapshots = this.store.list<import("../shared/factory.ts").NativeConversationSnapshot>("native_snapshots", id).filter(entry => entry.run_id === id && (entry.worker_id ?? null) === workerId);
+      const capture = this.store.list<{ kind: string; data: { run_id?: string; worker_id?: string | null; source_id?: string; snapshot_ids?: string[] } }>("events", run.implementation_id).filter(event => ["native_history_retained", "native_history_unavailable"].includes(event.kind) && event.data.run_id === id && (event.data.worker_id ?? null) === workerId).at(-1);
+      const newest = capture?.kind === "native_history_retained" ? snapshots.find(entry => entry.id === capture.data.snapshot_ids?.[0] && entry.source_id === capture.data.source_id) : undefined;
+      const snapshot = newest ?? snapshots.at(-1);
+      const warning = capture?.kind === "native_history_unavailable" ? "The latest complete native history capture was unavailable; this retained page may be partial or outdated. Inspect the retained history and original native conversation before continuing.\n" : "";
+      const history = snapshot ? warning + `Retained native snapshot ${snapshot.id} (${snapshot.source_id}).${snapshot.cursor ? " Earlier pages remain in retained Assignment history." : ""}\n` + snapshot.turns.map(turn => `${turn.role}: ${turn.parts.flatMap(part => part.kind === "text" || part.kind === "compact" ? [part.text] : []).join("\n")}`).join("\n\n").slice(-48_000) : "No native transcript page could be captured; the original provider store and all previously retained Assignment history remain preserved. Inspect the retained files and current tracker evidence before continuing.";
       const result = await this.operation<FactoryRun | import("../shared/factory.ts").FactoryWorker>(run, "resume-context", { ...body, history });
       this.completeResumption(run, reserved, result);
     } catch {
