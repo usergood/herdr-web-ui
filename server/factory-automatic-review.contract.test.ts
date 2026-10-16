@@ -217,7 +217,9 @@ describe("Automatic independent review through authenticated HTTP", () => {
       const context = await f.agent(run.id, "contract").then(r => r.json());
       const original = context.review_batches.find((b: any) => b.id === repair.rework_batch_id);
       expect(original).toMatchObject({ origin: "automatic", head: standards.base, reports: [expect.objectContaining({ outcome: "failed", content: expect.stringContaining("draft on reload") }), expect.objectContaining({ outcome: "passed" })] });
-      expect(f.workerContexts.get(repair.id).review_batch).toEqual(original);
+      const repairContext = f.workerContexts.get(repair.id).review_batch;
+      expect(repairContext).toMatchObject({ id: original.id, run_id: run.id, head: original.head, report_ids: original.reports.map((report: any) => report.id), instructions: expect.stringContaining(".saurons-eye-tracker.mjs contract") });
+      expect(repairContext.reports).toBeUndefined();
       expect(fixing.conversations.find((c: any) => c.contexts.some((x: any) => x.worker_id === repair.id))).toMatchObject({ kind: "review_fixes", parent_id: `${fixing.implementation.id}:orchestrator` });
       f.restart(); f.workers.get(repair.id)!.condition = "ready";
       const freshStandards = await until(detail, d => d.workers.filter((w: any) => w.role === "standards").length === 2 && d.workers.some((w: any) => w.role === "standards" && w.condition === "working"));
