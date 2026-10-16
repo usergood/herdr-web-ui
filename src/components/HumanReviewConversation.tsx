@@ -52,3 +52,16 @@ export function HumanReviewConversation({ detail, busy, perform, history }: { de
         <details className="human-review-provenance"><summary>{t("Review snapshot")}</summary><dl><dt>{t("Review snapshot")}</dt><dd>{snapshot.id}</dd><dt>{t("Before")}</dt><dd>{snapshot.base}</dd><dt>{t("After")}</dt><dd>{snapshot.head}</dd><dt>{t("Captured workspace")}</dt><dd>{snapshot.machine_id} · {snapshot.mode} · {snapshot.hash}</dd></dl></details>
         <div className="human-review-changes"><nav aria-label={t("Changed files")}><ChangedFiles files={snapshot.files} selected={fileIndex} choose={setFileIndex} /></nav>
           <section className="human-review-diff" aria-label={t("Captured diff")}>{file ? <><h5>{file.path} · {file.status}</h5>{file.oversized ? <p role="status">{t("This file exceeds the review size limit.")}</p> : file.binary ? <p role="status">{t("Binary file: a text diff is unavailable.")}</p> : <ReviewLineComments snapshot={snapshot} file={file} busy={busy || repairing} perform={perform} compositions={compositions} setCompositions={setCompositions} />}</> : <p role="status">{t("No changed files in this snapshot.")}</p>}</section>
+        </div>
+      </>}<ReviewDrafts detail={detail} busy={busy || repairing} perform={perform} /></div>
+      <section aria-label={t("Review discussion")}>{detail.messages.filter(m => chatIds.has(m.chat_id)).map(m => <article className="factory-message" key={m.id}><p>{m.content}</p></article>)}
+        {history}
+        <form className="factory-form" onSubmit={event => { event.preventDefault(); void perform(async () => { await factoryRequest(`/implementations/${detail.implementation.id}/human-review/messages`, { review_id: review.id, content: text, idempotency_key: key }); setText(""); setKey(crypto.randomUUID()); }); }}>
+          <label>{t("Discuss this review")}<textarea className="input factory-input" value={text} maxLength={20000} required onChange={event => setText(event.target.value)} /></label>
+          <button className="btn factory-button" disabled={busy || review.condition !== "ready" || !text.trim()}>{t("Send discussion")}</button>
+        </form>
+      </section></div>
+    </>}
+    {!review && history}
+  </div>;
+}
