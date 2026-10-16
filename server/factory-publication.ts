@@ -39,13 +39,17 @@ export class FactoryPublication {
       return report?.source_id === reference.source_id ? report : null;
     }) : [];
     if (!check || check.run_id !== id || check.worker_id !== null || check.condition !== "passed" || check.head !== body.head || check.workspace_hash !== body.workspace_hash || !recipes.length || JSON.stringify(check.commands.map(c => c.args)) !== JSON.stringify(recipes) || check.commands.some(c => c.exit_code !== 0) || reports.length !== 2 || !["standards", "spec"].every(axis => reports.some(r => r?.run_id === id && r.axis === axis && r.head === body.head && r.outcome === "passed"))) throw new FactoryError("fresh_evidence_required", "Publication requires this Machine's passing configured checks and separate native Standards and Spec reports at the current head", 409);
-    const assertCurrent = async () => {
+    const assertOwned = () => {
       const lease = this.store.get<{ closing?: boolean; run: FactoryRun }>("host_leases", id);
-      if (!lease || lease.closing || lease.run.suspension) throw new FactoryError("run_stopping", "Publication stopped with its owned Run", 409);
+      if (!lease || lease.closing || lease.run.suspension || ["cancelled", "completed", "failed"].includes(lease.run.condition)) throw new FactoryError("run_stopping", "Publication stopped with its owned Run", 409);
+    };
+    const assertCurrent = async () => {
+      assertOwned();
       const current = await this.head(id);
       if (current.head !== body.head || current.workspace_hash !== body.workspace_hash) throw new FactoryError("review_stale", "Publication must cover the checked integration workspace", 409);
       const tracked = await git(run.worktree!, ["diff", "--no-ext-diff", "--no-textconv", "HEAD", "--"]);
       const untracked = (await git(run.worktree!, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0").filter(n => n && !n.startsWith(".saurons-eye-") && n !== ".opencode/agents/saurons-eye.md" && !/^(\.agents|\.claude|\.opencode)\/skills\//.test(n));
+      assertOwned();
       if (tracked || untracked.length) throw new FactoryError("dirty_integration", "Commit the checked changes before publication", 409);
     };
     await assertCurrent();
@@ -57,7 +61,7 @@ export class FactoryPublication {
     intent ??= { id: key, run_id: id, head: String(body.head), repository: policy.repository, base_branch: policy.base_branch, branch: run.branch, condition: "prepared" };
     this.store.put("host_publications", intent, id);
     const marker = `<!-- saurons-eye:${id}:${body.head} -->`;
-    const api = (args: string[]) => this.accounts!.github(frozen.account_snapshot!, args);
+    const api = (args: string[], dispatch?: () => void) => this.accounts!.github(frozen.account_snapshot!, args, () => { assertOwned(); dispatch?.(); });
     const pulls = await api(["api", `repos/${policy.repository}/pulls?state=all&head=${encodeURIComponent(policy.repository.split("/")[0] + ":" + run.branch)}&base=${encodeURIComponent(policy.base_branch)}&per_page=100`]);
     if (!Array.isArray(pulls) || pulls.length > 1) throw new FactoryError("publication_uncertain", "The owned PR lookup is ambiguous; retain the publication identity", 409);
     let pull = pulls[0] as GitHubPull | undefined;
@@ -67,13 +71,14 @@ export class FactoryPublication {
       const remote = (await git(run.worktree, ["ls-remote", "--heads", destination, `refs/heads/${run.branch}`])).trim();
       if (remote && remote.split(/\s+/)[0] !== body.head) throw new FactoryError("publication_branch_changed", "The owned remote branch has another head; preserve it", 409);
       await assertCurrent();
+      assertOwned();
       await git(run.worktree, ["push", "--", destination, `${body.head}:refs/heads/${run.branch}`]);
       await assertCurrent();
-      intent = { ...intent, condition: "sending" }; this.store.put("host_publications", intent, id);
       const title = (frozen.implementation?.title ?? frozen.project.name).replace(/[\r\n]/g, " ").slice(0, 180);
       const description = `## Summary\n\n${title}\n\n\`\`\`text\nAccepted Specification → Tickets → checks → Standards + Spec → PR\n\`\`\`\n\n## Evidence\n\n- Checked and independently reviewed commit: ${body.head}\n- Check: ${String(body.check_id)}\n- Independent reports: ${Array.isArray(body.evidence_ids) ? body.evidence_ids.join(", ") : ""}\n\n## Merge Danger\n\n**Door:** two-way\n\n**Blast Radius:** Project\n\nMerge requires separate Human Review authorization.\n\n${marker}`;
-      try { pull = await api(["api", `repos/${policy.repository}/pulls`, "--method", "POST", "-f", `title=feat: ${title}`, "-f", `head=${run.branch}`, "-f", `base=${policy.base_branch}`, "-f", `body=${description}`]) as GitHubPull; }
-      catch { throw new FactoryError("publication_uncertain", "PR creation was sent; reconcile its exact identity before any further action", 409); }
+      let sent = false;
+      try { pull = await api(["api", `repos/${policy.repository}/pulls`, "--method", "POST", "-f", `title=feat: ${title}`, "-f", `head=${run.branch}`, "-f", `base=${policy.base_branch}`, "-f", `body=${description}`], () => { intent = { ...intent!, condition: "sending" }; this.store.put("host_publications", intent, id); sent = true; }) as GitHubPull; }
+      catch (error) { if (!sent) throw error; throw new FactoryError("publication_uncertain", "PR creation was sent; reconcile its exact identity before any further action", 409); }
     }
     if (pull && !pull.body?.includes(marker) && typeof body.previous_head === "string") {
       const previous = this.store.get<PublicationIntent>("host_publications", `${id}:${body.previous_head}`);
@@ -86,12 +91,13 @@ export class FactoryPublication {
       try { await git(run.worktree, ["merge-base", "--is-ancestor", body.previous_head, String(body.head)]); }
       catch { throw new FactoryError("publication_branch_changed", "The repaired head must preserve the published history", 409); }
       await assertCurrent();
+      assertOwned();
       if (remote !== body.head) await git(run.worktree, ["push", "--", destination, `${body.head}:refs/heads/${run.branch}`]);
       await assertCurrent();
-      intent = { ...intent, condition: "sending" }; this.store.put("host_publications", intent, id);
       const description = pull.body.replace(previousMarker, marker) + `\n\nRepaired candidate: ${body.head}\nCheck: ${String(body.check_id)}\nIndependent reports: ${(body.evidence_ids as string[]).join(", ")}\nMerge still requires Human Review authorization.\n`;
-      try { await api(["api", `repos/${policy.repository}/pulls/${pull.number}`, "--method", "PATCH", "-f", `body=${description}`]); }
-      catch { throw new FactoryError("publication_uncertain", "PR update was sent; reconcile its exact identity before any further action", 409); }
+      let sent = false;
+      try { await api(["api", `repos/${policy.repository}/pulls/${pull.number}`, "--method", "PATCH", "-f", `body=${description}`], () => { intent = { ...intent!, condition: "sending" }; this.store.put("host_publications", intent, id); sent = true; }); }
+      catch (error) { if (!sent) throw error; throw new FactoryError("publication_uncertain", "PR update was sent; reconcile its exact identity before any further action", 409); }
       const updated = await api(["api", `repos/${policy.repository}/pulls?state=all&head=${encodeURIComponent(policy.repository.split("/")[0] + ":" + run.branch)}&base=${encodeURIComponent(policy.base_branch)}&per_page=100`]);
       if (!Array.isArray(updated) || updated.length !== 1) throw new FactoryError("publication_uncertain", "The updated owned PR is not yet unambiguous", 409);
       pull = updated[0] as GitHubPull;

@@ -94,8 +94,12 @@ export class FactoryExecutionHost {
     if (action === "pause") return this.pauseRun(id, String(body.pause_id));
     const run = this.store.get<{ run: FactoryRun }>("host_leases", id)?.run;
     const controlOnly = ["cleanup", "resume-status", "check-reconcile", "reconcile-worker", "stop-worker", "head", "transcript"].includes(action);
-    const environment = controlOnly ? {} : await this.accounts?.environment((run?.manifest as { account_snapshot?: AccountBindingSnapshot } | undefined)?.account_snapshot, true) ?? {};
-    const operation = withAccountEnvironment(environment, () => this.performOperation(id, action, body));
+    // Account verification is part of the owned operation too: Stop must not
+    // acknowledge shutdown while a suspended request can still dispatch work.
+    const operation = (async () => {
+      const environment = controlOnly ? {} : await this.accounts?.environment((run?.manifest as { account_snapshot?: AccountBindingSnapshot } | undefined)?.account_snapshot, true) ?? {};
+      return withAccountEnvironment(environment, () => this.performOperation(id, action, body));
+    })();
     const pending = this.operations.get(id) ?? new Set();
     pending.add(operation); this.operations.set(id, pending);
     try { return await operation; } finally { pending.delete(operation); if (!pending.size) this.operations.delete(id); }
@@ -537,6 +541,7 @@ export class FactoryExecutionHost {
     if (!childrenAttempted) await this.worktrees.stopWorkers(id);
     if (!alreadyClosed && !neverAllocated) await this.native.closeWorkspace(workspace!.workspace_id);
     await this.worktrees.stopChecks(id);
+    await Promise.allSettled([...(this.operations.get(id) ?? [])]);
     const stopped: FactoryRun = { ...run, condition: "cancelled", waiting_reason: null, updated_at: new Date().toISOString() };
     this.store.put("host_leases", { ...lease, closing: true, run: stopped }); return stopped;
   }

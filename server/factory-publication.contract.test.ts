@@ -1,12 +1,12 @@
 import { expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "./index.ts";
 import { FactoryStore } from "./factory-store.ts";
 
-it("the owned Machine publishes the exact commit and reconciles a lost GitHub create acknowledgment without another POST", async () => {
+async function publicationFixture() {
   const root = mkdtempSync(join(tmpdir(), "factory-publication-"));
   const repo = join(root, "repo"); mkdirSync(repo);
   const git = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -18,25 +18,31 @@ it("the owned Machine publishes the exact commit and reconciles a lost GitHub cr
   git(["remote", "add", "origin", "https://github.com/fictional/project.git"]);
   git(["config", `url.${bare}.insteadOf`, "https://github.com/fictional/project.git"]);
   const responses = join(root, "responses.json"); const calls = join(root, "calls.jsonl"); writeFileSync(responses, "[]");
+  const control = join(root, "control.json"); const waiting = join(root, "waiting"); const release = join(root, "release"); writeFileSync(control, "{}");
   const tool = join(root, "gh.mjs");
-  writeFileSync(tool, `import { readFileSync, writeFileSync, appendFileSync } from "node:fs";
+  writeFileSync(tool, `import { existsSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
 const args = process.argv.slice(2); appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + "\\n");
-if (args[1] === "user") { process.stdout.write(JSON.stringify({login:"fixture",id:42})); }
+const controlFile = ${JSON.stringify(control)}; const state = JSON.parse(readFileSync(controlFile,"utf8"));
+async function hold() { writeFileSync(${JSON.stringify(waiting)}, "waiting"); const deadline=Date.now()+8000; while(!existsSync(${JSON.stringify(release)})){if(Date.now()>deadline)process.exit(1); await Bun.sleep(10);} }
+if (args[1] === "user") { if (state.arm_user) await hold(); process.stdout.write(JSON.stringify({login:"fixture",id:42})); }
 else if (args.includes("PATCH")) {
+ if(state.hold_mutation) await hold();
  const saved = JSON.parse(readFileSync(${JSON.stringify(responses)},"utf8"));
  saved[0].body = args.find(a => a.startsWith("body="))?.slice(5);
  saved[0].head.sha = (await import("node:child_process")).execFileSync("git", ["--git-dir", ${JSON.stringify(bare)}, "rev-parse", ${JSON.stringify(`refs/heads/${branch}`)}], {encoding:"utf8"}).trim();
  writeFileSync(${JSON.stringify(responses)}, JSON.stringify(saved)); process.exit(1);
 }
 else if (args.includes("POST")) {
+ if(state.hold_mutation) await hold();
  const field = name => args.find(a => a.startsWith(name + "="))?.slice(name.length + 1);
  writeFileSync(${JSON.stringify(responses)}, JSON.stringify([{ number:27, html_url:"https://github.com/fictional/project/pull/27", state:"open", body:field("body"), head:{sha:${JSON.stringify(head)},ref:${JSON.stringify(branch)},repo:{full_name:"fictional/project"}}, base:{ref:"main",repo:{full_name:"fictional/project"}} }]));
  process.exit(1);
-} else process.stdout.write(readFileSync(${JSON.stringify(responses)},"utf8"));
+} else { if(state.hold_account) {state.arm_user=true;writeFileSync(controlFile,JSON.stringify(state));} process.stdout.write(readFileSync(${JSON.stringify(responses)},"utf8")); }
 `);
   const stateDir = join(root, "state");
+  let closed = false;
   const pane = { pane_id: "owned:p1", workspace_id: "owned", terminal_id: "owned-terminal", cwd: repo, agent: "codex", agent_status: "idle" };
-  const options = { port: 0, token: "owned-publication", stateDir, machines: false as const, factory: { native: { snapshot: async () => ({ panes: [pane], workspaces: [{ workspace_id: "owned", label: `saurons-eye-run-${id}` }] }) as any, paneState: async () => pane as any }, accountDiscoveryHome: root, accountTools: { github: { executable: process.execPath, args: [tool] } } } };
+  const options = { port: 0, token: "owned-publication", stateDir, machines: false as const, factory: { native: { snapshot: async () => ({ panes: closed ? [] : [pane], workspaces: closed ? [] : [{ workspace_id: "owned", label: `saurons-eye-run-${id}` }] }) as any, closeWorkspace: async () => { closed = true; return {} as any; }, paneState: async () => pane as any }, accountDiscoveryHome: root, accountTools: { github: { executable: process.execPath, args: [tool] } } } };
   let app = createServer(options);
   const headers = { authorization: "Bearer owned-publication", "content-type": "application/json", "x-herdr-factory": "1", "x-herdr-machine": "1" };
   const post = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/${path}`, { method: "POST", headers, body: JSON.stringify(body) });
@@ -46,7 +52,8 @@ else if (args.includes("POST")) {
     const accountOverview = await fetch(`http://localhost:${app.port}/api/factory/machines/local/accounts`, { headers }).then(r => r.json());
     const project = await post("factory/projects", { name: "Fixture", path: repo, machine_id: "local", provider: "codex", tracker: "app" }).then(r => r.json());
     const overview = await fetch(`http://localhost:${app.port}/api/factory`, { headers }).then(r => r.json());
-    // Fixture setup models a safely parked, checked Run owned by this Machine.
+    // Restore a fictional parked/check-reviewed Machine fixture, not provider certification.
+    // All behavioral assertions use authenticated HTTP, the fake GitHub tool and owned Git refs.
     const store = new FactoryStore(stateDir);
     const record = store.record();
     store.put("host_leases", { id, signature: "owned", run: { ...record, id, action: "implement-spec", implementation_id: "owned-assignment", provider: "codex", machine_id: "local", condition: "ready", pane_id: pane.pane_id, workspace_id: pane.workspace_id, checkout: repo, worktree: repo, branch, base: head, manifest: { project: { ...project, checks: [["bun", "-e", "process.exit(0)"]], pull_request: { repository: "fictional/project", base_branch: "main" } }, checkout: overview.checkouts[0], planning_authority: { automatic_execution: true }, account_snapshot: { host_id: accountOverview.host_id, profiles: [{ id: profile.id, revision: profile.revision, service: "github", identity: profile.verified_identity }] } } } });
@@ -56,13 +63,35 @@ else if (args.includes("POST")) {
     const current = await post(route + "head", {}).then(r => r.json());
     const checked = await post(route + "check", { check: { id: crypto.randomUUID(), run_id: id, worker_id: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), head: "", workspace_hash: "", commands: [], condition: "working" } }).then(r => r.json());
     const body = { ...current, check_id: checked.id, evidence_ids: ["owned-standards", "owned-spec"], reports: ["standards", "spec"].map(axis => ({ worker_id: `owned-${axis}`, source_id: `owned-source-${axis}` })) };
-    const untrusted = await fetch(`http://localhost:${app.port}/api/${route}publish`, { method: "POST", headers: { authorization: "Bearer owned-publication", "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    const repair = async () => {
+      writeFileSync(join(repo, "README.md"), "Repaired owned candidate\n"); git(["add", "."]);
+      git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "Owned feedback repair"]);
+      const repairedHead = git(["rev-parse", "HEAD"]);
+      const repairEvidence = new FactoryStore(stateDir);
+      for (const axis of ["standards", "spec"]) repairEvidence.put("host_review_evidence", { ...repairEvidence.record(), id: `repair-${axis}`, worker_id: `repair-${axis}`, run_id: id, axis, head: repairedHead, outcome: "passed", source_id: `repair-source-${axis}`, content: "FACTORY_REVIEW: PASS" }, id);
+      repairEvidence.close();
+      const repairedCurrent = await post(route + "head", {}).then(r => r.json());
+      const repairedCheck = await post(route + "check", { check: { id: crypto.randomUUID(), run_id: id, worker_id: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), head: "", workspace_hash: "", commands: [], condition: "working" } }).then(r => r.json());
+      const repairBody = { ...repairedCurrent, previous_head: head, check_id: repairedCheck.id, evidence_ids: ["repair-standards", "repair-spec"], reports: ["standards", "spec"].map(axis => ({ worker_id: `repair-${axis}`, source_id: `repair-source-${axis}` })) };
+      return { repairedHead, repairBody };
+    };
+    return { get app() { return app; }, get closed() { return closed; }, root, control, waiting, release, calls, responses, id, route, body, head, branch, bare, git, post, repair,
+      restart: () => { app.stop(); app = createServer(options); },
+      close: () => { writeFileSync(release, "release"); app.stop(); rmSync(root, { recursive: true, force: true }); } };
+  } catch (error) { app.stop(); rmSync(root, { recursive: true, force: true }); throw error; }
+}
+
+it("the owned Machine publishes the exact commit and reconciles a lost GitHub create acknowledgment without another POST", async () => {
+  const f = await publicationFixture();
+  const { calls, id, route, body, head, branch, bare, post } = f;
+  try {
+    const untrusted = await fetch(`http://localhost:${f.app.port}/api/${route}publish`, { method: "POST", headers: { authorization: "Bearer owned-publication", "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
     expect(untrusted.status).toBe(403);
     const forged = await post(route + "publish", { ...body, check_id: "unverified-check" });
     expect((await forged.json()).error.code).toBe("fresh_evidence_required");
     const first = await post(route + "publish", body);
     expect(first.status).toBe(409);
-    app.stop(); app = createServer(options);
+    f.restart();
     const second = await post(route + "publish", body);
     const result = await second.json();
     expect(result).not.toHaveProperty("error");
@@ -73,17 +102,9 @@ else if (args.includes("POST")) {
     // Verify the effect through Git's public interface, never the factory store.
     expect(execFileSync("git", ["--git-dir", bare, "rev-parse", `refs/heads/${branch}`], { encoding: "utf8" }).trim()).toBe(head);
     expect((await post(route + "publish", { ...body, head: "f".repeat(40) })).status).toBe(409);
-    writeFileSync(join(repo, "README.md"), "Repaired owned candidate\n"); git(["add", "."]);
-    git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "Owned feedback repair"]);
-    const repairedHead = git(["rev-parse", "HEAD"]);
-    const repairEvidence = new FactoryStore(stateDir);
-    for (const axis of ["standards", "spec"]) repairEvidence.put("host_review_evidence", { ...repairEvidence.record(), id: `repair-${axis}`, worker_id: `repair-${axis}`, run_id: id, axis, head: repairedHead, outcome: "passed", source_id: `repair-source-${axis}`, content: "FACTORY_REVIEW: PASS" }, id);
-    repairEvidence.close();
-    const repairedCurrent = await post(route + "head", {}).then(r => r.json());
-    const repairedCheck = await post(route + "check", { check: { id: crypto.randomUUID(), run_id: id, worker_id: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), head: "", workspace_hash: "", commands: [], condition: "working" } }).then(r => r.json());
-    const repairBody = { ...repairedCurrent, previous_head: head, check_id: repairedCheck.id, evidence_ids: ["repair-standards", "repair-spec"], reports: ["standards", "spec"].map(axis => ({ worker_id: `repair-${axis}`, source_id: `repair-source-${axis}` })) };
+    const { repairedHead, repairBody } = await f.repair();
     await post(route + "publish", repairBody); // Lost PATCH acknowledgment must reconcile without replay.
-    app.stop(); app = createServer(options);
+    f.restart();
     const updated = await post(route + "publish", repairBody);
     expect(await updated.json()).toMatchObject({ run_id: id, head: repairedHead, number: 27 });
     expect(updated.status).toBe(200);
@@ -92,5 +113,80 @@ else if (args.includes("POST")) {
     expect(requests.filter(args => args.includes("POST"))).toHaveLength(1);
     expect(requests.filter(args => args.includes("PATCH"))).toHaveLength(1);
 
-  } finally { app.stop(); rmSync(root, { recursive: true, force: true }); }
+  } finally { f.close(); }
+}, 20000);
+
+async function waitFor(check: () => boolean) {
+  const deadline = Date.now() + 8000;
+  while (!check()) { if (Date.now() > deadline) throw new Error("Owned publication observation deadline"); await Bun.sleep(10); }
+}
+
+it("Stop retains publication held at its final account check and prevents PR creation afterward", async () => {
+  const f = await publicationFixture(); let publishing: Promise<Response> | undefined; let stopping: Promise<Response> | undefined;
+  try {
+    writeFileSync(f.control, JSON.stringify({ hold_account: true }));
+    publishing = f.post(f.route + "publish", f.body); await waitFor(() => existsSync(f.waiting));
+    let stopAnswered = false;
+    stopping = f.post(`factory-host/runs/${f.id}/stop`, {}).then(response => { stopAnswered = true; return response; });
+    await waitFor(() => f.closed);
+    // The fake native boundary proves Stop took ownership before the final account gate opens.
+    writeFileSync(f.release, "release");
+    const stopped = await stopping; expect(stopped.status).toBe(200); expect(await stopped.json()).toMatchObject({ condition: "cancelled" });
+    const refused = await publishing; expect(refused.status).toBe(409); expect(await refused.json()).toMatchObject({ error: { code: "run_stopping" } });
+    const mutations = readFileSync(f.calls, "utf8").trim().split("\n").map(line => JSON.parse(line)).filter(args => args.includes("POST") || args.includes("PATCH"));
+    expect(mutations).toHaveLength(0); expect(stopAnswered).toBe(true);
+  } finally { writeFileSync(f.release, "release"); await publishing?.catch(() => {}); await stopping?.catch(() => {}); f.close(); }
+}, 20000);
+
+it("Stop waits for an already dispatched uncertain PR create before releasing its owned Run", async () => {
+  const f = await publicationFixture(); let publishing: Promise<Response> | undefined; let stopping: Promise<Response> | undefined;
+  try {
+    writeFileSync(f.control, JSON.stringify({ hold_mutation: true }));
+    publishing = f.post(f.route + "publish", f.body); await waitFor(() => existsSync(f.waiting));
+    stopping = f.post(`factory-host/runs/${f.id}/stop`, {}); await waitFor(() => f.closed);
+    const retained = await f.post(`factory-host/runs/${f.id}/reconcile`, {}).then(r => r.json());
+    expect(retained.condition).not.toBe("cancelled");
+    writeFileSync(f.release, "release");
+    const uncertain = await publishing; expect(uncertain.status).toBe(409); expect(await uncertain.json()).toMatchObject({ error: { code: "publication_uncertain" } });
+    expect(await (await stopping).json()).toMatchObject({ condition: "cancelled" });
+    f.restart(); expect((await f.post(f.route + "publish", f.body)).status).toBe(409);
+    const mutations = readFileSync(f.calls, "utf8").trim().split("\n").map(line => JSON.parse(line)).filter(args => args.includes("POST"));
+    expect(mutations).toHaveLength(1);
+    expect(execFileSync("git", ["--git-dir", f.bare, "rev-parse", `refs/heads/${f.branch}`], { encoding: "utf8" }).trim()).toBe(f.head);
+  } finally { writeFileSync(f.release, "release"); await publishing?.catch(() => {}); await stopping?.catch(() => {}); f.close(); }
+}, 20000);
+
+it("Stop prevents a repaired PR PATCH after its final account verification resumes", async () => {
+  const f = await publicationFixture(); let publishing: Promise<Response> | undefined; let stopping: Promise<Response> | undefined;
+  try {
+    expect((await f.post(f.route + "publish", f.body)).status).toBe(409);
+    expect((await f.post(f.route + "publish", f.body)).status).toBe(200);
+    const { repairedHead, repairBody } = await f.repair();
+    writeFileSync(f.control, JSON.stringify({ hold_account: true }));
+    publishing = f.post(f.route + "publish", repairBody); await waitFor(() => existsSync(f.waiting));
+    stopping = f.post(`factory-host/runs/${f.id}/stop`, {}); await waitFor(() => f.closed);
+    writeFileSync(f.release, "release");
+    expect(await (await stopping).json()).toMatchObject({ condition: "cancelled" });
+    const refused = await publishing;
+    const mutations = readFileSync(f.calls, "utf8").trim().split("\n").map(line => JSON.parse(line));
+    expect(mutations.filter(args => args.includes("POST"))).toHaveLength(1);
+    expect(mutations.filter(args => args.includes("PATCH"))).toHaveLength(0);
+    expect(refused.status).toBe(409); expect(await refused.json()).toMatchObject({ error: { code: "run_stopping" } });
+    expect(execFileSync("git", ["--git-dir", f.bare, "rev-parse", `refs/heads/${f.branch}`], { encoding: "utf8" }).trim()).toBe(repairedHead);
+  } finally { writeFileSync(f.release, "release"); await publishing?.catch(() => {}); await stopping?.catch(() => {}); f.close(); }
+}, 20000);
+
+it("Stop also retains publication waiting for its initial frozen account verification", async () => {
+  const f = await publicationFixture(); let publishing: Promise<Response> | undefined; let stopping: Promise<Response> | undefined;
+  try {
+    writeFileSync(f.control, JSON.stringify({ arm_user: true }));
+    publishing = f.post(f.route + "publish", f.body); await waitFor(() => existsSync(f.waiting));
+    stopping = f.post(`factory-host/runs/${f.id}/stop`, {}); await waitFor(() => f.closed);
+    expect((await f.post(`factory-host/runs/${f.id}/reconcile`, {}).then(r => r.json())).condition).not.toBe("cancelled");
+    writeFileSync(f.release, "release");
+    expect((await publishing).status).toBe(409);
+    expect(await (await stopping).json()).toMatchObject({ condition: "cancelled" });
+    expect(readFileSync(f.calls, "utf8")).not.toContain('"POST"');
+    expect(readFileSync(f.calls, "utf8")).not.toContain('"PATCH"');
+  } finally { writeFileSync(f.release, "release"); await publishing?.catch(() => {}); await stopping?.catch(() => {}); f.close(); }
 }, 20000);
