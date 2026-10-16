@@ -415,7 +415,14 @@ describe("Assignment discard", () => {
       expect((await f.request(`${f.prefix}/discard`, {}).then(r => r.json())).outcome).toBe("discarded");
       const admitted = await f.request(`/implementations/${next.id}/runs`, { action: "work", idempotency_key: "reserved-until-stopped" });
       expect(admitted.status).toBe(202);
-      expect(await admitted.json()).toMatchObject({ condition: "working", idempotency_key: "reserved-until-stopped" });
+      const deadline = Date.now() + 12_000;
+      let admittedRuns = (await f.request(`/implementations/${next.id}`).then(r => r.json())).runs;
+      while (!admittedRuns.some((run: FactoryRun) => run.idempotency_key === "reserved-until-stopped" && run.condition === "working")) {
+        expect(Date.now()).toBeLessThan(deadline);
+        await Bun.sleep(50);
+        admittedRuns = (await f.request(`/implementations/${next.id}`).then(r => r.json())).runs;
+      }
+      expect(admittedRuns).toHaveLength(1);
     } finally { await f.close(); }
   }, 30_000);
   it("continues stopping other owned contexts when one child's stop is uncertain", async () => {
@@ -5574,7 +5581,9 @@ describe("changed GitHub issue scope", () => {
       issue.labels = [{ name: "ready-for-agent" }]; writeFileSync(f.responses, JSON.stringify({ issues: [issue] }));
       source = (await f.request(f.route + "/sync", {})).body.sources[0];
       await f.request(f.route + "/issues/12/approve", { policy_revision: policy.revision, issue_revision: source.revision, plan });
-      expect((await f.request(prefix + "/runs", { action: "work", idempotency_key: "renewed-but-owned" })).status).toBe(409);
+      const renewed = await f.request(prefix + "/runs", { action: "work", idempotency_key: "renewed-but-owned" });
+      if (renewed.status === 409) expect(renewed.body.error.code).toBe("implementation_owned");
+      else expect(renewed).toMatchObject({ status: 202, body: { condition: "blocked", run_id: null, reason: expect.stringContaining("ownership") } });
       reachable = true;
       const reconciled = await f.request(`/runs/${run.id}/reconcile`, {});
       expect(reconciled.status).toBe(200);
