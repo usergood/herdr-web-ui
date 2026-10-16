@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { SUMMARY_LANGUAGES } from "../shared/update.ts";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -61,7 +62,7 @@ describe("check", () => {
       "package.json": JSON.stringify({ version, dependencies: { a: "1" } }),
       "herdr-plugin.toml": `version = "${version}"\n`,
       "CHANGELOG.md": `## [Unreleased]\n\n## [${version}]\n\n- Fixed.\n`,
-      "release-summaries.json": JSON.stringify({ [version]: Object.fromEntries(["en", "ko", "ja", "zh"].map((language) => [language, { fixed: ["Fixed."] }])) }),
+      "release-summaries.json": JSON.stringify({ [version]: Object.fromEntries(SUMMARY_LANGUAGES.map((language) => [language, { fixed: ["Fixed."] }])) }),
     });
     const worker = { "telemetry/worker.ts": "worker", "shared/telemetry.ts": "schema" };
     write({ ...metadata("1.0.0"), ...worker, "shared/machines.ts": 'export const REMOTE_BUNDLE_VERSION = "1";\n', "server/index.ts": "a", "src/App.tsx": "a",
@@ -150,6 +151,6 @@ describe("check", () => {
     expect(problems).toHaveLength(1);
     expect(problems[0]).toStartWith("telemetry/worker.ts or shared/telemetry.ts changed");
     writeFileSync(join(dir, "release-summaries.json"), "{}");
-    expect(check(dir, false).problems[0]).toContain("release-summaries.json must tell this version in: en, ko, ja, zh.");
+    expect(check(dir, false).problems[0]).toContain(`release-summaries.json must tell this version in: ${SUMMARY_LANGUAGES.join(", ")}.`);
   });
 });
