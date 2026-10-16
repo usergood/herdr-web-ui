@@ -119,14 +119,17 @@ test("preview keeps automatic creation order and becomes stale on policy, planni
   } finally { fixture.close(); }
 });
 
-test("global capacity reductions bound the effective Project limit and invalidate previews", async () => {
+test("agent capacity bounds explicit Project policy independently of build capacity and invalidates previews", async () => {
   const fixture = githubQueueFixture();
   try {
     const { route } = await fixture.setup();
     await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: false, max_implementations: 3 });
     await fixture.json(route + "/preview", {});
-    await fixture.json("/settings", { max_implementations: 2 });
+    await fixture.json("/settings", { max_agents: 2, max_builds: 1 });
     expect(await fixture.json(route + "/queue")).toMatchObject({ policy: { max_implementations: 3 }, global_limit: 2, effective_limit: 2, preview_current: false });
+    await fixture.json(route + "/preview", {});
+    await fixture.json("/settings", { max_builds: 2 });
+    expect(await fixture.json(route + "/queue")).toMatchObject({ policy: { max_implementations: 3 }, global_limit: 2, effective_limit: 2, preview_current: true });
   } finally { fixture.close(); }
 });
 

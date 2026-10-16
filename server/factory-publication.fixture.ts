@@ -81,7 +81,8 @@ process.stdout.write(JSON.stringify(value));
     if (!checked.ok || (await checked.json()).condition !== "passed") throw new Error("Owned publication checks failed");
     for (const role of ["standards", "spec"]) {
       const worker = await f.request(`/runs/${run.id}/workers`, { role, idempotency_key: `publication-${role}` }).then(r => r.json());
-      if (!(await f.request(`/runs/${run.id}/workers/${worker.id}/review-evidence`, {})).ok) throw new Error("Owned independent publication review failed");
+      const evidence = await f.request(`/runs/${run.id}/workers/${worker.id}/review-evidence`, {});
+      if (!evidence.ok) throw new Error(`Owned independent publication review failed: ${evidence.status} ${await evidence.text()}`);
     }
   };
   const legacyPolicy = async () => {

@@ -31,6 +31,12 @@ export async function factoryDeliveryFixture(remote = false, reviewReports = fal
   const proxy = remote ? Bun.serve({ port: 0, async fetch(request) {
     const url = new URL(request.url);
     if (url.pathname.endsWith("/operations/transcript") && handoffWrite) { const write = handoffWrite; handoffWrite = null; await write(); }
+    if (reviewReports && url.pathname.endsWith("/operations/transcript")) {
+      const body = await request.clone().json() as { worker_id?: string; before?: string };
+      const runId = url.pathname.split("/runs/")[1]!.split("/")[0]!;
+      const earlier = body.before !== undefined;
+      return Response.json({ ...(body.worker_id ? { worker_id: body.worker_id } : {}), source_id: `owned-delivery-history:${runId}:${body.worker_id ?? "parent"}`, version: earlier ? "earlier-v1" : "latest-v1", cursor: earlier ? null : "owned-earlier-page", turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: `${earlier ? "Earlier" : "Final"} owned delivery context retained before verified closure` }] }] });
+    }
     if (reviewReports && url.pathname.endsWith("/operations/review-evidence")) return Response.json({ head: reviewHead, source_id: "owned-external-review", content: `Owned external review ${reviewOutcome}`, outcome: reviewOutcome });
     const response = await fetch(`http://localhost:${host.port}${url.pathname}${url.search}`, request);
     if (loseCheckResponse && url.pathname.endsWith("/operations/check")) { await response.arrayBuffer(); return new Response(null, { status: 503 }); }
