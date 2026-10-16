@@ -18,6 +18,11 @@ test("Continue retires only the exact ready planning step and freezes guarded is
   const fixture = issueContinuationFixture();
   try {
     const { path, planning, body } = await fixture.preparedPlanning();
+    const prepared = await fixture.json(path);
+    expect(prepared.questions).toEqual([]);
+    expect(prepared.github_sources[0].planning).toMatchObject({ condition: "prepared", origin: "app_plan", graph_hash: body.issue_scope.graph_hash });
+    expect(prepared.approvals).toHaveLength(3);
+    for (const approval of prepared.approvals) expect(approval.issue_scope).toMatchObject({ source_id: body.issue_scope.source_id, source_revision: body.issue_scope.source_revision });
     const response = await fixture.post(path + "/continue", body);
     expect(response.status).toBe(202);
     const run = await response.json();
@@ -190,6 +195,9 @@ test("an unrelated ready predecessor or a direct Start run_id cannot retire the 
   const fixture = issueContinuationFixture();
   try {
     const { path, planning, body, project } = await fixture.preparedPlanning();
+    const before = await fixture.json(path);
+    expect(before.questions).toEqual([]);
+    expect(before.github_sources[0].planning.condition).toBe("prepared");
     const unrelated = await fixture.json("/implementations", { title: "Unrelated planning", project_id: project.id, description: "An owned independent plan" });
     const other = await fixture.json(`/implementations/${unrelated.id}/runs`, { action: "to-spec", idempotency_key: "unrelated-ready-planning" });
     await fixture.json(`/runs/${other.id}/reconcile`, {});
@@ -198,7 +206,9 @@ test("an unrelated ready predecessor or a direct Start run_id cannot retire the 
     const direct = await fixture.post(path + "/runs", { ...body, idempotency_key: "direct-cannot-retire" });
     expect(direct.status).toBe(409); expect((await direct.json()).error.code).toBe("issue_not_eligible");
     const detail = await fixture.json(path);
-    expect(detail.runs).toHaveLength(1); expect(detail.runs[0]).toMatchObject({ id: planning.id, condition: "ready" });
+    expect(detail.runs).toEqual(before.runs); expect(detail.runs[0]).toMatchObject({ id: planning.id, condition: "ready" });
+    expect(detail.messages).toEqual(before.messages);
+    expect((await fixture.json(`/implementations/${unrelated.id}`)).runs[0]).toMatchObject({ id: other.id, condition: "ready" });
     expect(detail.events.some((event: any) => event.kind === "workflow_step_finished")).toBe(false);
   } finally { fixture.close(); }
 }, 15_000);

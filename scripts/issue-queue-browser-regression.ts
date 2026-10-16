@@ -179,8 +179,9 @@ try {
         await guarded.json(route + "/issues/1/approve", { source_revision: source.revision, policy_revision: readiness.revision });
         await guarded.json(route + "/issues/1/prepare", { source_revision: source.revision });
         const prepared = (await guarded.json(route + "/sync", {})).sources[0];
-        for (const kind of ["specification", "testing_seams"]) await guarded.json(path + "/approvals", { kind, revision: prepared.planning.specification_id, scope: "Public HTTP and real browser journeys." });
-        await guarded.json(path + "/approvals", { kind: "ticket_graph", revision: prepared.planning.graph_hash, scope: "Approved bounded greeting" });
+        const initial = await guarded.json(path);
+        assert.deepEqual(initial.approvals, []); assert.deepEqual(initial.questions, []);
+        assert.equal(prepared.planning.condition, "prepared"); assert.equal(prepared.planning.origin, "issue_body");
         await guarded.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true, max_implementations: 1 });
         guarded.setNativeIdentity();
         async function openControl() {
@@ -201,6 +202,8 @@ try {
         await openControl();
         assert(await page.getByRole("button", { name: control, exact: true }).isDisabled());
         guarded.save(); await guarded.json(route + "/sync", {});
+        assert.deepEqual((await guarded.json(path)).questions, []);
+        assert.equal((await guarded.json(path)).github_sources[0].planning.condition, "prepared");
         const queue = await guarded.json(route + "/queue");
         await guarded.json(route + "/queue", { expected_revision: queue.policy.revision, automatic_implementation: false, paused: false, max_implementations: 1 });
         await openControl();
@@ -224,6 +227,10 @@ try {
       try {
         continuation.setPlanningCondition(condition);
         const { path, planning, body, project } = await continuation.preparedPlanning();
+        const before = await continuation.json(path);
+        assert.deepEqual(before.questions, []);
+        assert.equal(before.github_sources[0].planning.condition, "prepared");
+        assert.equal(before.github_sources[0].planning.origin, "app_plan");
         await page.goto(continuation.origin + `/#factory/${planning.implementation_id}`);
         const button = page.getByRole("region", { name: "Next step", exact: true }).getByRole("button", { name: "Continue workflow", exact: true });
         await button.waitFor();
@@ -241,6 +248,10 @@ try {
           return { status: response.status, code: (await response.json()).error.code };
         }, { path, body, runId: unrelated.id });
         assert.deepEqual(rejected, { status: 409, code: "step_changed" });
+        const unchanged = await continuation.json(path);
+        assert.deepEqual(unchanged.runs, before.runs); assert.deepEqual(unchanged.messages, before.messages);
+        assert.equal(unchanged.events.some((event: any) => event.kind === "workflow_step_finished"), false);
+        assert.equal((await continuation.json(`/implementations/${other.id}`)).runs[0].condition, "ready");
         const started = page.waitForResponse(response => response.url().endsWith(path + "/continue") && response.request().method() === "POST");
         await button.click();
         const response = await started; assert.equal(response.status(), 202);
@@ -261,7 +272,10 @@ try {
     page.setDefaultTimeout(10_000); page.on("pageerror", recordPageError);
     try {
       const { path, planning, body } = await continuation.preparedPlanning("to-spec");
-      assert.deepEqual((await continuation.json(path)).approvals, []);
+      const prepared = await continuation.json(path);
+      assert.deepEqual(prepared.approvals, []); assert.deepEqual(prepared.questions, []);
+      assert.equal(prepared.github_sources[0].planning.condition, "prepared");
+      assert.equal(prepared.github_sources[0].planning.origin, "issue_body");
       continuation.setFactoryReady(false);
       await page.goto(continuation.origin + `/#factory/${planning.implementation_id}`);
       const started = page.waitForResponse(response => response.url().endsWith(path + "/continue") && response.request().method() === "POST");

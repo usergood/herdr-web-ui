@@ -241,8 +241,10 @@ test.each(["paused", "outage", "changed_scope", "unresolved_dependencies", "need
   const fixture = githubQueueFixture(true);
   try {
     const { path, source, route, readiness } = await prepared(fixture);
-    for (const kind of ["specification", "testing_seams"]) await fixture.json(path + "/approvals", { kind, revision: source.planning.specification_id, scope: "Public HTTP and real browser journeys." });
-    await fixture.json(path + "/approvals", { kind: "ticket_graph", revision: source.planning.graph_hash, scope: "Approved bounded greeting" });
+    const issueScope = { source_id: source.id, source_revision: source.revision };
+    for (const kind of ["specification", "testing_seams"]) await fixture.json(path + "/approvals", { kind, revision: source.planning.specification_id, scope: "Public HTTP and real browser journeys.", issue_scope: issueScope });
+    await fixture.json(path + "/approvals", { kind: "ticket_graph", revision: source.planning.graph_hash, scope: "Approved bounded greeting", issue_scope: issueScope });
+    expect((await fixture.json(path)).questions).toEqual([]);
     if (blocker === "paused") await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true, max_implementations: 1 });
     if (blocker === "outage") { fixture.save([fixture.issue], true); expect((await fixture.post(route + "/sync", {})).status).toBe(409); }
     if (blocker === "changed_scope" || blocker === "needs_you") {
@@ -262,10 +264,10 @@ test.each(["paused", "outage", "changed_scope", "unresolved_dependencies", "need
     for (const route of ["/runs", "/continue"]) {
       const response = await fixture.post(path + route, { action: "implement-spec", idempotency_key: "ordinary-prepared-start" + route.slice(1), run_id: null });
       expect(response.status).toBe(409);
-      // Continue can also refuse earlier because changed scope left unanswered decisions.
+      // Only an actual scope/relationship edit introduces a product question here.
       const code = (await response.json()).error.code;
       if (route === "/runs") expect(code).toBe("issue_scope_required");
-      else expect(["issue_scope_required", "answers_unready"]).toContain(code);
+      else expect(code).toBe(["changed_scope", "needs_you", "unresolved_dependencies"].includes(blocker) ? "answers_unready" : "issue_scope_required");
     }
     expect((await fixture.json(path)).runs).toEqual([]);
     expect(fixture.launches).toEqual([]);
@@ -275,26 +277,30 @@ test.each(["paused", "outage", "changed_scope", "unresolved_dependencies", "need
 test("issue preparation during an ordinary Start cannot bypass final guarded admission", async () => {
   const fixture = githubQueueFixture(true);
   let release: (() => void) | undefined;
+  let starting: Promise<Response> | undefined;
   try {
     const { route, readiness } = await fixture.setup();
     const source = (await fixture.json(route + "/sync", {})).sources[0];
     const path = `/implementations/${source.implementation_id}`;
+    const issueScope = { source_id: source.id, source_revision: source.revision };
     await fixture.json(route + "/issues/1/approve", { source_revision: source.revision, policy_revision: readiness.revision });
     const specification = await fixture.json(path + "/specifications", { content: fixture.issue.body });
-    for (const kind of ["specification", "testing_seams"]) await fixture.json(path + "/approvals", { kind, revision: specification.id, scope: "Public HTTP and real browser journeys." });
+    for (const kind of ["specification", "testing_seams"]) await fixture.json(path + "/approvals", { kind, revision: specification.id, scope: "Public HTTP and real browser journeys.", issue_scope: issueScope });
     const graph = await fixture.json(path + "/tickets", { specification_id: specification.id, tickets: [{ key: "greeting", title: "Greeting", acceptance: "Show hello", dependencies: [] }] });
-    await fixture.json(path + "/approvals", { kind: "ticket_graph", revision: graph.hash, scope: "Approved bounded greeting" });
+    await fixture.json(path + "/approvals", { kind: "ticket_graph", revision: graph.hash, scope: "Approved bounded greeting", issue_scope: issueScope });
     const gate = fixture.holdCapabilities(); release = gate.release;
-    const starting = fixture.post(path + "/runs", { action: "implement-spec", idempotency_key: "prepare-during-start" });
+    starting = fixture.post(path + "/runs", { action: "implement-spec", idempotency_key: "prepare-during-start" });
     await gate.waiting;
-    await fixture.json(route + "/issues/1/prepare", { source_revision: source.revision });
+    const prepared = await fixture.json(route + "/issues/1/prepare", { source_revision: source.revision });
+    expect(prepared.sources[0].planning.condition).toBe("prepared");
+    expect((await fixture.json(path)).questions).toEqual([]);
     await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true, max_implementations: 1 });
     gate.release();
     const refused = await starting;
     expect(refused.status).toBe(409);
     expect((await fixture.json(path)).runs).toEqual([]);
     expect(fixture.launches).toEqual([]);
-  } finally { release?.(); fixture.close(); }
+  } finally { release?.(); await starting?.catch(() => undefined); fixture.close(); }
 }, 20_000);
 
 test("explicit issue Start follows current board priority", async () => {
