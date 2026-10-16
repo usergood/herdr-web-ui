@@ -3,6 +3,16 @@ import type { ConversationTurn } from "./protocol.ts";
 import type { ProjectAccountBindings } from "./accounts.ts";
 export type FactoryProvider = "codex" | "claude" | "opencode";
 export type FactoryStage = "inbox" | "specifying" | "ready" | "running" | "review" | "done";
+export type FactoryBoardLane = "inbox" | "queued" | "running" | "needs_you" | "done";
+export type FactoryActivity = "specifying" | "implementing" | "validating" | "reviewing" | "researching" | "setting_up" | "reflecting" | "awaiting_checks" | "awaiting_release" | "awaiting_merge" | "discard_pending";
+/** A current projection; persisted stages, Runs and events remain historical records. */
+export interface FactoryBoardItem {
+  implementation_id: string; lane: FactoryBoardLane; activity: FactoryActivity | null;
+  condition: RunCondition | null; run_id: string | null; busy: boolean; waiting_reason: string | null;
+  ticket_progress: { completed: number; total: number } | null;
+  /** Hide finished sidebar entries only after all owned work is reconciled. */
+  sidebar_hidden?: boolean;
+}
 export type RunCondition = "accepted" | "working" | "ready" | "needs_you" | "blocked" | "disconnected" | "interrupted" | "failed" | "cancelled" | "completed";
 export type FactoryAction = "work" | "setup" | "grill-me" | "grill-with-docs" | "to-spec" | "to-tickets" | "implement-spec" | "retro" | "apply-retro" | "verify-provider";
 export interface FactoryRecord { id: string; created_at: string; updated_at: string }
@@ -13,11 +23,33 @@ export interface Implementation extends FactoryRecord {
   pause?: { id: string; condition: "pending" | "paused" | "resuming"; reasons: string[] };
   /** A pending permanent deletion takes precedence over execution controls. */
   deletion?: { id: string; condition: "pending"; reasons: string[]; local_cleanup?: "complete" };
+  /** Workflow activity is separate from verified delivery and the Board lane. */
+  activity?: "awaiting_merge";
+  delivery_evidence?: NonNullable<import("./github-project.ts").GitHubDependencyEdge["delivery"]> & { source_id: string; source_revision: string; requires: "merge" | "release" };
+  intake?: import("./issue-queue.ts").IssueQueueEntry;
   title: string; description: string; project_id: string | null; provider: FactoryProvider | null;
   machine_id: string | null; stage: FactoryStage; position: number;
-  outcome: "none" | "implementation_complete" | "pr_open" | "merged" | "released";
+  outcome: "none" | "implementation_complete" | "research_accepted" | "pr_open" | "merged" | "released" | "discarded";
   archived_at?: string | null;
+  discard_requested_at?: string | null;
+  /** Fixed at the first accepted Run, including its committed repository baseline. */
+  delivery_scope?: { milestone: "merge" | "release"; repository: string | null; branch: string | null; base: string | null; github_repository?: string | null };
+  completion_evidence?: { repository_changes: "none" | "changes" | "unknown"; quiescent: boolean; reason: string | null; checked_at: string };
+  delivery?: AssignmentDelivery;
+  upstream_update?: import("./upstream-releases.ts").UpstreamRelease;
 }
+export interface DeliveryChange { path: string; oid: string | null; mode: string | null; old_path?: string }
+export interface AssignmentDelivery {
+  revision: string; machine_id: string; account_profile_id: string; repository: string; branch: string;
+  pull_numbers: number[]; condition: "linked" | "needs_you" | "merged" | "released";
+  changes: DeliveryChange[];
+  pulls: { number: number; url: string; head: string; merge_commit: string; covered_paths: string[] }[];
+  branch_head?: string;
+  /** Published release whose resolved tag contains every verified delivery merge. */
+  release?: { id: number; tag: string; url: string; commit: string; published_at: string; merge_commits: string[] };
+  problem: string | null; checked_at: string | null;
+}
+export interface AssignmentDeliveryConfiguration { expected_revision: string | null; machine_id: string; account_profile_id: string; pull_numbers: number[] }
 export interface FactoryProject extends FactoryRecord {
   delivery_policy?: "merge" | "release";
   /** Explicit publication destination, frozen when the owner accepts the Specification. */
@@ -33,6 +65,9 @@ export interface FactoryProject extends FactoryRecord {
   removed_at?: string | null;
   workflow_instructions?: string;
   context_target_tokens?: number;
+  delivery_branch?: string;
+  /** Separate publication authority. Missing on older Projects means disabled. */
+  auto_publish_pr?: boolean;
 }
 export interface ProjectCheckout extends FactoryRecord {
   project_id: string; machine_id: string; path: string; repository: string; head: string;
@@ -56,7 +91,11 @@ export interface FactoryMessage extends FactoryRecord {
   content: string; source_id: string | null; sequence: number | null;
 }
 export interface FactoryEvent extends FactoryRecord { implementation_id: string | null; kind: string; data: unknown }
-export interface SpecificationVersion extends FactoryRecord { implementation_id: string; revision: number; content: string; hash: string; presentation_run_id?: string }
+export interface SpecificationVersion extends FactoryRecord {
+  implementation_id: string; revision: number; content: string; hash: string; presentation_run_id?: string;
+  /** The detected release this revision proposes to prepare; never a moving candidate. */
+  upstream_update?: import("./upstream-releases.ts").UpstreamRelease;
+}
 export interface FactoryTicket extends FactoryRecord {
   implementation_id: string; specification_id: string; title: string; acceptance: string;
   dependencies: string[]; status: "proposed" | "ready" | "working" | "review" | "done";
@@ -67,6 +106,10 @@ export interface FactoryApproval extends FactoryRecord {
   automatic_execution?: boolean;
   implementation_id: string; kind: "specification" | "testing_seams" | "ticket_graph" | "review" | "shared_understanding"; revision: string; scope: string;
   provenance?: { kind: "button" | "owner_chat" | "native_chat"; specification_hash: string; message_id?: string; run_id?: string; snapshot_id?: string; source_id?: string; turn_ts?: string };
+  /** Issue scope observed by the app at this explicit planning decision; absent on legacy receipts. */
+  issue_scope?: { source_id: string; source_revision: string; scope_hash?: string };
+  /** Trusted readiness receipt reused by the Project issue workflow. */
+  source_approval_id?: string;
 }
 export interface FactoryExecutionPlan extends FactoryRecord {
   run_id: string; specification_id: string; hash: string; testing_plan: string; tickets: FactoryTicket[];
@@ -136,16 +179,25 @@ export interface FactoryRun extends FactoryRecord {
   conversation_kind?: "human_review";
   /** Missing on saved Runs from before the shared planning allowance: normal. */
   capacity_pool?: "normal" | "planning";
+  /** Execution was reconciled at this checked revision; owner acceptance remains separate. */
+  implementation_completion?: { head: string; workspace_hash: string; check_id: string; standards_id: string; spec_id: string };
+  implementation_completion_pending?: boolean;
   implementation_id: string; action: FactoryAction; provider: FactoryProvider; machine_id: string;
   condition: RunCondition; waiting_reason: string | null; idempotency_key: string;
   specification_id: string | null; graph_hash: string | null; base: string | null;
   checkout: string | null; worktree: string | null; branch: string | null;
   workspace_id: string | null; pane_id: string | null; manifest: unknown;
+  retry_of?: string;
+  issue_pause?: import("./issue-admission.ts").IssuePause;
+  scope_pause?: { source_id: string; approved_revision: string; observed_revision: string; condition: "requested" | "paused" | "uncertain"; reason: string };
+  accepted_result?: { head: string; workspace_hash: string; check_id: string; review_ids: string[]; question_revision: string };
 }
+/** Frozen manifest.rework source for an explicit Retry; the retired lease stays closed. */
+export interface FactoryRework { run_id: string; head: string; workspace_hash: string }
 export interface ReviewSnapshot extends FactoryRecord {
   implementation_id: string; run_id: string | null; machine_id: string; repository: string;
   mode: "branch" | "workspace"; base: string; head: string; hash: string;
-  files: { path: string; old_path?: string; status: string; diff: string; binary: boolean; oversized: boolean }[];
+  files: { path: string; status: string; diff: string; binary: boolean; oversized: boolean; new_oid?: string | null; new_mode?: string | null; old_path?: string }[];
 }
 export interface ReviewComment extends FactoryRecord {
   implementation_id: string; run_id: string | null; snapshot_id: string; path: string; change: string;
@@ -227,6 +279,11 @@ export interface FactoryDetail {
   execution_plans?: FactoryExecutionPlan[];
   capacity_waiting?: FactoryCapacityWait[];
   conversations?: FactoryConversation[];
+  /** Absent on older servers. Source observations are separate from notes and frozen Runs. */
+  github_sources?: import("./github-project.ts").ProjectGitHubSource[];
+  github_sync?: { last_sync: string | null; problem: string | null } | null;
+  /** Absent on older bridges. */
+  board?: FactoryBoardItem;
   graph_hash: string; question_revision: string;
   /** Current decision scope; full historical questions remain in questions below. */
   question_context?: { revision: string; questions: FactoryQuestion[]; run_id: string | null };
@@ -235,11 +292,12 @@ export interface FactoryDetail {
   questions: FactoryQuestion[]; artifacts: FactoryArtifact[]; runs: FactoryRun[];
   snapshots: ReviewSnapshot[]; comments: ReviewComment[]; events: FactoryEvent[];
   workers: FactoryWorker[]; checks: FactoryCheck[]; review_evidence: FactoryReviewEvidence[];
+  review_batches?: import("./protocol.ts").FactoryBatchReceipt[];
   frontier: FactoryTicket[];
   retrospectives: FactoryRetrospective[];
   native_snapshots: NativeConversationSnapshot[];
 }
-export interface FactoryOverview { implementations: Implementation[]; projects: FactoryProject[]; checkouts: (Omit<ProjectCheckout, "instructions"> & { instructions?: ProjectCheckout["instructions"] })[]; settings: FactorySettings; activity: { implementation_id: string; run_id: string; condition: RunCondition; action: FactoryAction; waiting_reason: string | null; completed_tickets: number; total_tickets: number }[] }
+export interface FactoryOverview { implementations: FactoryImplementationSummary[]; projects: FactoryProject[]; checkouts: (Omit<ProjectCheckout, "instructions"> & { instructions?: ProjectCheckout["instructions"] })[]; settings: FactorySettings; activity: { implementation_id: string; run_id: string; condition: RunCondition; action: FactoryAction; waiting_reason: string | null; completed_tickets: number; total_tickets: number }[] }
 export interface FactoryPaneLink {
   project_id?: string | null;
   worktree: string | null; workspace_id: string | null;
@@ -248,9 +306,9 @@ export interface FactoryPaneLink {
   title: string; condition: RunCondition;
 }
 export interface FactoryPaneArchive extends FactoryRecord { machine_id: string; pane_id: string; terminal_id?: string; session_ref?: string | null; title?: string; archived_at: string | null }
-export interface FactoryOverview { pane_links?: FactoryPaneLink[]; pane_archives?: FactoryPaneArchive[]; conversations?: FactoryConversation[] }
+export interface FactoryOverview { pane_links?: FactoryPaneLink[]; pane_archives?: FactoryPaneArchive[]; conversations?: FactoryConversation[]; board?: FactoryBoardItem[] }
 export interface FactoryProviderCapability { provider: FactoryProvider; version: string | null; installed: boolean; skills_verified: boolean; factory_ready: boolean; reasons: string[] }
-export interface FactoryCapabilities { providers: FactoryProviderCapability[]; skill_manifest: { commit: string; hash: string; file_count: number } | null; factory_host_protocol: 1; human_review_protocol?: 1; project_reference_protocol?: 1; account_profile_protocol?: 1 }
+export interface FactoryCapabilities { providers: FactoryProviderCapability[]; skill_manifest: { commit: string; hash: string; file_count: number } | null; factory_host_protocol: 1; human_review_protocol?: 1; implementation_rework_protocol?: 1; project_reference_protocol?: 1; account_profile_protocol?: 1 }
 export interface FactoryOutput { name: string; media_type: string; hash: string; size: number }
 export interface FactoryWorker extends FactoryRecord {
   /** The Machine merged this candidate; central progress/cleanup still needs its receipt. */
@@ -294,12 +352,26 @@ export interface NativeConversationSnapshot extends FactoryRecord {
 }
 
 /** Public board projection; counts cover the complete current Ticket scope. */
-export type FactoryBoardLane = "inbox" | "queued" | "running" | "needs_you" | "done";
-export type FactoryActivity = "specifying" | "implementing" | "testing" | "auto_review" | "fixing";
+export type FactoryAssignmentActivity = "specifying" | "implementing" | "testing" | "auto_review" | "fixing";
 export interface FactoryAssignmentProgress {
-  implementation_id: string; lane: FactoryBoardLane; activities: FactoryActivity[];
+  implementation_id: string; lane: FactoryBoardLane; activities: FactoryAssignmentActivity[];
   counts: { waiting: number; running: number; completed: number };
   tickets: { ticket_id: string; title: string; state: "waiting" | "running" | "completed"; reason: string | null }[];
   reasons: string[];
 }
 export interface FactoryOverview { progress: FactoryAssignmentProgress[] }
+/** Pollable owner decisions. Historical collections and evidence bodies are fetched on demand. */
+export type FactoryCurrent = Pick<FactoryDetail, "github_sources" | "github_sync" | "implementation" | "board" | "graph_hash" | "question_revision" | "question_context" | "specifications" | "tickets" | "approvals" | "questions" | "events" | "runs" | "conversations" | "execution_plans" | "automatic_planning" | "automatic_execution" | "automatic_review" | "capacity_waiting" | "human_reviews" | "pull_requests"> & {
+  workers: FactoryWorker[];
+  automatic_review_batches?: Omit<FactoryAutomaticReviewBatch, "reports">[];
+  /** Changes when retained data changes, including evidence outside this summary. */
+  revision: string;
+  checks: Omit<FactoryCheck, "commands">[];
+  review_evidence: Omit<FactoryReviewEvidence, "content">[];
+};
+export type FactoryReviewDetail = Pick<FactoryCurrent, "implementation" | "runs" | "checks" | "review_evidence"> & {
+  snapshots: Omit<ReviewSnapshot, "files">[];
+  comments: ReviewComment[];
+  review_batches: Omit<import("./protocol.ts").FactoryBatchReceipt, "reports">[];
+};
+export type FactoryImplementationSummary = Omit<Implementation, "description" | "delivery" | "upstream_update">;

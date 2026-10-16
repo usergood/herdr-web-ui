@@ -1,3 +1,4 @@
+import { isTerminalProtocolReply } from "./terminal-protocol-replies.ts";
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -51,7 +52,7 @@ process.stdin.on("data", chunk => {
       });
       socket.on("framesent", ({ payload }) => {
       const frame = JSON.parse(String(payload));
-      if (["secret", "submit", "input"].includes(frame.type)) sent.push(frame.type);
+      if (["secret", "submit", "input"].includes(frame.type) && !isTerminalProtocolReply(frame)) sent.push(frame.type);
       // Never retain payloads in browser-test logs either.
       });
     });

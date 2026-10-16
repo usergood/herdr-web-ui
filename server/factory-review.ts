@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import type { FactoryProject, FactoryRun, Implementation, ProjectCheckout, ReviewComment, ReviewSnapshot } from "../shared/protocol.ts";
+import type { FactoryBatchReceipt, FactoryReviewEvidence, FactoryWorker, FactoryProject, FactoryRun, Implementation, ProjectCheckout, ReviewComment, ReviewSnapshot } from "../shared/protocol.ts";
 import { FactoryError, git, hash, inspectCheckout } from "./factory-host.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { HerdrError } from "./herdr/client.ts";
@@ -48,7 +48,8 @@ export async function captureReview(path: string, base: string, mode: ReviewSnap
           let diff = oversized ? "" : await git(path, ["diff", "--no-ext-diff", "--no-textconv", "--find-renames", ...group.args, "--", ...(change.oldPath ? [change.oldPath] : []), change.path]);
           if (Buffer.byteLength(diff) > FILE_LIMIT) { diff = ""; oversized = true; }
           size += Buffer.byteLength(diff);
-          files.push({ path: change.path, ...(change.oldPath ? { old_path: change.oldPath } : {}), status: `${group.name}:${change.status}`, diff, binary: /Binary files .* differ|GIT binary patch/.test(diff), oversized });
+          const treeEntry = mode === "branch" ? (await git(path, ["ls-tree", "-z", head, "--", change.path])).split("\t")[0]?.split(" ") : undefined;
+          files.push({ path: change.path, ...(change.oldPath ? { old_path: change.oldPath } : {}), status: `${group.name}:${change.status}`, diff, binary: /Binary files .* differ|GIT binary patch/.test(diff), oversized, ...(mode === "branch" ? { new_oid: treeEntry?.[2] ?? null, new_mode: treeEntry?.[0] || null } : {}) });
         }
       }
       if (mode === "workspace") for (const name of (await git(path, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0").filter(Boolean)) {
@@ -131,6 +132,7 @@ export class FactoryReview {
     return action === "delete" ? { id: commentId } : next;
   }
   async requestChanges(id: string, body: Record<string, unknown>, send: (run: FactoryRun, text: string) => Promise<void>): Promise<{ id: string; status: string }> {
+    if (body.report_ids !== undefined) return this.requestReports(id, body, send);
     if (typeof body.idempotency_key !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.idempotency_key) || typeof body.run_id !== "string" || typeof body.snapshot_id !== "string" || !Array.isArray(body.comment_ids) || !body.comment_ids.length || body.comment_ids.length > 100 || body.comment_ids.some((value: unknown) => typeof value !== "string")) throw new FactoryError("invalid_batch", "Select a Run, snapshot and a bounded finding batch");
     const signature = hash(JSON.stringify({ run_id: body.run_id, snapshot_id: body.snapshot_id, comment_ids: body.comment_ids }));
     const previous = this.store.list<{ id: string; key: string; signature: string; status: string }>("review_batches", id).find((batch) => batch.key === body.idempotency_key);
@@ -159,4 +161,35 @@ export class FactoryReview {
     this.store.db.transaction(() => { this.store.put("review_batches", batch, id); this.store.event(id, batch.status === "sent" ? "request_changes_delivered" : "request_changes_uncertain", { batch_id: batch.id, run_id: run.id }); })();
     return batch;
   }
+  private async requestReports(id: string, body: Record<string, unknown>, send: (run: FactoryRun, text: string) => Promise<void>): Promise<FactoryBatchReceipt> {
+    if (typeof body.idempotency_key !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.idempotency_key) || typeof body.run_id !== "string" || typeof body.head !== "string" || !/^[a-f0-9]{40,64}$/.test(body.head) || body.snapshot_id !== undefined || body.comment_ids !== undefined || !Array.isArray(body.report_ids) || !body.report_ids.length || body.report_ids.length > 20 || body.report_ids.some(value => typeof value !== "string") || new Set(body.report_ids).size !== body.report_ids.length) throw new FactoryError("invalid_batch", "Select a Run, reviewed head and distinct retained reports");
+    const reportIds = [...body.report_ids as string[]].sort();
+    const signature = hash(JSON.stringify({ run_id: body.run_id, head: body.head, report_ids: reportIds }));
+    const batches = () => this.store.list<FactoryBatchReceipt>("review_batches", id);
+    const previous = batches().find(batch => batch.key === body.idempotency_key);
+    if (previous) { if (previous.signature !== signature) throw new FactoryError("batch_conflict", "This submission key belongs to another selected batch", 409); return previous; }
+    const run = this.store.get<FactoryRun>("runs", body.run_id);
+    const idea = this.store.get<Implementation>("implementations", id);
+    if (!run || run.implementation_id !== id || run.action !== "implement-spec" || !["working", "ready", "needs_you", "blocked"].includes(run.condition) || run.scope_pause || !idea || idea.archived_at || idea.discard_requested_at || idea.stage === "done") throw new FactoryError("batch_target_changed", "Select an active implementation Run for repair", 409);
+    const reports = reportIds.map(reportId => this.store.get<FactoryReviewEvidence>("review_evidence", reportId));
+    if (reports.some(report => !report || report.run_id !== run.id || report.head !== body.head || report.outcome !== "failed")) throw new FactoryError("invalid_report_selection", "Select failed reports from this Run and exact reviewed head", 409);
+    const workspace = await this.capture(id, { mode: "workspace", run_id: run.id });
+    if (workspace.head !== body.head || workspace.files.length) throw new FactoryError("review_stale", "The reviewed head changed; retain fresh reports before requesting repair", 409);
+    const batch: FactoryBatchReceipt = { ...this.store.record(), implementation_id: id, run_id: run.id, snapshot_id: null, key: body.idempotency_key, signature, status: "sending", comment_ids: [], head: body.head, report_ids: reportIds, reports: reports as FactoryReviewEvidence[] };
+    this.store.db.transaction(() => {
+      if (JSON.stringify(this.store.get("runs", run.id)) !== JSON.stringify(run) || JSON.stringify({ ...this.store.get<Implementation>("implementations", id), updated_at: null }) !== JSON.stringify({ ...idea, updated_at: null })) throw new FactoryError("batch_target_changed", "The repair target changed; refresh before sending", 409);
+      if (this.store.list<FactoryWorker>("workers", run.id).some(worker => !["completed", "cancelled", "failed"].includes(worker.condition))) throw new FactoryError("workers_active", "Stop active or uncertain workers before requesting repair", 409);
+      if (batches().some(entry => entry.key === batch.key || entry.status !== "blocked" && entry.report_ids?.some(reportId => reportIds.includes(reportId)))) throw new FactoryError("report_claimed", "A report already has a delivery receipt; inspect it before sending again", 409);
+      this.store.put("review_batches", batch, id);
+      this.store.event(id, "request_changes_submitted", { batch_id: batch.id, run_id: run.id, head: batch.head, report_ids: reportIds });
+    }).immediate();
+    const text = `Request changes batch ${batch.id} for Run ${run.id}, reviewed head ${batch.head}.\nReports: ${reportIds.join(", ")}.\n\nBefore repair, read contract through bun .saurons-eye-tracker.mjs and select review_batches entry ${batch.id}. It retains the full immutable reports, original findings and anchors. Use one fresh owned Ticket worker with review_batch_id ${batch.id}; keep the coordinator read-only. Rework requires fresh checks and separate Standards and Spec reviews before owner acceptance.`;
+    try { await send(run, text); batch.status = "sent"; }
+    catch (error) {
+      batch.status = error instanceof FactoryError && ["agent_busy", "delivery_busy", "input_draft", "run_unavailable", "native_identity_changed", "disconnected", "recovery_copy"].includes(error.code) || error instanceof HerdrError && ["agent_blocked", "agent_not_found", "agent_not_ready", "cancelled", "input_draft"].includes(error.code) ? "blocked" : "uncertain";
+    }
+    this.store.db.transaction(() => { this.store.put("review_batches", batch, id); this.store.event(id, batch.status === "sent" ? "request_changes_delivered" : "request_changes_uncertain", { batch_id: batch.id, run_id: run.id }); })();
+    return batch;
+  }
+
 }

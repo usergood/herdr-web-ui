@@ -65,6 +65,8 @@ describe("starting an Inbox idea through the public API", () => {
       await herdrRpc("pane.report_agent", { pane_id: independent.root_pane.pane_id, source: "manual", agent: "claude", state: "working" });
       expect((await fetch(`http://localhost:${app.port}/api/factory`).then(r => r.json())).capacity.contexts).toEqual([]);
       const project = await post("/projects", { name: "Capacity Project", path: repo, machine_id: "local", provider: "codex", tracker: "app" }).then(response => response.json());
+      await post("/settings", { max_builds: 6 });
+      await post(`/projects/${project.id}/queue/configure`, { expected_revision: null, max_implementations: 6, paused: false });
       const ideas: { id: string }[] = [];
       for (let index = 0; index < 8; index++) ideas.push(await post("/implementations", { title: `Owned task ${index}`, description: "", project_id: project.id }).then(response => response.json()));
       const runs: { id: string; pane_id: string; workspace_id: string }[] = [];
@@ -185,8 +187,8 @@ describe("starting an Inbox idea through the public API", () => {
       expect(execFileSync("git",["status","--porcelain"],{cwd:repo,encoding:"utf8"})).toBe("?? personal-note.txt\n");
       const again=await post(`/implementations/${idea.id}/runs`,{action:"work",idempotency_key:"owned-work"}).then(r=>r.json());expect(again.id).toBe(run.id);
       const overview=await fetch(`http://localhost:${app.port}/api/factory?navigation=1`).then(r=>r.json());expect(overview.implementations.find((i:any)=>i.id===idea.id).stage).toBe("running");
-      const finished=await post(`/implementations/${idea.id}/complete-work`,{run_id:run.id});expect(finished.status).toBe(200);expect((await finished.json()).stage).toBe("done");
-      expect((await post(`/implementations/${idea.id}/archive`,{})).status).toBe(200);
+      const finished=await post(`/implementations/${idea.id}/complete-work`,{run_id:run.id});expect(finished.status).toBe(409);expect((await finished.json()).error.code).toBe("repository_delivery_required");
+      expect((await post(`/implementations/${idea.id}/archive`,{})).status).toBe(409);
     } finally {app.stop();for(const id of owned)await workspaceClose(id).catch(()=>{});rmSync(root,{recursive:true,force:true});}
   });
   it("retains verified cleanup when the owner stops during workspace allocation",async()=>{

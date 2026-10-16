@@ -1,9 +1,11 @@
 .factory-panel { height: 100%; overflow: auto; padding: var(--space-4); background: var(--bg-panel); color: var(--text); }
-.factory-heading, .factory-actions, .factory-filters { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
+.factory-heading, .factory-heading-actions, .factory-actions, .factory-filters { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
+.factory-heading-actions { margin-left: auto; justify-content: flex-end; }
 .factory-heading h1 { margin-right: auto; font-size: var(--fs-lg); color: var(--text-strong); }
+.factory-heading h1, .factory-heading-actions { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 .factory-section { padding: var(--space-4) 0; border-bottom: var(--hairline) solid var(--border); }
 .factory-section h2, .factory-section h3 { margin-bottom: var(--space-3); color: var(--text-strong); }
-.factory-form { display: grid; gap: var(--space-3); max-width: var(--content-w); }
+.factory-form { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-3); max-width: var(--content-w); min-width: 0; }
 .factory-form label, .factory-filters label { display: grid; gap: var(--space-2); font-size: var(--fs-sm); }
 .factory-form textarea { min-height: 6rem; resize: vertical; width: 100%; }
 .factory-form fieldset { display: grid; gap: var(--space-3); border: var(--hairline) solid var(--border); border-radius: var(--radius-lg); padding: var(--space-3); min-width: 0; }
@@ -30,13 +32,18 @@
 .factory-card time { display: block; font-size: var(--fs-xs); color: var(--text-dim); }
 .factory-section fieldset label { display: block; padding: var(--space-2); }
 @media (max-width: 640px) {
-  .factory-panel { padding: var(--space-3); }
+  .factory-panel { padding: var(--space-4); }
   .factory-heading h1 { flex-basis: 100%; }
-  .factory-filters label { flex: 1 1 8rem; min-width: 0; }
-  .factory-input { font-size: var(--fs-input); }
+  .factory-heading-actions { width: 100%; }
+  .factory-heading-button { flex: 1; min-width: 0; }
+  .factory-filters { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-4); }
+  .factory-form label, .factory-filters label { min-width: 0; }
+  .factory-input { width: 100%; min-width: 0; min-height: var(--touch-target); font-size: var(--fs-input); }
+  .factory-actions { flex-direction: column; align-items: stretch; gap: var(--space-3); }
+  .factory-section summary { min-height: var(--touch-target); padding-block: var(--space-2); }
   .factory-board { grid-template-columns: 1fr; overflow: visible; }
   .factory-lane { min-height: 0; }
-  .factory-button { min-height: var(--touch-target); }
+  .factory-button { min-height: var(--touch-target); height: auto; padding-block: var(--space-2); white-space: normal; }
 }
 
 .factory-inbox-board { grid-template-columns: 1fr; max-width: var(--content-w); }

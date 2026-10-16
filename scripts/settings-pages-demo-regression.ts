@@ -81,6 +81,31 @@ try {
           page.on("pageerror", (error) => errors.push(error.message));
           await page.goto(url);
           await page.locator(".conn-live").waitFor({ state: "attached" });
+          if (width === 390 && language === "en") {
+            const contract = await page.evaluate(async () => {
+              async function request(path: string, body?: unknown) {
+                const response = await fetch("/api/factory" + path, body === undefined ? undefined : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+                return { status: response.status, body: await response.json() };
+              }
+              const project = await request("/projects", { name: "Fictional automatic queue", path: "/fictional/queue", provider: "codex" });
+              const route = `/projects/${project.body.id}/github`;
+              const config = { expected_revision: null, automatic_implementation: true, paused: true, max_implementations: 1 };
+              const missing = await request(route + "/queue", config);
+              const preview = await request(route + "/preview", {});
+              const unavailable = await request(route + "/queue", { ...config, preview_revision: preview.body.revision });
+              const current = await request(route + "/queue");
+              return { missing, preview, unavailable, current };
+            });
+            assert.equal(contract.missing.status, 409);
+            assert.equal(contract.missing.body.error.code, "queue_preview_required");
+            assert.equal(contract.preview.body.preview_current, true);
+            assert.equal(contract.unavailable.status, 409);
+            assert.equal(contract.unavailable.body.error.code, "demo_unavailable");
+            assert.equal(contract.current.body.policy.automatic_implementation, false);
+            assert.equal(contract.current.body.dispatch_problem, null);
+            console.log("PASS fictional demo automatic opt-in contract, exact preview guard and explicit execution unavailability");
+          }
+
           const terminal = page.locator(".pane-terminal");
           await terminal.waitFor({ state: "attached" });
           const lens = page.getByRole("group", { name: "Pane view", exact: true });

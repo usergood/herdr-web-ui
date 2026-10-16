@@ -1,9 +1,10 @@
-import type { FactoryCapacity, FactoryCapacityReservation, FactoryCapacityWait, FactoryCheck, FactoryRun, FactorySettings, FactoryTicket, FactoryWorker, Implementation } from "../shared/factory.ts";
+import type { FactoryApproval, FactoryCapacity, FactoryCapacityReservation, FactoryCapacityWait, FactoryCheck, FactoryRun, FactorySettings, FactoryTicket, FactoryWorker, Implementation } from "../shared/factory.ts";
 import { FactoryError } from "./factory-host.ts";
 import type { FactoryStore } from "./factory-store.ts";
 
 /** Retained ownership is independent of observed execution. */
-function consumesCapacity(context: Pick<FactoryRun, "condition" | "continuation" | "suspension">): boolean {
+function consumesCapacity(context: Pick<FactoryRun, "condition" | "continuation" | "suspension"> & Partial<Pick<FactoryRun, "scope_pause" | "implementation_completion_pending">>): boolean {
+  if (context.implementation_completion_pending || context.scope_pause && context.scope_pause.condition !== "paused") return true;
   if (["completed", "cancelled", "failed"].includes(context.condition)) return false;
   if (context.suspension) return context.suspension.condition !== "stopped";
   if (["sending", "uncertain"].includes(context.continuation?.condition ?? "")) return true;
@@ -12,7 +13,21 @@ function consumesCapacity(context: Pick<FactoryRun, "condition" | "continuation"
 }
 
 /** Only app-owned reservations count; never infer execution from the terminal roster. */
-export function factoryCapacity(store: FactoryStore, settings: FactorySettings): FactoryCapacity {
+type LegacyCapacity = { implementations: Set<string>; implementing: Set<string>; agents: number; builds: number };
+export function factoryCapacity(store: Pick<FactoryStore, "list">): LegacyCapacity;
+export function factoryCapacity(store: Pick<FactoryStore, "list">, settings: FactorySettings): FactoryCapacity;
+export function factoryCapacity(store: Pick<FactoryStore, "list">, settings?: FactorySettings): FactoryCapacity | LegacyCapacity {
+  if (!settings) {
+    const runs = store.list<FactoryRun>("runs");
+    const parents = new Map(runs.map(run => [run.id, run]));
+    const active = runs.filter(consumesCapacity);
+    const workers = store.list<FactoryWorker>("workers").filter(consumesCapacity);
+    const checks = store.list<FactoryCheck>("checks").filter(check => ["working", "interrupted"].includes(check.condition));
+    const implementing = implementingAssignments(store, runs.filter(run => run.action === "implement-spec"));
+    const implementations = new Set([...active.map(run => run.implementation_id), ...implementing]);
+    for (const child of [...workers, ...checks]) { const parent = parents.get(child.run_id); if (parent) { implementations.add(parent.implementation_id); if (["work", "implement-spec"].includes(parent.action)) implementing.add(parent.implementation_id); } }
+    return { implementations, implementing, agents: active.length + workers.length, builds: checks.length };
+  }
   const runs = store.list<FactoryRun>("runs");
   const parents = new Map(runs.map(run => [run.id, run]));
   const assignments = new Map(store.list<Implementation>("implementations").map(idea => [idea.id, idea]));
@@ -34,10 +49,22 @@ export function factoryCapacity(store: FactoryStore, settings: FactorySettings):
 }
 
 /** Call inside the same immediate transaction that records the accepted identity. */
-export function agentCapacityPool(store: FactoryStore, settings: FactorySettings, planning = false): "normal" | "planning" {
+export function agentCapacityPool(store: Pick<FactoryStore, "list">, settings: FactorySettings, planning = false): "normal" | "planning" {
   const capacity = factoryCapacity(store, settings);
   if (capacity.normal.used < capacity.normal.limit) return "normal";
   if (planning && capacity.planning.used < capacity.planning.limit) return "planning";
   const occupants = capacity.contexts.map(context => `${context.assignment_title} / ${context.label} [${context.machine_id}, ${context.provider}, ${context.condition}${context.uncertain ? ", uncertain" : ""}]${context.reason ? `: ${context.reason}` : ""}`).join("; ");
   throw new FactoryError("capacity_exhausted", `Waiting for agent capacity: normal ${capacity.normal.used}/${capacity.normal.limit}, extra planning ${capacity.planning.used}/1, builds ${capacity.builds.used}/${capacity.builds.limit}. ${occupants}`, 409);
+}
+
+/** A native completion is not evidence that checked implementation and review finished. */
+export function implementingAssignments(store: Pick<FactoryStore, "list">, runs: FactoryRun[]): Set<string> {
+  // Historical owner acceptance already retired execution before completion receipts
+  // existed. Keep that released slot without revalidating cleaned workspaces.
+  const accepted = (run: FactoryRun) => store.list<FactoryApproval>("approvals", run.implementation_id).some(approval => approval.kind === "review" && approval.scope.startsWith(`Run ${run.id};`));
+  const owners = new Set(runs.filter(run => !((run.manifest as { planning_authority?: { automatic_execution?: boolean } }).planning_authority?.automatic_execution && ["completed", "cancelled", "failed"].includes(run.condition)) && (run.implementation_completion_pending || !["completed", "failed", "cancelled"].includes(run.condition) || run.condition === "completed" && !run.implementation_completion && !accepted(run))).map(run => run.implementation_id));
+  const parents = new Map(runs.map(run => [run.id, run.implementation_id]));
+  for (const worker of store.list<FactoryWorker>("workers")) if (parents.has(worker.run_id) && !["completed", "failed", "cancelled"].includes(worker.condition)) owners.add(parents.get(worker.run_id)!);
+  for (const check of store.list<FactoryCheck>("checks")) if (parents.has(check.run_id) && ["working", "interrupted"].includes(check.condition)) owners.add(parents.get(check.run_id)!);
+  return owners;
 }

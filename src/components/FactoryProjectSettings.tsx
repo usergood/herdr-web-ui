@@ -9,6 +9,8 @@ import { ProjectFolderPicker } from "./ProjectFolderPicker.tsx";
 import { ProjectPermissions } from "./ProjectPermissions.tsx";
 import { ProjectChecks } from "./ProjectChecks.tsx";
 import { AgentModelPicker } from "./AgentModelPicker.tsx";
+import { SettingsGroup, SettingsRow, Toggle } from "./SettingsControls.tsx";
+import { accountRequest } from "../lib/accountsApi.ts";
 
 const existingCheckId = (args: string[]) => `existing:${JSON.stringify(args)}`;
 
@@ -21,6 +23,7 @@ export function FactoryProjectSettings({ project, overview, machineId, machines,
   const [prBranch, setPrBranch] = useState(project.pull_request?.base_branch ?? "main");
   const [milestone, setMilestone] = useState(project.delivery_policy ?? "merge");
   const publicationTouched = useRef(false);
+  const [deliveryBranch, setDeliveryBranch] = useState(project.delivery_branch ?? overview.checkouts.find(c => c.project_id === project.id)?.branch ?? "main");
   const [host, setHost] = useState(project.machine_id);
   const [path, setPath] = useState(overview.checkouts.find(c => c.project_id === project.id && c.machine_id === machineId)?.path ?? "");
   const [data, setData] = useState<ProjectDiscovery | null>(null);
@@ -47,9 +50,14 @@ export function FactoryProjectSettings({ project, overview, machineId, machines,
     return () => { live = false; };
   }, [checkout?.machine_id, checkout?.path]);
   return <section className="factory-section"><h3>{section === "checkout" ? t("Verify Machine checkout") : t("Project execution settings")}</h3>
+    {section === "execution" && <SettingsGroup title={t("Implementation PR")}>
+      <SettingsRow label={t("Publish implementation PRs automatically")} description={t("Only accepted Assignments with current checks and independent reviews are published. Merge approval remains manual.")}>
+        <Toggle label={t("Publish implementation PRs automatically")} checked={project.auto_publish_pr === true} disabled={busy} onChange={enabled => void perform(async () => { await accountRequest(`/projects/${project.id}/configure`, { auto_publish_pr: enabled }); })} />
+      </SettingsRow>
+    </SettingsGroup>}
     {section === "execution" && <form className="factory-form" onSubmit={event => {
       event.preventDefault(); if (!selectedHost) return;
-      void perform(async () => { await factoryRequest(`/projects/${project.id}/configure`, { delivery_policy: milestone, ...(publicationTouched.current ? { pull_request: prRepository.trim() ? { repository: prRepository.trim(), base_branch: prBranch.trim() } : null } : {}), provider, machine_id: selectedHost, permission_mode: mode, context_target_tokens: target, ...(presetTouched.current ? { execution_preset: preset } : {}), ...(data || checksTouched ? { checks: choices.filter(c => selected.includes(c.id)).map(c => c.args) } : {}), ...(!project.workflow_instructions?.trim() ? { workflow_instructions: MATT_PROJECT_WORKFLOW } : {}) }); });
+      void perform(async () => { await factoryRequest(`/projects/${project.id}/configure`, { delivery_policy: milestone, delivery_branch: deliveryBranch, ...(publicationTouched.current ? { pull_request: prRepository.trim() ? { repository: prRepository.trim(), base_branch: prBranch.trim() } : null } : {}), provider, machine_id: selectedHost, permission_mode: mode, context_target_tokens: target, ...(presetTouched.current ? { execution_preset: preset } : {}), ...(data || checksTouched ? { checks: choices.filter(c => selected.includes(c.id)).map(c => c.args) } : {}), ...(!project.workflow_instructions?.trim() ? { workflow_instructions: MATT_PROJECT_WORKFLOW } : {}) }); });
     }}>
       <label>{t("CLI agent")}<select className="select" value={provider} onChange={event => { const next = event.target.value as FactoryProvider; setProvider(next); modeTouched.current = true; presetTouched.current = true; setPreset({ model: null, reasoning: null }); setMode(next === "codex" && data?.permission_modes.codex.includes("approve_for_me") ? "approve_for_me" : "ask"); }}><option>codex</option><option>claude</option><option>opencode</option></select></label>
       <label>{t("Machine")}<select className="select" value={selectedHost} onChange={event => setHost(event.target.value)}><option value="" disabled>{t("Select a Machine")}</option>{hosts.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></label>
@@ -57,6 +65,8 @@ export function FactoryProjectSettings({ project, overview, machineId, machines,
       {selectedHost && <AgentModelPicker projectId={project.id} machineId={selectedHost} provider={provider} accountScope={JSON.stringify(project.account_bindings?.[selectedHost] ?? {})} value={preset} onChange={selection => { presetTouched.current = true; setPreset(selection); }} disabled={busy} />}
       <label>{t("Context handoff target")}<select className="select" value={target} onChange={event => setTarget(Number(event.target.value))}>{![150000, 200000].includes(target) && <option value={target}>{target.toLocaleString()}</option>}<option value={150000}>150,000</option><option value={200000}>200,000</option></select></label>
       <p className="field-hint">{t("A planning target for smaller Ticket workers, not a measured hard token limit.")}</p>
+      <SettingsGroup title={t("Delivery milestone")} note={t("Delivery settings apply to new Assignments. Started Assignments keep their frozen scope.")}><SettingsRow label={t("Delivery milestone")}><select aria-label={t("Delivery milestone")} className="select" value={milestone} onChange={event => setMilestone(event.target.value as "merge" | "release")}><option value="merge">{t("Verified merge")}</option><option value="release">{t("Containing release")}</option></select></SettingsRow>
+      <SettingsRow wide label={t("Delivery branch")}><input aria-label={t("Delivery branch")} className="input" required value={deliveryBranch} onChange={event => setDeliveryBranch(event.target.value)} /></SettingsRow></SettingsGroup>
       <ProjectChecks choices={choices} selected={selected} onChange={ids => {setChecksTouched(true);setSelected(ids);}} />{problem && <p role="status">{problem}</p>}
       <label>{t("PR repository (owner/repository)")}<input className="input" value={prRepository} onChange={event => { publicationTouched.current = true; setPrRepository(event.target.value); }} /></label>
       <label>{t("PR target branch")}<input className="input" value={prBranch} onChange={event => { publicationTouched.current = true; setPrBranch(event.target.value); }} /></label>

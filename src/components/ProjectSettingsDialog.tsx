@@ -1,5 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import { ArrowLeft, ChevronRight, Folder, GitPullRequest, KeyRound, Library, Settings, Workflow, X, type LucideIcon } from "lucide-react";
+import { ArrowLeft, ChevronRight, Folder, GitPullRequest, KeyRound, Library, ListOrdered, Settings, Workflow, X, type LucideIcon } from "lucide-react";
 import type { FactoryOverview } from "../../shared/factory.ts";
 import type { Machine } from "../../shared/machines.ts";
 import { useT } from "../lib/i18n.ts";
@@ -19,6 +19,7 @@ export function ProjectSettingsDialog({ overview, machines, projectId, refresh, 
   useSheetSwipe(surface, onClose);
   const pages: { id: ProjectSettingsPage; label: string; icon: LucideIcon }[] = projectId ? [
     { id: "general", label: t("Project"), icon: Folder }, { id: "execution", label: t("Workflow"), icon: Workflow },
+    { id: "queue", label: t("Queue"), icon: ListOrdered },
     { id: "checkout", label: t("Checkout path"), icon: Folder }, { id: "accounts", label: t("Accounts"), icon: KeyRound },
     { id: "references", label: t("Project references"), icon: Library }, { id: "github", label: "GitHub", icon: GitPullRequest },
   ] : [{ id: "general", label: t("Projects"), icon: Folder }, { id: "factory", label: t("Factory"), icon: Settings }];

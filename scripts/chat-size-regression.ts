@@ -579,7 +579,11 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
           console.log("PASS inactive attach lifecycle: held");
           continue;
         }
-        await (routed ? waitWire("in", "input-ready") : attached(page));
+        if (scenario === "mount") {
+          // An out-of-use mount may release its attempted attach before input-ready.
+          await page.waitForFunction(() => (window as unknown as { frames_: Frame[] }).frames_
+            .some(frame => frame.dir === "out" && frame.type === "attach"), undefined, { timeout: 15_000 });
+        } else await (routed ? waitWire("in", "input-ready") : attached(page));
         if (queueScenario) {
           await page.locator('.composer-status[data-status="working"]').waitFor();
           await page.locator(".composer-text").fill("lifecycle follow-up");
@@ -592,6 +596,7 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
           // No blur or visibility transition occurs after this out-of-use mount.
           await waitDetach(page);
           assert.deepEqual(await sent(page), [{ dir: "out", type: "attach", keep_size: true }]);
+          console.log("Out-of-use mount frames", (await framesOf(page)).filter(frame => ["attach", "detach", "input-ready", "resize"].includes(frame.type)));
         } else {
           // Freeze timers after the real first attach; only the release delay is advanced below.
           await pauseClock(page);
@@ -743,6 +748,7 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
       } catch (error) {
         failures.push(`${scenario}: ${String(error)}`);
         console.error(`FAIL inactive attach lifecycle: ${scenario}: ${String(error)}`);
+        if (page && !page.isClosed()) await framesOf(page).then(frames => console.error("Inactive attach frames", frames), failure => console.error("Inactive attach frames unavailable", String(failure)));
         if (error instanceof Error) console.error(error.stack);
       } finally {
         if (holder) await stopHolder(holder);

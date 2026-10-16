@@ -1,7 +1,7 @@
 import type { FactoryConversation, FactoryConversationContext, FactoryDetail, FactoryRun, FactoryWorker } from "./factory.ts";
 
 /** Read-only projection of durable provenance; never admits or starts native work. */
-export function workflowConversations(detail: Pick<FactoryDetail, "implementation" | "runs" | "workers" | "tickets" | "native_snapshots" | "execution_plans">): FactoryConversation[] {
+export function workflowConversations(detail: Pick<FactoryDetail, "implementation" | "runs" | "workers" | "tickets" | "execution_plans"> & { native_snapshots: Pick<FactoryDetail["native_snapshots"][number], "id" | "run_id" | "worker_id">[] }): FactoryConversation[] {
   const assignmentId = detail.implementation.id;
   const roots: FactoryConversation[] = (["specifications", "orchestrator", "human_review"] as const).map(kind => ({ id: `${assignmentId}:${kind}`, implementation_id: assignmentId, parent_id: null, kind, title: null, contexts: [] }));
   const conversations = [...roots];

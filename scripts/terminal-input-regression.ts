@@ -1,3 +1,4 @@
+import { isTerminalProtocolReply } from "./terminal-protocol-replies.ts";
 /** Input lifecycle adversarial cases, using an owned pane and intercepted submits. */
 import assert from "node:assert/strict";
 import type { Browser } from "playwright-core";
@@ -28,7 +29,7 @@ export async function checkTerminalInput(browser: Browser, origin: string, pane:
       if (frame.type === "submit") {
         sent.push(frame);
         acknowledge = () => socket.send(JSON.stringify({ type: "submit-result", id: frame.id, pane_id: frame.pane_id, ok: true }));
-      } else if (frame.type === "input") sent.push(frame);
+      } else if (frame.type === "input" && !isTerminalProtocolReply(frame)) sent.push(frame);
       else server.send(raw);
     });
   });

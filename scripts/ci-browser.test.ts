@@ -61,7 +61,26 @@ describe("browser lane", () => {
       { script: "scripts/factory-human-merge-browser-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/factory-human-feedback-browser-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/factory-human-conditional-browser-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/github-source-browser-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/issue-planning-browser-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/issue-queue-browser-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/issue-retry-browser-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/factory-loading-browser-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/factory-delivery-browser-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/factory-merge-browser-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/factory-publication-browser-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/factory-review-rework-browser-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/factory-history-browser-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/project-setup-browser-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/project-navigation-browser-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/project-schedules-browser-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/upstream-releases-browser-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/upstream-preparation-browser-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/project-queue-browser-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/ready-issues-browser-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/github-readiness-browser-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/github-scope-browser-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/github-issue-batches-browser-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/inbox-start-browser-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/account-profiles-browser-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/plan-browser-regression.ts", seconds: expect.any(Number), code: 0 },
@@ -81,7 +100,12 @@ describe("browser lane", () => {
   it("summarizes every script and exits zero on success without enabling local evidence", async () => {
     const { text, code, evidence } = await lane();
     expect(code).toBe(0);
-    expect(rows(text)).toHaveLength(65);
+    expect(rows(text)).toHaveLength(84);
+    expect(new Set(rows(text).map(row => row.script)).size).toBe(84);
+    expect(rows(text).map((row) => row.script)).toContain("scripts/issue-planning-browser-regression.ts");
+    expect(rows(text).map((row) => row.script)).toContain("scripts/issue-queue-browser-regression.ts");
+    expect(rows(text).map((row) => row.script)).toContain("scripts/upstream-releases-browser-regression.ts");
+    expect(rows(text).map((row) => row.script)).toContain("scripts/upstream-preparation-browser-regression.ts");
     expect(rows(text).map((row) => row.script)).toContain("scripts/portal-regression.ts");
     expect(rows(text).map((row) => row.script)).toContain("scripts/notification-icons-browser-qa.ts");
     expect(rows(text).map((row) => row.script)).toContain("scripts/agy-chat-browser-qa.ts");

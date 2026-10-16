@@ -4,12 +4,13 @@ import { projectWorkflowPrompt } from "./factory-project-policy.ts";
 import { writePrivateFile } from "./factory-files.ts";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
-import type { FactoryCapabilities, FactoryOutput, FactoryRun } from "../shared/protocol.ts";
+import type { FactoryCapabilities, FactoryOutput, FactoryRework, FactoryRun, ProjectCheckout } from "../shared/protocol.ts";
 import { HerdrError } from "./herdr/client.ts";
 import { paneRead, paneScrollInfo } from "./herdr/client.ts";
 import { claudeInputDraft, noteSubmitted, viewportShowsLive } from "./prompt.ts";
-import { FactoryError, git, hash, inspectCheckout, withinRoot } from "./factory-host.ts";
-import { factoryPaneResting, factoryAgentArguments, factoryNative, type FactoryNative } from "./factory-native.ts";
+import { CLEAN_WORKSPACE_HASH, FactoryError, git, hash, inspectCheckout, withinRoot } from "./factory-host.ts";
+import { factoryPaneResting, factoryWorkspaceGone, factoryAgentArguments, factoryNative, type FactoryNative } from "./factory-native.ts";
+import { captureReview } from "./factory-review.ts";
 import { materializeSkills, provisionFactoryAgent, provisionSkills, verifySkills, type SkillManifest } from "./factory-skills.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { paneConversation } from "./conversation.ts";
@@ -21,12 +22,14 @@ import { factoryEnvironment } from "./factory-environment.ts";
 import { materializeProjectReferences, preparedProjectReferences } from "./factory-reference-context.ts";
 import type { CodexReferenceContext, ProjectReferencePayload } from "../shared/protocol.ts";
 import type { AccountBindingSnapshot } from "../shared/accounts.ts";
+import type { ProjectIssueExecutionScope } from "../shared/github-project.ts";
 import type { MachineAccounts } from "./accounts.ts";
 import { withAccountEnvironment } from "./account-execution.ts";
 import { stagePlanningDocuments } from "./factory-planning-docs.ts";
 import { prepareFactoryPrompt } from "./factory-prompt.ts";
 import { FactoryMerge } from "./factory-merge.ts";
-import { FactoryPublication } from "./factory-publication.ts";
+import { FactoryHostPublication as FactoryPublication } from "./factory-publication.ts";
+import { publicationGitHub } from "./factory-publication-github.ts";
 import { deleteHostFiles } from "./factory-delete-host.ts";
 import { FactoryBackup } from "./factory-backup.ts";
 import { FactoryArtifacts } from "./factory-artifacts.ts";
@@ -49,16 +52,51 @@ export class FactoryExecutionHost {
   private readonly genuineNative: boolean;
   readonly worktrees: FactoryWorktrees;
   private readonly merger: FactoryMerge;
-  private readonly publication: FactoryPublication;
+  private readonly hostPublication: FactoryPublication;
   constructor(private readonly store: FactoryStore, private readonly sourcePath: () => string | null, native: Partial<FactoryNative> = {}, private readonly accounts?: MachineAccounts) {
     this.native = { ...factoryNative, ...native };
     this.genuineNative = Object.keys(native).every((key) => key === "paneState") && accounts?.native.genuine !== false;
     this.worktrees = new FactoryWorktrees(store, this.native, () => this.skillPath(), accounts);
     this.merger = new FactoryMerge(store, accounts, id => this.worktrees.head(id), id => this.reconcile(id));
-    this.publication = new FactoryPublication(store, accounts, id => this.reconcile(id), id => this.worktrees.head(id));
+    this.hostPublication = new FactoryPublication(store, accounts, id => this.reconcile(id), id => this.worktrees.head(id));
     const prepared = this.store.get<{ id: string; path: string }>("host_skills", "default"); this.preparedPath = prepared?.path ?? null;
   }
   discover(path: string) { return discoverProject(path, this.native, this.accounts?.discoveryHome); }
+  async publication(request: import("../shared/factory-publication.ts").PublicationHostRequest): Promise<unknown> {
+    if (!this.accounts || this.stopped || existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("publication_disabled", "Publication is unavailable on this bridge", 409);
+    const id = request.publication?.run_id;
+    if (!id) throw new FactoryError("invalid_publication", "Select a scoped implementation publication");
+    const operation = this.performPublication(request);
+    const pending = this.operations.get(id) ?? new Set();
+    pending.add(operation); this.operations.set(id, pending);
+    try { return await operation; } finally { pending.delete(operation); if (!pending.size) this.operations.delete(id); }
+  }
+  private async performPublication(request: import("../shared/factory-publication.ts").PublicationHostRequest): Promise<unknown> {
+    const p = request.publication;
+    if (!p || typeof p.run_id !== "string" || !p.account_snapshot || !Array.isArray(p.account_snapshot.profiles) || !["lookup", "branch", "push", "create"].includes(request.action)) throw new FactoryError("invalid_publication", "Select a scoped implementation publication");
+    const run = this.store.get<{ run: FactoryRun }>("host_leases", p?.run_id)?.run;
+    if (!run?.worktree || run.branch !== p.branch || run.base !== p.base || run.implementation_id !== p.implementation_id) throw new FactoryError("publication_scope_changed", "Publication must belong to this Run's retained branch", 409);
+    const frozen = (run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot?.profiles.find(profile => profile.service === "github");
+    if (frozen && JSON.stringify(p.account_snapshot.profiles.find(profile => profile.service === "github")) !== JSON.stringify(frozen)) throw new FactoryError("account_scope_mismatch", "Keep this Run's frozen GitHub account", 409);
+    const expected = this.store.get<{ control_revision?: number; run: FactoryRun }>("host_leases", run.id)!;
+    const authorize = () => {
+      this.assertNotDeleting(run.id);
+      const current = this.store.get<{ control_revision?: number; run: FactoryRun }>("host_leases", run.id);
+      if (this.stopped || !current || current.control_revision !== expected.control_revision || current.run.suspension || current.run.scope_pause || !["completed", "cancelled"].includes(current.run.condition)) throw new FactoryError("publication_active", "Publication ownership changed or native control is pending", 409);
+    };
+    authorize();
+    return publicationGitHub(this.accounts!, request, async () => {
+      if (!["completed", "cancelled"].includes(run.condition) || !factoryWorkspaceGone(await this.native.snapshot(), run, `saurons-eye-run-${run.id}`)) throw new FactoryError("publication_active", "Confirm that owned native work has stopped before publishing", 409);
+      const checkout = await inspectCheckout(run.worktree!);
+      const discovered = await this.discover(run.worktree!);
+      if (checkout.repository !== (run.manifest as { checkout: ProjectCheckout }).checkout.repository || discovered.github.repository?.toLowerCase() !== p.repository.toLowerCase() || checkout.branch !== p.branch || checkout.head !== p.head || (await captureReview(run.worktree!, p.base, "workspace")).files.length) throw new FactoryError("publication_scope_changed", "The reviewed repository, branch or diff changed", 409);
+      // Git URL rewrites could send an explicit GitHub URL to an unrelated remote.
+      const config = await git(run.worktree!, ["config", "--list"]);
+      if (/^url\..*\.(?:insteadof|pushinsteadof)=/im.test(config)) throw new FactoryError("publication_routing_changed", "Remove Git URL rewrite routing before scoped publication", 409);
+      const environment = await this.accounts!.environment(p.account_snapshot, true, run.worktree!);
+      await withAccountEnvironment(environment, () => { authorize(); return this.native.pushBranch({ cwd: run.worktree!, repository: p.repository, branch: p.branch, head: p.head }); });
+    }, authorize);
+  }
   async modelCatalog(provider: import("../shared/factory.ts").FactoryProvider, path: string, repository: string, snapshot?: AccountBindingSnapshot | null) {
     if (this.stopped || existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Native model reads are disabled on a stopped or restored bridge", 409);
     const checkout = await inspectCheckout(path);
@@ -183,7 +221,7 @@ export class FactoryExecutionHost {
   private async performOperation(id: string, action: string, body: Record<string, unknown>): Promise<unknown> {
     this.assertNotDeleting(id);
     if (action === "merge") return this.merger.merge(id, body);
-    if (action === "publish") return this.publication.publish(id, body);
+    if (action === "publish") return this.hostPublication.publish(id, body);
     if (action === "resume-status") {
       const prior = this.store.get<{ context: FactoryRun | FactoryWorker }>("host_resumptions", `${body.pause_id}:${body.worker_id ?? id}`);
       const target = typeof body.worker_id === "string" ? this.store.get<FactoryWorker>("host_workers", body.worker_id) : this.store.get<{ run: FactoryRun }>("host_leases", id)?.run;
@@ -305,7 +343,7 @@ export class FactoryExecutionHost {
       const reasons = [...(!version ? ["The native provider or its version is unavailable on this Machine"] : []), ...(problem ? [problem] : []), ...(!ready ? ["Verify pinned native skill loading on this provider version before factory admission"] : [])];
       return { provider, version, installed: version !== null, skills_verified: skills !== null, factory_ready: reasons.length === 0, reasons };
     }));
-    return { providers, skill_manifest: skills ? { commit: skills.commit, hash: skills.hash, file_count: skills.files.length } : null, factory_host_protocol: 1, human_review_protocol: 1, project_reference_protocol: 1, account_profile_protocol: 1 };
+    return { providers, skill_manifest: skills ? { commit: skills.commit, hash: skills.hash, file_count: skills.files.length } : null, factory_host_protocol: 1, human_review_protocol: 1, implementation_rework_protocol: 1, project_reference_protocol: 1, account_profile_protocol: 1 };
   }
   private assertReviewQuiescent(id: string): void {
     this.assertNotDeleting(id);
@@ -398,12 +436,22 @@ export class FactoryExecutionHost {
         const checkout = await inspectCheckout(run.checkout);
         if (checkout.repository !== expected.checkout?.repository || checkout.head !== (run.conversation_kind === "human_review" ? expected.checkout?.head : run.base) || run.action === "implement-spec" && (await git(checkout.path, ["status", "--porcelain", "--untracked-files=all"])).trim()) throw new FactoryError("checkout_changed", "The verified checkout changed or has unpublished work; preserve it", 409);
       }
+      const rework = (run.manifest as { rework?: FactoryRework }).rework;
+      if (rework) {
+        const retired = this.store.get<{ run: FactoryRun }>("host_leases", rework.run_id)?.run;
+        const predecessor = run.retry_of ? this.store.get<{ run: FactoryRun }>("host_leases", run.retry_of)?.run : null;
+        const inherited = predecessor?.condition === "failed" && !predecessor.worktree && predecessor.implementation_id === run.implementation_id && predecessor.provider === run.provider && predecessor.action === run.action && (predecessor.manifest as { rework?: FactoryRework }).rework?.run_id === retired?.id;
+        if (!retired || run.retry_of !== retired.id && !inherited || retired.implementation_id !== run.implementation_id || retired.provider !== run.provider || retired.action !== run.action || !["completed", "cancelled", "failed"].includes(retired.condition)
+          || (retired.manifest as { checkout?: { repository?: string } }).checkout?.repository !== expected.checkout?.repository) throw new FactoryError("rework_owned", "Recover only this Assignment's confirmed retired native lease", 409);
+        const current = await this.worktrees.head(retired.id);
+        if (current.head !== rework.head || current.workspace_hash !== rework.workspace_hash || current.workspace_hash !== CLEAN_WORKSPACE_HASH) throw new FactoryError("rework_changed", "The retained implementation changed before rework; preserve it and inspect the new attempt", 409);
+      }
       const root = run.checkout ? join(this.store.root, "worktrees", run.id) : join(this.store.root, "inbox", run.implementation_id, run.id);
       const worktree = join(root, run.checkout ? "integration" : "workspace");
       mkdirSync(root, { recursive: true, mode: 0o700 });
       if (existsSync(worktree)) throw new FactoryError("worktree_owned", "Unexpected work exists at the proposed working directory; preserve it", 409);
       const branch = run.checkout ? `saurons-eye/${run.implementation_id}/${run.id}` : null;
-      if (run.checkout) await git(run.checkout, ["worktree", "add", "-b", branch!, worktree, run.base!]); else mkdirSync(worktree, { mode: 0o700 });
+      if (run.checkout) await git(run.checkout, ["worktree", "add", "-b", branch!, worktree, rework?.head ?? run.base!]); else mkdirSync(worktree, { mode: 0o700 });
       if (realpathSync(worktree) !== worktree) throw new FactoryError("wrong_worktree", "The owned working directory changed", 409);
       run = { ...run, worktree, branch, updated_at: new Date().toISOString() }; save();
       const project = (run.manifest as { project?: { environment?: Record<string, string> } }).project;
@@ -450,9 +498,13 @@ export class FactoryExecutionHost {
       if (automaticPlanning) prompt = `${skillPrefix} Read .saurons-eye-context.json and the scoped contract for the frozen Specification and planning_authority. ${planningInstructions}`;
       if (run.action === "work") {
         const idea = (run.manifest as { implementation: import("../shared/factory.ts").Implementation }).implementation;
-        prompt = `Work on this Project idea:\n\n${idea.title}\n\n${idea.description}\n\nRead the repository's guidance and .saurons-eye-context.json for the selected Project scope. Read contract through bun .saurons-eye-tracker.mjs for retained owner messages and the notes .research-index.json for attachments. This is a direct owner-requested work session. Preserve the primary checkout; this workspace starts from its committed revision. Follow the Project's coding standards and native permissions. Ask for missing decisions in this chat. Publication and deployment require their separately authorized scope.`;
+        const issueScope = (run.manifest as { issue_scope?: ProjectIssueExecutionScope }).issue_scope;
+        const workScope = issueScope ? `${issueScope.issue.title}\n\n${issueScope.issue.body}\n\nApproved issue plan:\n${JSON.stringify(issueScope.approval.plan, null, 2)}` : `${idea.title}\n\n${idea.description}`;
+        prompt = `Work on this Project idea:\n\n${workScope}\n\nRead the repository's guidance and .saurons-eye-context.json for the selected Project scope. Read contract through bun .saurons-eye-tracker.mjs for retained owner messages and the notes .research-index.json for attachments. This is a direct owner-requested work session. Preserve the primary checkout; this workspace starts from its committed revision. Follow the Project's coding standards and native permissions. Ask for missing decisions in this chat. Publication and deployment require their separately authorized scope.`;
+        if (issueScope) prompt += " Use only the frozen approved issue requirements and testing decisions. Use the scoped tracker to ask the owner about missing requirements or any new design/testing choice, then wait for the actual answer.";
       }
       if (run.conversation_kind === "human_review") prompt = "You are the Human Review assistant. Discuss the captured candidate and the owner's message in manifest.human_review in .saurons-eye-context.json. Read the scoped contract for retained Human Review messages. This is discussion only: do not edit, allocate workers, create an Orchestrator, publish or merge. End your turn at rest while waiting for the owner; the app owns capacity and future repair dispatch.";
+      if (run.action === "implement-spec" && (run.manifest as { issue_scope?: ProjectIssueExecutionScope }).issue_scope) prompt += " Implement the frozen trusted issue scope using its reused planning and testing receipts. Do not repeat the accepted interview. Allocate bounded Ticket workers through the scoped tracker, retain Project checks and independent Standards and Spec reviews at the checked head, and ask the owner only about missing requirements or new decisions. Rest after verification so the app can release the implementing slot while awaiting manual merge. Do not merge or deploy.";
       prompt += projectWorkflowPrompt((run.manifest as { project?: import("../shared/factory.ts").FactoryProject }).project);
       if (automaticPlanning) prompt += ` App-owned automatic workflow instruction: ${planningInstructions}`;
       if (referenceContext) prompt += ` ${referenceContext.prompt}`;
@@ -530,11 +582,14 @@ export class FactoryExecutionHost {
   async stopRun(id: string, childrenAttempted = false, deleting = false): Promise<FactoryRun> {
     if (!deleting) this.assertNotDeleting(id);
     if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Native control is disabled on a restored copy", 409);
-    const lease = this.store.get<{ id: string; signature: string; run: FactoryRun }>("host_leases", id);
+    const lease = this.store.get<{ id: string; signature: string; run: FactoryRun; control_revision?: number }>("host_leases", id);
     if (!lease) throw new FactoryError("native_identity_uncertain", "This host has no owned lease to stop", 409);
-    if (!deleting && ["cancelled", "completed", "failed"].includes(lease.run.condition)) return lease.run;
+    lease.control_revision = (lease.control_revision ?? 0) + 1;
+    this.store.put("host_leases", { ...lease, closing: true });
+    if (!deleting && ["cancelled", "completed", "failed"].includes(lease.run.condition)) { await this.worktrees.stopChecks(id); if (!childrenAttempted) await this.worktrees.stopWorkers(id); await Promise.allSettled([...(this.operations.get(id) ?? [])]); return lease.run; }
     const run = lease.run;
     this.store.put("host_leases", { ...lease, closing: true });
+    await this.worktrees.stopChecks(id);
     const snapshot = await this.native.snapshot();
     const workspace = snapshot.workspaces.find((entry) => entry.workspace_id === run.workspace_id);
     const pane = snapshot.panes.find((entry) => entry.pane_id === run.pane_id);
@@ -557,6 +612,7 @@ export class FactoryExecutionHost {
     if (!alreadyClosed && !neverAllocated && (!workspace || workspace.label !== `saurons-eye-run-${id}` || !pane?.cwd || realpathSync(pane.cwd) !== run.worktree)) throw new FactoryError("native_identity_uncertain", "Verify the recorded native identity before stopping it; ownership is retained", 409);
     if (!childrenAttempted) await this.worktrees.stopWorkers(id);
     if (!alreadyClosed && !neverAllocated) await this.native.closeWorkspace(workspace!.workspace_id);
+    if (!neverAllocated && !factoryWorkspaceGone(await this.native.snapshot(), run, `saurons-eye-run-${id}`)) throw new FactoryError("native_stop_uncertain", "The native Run has not been confirmed stopped; ownership is retained", 409);
     await this.worktrees.stopChecks(id);
     await Promise.allSettled([...(this.operations.get(id) ?? [])]);
     if (!deleting) this.assertNotDeleting(id);

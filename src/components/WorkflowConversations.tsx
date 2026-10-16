@@ -1,6 +1,7 @@
-import type { ReactNode } from "react";
-import type { FactoryConversation, FactoryConversationKind, FactoryDetail } from "../../shared/factory.ts";
+import { useEffect, useState, type ReactNode } from "react";
+import type { FactoryConversation, FactoryConversationKind, FactoryCurrent, FactoryDetail } from "../../shared/factory.ts";
 import type { Machine } from "../../shared/machines.ts";
+import { factoryRead } from "../lib/factoryApi.ts";
 import { useT } from "../lib/i18n.ts";
 import { RetainedNativeTurn } from "./RetainedNativeTurn.tsx";
 import { SpecificationConversation } from "./SpecificationConversation.tsx";
@@ -31,10 +32,36 @@ export function WorkflowConversationTree({ conversations, selectedId, onSelect, 
   return render(null);
 }
 
-export function WorkflowConversations({ detail, machines, selectedId, onSelect, onOpenPane, busy, perform }: { detail: FactoryDetail; machines: Machine[]; selectedId?: string | null; onSelect: (id: string) => void; onOpenPane: (machineId: string, paneId: string) => void; busy: boolean; perform: (work: () => Promise<void>) => Promise<void> }) {
+export function WorkflowConversations({ detail, machines, selectedId, onSelect, onOpenPane, busy, perform }: { detail: FactoryCurrent; machines: Machine[]; selectedId?: string | null; onSelect: (id: string) => void; onOpenPane: (machineId: string, paneId: string) => void; busy: boolean; perform: (work: () => Promise<void>) => Promise<void> }) {
   const t = useT(); const conversations = detail.conversations ?? [];
-  const selected = conversations.find(c => c.id === selectedId && c.kind !== "reviewer") ?? conversations[0];
+  const selected = conversations.find(c => c.id === selectedId && c.kind !== "reviewer") ?? conversations.find(c => c.kind === "specifications");
+  const [loaded, setLoaded] = useState<{ id: string; detail: FactoryDetail } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [retry, setRetry] = useState(0);
+  const id = selected?.id;
+  const assignmentId = detail.implementation.id;
+  useEffect(() => {
+    if (!id) return;
+    let live = true; setError(null);
+    void factoryRead<FactoryDetail>(`/implementations/${encodeURIComponent(assignmentId)}?view=workflow&conversation_id=${encodeURIComponent(id)}&revision=${encodeURIComponent(detail.revision)}`)
+      .then(next => { if (live) setLoaded({ id, detail: next }); })
+      .catch(failure => { if (live) setError(failure.message); });
+    return () => { live = false; };
+  }, [assignmentId, id, detail.revision, retry]);
   if (!selected) return null;
+  const retained = loaded?.id === selected.id ? loaded.detail : null;
+  const selectedHistory = retained?.conversations?.find(conversation => conversation.id === selected.id) ?? selected;
+  return <section className="factory-section workflow-conversations" aria-label={t("Workflow conversations")}>
+    <h3>{t("Workflow conversations")}</h3>
+    <nav aria-label={t("Workflow history")}><WorkflowConversationTree conversations={conversations} selectedId={selected.id} onSelect={onSelect} /></nav>
+    {error && <p role="alert">{error} <button className="btn factory-button" onClick={() => setRetry(value => value + 1)}>{t("Retry")}</button></p>}
+    {retained ? <ConversationHistory key={selected.id} detail={retained} selected={selectedHistory} machines={machines} busy={busy || !!error} perform={perform} onOpenPane={onOpenPane} /> : !error && <p role="status">{t("Loading…")}</p>}
+  </section>;
+}
+
+/** A selected history body stays separate from the small pollable conversation tree. */
+function ConversationHistory({ detail, selected, machines, busy, perform, onOpenPane }: { detail: FactoryDetail; selected: FactoryConversation; machines: Machine[]; busy: boolean; perform: (work: () => Promise<void>) => Promise<void>; onOpenPane: (machineId: string, paneId: string) => void }) {
+  const t = useT();
   const snapshots = new Map(detail.native_snapshots.map(s => [s.id, s]));
   const specification = detail.specifications.at(-1);
   const history = selected.contexts.map(context => {
@@ -52,15 +79,11 @@ export function WorkflowConversations({ detail, machines, selectedId, onSelect, 
       })}
     </article>;
   });
-  return <section className="factory-section workflow-conversations" aria-label={t("Workflow conversations")}>
-    <h3>{t("Workflow conversations")}</h3>
-    <nav aria-label={t("Workflow history")}><WorkflowConversationTree conversations={conversations} selectedId={selected.id} onSelect={onSelect} /></nav>
-    <section className="workflow-conversation-history" aria-label={conversationLabel(selected.kind, selected.title, t)}>
+  return <section className="workflow-conversation-history" aria-label={conversationLabel(selected.kind, selected.title, t)}>
       <h4>{conversationLabel(selected.kind, selected.title, t)}</h4>
       {selected.kind === "human_review" && <HumanReviewConversation detail={detail} busy={busy} perform={perform} history={history} />}
       {selected.kind === "specifications" && specification && <SpecificationConversation key={specification.id} detail={detail} specification={specification} busy={busy} perform={perform} />}
       {!selected.contexts.length && <p role="status">{t("No native context yet.")}</p>}
       {selected.kind !== "human_review" && history}
-    </section>
   </section>;
 }

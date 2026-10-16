@@ -1,3 +1,4 @@
+import { issueImplementationStart } from "../lib/issueStart.ts";
 import type { AgentModelSelection } from "../../shared/agent-models.ts";
 import { useState } from "react";
 import type { FactoryAction, FactoryCapabilities, FactoryDetail, FactoryProvider } from "../../shared/protocol.ts";
@@ -13,7 +14,8 @@ export function FactoryWorkflowPanel({ preset, detail, machineId, provider, busy
   const capability = capabilities?.providers.find((entry) => entry.provider === provider);
   const automatic = detail.approvals.some(a => a.kind === "specification" && a.revision === detail.specifications.at(-1)?.id && a.automatic_execution);
   const active = detail.runs.some((run) => ["accepted", "working", "ready", "needs_you", "blocked", "disconnected", "interrupted"].includes(run.condition));
-  const start = (action: FactoryAction) => perform(async () => { await factoryRequest(`${prefix}/runs`, { action, execution_preset: preset, idempotency_key: crypto.randomUUID(), expected: { provider, machine_id: machineId, project_id: detail.implementation.project_id, specification_id: detail.specifications.at(-1)?.id ?? null, graph_hash: detail.graph_hash } }); });
+  const issueStart = issueImplementationStart(detail);
+  const start = (action: FactoryAction) => perform(async () => { await factoryRequest(`${prefix}/runs`, { action, ...(action === "implement-spec" && issueStart.scope ? { issue_scope: issueStart.scope } : {}), execution_preset: preset, idempotency_key: crypto.randomUUID(), expected: { provider, machine_id: machineId, project_id: detail.implementation.project_id, specification_id: detail.specifications.at(-1)?.id ?? null, graph_hash: detail.graph_hash } }); });
   return <section className="factory-section"><h3>{t("Workflow")}</h3>
     <p>{provider} · {capability?.version ?? t("Not verified")}</p>
     {problem && <p role="alert">{problem}</p>}
@@ -26,7 +28,7 @@ export function FactoryWorkflowPanel({ preset, detail, machineId, provider, busy
       <button className="btn factory-button" disabled={busy || active || !detail.implementation.project_id || !capability?.installed || !capability.skills_verified} onClick={() => void start("grill-with-docs")}>{t("Grill with docs")}</button>
       <button className="btn factory-button" disabled={busy || active || !capability?.installed || !capability.skills_verified} onClick={() => void start("to-spec")}>{t("Create specification")}</button>
       {!automatic && <button className="btn factory-button" disabled={busy || active || !detail.implementation.project_id || !capability?.installed || !capability.skills_verified} onClick={() => void start("to-tickets")}>{t("Plan tickets")}</button>}
-      {!automatic && <button className="btn btn-primary" disabled={busy || active || !capability?.factory_ready} onClick={() => void start("implement-spec")}>{t("Start factory")}</button>}
+      {!automatic && <button className="btn btn-primary" disabled={busy || active || issueStart.blocked || !capability?.factory_ready} onClick={() => void start("implement-spec")}>{t("Start factory")}</button>}
     </div>
     {showQuestions && <><h4>{t("Questions")}</h4>{(detail.question_context?.questions ?? detail.questions).map((entry) => <article className="factory-message" key={entry.id}><p>{entry.question}</p>{entry.answer === null && entry.answer_kind !== "confirmation" ? <form className="factory-form" onSubmit={(event) => { event.preventDefault(); void perform(async () => { await factoryRequest(`${prefix}/questions/${entry.id}/answer`, { revision: entry.revision, answer: answers[entry.id] ?? "" }); }); }}><label>{t("Your answer")}<textarea className="input factory-input" required value={answers[entry.id] ?? ""} onChange={(event) => setAnswers((current) => ({ ...current, [entry.id]: event.target.value }))} /></label><button className="btn factory-button" disabled={busy}>{t("Save answer")}</button></form> : entry.answer !== null ? <p>{entry.answer}</p> : null}</article>)}</>}
     <form className="factory-form" onSubmit={(event) => { event.preventDefault(); void perform(async () => { await factoryRequest(`${prefix}/questions`, { question }); setQuestion(""); }); }}><label>{t("Open question")}<textarea className="input factory-input" value={question} required onChange={(event) => setQuestion(event.target.value)} /></label><button className="btn factory-button" disabled={busy}>{t("Record question")}</button></form>

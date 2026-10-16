@@ -1,4 +1,4 @@
-import type { FactoryActivity, FactoryAssignmentProgress, Implementation } from "../../shared/factory.ts";
+import type { FactoryAssignmentActivity as FactoryActivity, FactoryAssignmentProgress, Implementation } from "../../shared/factory.ts";
 import { useT } from "../lib/i18n.ts";
 import "./FactoryBoardProgress.css";
 
@@ -11,7 +11,7 @@ function activityLabel(activity: FactoryActivity, t: ReturnType<typeof useT>): s
     case "fixing": return t("Fixing");
   }
 }
-export function FactoryBoardProgress({ idea, progress, expanded, onExpandedChange }: { idea: Implementation; progress?: FactoryAssignmentProgress; expanded: boolean; onExpandedChange: (open: boolean) => void }) {
+export function FactoryBoardProgress({ idea, progress, expanded, onExpandedChange }: { idea: Pick<Implementation, "id" | "pause" | "deletion">; progress?: FactoryAssignmentProgress; expanded: boolean; onExpandedChange: (open: boolean) => void }) {
   const t = useT();
   return <div className="factory-progress">
     {idea.deletion && <p role="status">{t("Delete pending")}</p>}

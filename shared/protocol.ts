@@ -1135,8 +1135,25 @@ export const DEFAULT_PORT = 7317;
  * Ordinary terminals and independently launched agents are excluded. Ready chats consume
  * no slot; uncertain execution retains its reservation. Builds have a separate max_builds.
  * GET /api/factory/implementations/:id -> FactoryDetail.
+ * FactoryDetail includes github_sources (current issue observations and revision history) and
+ * github_sync (last complete sync and current problem), separate from notes and frozen Runs.
  * GET /api/factory?navigation=1 -> FactoryOverview without checkout instruction contents;
  * sidebar/page polling uses metadata; full instructions remain in frozen Run context.
+ * Both include a board projection with five lifecycle lanes, current workflow activity,
+ * execution condition and nullable Ticket progress; stored stages and Run history are retained.
+ * GET /api/factory?navigation=1 -> FactoryOverview without Assignment descriptions/delivery
+ * evidence/upstream bodies or checkout instruction contents. Sidebar and board share this read.
+ * GET /api/factory/implementations/:id?view=current -> FactoryCurrent: current decisions,
+ *   Run manifests include execution_preset, bounded IssueAdmissionSummary and rework identity;
+ *   frozen issue history and planning content remain in the lazy full Assignment response.
+ * latest Specification, Ticket graph, Run status/model summaries, report/check metadata and
+ * current continuation warnings. No frozen manifests, transcripts, diffs or historical bodies.
+ * GET ...?view=workflow&conversation_id= -> FactoryDetail-shaped selected logical conversation;
+ * only its chat, native history and Human Review evidence bodies are read. Current polls keep metadata.
+ * GET ...?view=review -> FactoryReviewDetail: selectable report/snapshot metadata and findings.
+ * GET ...?view=report&record_id= -> FactoryReviewEvidence; ?view=snapshot&record_id= -> ReviewSnapshot.
+ * Evidence must belong to the named Assignment (otherwise 404). The default full detail remains
+ * available on demand; the current revision token invalidates open history after retained writes.
  * POST /api/factory/implementations (implementation) -> Implementation, 201, initial Chat retained.
  * POST /api/factory/projects (project) -> FactoryProject, 201, checkout verified on selected Machine.
  * POST /api/factory/project-discovery (project_discovery) -> ProjectDiscovery;
@@ -1169,8 +1186,11 @@ export const DEFAULT_PORT = 7317;
  * POST /api/factory/artifacts/:id/note (artifact_note) -> FactoryArtifact;
  * POST .../delete (artifact_delete) -> {ok:true}; referenced deleted blobs remain retained.
  * POST /api/factory/implementations/:id/specifications (specification) -> SpecificationVersion, 201;
+ * upstream_update is retained from the detected Assignment release, never caller-selected.
  * POST .../tickets (tickets) -> {hash:string,tickets:FactoryTicket[]}, 201; accepted current revision, acyclic.
  * POST .../approvals (approval) -> FactoryApproval, 201; stale scope=409.
+ * Planning receipts bind semantic issue scope only with an exact displayed request
+ * issue_scope. Generic/legacy approvals stay unbound; readiness remains revision-scoped.
  * POST .../questions (question) -> FactoryQuestion, 201; POST .../questions/:question/answer (answer)
  * -> FactoryQuestion; revision-bound, never invents answers. Missing answer_kind means text.
  * Explicit shared_understanding approval confirms pending confirmation questions atomically
@@ -1184,7 +1204,22 @@ export const DEFAULT_PORT = 7317;
  * Resume durably queues retained unfinished contexts, revalidating scope before admission.
  * POST /api/factory/settings (settings) -> FactorySettings; global agent/build limits and future defaults.
  * The removed max_implementations setting is rejected; saved agent/build limits migrate unchanged.
+ * GET .../completion-evidence -> Implementation["completion_evidence"]; freshly checks all
+ * retained Run/worker repositories and ownership. Unavailable Machine evidence stays unknown.
+ * POST .../complete-work (complete_work) -> Implementation; accepts no-change research only
+ * after fresh repository and quiescence evidence; repository changes require PR delivery.
+ * GET .../delivery -> AssignmentDelivery | null; owner-linked repository, branch and PR evidence.
+ * POST .../delivery (AssignmentDeliveryConfiguration) -> AssignmentDelivery; revision-bound correction.
+ * POST .../delivery/sync ({expected_revision}) -> AssignmentDelivery; read-only GitHub verification;
+ * all intended committed changes and linked merges must be covered before merge-based completion.
+ * Release milestones additionally verify a published release tag contains every linked merge;
+ * retained release ID, URL, tag commit and publication time are inspectable. No release writes.
+ * POST /api/factory-host/delivery-read (DeliveryReadRequest) -> bounded read-only GitHub resource;
+ * selected Machine account snapshot only, no publication or merge authority.
+ * GET overview/detail board.sidebar_hidden is true only for finished, quiescent work.
  * POST /api/factory/projects/:id/configure (project_settings) -> FactoryProject;
+ * auto_publish_pr is a separate default-off publication opt-in; editing it requires
+ * same origin and x-herdr-machine: 1, independently of issue publication/automatic implementation.
  * GET /api/factory/projects/:id/references -> ProjectReferenceLibrary; current immutable versions.
  * POST .../references (project_reference) -> ProjectReference, 201; displayed revision required.
  * GET .../references/:version/source|preview|download -> private verified bytes; Project scoped.
@@ -1207,6 +1242,9 @@ export const DEFAULT_PORT = 7317;
  * POST /api/factory/implementations/:id/runs (start) -> FactoryRun | FactoryCapacityWait, 202;
  * durably queues at capacity. Queued requests retain identity/age across restart and dispatch
  * oldest eligible first. GET /api/factory exposes public capacity.waiting, including blocked reasons.
+ * Optional issue_scope: IssueStartScope reuses a prepared trusted plan after fresh eligibility
+ * revalidation; manifest.issue_admission freezes its source, plan, provenance and policies.
+ * Known active changes retain issue_pause and Needs you; outage alone preserves admitted work.
  * POST .../continue (continue_workflow) -> FactoryRun | FactoryCapacityWait, 202; retain a resting step's chat/handoff
  * and start its approved successor. Implementation may first run genuine native verification
  * under retained owner intent. Missing approvals are never inferred.
@@ -1215,7 +1253,22 @@ export const DEFAULT_PORT = 7317;
  * of the same identity; unknown execution and delivery retain their reservations.
  * Resting Runs/workers are ready: native capacity released, exclusive worktree ownership retained.
  * POST /api/factory/runs/:id/reconcile (empty) -> FactoryRun; observation never redispatches.
+ * A resting implementation with current frozen Project checks, both independent reviews and no
+ * owned/uncertain children or builds can finish execution. implementation_completion records that
+ * revision; owner review acceptance remains separate. Implementation.activity may be awaiting_merge,
+ * with Board stage review until intended merge coverage (and any required release) is verified.
+ * POST .../retry (issue_retry) -> FactoryRun, 202; owner-only successor of a failed issue attempt,
+ * or a retired implementation or controlled-pause attempt with confirmed owner Stop.
+ * Revalidates current issue_scope,
+ * answers, queue and ownership; retry_of retains the original Run identity. Retired rework copies
+ * its clean produced commit into a new lease on a Machine with implementation_rework_protocol: 1;
+ * issue_scope is required for issue attempts only.
+ * manifest.rework is FactoryRework. Original findings still require owner resolution against
+ * successor evidence. Never auto-retries.
+ * A revoked issue Run retains scope_pause independently of native status. Reconcile retries its
+ * controlled stop; uncertainty retains owned reservations. A paused attempt never resumes.
  * POST .../stop (stop) -> FactoryRun; verified ownership released, history/work retained.
+ * Explicit Stop of invalidated retired work enables Retry; ordinary reconcile never reopens its lease or releases invalidated capacity.
  * POST .../cleanup (empty) -> FactoryCleanup; only stopped clean owned checkouts removed.
  * POST .../verify-provider (empty) -> FactoryCapabilities; genuine loading/owner-round evidence required.
  * POST .../import-artifacts (empty) -> FactoryArtifact[], 201; verified outputs retained centrally.
@@ -1258,12 +1311,21 @@ export const DEFAULT_PORT = 7317;
  * POST .../workers/:worker/review-evidence (empty) -> FactoryReviewEvidence; independent current-head report.
  * POST .../checks (empty), POST .../checks/:check/reconcile (empty) -> FactoryCheck; owned build reservation. Confirmed Pause cancellation is cancelled with pause_id; Resume reruns unfinished validation.
  * POST .../accept (accept) -> FactoryRun; exact head, fresh checks/reviews, resolved findings; no publication.
+ * GET /api/factory/runs/:id/publication -> PublicationOverview; accepted scope and current blockers.
+ * POST .../publication/publish (publish) -> ImplementationPublication; exact accepted head,
+ * optional repository-appropriate title/body, current checks and independent reviews,
+ * selected Machine account; x-herdr-machine: 1 required. Retains metadata and verification results.
+ * POST .../publication/reconcile (empty) -> ImplementationPublication; read-only receipt recovery;
+ * uncertain creation never replays. A verified upload with no creation dispatched can be
+ * prepared for another explicit Publish PR. Automatic publication has a separate default-off Project setting.
+ * POST /api/factory-host/publication (FactoryHostRequests.publication) -> scoped native GitHub result;
+ * bridge authentication and x-herdr-machine: 1; retained Run branch and account only.
  * GET /api/factory/tickets/:id -> FactoryTicket; stable app-native tracker identity.
  * POST /api/factory/implementations/:id/snapshots (snapshot) -> ReviewSnapshot, 201;
  * POST .../comments (comment) -> ReviewComment, 201; immutable line/hunk anchor.
  * POST .../comments/:comment/edit (comment_edit) -> ReviewComment; unsent draft text only, retains anchors.
  * POST .../comments/:comment/delete (empty) -> {id}; unsent drafts only, including stale drafts.
- * POST .../request-changes (request_changes) -> FactoryBatchReceipt; only selected drafts delivered.
+ * POST .../request-changes (request_changes) -> FactoryBatchReceipt; selected drafts or immutable failed reports delivered once; uncertain receipts never replay.
  * POST .../comments/:comment/resolve (resolve) -> ReviewComment; current checks and both axes required.
  * POST /api/factory/projects/:id/retrospectives (retrospective) -> FactoryRetrospective, 201;
  * POST /api/factory/retrospectives/:id/approve (approve_retrospective) -> FactoryRetrospective; exact scope.
@@ -1313,10 +1375,10 @@ export const DEFAULT_PORT = 7317;
  * proposal -> FactoryRetrospective, 201. Bodies are FactoryAgentRequests; proposals are action-scoped.
  * POST .../worker/:id/:action (empty) has the corresponding owner worker response above.
  */
-export type { FactoryOverview, FactoryDetail, Implementation, FactoryProject, ProjectCheckout, FactoryChat, FactoryMessage, FactoryEvent, SpecificationVersion, FactoryTicket, FactoryApproval, FactoryQuestion, FactoryArtifact, FactoryRun, ReviewSnapshot, ReviewComment, FactorySettings, FactoryProvider, FactoryStage, FactoryAction, RunCondition, FactoryCapabilities, FactoryProviderCapability, FactoryOutput } from "./factory.ts";
-export type { FactoryWorker, FactoryCheck, FactoryReviewEvidence, FactoryRetrospective, FactoryPauseResult, FactorySuspension, FactoryDeleteResult, FactoryDeleteAttemptResult } from "./factory.ts";
-export type { NativeConversationSnapshot } from "./factory.ts";
-export type { FactoryCapacity, FactoryCapacityReservation, FactoryCapacityWait, FactoryPaneLink, FactoryPaneArchive } from "./factory.ts";
+export type { FactoryOverview, FactoryDetail, Implementation, FactoryProject, ProjectCheckout, FactoryChat, FactoryMessage, FactoryEvent, SpecificationVersion, FactoryTicket, FactoryApproval, FactoryQuestion, FactoryArtifact, FactoryRun, ReviewSnapshot, ReviewComment, FactorySettings, FactoryProvider, FactoryStage, FactoryAction, RunCondition, FactoryCapabilities, FactoryProviderCapability, FactoryOutput, FactoryWorker, FactoryCheck, FactoryReviewEvidence, FactoryRetrospective, FactoryPauseResult, FactorySuspension, FactoryDeleteResult, FactoryDeleteAttemptResult, NativeConversationSnapshot, FactoryCapacity, FactoryCapacityReservation, FactoryCapacityWait, FactoryPaneLink, FactoryPaneArchive, FactoryCurrent, FactoryReviewDetail, FactoryBoardItem, FactoryBoardLane, FactoryActivity, FactoryRework, AssignmentDelivery, AssignmentDeliveryConfiguration, DeliveryChange } from "./factory.ts";
+export type { IssueAdmissionSummary } from "./issue-admission.ts";
+export type { DeliveryReadRequest } from "./factory-delivery.ts";
+export type { ImplementationPublication, PublicationOverview } from "./factory-publication.ts";
 export type { ProjectReference, ProjectReferenceLibrary, CodexReferenceContext, ProjectReferencePayload } from "./factory.ts";
 
 /** Factory mutation bodies. Runtime validation still treats incoming JSON as untrusted. */
@@ -1328,16 +1390,30 @@ export type { ProjectReference, ProjectReferenceLibrary, CodexReferenceContext, 
 export type { AgentModelCatalog, AgentModelSelection, AgentExecutionPreset } from "./agent-models.ts";
 export interface FactoryRequests {
   human_review_message: { review_id: string; content: string; idempotency_key: string };
+  queue_configuration: import("./project-queue.ts").ProjectQueueConfiguration;
+  queue_retry: { run_id: string };
   model_catalog: { project_id: string; machine_id: string; provider: import("./factory.ts").FactoryProvider };
   pane_archive: { machine_id: string; pane_id: string; archived: boolean; terminal_id?: string; session_ref?: string | null };
+  github_readiness: import("./github-readiness.ts").ReadinessConfiguration;
+  github_plan_preparation: import("./issue-planning.ts").PrepareIssuePlan;
+  github_delivery_link: import("./github-project.ts").LinkIssueDelivery;
+  github_readiness_approval: { source_revision: string; policy_revision: string };
+  github_queue_configuration: import("./issue-queue.ts").QueueConfiguration;
   github_configuration: import("./github-project.ts").ProjectGitHubConfiguration;
+  project_schedule: import("./project-schedules.ts").ProjectScheduleConfiguration;
+  project_sync: { job: import("./project-schedules.ts").ProjectSyncJob; result_id?: string };
   github_action: { head: string; base: string; policy_revision: string };
+  issue_batch_proposal: import("./issue-batches.ts").IssueBatchProposal;
+  issue_batch_action: import("./issue-batches.ts").IssueBatchAction;
   implementation: { title: string; description: string; project_id?: string | null };
   configure: { project_id?: string | null; provider?: import("./factory.ts").FactoryProvider | null; machine_id?: string | null };
   complete_work: { run_id: string };
+  delivery: import("./factory.ts").AssignmentDeliveryConfiguration;
+  delivery_sync: { expected_revision: string | null };
+  discard: Record<string, never>;
   project: { name: string; path: string; machine_id: string; provider: import("./factory.ts").FactoryProvider; tracker: import("./factory.ts").FactoryProject["tracker"]; tracker_reference?: string; guided_setup?: boolean; permission_mode?: import("./agent-permissions.ts").AgentPermissionMode; check_ids?: string[]; context_target_tokens?: number; guidance_task?: boolean; github_account_id?: string };
   human_review_approval: { review_id: string; snapshot_id: string; head: string; idempotency_key: string };
-  project_settings: Partial<Pick<import("./factory.ts").FactoryProject, "pull_request" | "delivery_policy" | "name" | "checks" | "setup" | "environment" | "permissions" | "permission_mode" | "execution_preset" | "shared_paths" | "provider" | "machine_id" | "account_bindings" | "workflow_instructions" | "context_target_tokens">>;
+  project_settings: Partial<Pick<import("./factory.ts").FactoryProject, "delivery_branch" | "auto_publish_pr" | "pull_request" | "delivery_policy" | "name" | "checks" | "setup" | "environment" | "permissions" | "permission_mode" | "execution_preset" | "shared_paths" | "provider" | "machine_id" | "account_bindings" | "workflow_instructions" | "context_target_tokens">>;
   project_discovery: { machine_id: string; path: string };
   account_import: { source_id: string; path?: string };
   checkout: { machine_id: string; path: string };
@@ -1353,10 +1429,12 @@ export interface FactoryRequests {
   specification: { content: string };
   specification_acceptance: { specification_id: string; hash: string; source: "button" } | { specification_id: string; hash: string; source: "owner_chat"; content: string; idempotency_key: string };
   tickets: { specification_id: string; tickets: { key: string; title: string; acceptance: string; dependencies: string[] }[] };
-  approval: { kind: Exclude<import("./factory.ts").FactoryApproval["kind"], "review">; revision: string; scope: string };
+  approval: { kind: Exclude<import("./factory.ts").FactoryApproval["kind"], "review">; revision: string; scope: string; issue_scope?: { source_id: string; source_revision: string } };
   question: { question: string; run_id?: string; worker_id?: string; answer_kind?: "text" | "confirmation" };
   answer: { revision: string; answer: string };
-  start: { action: import("./factory.ts").FactoryAction; idempotency_key: string; execution_preset?: import("./agent-models.ts").AgentModelSelection; retrospective_id?: string; expected?: { provider: import("./factory.ts").FactoryProvider; machine_id: string; project_id: string | null; specification_id: string | null; graph_hash: string } };
+  order: { direction: -1 | 1 } | { before_id: string };
+  issue_retry: { idempotency_key: string; issue_scope?: import("./issue-admission.ts").IssueStartScope; execution_preset?: import("./agent-models.ts").AgentModelSelection };
+  start: { action: import("./factory.ts").FactoryAction; idempotency_key: string; issue_scope?: import("./issue-admission.ts").IssueStartScope; execution_preset?: import("./agent-models.ts").AgentModelSelection; retrospective_id?: string; expected?: { provider: import("./factory.ts").FactoryProvider; machine_id: string; project_id: string | null; specification_id: string | null; graph_hash: string } };
   continue_workflow: FactoryRequests["start"] & { run_id: string | null; allow_partial_handoff?: boolean };
   stop: { summary?: string };
   import_conversation: { before?: string };
@@ -1367,26 +1445,118 @@ export interface FactoryRequests {
   comment: { snapshot_id: string; path: string; change?: string; side: "old" | "new"; line_start: number; line_end: number; content: string };
   comment_edit: { content: string };
   human_review_submission: { review_id: string; snapshot_id: string; head: string; disposition: "decline" | "approve"; comment_ids: string[]; idempotency_key: string };
-  request_changes: { run_id: string; snapshot_id: string; comment_ids: string[]; idempotency_key: string };
+  publish: { head: string; title?: string; body?: string };
+  request_changes: { run_id: string; snapshot_id: string; comment_ids: string[]; idempotency_key: string } | { run_id: string; head: string; report_ids: string[]; idempotency_key: string };
   resolve: { head: string; summary: string };
   retrospective: { evidence_ids: string[]; proposal: string };
   approve_retrospective: { scope_hash: string };
   empty: Record<string, never>;
 }
 export type FactoryRequestBody = FactoryRequests[keyof FactoryRequests];
-/** GET /api/factory/projects/:id/github -> ProjectGitHubOverview.
+/** GET /api/factory/projects/:id/github/queue -> IssueQueue, one current eligibility result
+ * shared by previews, source detail and board intake badges. Each excluded issue retains reason codes
+ * and dependency identities. Policy defaults to automatic_implementation:false, paused:false,
+ * max_implementations:1. effective_limit also respects the current global limit. implementing_count
+ * includes uncertain execution and builds; available_slots reports remaining Project capacity.
+ * POST .../github/queue (QueueConfiguration) -> IssueQueue; expected_revision guards replacement.
+ * Enabling automatic_implementation requires preview_revision from the exact current preview,
+ * an explicitly selected readiness identity, enabled sync and issue imports. Existing and future
+ * eligible issues use guarded admission, frozen contracts, limits, recovery and explicit Retry.
+ * dispatch_problem retains a pre-admission blocking code/message without inventing an attempt.
+ * POST .../github/preview ({}) -> IssueQueue; syncs evidence, prepares sufficient trusted plans and
+ * retains a preview revision/count. Preview alone does not enable or dispatch implementation.
+ * preview_current is false after relevant policy, account, scope, plan, evidence, freshness or priority
+ * changes. Both POSTs require same origin and x-herdr-machine:1 plus x-herdr-factory:1.
+ * GET /api/factory/projects/:id/github -> ProjectGitHubOverview.
  * POST .../github/settings ({account_profile_id}) -> ProjectGitHubSettings;
  * detected repository, collaborators and branch checks, without enabling automation.
+ * POST .../github/readiness (ReadinessConfiguration) -> ProjectReadinessPolicy;
+ * separately selects one verified readiness identity and all triage/blocked mappings.
+ * POST .../github/issues/:number/approve ({source_revision,policy_revision}) -> ProjectGitHubOverview;
+ * explicit owner approval of fresh current scope only; never dispatches work.
+ * POST .../github/issues/:number/prepare (PrepareIssuePlan) -> ProjectGitHubOverview;
+ * reuses trusted planning and retains a bounded graph/provenance or targeted owner questions. Never starts work.
+ * Source planning records retain exact content, dependencies, seams, graph and original authorization.
+ * POST .../github/issues/:number/delivery (LinkIssueDelivery) -> ProjectGitHubOverview;
+ * owner links the complete intended PR numbers/heads, target branch and optional release tag
+ * for the displayed source revision. expected_revision guards replacement; delivery_history
+ * exposes immutable prior links. Linking never asserts delivery, accepts implementation or starts work.
+ * Issue source responses include delivery_scope_current: authoritative applicability of the original
+ * coverage to uninterrupted semantic scope, independent of labels/readiness and fresh delivery proof.
+ * Link source_revision and history retain their original provenance; applicability is not verification.
  * POST .../github/configure -> ProjectGitHubPolicy, uses ProjectGitHubConfiguration.
+ * POST .../github/sync -> ProjectGitHubOverview; imports issue/fix records and applies opted-in PR policies.
+ * Sources retain current issue scope, revision history and fetch evidence; incomplete inventories
+ * preserve the last complete source state and last_sync, with a visible problem.
+ * Issue sources include native_dependencies in their current revision and combined dependencies evidence:
+ * revision/source_revision, account/policy, fetched_at, complete/fresh and edges with resolution
+ * and blocker. An approved specification's Dependencies section declares an explicit JSON array
+ * of {repository,number,requires:"merge"|"release"}, or None. Drafts create no edges; malformed
+ * approved declarations remain conflicts. Native and plan provenance is retained; release wins.
+ * Same-Project/repository identities alone may resolve. Source delivery links expose owner coverage;
+ * dependencies retain target_branch and verified merges/release. Satisfaction requires fresh complete
+ * graph/coverage evidence, matching intended heads, actual merges into the dependent target branch,
+ * branch containment and, when required, a published containing release. Closure is insufficient.
+ * The target branch is frozen from the registered checkout on import, or explicitly linked by the
+ * owner. Outages/changed plans/links retain observations but invalidate satisfaction. Prose creates no edges.
+ */
+/** GET /api/factory/projects/:id/queue -> ProjectQueueOverview; observes, never dispatches.
+ * POST /api/factory/projects/:id/queue/configure -> ProjectQueueOverview;
+ * ProjectQueueConfiguration requires the current revision and x-herdr-factory: 1.
+ * Pause stops new admissions while accepted work continues.
+ * POST /api/factory/implementations/:id/retry ({run_id}) -> ProjectQueueOverview;
+ * authorizes one replacement for the current failed attempt without dispatching. */
+export type { ProjectQueueConfiguration, ProjectQueueOverview } from "./project-queue.ts";
+/** GET /api/factory/implementations/:id/issue-batches -> IssueBatchesOverview.
+ * POST .../issue-batches -> IssueBatch, 201; IssueBatchProposal retains a whole proposed
+ * deliverable graph without remote mutations. Revision changes invalidate prior review.
+ * POST .../issue-batches/:batch_id/review -> IssueBatch; IssueBatchAction binds owner review
+ * to the batch, Project policy, repository and account. Requires same-origin and machine header.
+ * POST .../issue-batches/:batch_id/resume -> IssueBatch; reconcile retained publication
+ * intents for the same reviewed batch and policy, continuing only confirmed identities;
+ * same-origin and x-herdr-machine: 1, with the whole batch held until all links are confirmed.
+ * POST .../issue-batches/:batch_id/publish -> IssueBatch; an explicit owner action against
+ * the reviewed revision, same-origin and x-herdr-machine: 1. Never runs on chat completion.
+ * POST /api/factory-agent/:run_id/issue-batch -> IssueBatch, 201; IssueBatchProposal,
+ * scoped planning Runs may retain draft proposals for their frozen Project only.
+ * The scoped credential grants neither review nor publication.
+ */
+export type { IssueBatch, IssueBatchProposal, IssueBatchesOverview, PlannedIssue } from "./issue-batches.ts";
+/** GET /api/factory/projects/:id/github -> ProjectGitHubOverview.
+ * GET .../github/schedules -> ProjectSchedulesOverview; built-in defaults preserve saved polling;
+ * upstream includes detected/active/candidate release identities and fixed commit revisions.
+ * POST .../github/schedules/configure -> ProjectSchedulesOverview; ProjectScheduleConfiguration,
+ * revision-bound enable/disable and wall time, same origin and x-herdr-machine: 1.
+ * POST .../github/schedules/run ({job}) -> ProjectSchedulesOverview; shares sync ownership.
+ * POST .../github/schedules/reconcile ({job,result_id}) -> ProjectSchedulesOverview;
+ * refreshes interrupted synchronization without replaying remote mutations.
+ * POST .../github/settings ({account_profile_id}) -> ProjectGitHubSettings;
+ * detected repository, collaborators and branch checks, without enabling automation.
+ * POST .../github/configure -> ProjectGitHubPolicy, uses ProjectGitHubConfiguration;
+ * optional upstream_repository selects release discovery without enabling its schedule or implementation.
+ * Includes canonical triage-label overrides, default-off auto_implement and trusted_issue_approvers.
  * POST .../github/sync -> ProjectGitHubOverview; imports owned issue/fix records and applies opted-in policies.
+ * Issue sources retain scope, resolved triage roles, eligibility reasons and revision-bound plan approval.
+ * An edited/unready revision permanently revokes its approval receipt (revoked_at). Restoring prior
+ * content/labels requires fresh owner approval or a new trusted native comment, never receipt replay.
+ * Implementation admission re-reads native issue scope and freezes issue_scope in the Run manifest;
+ * later drift requests a controlled stop without replacing those instructions or produced evidence.
+ * POST .../github/issues/:number/approve -> ProjectGitHubOverview; ProjectIssueApprovalRequest,
+ * for Projects without a selected separate readiness policy, owner approval of fresh issue_revision
+ * and policy_revision with acceptance, dependencies and confirmed
+ * planning/testing decisions. Requires same origin, x-herdr-machine: 1 and x-herdr-factory: 1.
+ * Capturing readiness does not dispatch implementation or approve publication/merge.
  * GET .../github/pulls/:number/files?head=:sha -> ProjectGitHubFiles, bounded read-only patch inventory.
  * POST .../github/pulls/:number/(merge|update|rerequest|import) -> ProjectGitHubOverview;
  * mutations require the displayed head, base and policy_revision, same origin and x-herdr-machine: 1.
  */
-export type { ProjectGitHubOverview, ProjectGitHubPolicy, ProjectGitHubConfiguration, ProjectGitHubPull, ProjectGitHubSource, ProjectGitHubMutation, ProjectGitHubFiles } from "./github-project.ts";
+export type { ProjectGitHubOverview, ProjectGitHubPolicy, ProjectGitHubConfiguration, ProjectGitHubPull, ProjectGitHubSource, ProjectGitHubMutation, ProjectGitHubFiles, GitHubIssueDependency, GitHubDependencyEdge, GitHubDependencyEvidence, ProjectGitHubIssueRevision, IssueDeliveryLink, LinkIssueDelivery, ProjectIssuePlan, ProjectIssueApproval, ProjectIssueApprovalRequest, ProjectIssueReadiness } from "./github-project.ts";
+export type { ProjectSyncJob, ProjectSyncSchedule, ProjectSyncResult, ProjectSchedulesOverview, ProjectScheduleConfiguration } from "./project-schedules.ts";
+export type { UpstreamRelease, ProjectUpstreamOverview } from "./upstream-releases.ts";
 export interface FactoryBatchReceipt {
   id: string; created_at: string; updated_at: string; implementation_id: string;
-  run_id: string; snapshot_id: string; key: string; signature: string;
+  run_id: string; snapshot_id: string | null; key: string; signature: string;
+  head?: string; report_ids?: string[]; reports?: import("./factory.ts").FactoryReviewEvidence[];
   status: "sending" | "sent" | "blocked" | "uncertain"; comment_ids: string[];
 }
 export interface FactoryAnswerDelivery {
@@ -1432,6 +1602,8 @@ export interface FactoryNativeAnswers {
   questions: import("./factory.ts").FactoryQuestion[];
 }
 export interface FactoryHostRequests {
+  publication: import("./factory-publication.ts").PublicationHostRequest;
+  delivery_read: import("./factory-delivery.ts").DeliveryReadRequest;
   model_catalog: { provider: import("./factory.ts").FactoryProvider; path: string; repository: string; account_snapshot?: import("./accounts.ts").AccountBindingSnapshot | null };
   pane_state: { pane_id: string };
   references: import("./factory.ts").ProjectReferencePayload & { machine_id: string; checkout: { path: string; repository: string } };
@@ -1446,3 +1618,4 @@ export interface FactoryHostRequests {
 /** GET /api/factory/implementations/:id -> FactoryDetail, including stable workflow
  * conversations and their Run/worker/native-history provenance. Reads never start agents. */
 export type { FactoryConversation, FactoryConversationContext, FactoryConversationKind } from "./factory.ts";
+export type { IssueQueue, IssueQueueEntry, ProjectQueuePolicy, QueueConfiguration } from "./issue-queue.ts";

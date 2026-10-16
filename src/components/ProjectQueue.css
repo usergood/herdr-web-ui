@@ -1,0 +1,11 @@
+.project-queue { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
+.project-queue p, .project-queue a { overflow-wrap: anywhere; }
+.project-queue-limit { width: 5rem; min-width: 0; }
+.project-queue-list { margin: 0; padding: 0; list-style: none; }
+.project-queue-list li { padding: var(--space-3); border-bottom: var(--hairline) solid var(--border); }
+.project-queue-list li:last-child { border-bottom: 0; }
+.project-queue-list p { color: var(--text-dim); font-size: var(--fs-sm); }
+.project-queue-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+@media (max-width: 640px) {
+  .project-queue-button { min-width: var(--touch-target); min-height: var(--touch-target); }
+}

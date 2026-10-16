@@ -1,4 +1,3 @@
-import { assignmentProgress } from "../shared/factory-board.ts";
 import { factoryCapacity } from "./factory-capacity.ts";
 import { mkdirSync } from "node:fs";
 import { permissionDescription, validPermissionMode } from "../shared/agent-permissions.ts";
@@ -7,10 +6,15 @@ import { timingSafeEqual } from "node:crypto";
 import { join } from "node:path";
 import type { FactoryHostRequests, FactoryArtifact, FactoryChat, FactoryDetail, FactoryMessage, FactoryProject, FactoryProvider, FactoryRun, FactorySettings, Implementation, ProjectCheckout } from "../shared/protocol.ts";
 import { badRequest, errorResponse, httpError, isJsonObject, jsonResponse } from "./http.ts";
+import { FactoryReads } from "./factory-reads.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { FactoryDeletion } from "./factory-deletion.ts";
 import { GitHubDeletion } from "./github-deletion.ts";
+import { migrateFactoryHistory } from "./factory-history.ts";
 import { FactoryError, hash, inspectCheckout } from "./factory-host.ts";
+import { FactoryDelivery, manualCompletionAllowed } from "./factory-delivery.ts";
+import { FactoryMergeDelivery } from "./factory-merge-delivery.ts";
+import { readDeliveryGitHub } from "./factory-delivery-github.ts";
 import { FactoryArtifacts } from "./factory-artifacts.ts";
 import { FactoryWorkflow } from "./factory-workflow.ts";
 import { FactoryBackup } from "./factory-backup.ts";
@@ -32,9 +36,14 @@ import { projectReferenceTemplate } from "../shared/project-references.ts";
 import { MachineAccounts } from "./accounts.ts";
 import type { AccountTools } from "./account-tools.ts";
 import { ProjectGitHub } from "./github-project.ts";
+import { hasIssueSource, reconcileIssueDelivery } from "./issue-delivery.ts";
+import { GitHubIssueBatches } from "./github-issue-batches.ts";
 import { sameOrigin } from "./machine-security.ts";
 import { workflowConversations } from "../shared/factory-conversations.ts";
 import { parseModelSelection, resolveModelSelection } from "./agent-model-selection.ts";
+import { projectFactoryBoard } from "../shared/factory-board.ts";
+import { ProjectQueue } from "./project-queue.ts";
+import { FactoryPublication } from "./factory-publication.ts";
 
 const providers: FactoryProvider[] = ["codex", "claude", "opencode"];
 const initialSettings: FactorySettings = { provider: "codex", max_agents: 6, max_builds: 2, max_artifact_bytes: 25 * 1024 * 1024, max_storage_bytes: 2 * 1024 * 1024 * 1024, skills_path: null };
@@ -58,14 +67,22 @@ export class FactoryService {
   private readonly accounts: MachineAccounts;
   private readonly github: ProjectGitHub;
   private readonly deletion: FactoryDeletion;
+  private address: string | null = null;
+  private readonly delivery: FactoryMergeDelivery;
+  private readonly publication: FactoryPublication;
+  private readonly queue: ProjectQueue;
+  private readonly discards = new Map<string, Promise<Implementation>>();
+  private readonly issueBatches: GitHubIssueBatches;
   private stopped = false;
-  constructor(stateDir: string, private readonly skillsPath: string | null = null, native: Partial<FactoryNative> = {}, endpoint: MachineEndpoint = () => undefined, publicUrl: string | null = null, accountTools: AccountTools = {}, private readonly registeredMachine: (id: string) => boolean = (id) => id === "local" || !!endpoint(id), accountDiscoveryHome?: string) {
+  private origin: string | null = null;
+  private readonly issueAdmissions = new Set<string>();
+  constructor(stateDir: string, private readonly skillsPath: string | null = null, native: Partial<FactoryNative> = {}, endpoint: MachineEndpoint = () => undefined, publicUrl: string | null = null, accountTools: AccountTools = {}, private readonly registeredMachine: (id: string) => boolean = (id) => id === "local" || !!endpoint(id), accountDiscoveryHome?: string, scheduleTiming?: import("./project-schedules.ts").ProjectScheduleTiming) {
     this.accounts = new MachineAccounts(stateDir, accountTools, false, accountDiscoveryHome);
     this.store = new FactoryStore(stateDir); this.artifacts = new FactoryArtifacts(this.store, (text) => this.accounts.assertPublic(text)); this.workflow = new FactoryWorkflow(this.store); this.backup = new FactoryBackup(this.store, this.artifacts);
     this.accounts.usage((id) => [...this.store.list<FactoryRun>("runs"), ...this.store.list<{ run: FactoryRun; closing?: boolean }>("host_leases").map((lease) => lease.run)].some((run) => ["accepted", "working", "ready", "needs_you", "blocked", "disconnected", "interrupted"].includes(run.condition) && (run.manifest as { account_snapshot?: import("../shared/accounts.ts").AccountBindingSnapshot })?.account_snapshot?.profiles.some((profile) => profile.id === id)));
     this.references = new FactoryReferences(this.store, this.artifacts);
     this.executionHost = new FactoryExecutionHost(this.store, () => this.settings().skills_path, native, this.accounts);
-    this.runtime = new FactoryRuntime(this.store, this.workflow, () => this.settings(), this.executionHost, endpoint, (record) => this.artifacts.read(record), publicUrl, this.references, this.accounts); this.review = new FactoryReview(this.store, (machine, path, base, mode) => this.runtime.capture(machine, path, base, mode), (machine, path) => this.runtime.inspect(machine, path));
+    this.runtime = new FactoryRuntime(this.store, this.workflow, () => this.settings(), this.executionHost, endpoint, (record) => this.artifacts.read(record), publicUrl, this.references, this.accounts, (id, scope, retryRunId, planningRunId) => this.github.admission(id, scope, retryRunId, planningRunId), id => this.pipeline.reconcileCompletion(id), (id, continuing) => { const idea = this.store.get<Implementation>("implementations", id); if (!idea?.project_id || !this.store.get("github_readiness_policies", idea.project_id)) this.queue.assertAdmission(id, continuing); }, (id, next) => this.queue.consumeRetry(id, next), id => this.github.executionScope(id), id => this.github.prepareExecutionScope(id), id => this.queue.prerequisites(id)); this.review = new FactoryReview(this.store, (machine, path, base, mode) => this.runtime.capture(machine, path, base, mode), (machine, path) => this.runtime.inspect(machine, path));
     this.runtime.retainBeforePause = async (id, workerId) => { await this.retainNativeHistory(id, workerId); };
     this.pipeline = new FactoryPipeline(this.store, this.runtime, this.workflow, () => this.settings(), id => this.retainHandoff(id), (id, before, workerId) => this.retainNative(id, before, workerId));
     this.continuation = new FactoryContinuation(this.store, this.workflow, this.runtime, async (id, allowPartial) => {
@@ -88,10 +105,65 @@ export class FactoryService {
     this.runtime.queue.maintenance = async () => { await maintenance?.(); await this.humanApproval.maintain(); for (const run of this.store.list<FactoryRun>("runs")) { try { await this.humanReview.retainAssistant(run); } catch { /* Machine unavailability preserves retained history. */ } } };
     this.execution = new FactoryExecution(this.store, this.workflow, this.runtime, this.pipeline, run => this.humanReview.handoff(run));
     this.retrospectives = new FactoryRetrospectives(this.store);
-    this.github = new ProjectGitHub(this.store, this.accounts, (machineId, path) => this.runtime.discover(machineId, path));
+    this.delivery = new FactoryMergeDelivery(this.store, this.runtime, id => this.retainHandoff(id));
+    this.publication = new FactoryPublication(this.store, this.runtime, this.workflow, this.delivery);
+    this.github = new ProjectGitHub(this.store, this.accounts, (machineId, path) => this.runtime.discover(machineId, path), scheduleTiming, source => this.runtime.pauseIssueWork(source), async projectId => {
+      for (const idea of this.store.list<Implementation>("implementations")) {
+        if (idea.project_id === projectId && idea.delivery && !idea.archived_at && !idea.discard_requested_at && idea.stage !== "done") await this.delivery.sync(idea.id, idea.delivery.revision);
+      }
+      this.github.upstream.reconcile(this.store.get<FactoryProject>("projects", projectId)!);
+    }, id => this.admitIssues(id), {
+      reconcile: async () => { await this.runtime.recover(); await this.runtime.reconcileCapacity(); },
+      start: (id, scope, key, validate) => {
+        if (!this.address) throw new FactoryError("factory_address_required", "Wait for the connection server address", 409);
+        return this.runtime.start(id, { action: "implement-spec", issue_scope: scope, idempotency_key: key }, this.address, { validateScope: validate, automatic: true });
+      },
+    });
+    this.queue = new ProjectQueue(this.store, () => this.settings(), id => this.github.legacyOverview(id));
+    this.issueBatches = this.github.issueBatches;
     this.deletion = new FactoryDeletion(this.store, (run, deletionId) => this.runtime.deleteAttempt(run, deletionId), id => this.backup.purge(id), new GitHubDeletion(this.store, this.accounts));
     this.runtime.reconcileDeletion = id => this.deletion.reconcile(id);
   }
+  bindOrigin(origin: string): void { this.origin = origin; }
+  private async admitIssues(projectId: string): Promise<void> {
+    if (this.stopped || !this.origin || this.issueAdmissions.has(projectId) || this.store.get("github_readiness_policies", projectId)) return;
+    this.issueAdmissions.add(projectId);
+    try {
+      await this.runtime.reconcileCapacity();
+      if (this.stopped) return;
+      for (const run of this.store.list<FactoryRun>("runs")) {
+        if ((run.manifest as { project?: FactoryProject }).project?.id !== projectId) continue;
+        try { await this.pipeline.completeReadyIssue(run.id); await this.publication.automatic(run.id); }
+        catch { /* Stale evidence or uncertain ownership retains the implementing slot. */ }
+      }
+      if (this.stopped) return;
+      for (const item of this.queue.overview(projectId).items) {
+        const current = this.queue.overview(projectId).items.find(next => next.implementation_id === item.implementation_id);
+        if (this.stopped || !current || current.reasons.some(reason => reason !== "admission_held")) continue;
+        const scope = this.github.executionScope(item.implementation_id);
+        if (!scope) continue;
+        const attempts = this.store.list<FactoryRun>("runs", item.implementation_id).filter(run => run.action === "implement-spec").length;
+        try {
+          await this.runtime.start(item.implementation_id, { action: "implement-spec", idempotency_key: `issue-${scope.approval.id}-${attempts}` }, this.origin);
+          if (!this.stopped) this.queue.holdAdmission(item.implementation_id, null);
+        }
+        catch (error) { if (!this.stopped) this.queue.holdAdmission(item.implementation_id, error instanceof FactoryError ? error.message : "Automatic implementation could not be admitted"); }
+      }
+    } finally { this.issueAdmissions.delete(projectId); }
+  }
+  /** Persist known local scope changes and their controlled pauses atomically. */
+  private mutateWorkflow(id: string, action: string, body: Record<string, unknown>): unknown {
+    return this.store.db.transaction(() => {
+      const result = this.workflow.mutate(id, action, body);
+      const projectId = this.store.get<Implementation>("implementations", id)?.project_id;
+      if (projectId && ["specifications", "tickets", "approvals"].includes(action)) {
+        for (const source of this.store.list<import("../shared/github-project.ts").ProjectGitHubSource>("github_sources", projectId)) if (source.kind === "issue" && source.implementation_id === id) reconcileIssueDelivery(this.store, source);
+        this.github.reconcileAdmissions(projectId);
+      }
+      return result;
+    })();
+  }
+  bindAddress(address: string): void { this.address = address; }
   settings(): FactorySettings {
     const saved = this.store.get<{ id: string; value: Partial<FactorySettings> & { max_implementations?: number } }>("settings", "default");
     const { max_implementations: removed, ...value } = saved?.value ?? {};
@@ -99,23 +171,69 @@ export class FactoryService {
     if (removed !== undefined) this.store.put("settings", { id: "default", value: settings });
     return settings;
   }
-  private boardAssignments(): Implementation[] {
-    const ages = new Map<string, string>();
-    for (const wait of this.store.list<import("../shared/factory.ts").FactoryCapacityWait>("capacity_waits")) {
-      if (!ages.has(wait.implementation_id) || wait.created_at < ages.get(wait.implementation_id)!) ages.set(wait.implementation_id, wait.created_at);
-    }
-    return this.store.list<Implementation>("implementations").sort((a, b) => (ages.get(a.id) ?? a.created_at).localeCompare(ages.get(b.id) ?? b.created_at));
-  }
-  private boardProgress(idea: Implementation): import("../shared/factory.ts").FactoryAssignmentProgress {
-    const runs = this.store.list<FactoryRun>("runs", idea.id);
-    const executing = runs.filter(run => run.action === "implement-spec" && !["completed", "cancelled", "failed"].includes(run.condition)).at(-1);
-    const tickets = executing ? this.workflow.executionTickets(executing) : this.workflow.tickets(idea.id);
-    const waiting = this.store.list<import("../shared/factory.ts").FactoryCapacityWait & { request?: { ticket_id?: string } }>("capacity_waits").map(wait => ({ ...wait, ticket_id: wait.request?.ticket_id }));
-    return assignmentProgress(idea, tickets, runs, this.store.list("workers"), this.store.list("checks"), waiting);
-  }
   private activeWork(id: string): boolean {
     const runs = this.store.list<FactoryRun>("runs", id); const ids = new Set(runs.map((run) => run.id));
-    return runs.some((run) => !["completed", "failed", "cancelled"].includes(run.condition)) || this.store.list<import("../shared/factory.ts").FactoryWorker>("workers").some((worker) => ids.has(worker.run_id) && !["completed", "failed", "cancelled"].includes(worker.condition));
+    return runs.some((run) => !["completed", "failed", "cancelled"].includes(run.condition)) || this.store.list<import("../shared/factory.ts").FactoryWorker>("workers").some((worker) => ids.has(worker.run_id) && !["completed", "failed", "cancelled"].includes(worker.condition)) || this.store.list<import("../shared/factory.ts").FactoryCheck>("checks").some(check => ids.has(check.run_id) && ["working", "interrupted"].includes(check.condition));
+  }
+  private boardContext(id: string): Parameters<typeof projectFactoryBoard>[1] {
+    const idea = this.store.get<Implementation>("implementations", id);
+    if (idea?.project_id && this.store.get<FactoryProject>("projects", idea.project_id)?.removed_at) return { selected: false, readiness_problem: null };
+    if (!idea?.project_id || !this.store.get("github_readiness_policies", idea.project_id)) return { ...this.queue.boardContext(id), admission_problem: this.queue.admissionProblem(id) };
+    const entry = this.github.queue(idea.project_id).entries.find(entry => entry.implementation_id === id);
+    return { selected: entry?.eligible === true, readiness_problem: entry?.lane === "needs_you" ? entry.reasons.map(reason => reason.code).join(", ") : null };
+  }
+  private compactIssueContext(id: string): Pick<FactoryDetail, "github_sources" | "github_sync"> {
+    const projectIds = new Set(this.store.list<import("../shared/github-project.ts").ProjectGitHubSource>("github_sources").filter(source => source.implementation_id === id).map(source => source.project_id));
+    const sources = [...projectIds].flatMap(projectId => this.github.sources(projectId).filter(source => source.implementation_id === id)).map(source => {
+      const view = this.store.get("github_readiness_policies", source.project_id) ? this.github.describeSource(source) : this.github.legacyOverview(source.project_id).sources.find(item => item.id === source.id) ?? source;
+      const { history, delivery_history, readiness_approvals, ...current } = view;
+      return { ...current, intake: this.github.intake(source) };
+    });
+    const sync = sources[0] ? this.store.get<{ last_sync: string | null; problem: string | null }>("github_sync", sources[0].project_id) : null;
+    return { github_sources: sources, github_sync: sync ? { last_sync: sync.last_sync, problem: sync.problem } : null };
+  }
+  private async discard(id: string): Promise<Implementation> {
+    const pending = this.discards.get(id);
+    if (pending) return pending;
+    const idea = this.store.get<Implementation>("implementations", id);
+    if (!idea) throw new FactoryError("not_found", "Assignment not found", 404);
+    if (idea.outcome === "discarded" && !this.activeWork(id)) return idea;
+    if (!idea.discard_requested_at) {
+      this.store.put("implementations", { ...idea, discard_requested_at: new Date().toISOString() });
+      this.store.event(id, "assignment_discard_requested", { evidence_retained: true });
+    }
+    const operation = this.stopDiscardedWork(id);
+    this.discards.set(id, operation);
+    try { return await operation; } finally { this.discards.delete(id); }
+  }
+  private async stopDiscardedWork(id: string): Promise<Implementation> {
+    for (const run of this.store.list<FactoryRun>("runs", id)) {
+      if (["completed", "cancelled", "failed"].includes(run.condition) && !this.store.list<import("../shared/factory.ts").FactoryWorker>("workers", run.id).some(worker => !["completed", "cancelled", "failed"].includes(worker.condition)) && !this.store.list<import("../shared/factory.ts").FactoryCheck>("checks", run.id).some(check => ["working", "interrupted"].includes(check.condition))) continue;
+      await this.retainHandoff(run.id);
+      let stopConfirmed = false;
+      try { await this.runtime.stopRun(run.id, { summary: "Owner discarded this Assignment" }); stopConfirmed = true; }
+      catch {
+        const current = this.store.get<FactoryRun>("runs", run.id)!;
+        if (!["completed", "cancelled", "failed"].includes(current.condition)) this.store.put("runs", { ...current, condition: "disconnected", waiting_reason: "Discard pending: native stop is unconfirmed; ownership is retained" }, id);
+        for (const worker of this.store.list<import("../shared/factory.ts").FactoryWorker>("workers", run.id)) if (!["completed", "cancelled", "failed"].includes(worker.condition)) this.store.put("workers", { ...worker, condition: "disconnected", waiting_reason: "Discard pending: child stop is unconfirmed; ownership is retained" }, run.id);
+      }
+      for (const check of this.store.list<import("../shared/factory.ts").FactoryCheck>("checks", run.id)) {
+        if (!["working", "interrupted"].includes(check.condition)) continue;
+        try { await this.pipeline.reconcileCheck(run.id, check.id); }
+        catch { /* An unobserved build keeps its reservation and Discard pending. */ }
+      }
+      for (const worker of this.store.list<import("../shared/factory.ts").FactoryWorker>("workers", run.id)) {
+        if (!stopConfirmed || ["completed", "cancelled", "failed"].includes(worker.condition)) continue;
+        try { await this.pipeline.workerAction(run.id, worker.id, "reconcile"); }
+        catch { /* A missing child receipt retains ownership until its identity is observed. */ }
+      }
+    }
+    const current = this.store.get<Implementation>("implementations", id)!;
+    if (this.activeWork(id)) return current;
+    const next: Implementation = { ...current, stage: "done", outcome: "discarded", updated_at: new Date().toISOString() };
+    this.store.put("implementations", next); this.store.event(id, "assignment_discarded", { evidence_retained: true });
+    if (next.project_id) this.github.upstream.reconcile(this.store.get<FactoryProject>("projects", next.project_id)!);
+    return next;
   }
   private projectActive(id: string): boolean {
     const runs = this.store.list<FactoryRun>("runs").filter((run) => (run.manifest as { project?: FactoryProject })?.project?.id === id);
@@ -126,15 +244,6 @@ export class FactoryService {
     return this.store.list<FactoryRun>("runs").flatMap((run) => {
       const base = { project_id: (run.manifest as { project?: FactoryProject })?.project?.id ?? null, implementation_id: run.implementation_id, run_id: run.id, machine_id: run.machine_id, provider: run.provider };
       return [...(run.pane_id ? [{ ...base, pane_id: run.pane_id, worker_id: null, worktree: run.worktree, workspace_id: run.workspace_id, title: run.action, condition: run.condition }] : []), ...this.store.list<import("../shared/factory.ts").FactoryWorker>("workers", run.id).filter((worker) => worker.pane_id).map((worker) => ({ ...base, pane_id: worker.pane_id!, worker_id: worker.id, worktree: worker.worktree, workspace_id: worker.workspace_id, title: (run.manifest as { tickets?: { id: string; title: string }[] })?.tickets?.find((ticket) => ticket.id === worker.ticket_id)?.title ?? worker.role, condition: worker.condition }))];
-    });
-  }
-  private conversations(implementation: Implementation) {
-    const runs = this.store.list<FactoryRun>("runs", implementation.id);
-    return workflowConversations({
-      implementation, runs, tickets: this.workflow.tickets(implementation.id),
-      execution_plans: this.store.list("execution_plans", implementation.id),
-      workers: runs.flatMap(run => this.store.list<FactoryDetail["workers"][number]>("workers", run.id)),
-      native_snapshots: runs.flatMap(run => this.store.list<FactoryDetail["native_snapshots"][number]>("native_snapshots", run.id)),
     });
   }
   bindPrompt(prompt: FactoryNative["prompt"]): void { this.executionHost.bindPrompt(prompt); }
@@ -156,7 +265,10 @@ export class FactoryService {
     const runs = this.store.list<FactoryRun>("runs", id); const runIds = new Set(runs.map((run) => run.id));
     const active = [...runs].reverse().find(run => !["completed", "cancelled", "failed"].includes(run.condition));
     const questionRunId = active?.action === "verify-provider" ? active.id : undefined;
-    const detail: FactoryDetail = { human_feedback_batches: this.store.list<import("../shared/factory.ts").FactoryHumanFeedbackBatch>("review_batches", id).filter(b => b.origin === "human"), human_review_approvals: this.store.list("human_review_approvals", id), human_reviews: this.store.list("human_reviews", id), human_review_deliveries: this.store.list<import("../shared/factory.ts").FactoryHumanReviewDelivery & { origin: string }>("human_review_messages", id).map(({ origin: _origin, ...receipt }) => receipt), automatic_review_batches: this.store.list("automatic_review_batches", id), pull_requests: this.store.list("pull_requests", id), automatic_review: this.store.list("automatic_review", id), automatic_execution: this.store.list("automatic_execution", id), automatic_planning: this.store.list("automatic_planning", id), execution_plans: this.store.list("execution_plans", id), implementation, capacity_waiting: factoryCapacity(this.store, this.settings()).waiting.filter(wait => wait.implementation_id === id), question_context: { run_id: questionRunId ?? null, revision: this.workflow.questionRevision(id, questionRunId), questions: this.workflow.questions(id, questionRunId) }, graph_hash: this.workflow.graphHash(id), question_revision: this.workflow.questionRevision(id), chats: this.store.list("chats", id), messages: this.store.list("messages", id), specifications: this.store.list("specifications", id), tickets: this.workflow.tickets(id), approvals: this.store.list("approvals", id), questions: this.store.list("questions", id), artifacts: this.store.list("artifacts", id), runs, snapshots: this.store.list("snapshots", id), comments: this.store.list("comments", id), events: this.store.list("events", id), native_snapshots: this.store.list<import("../shared/protocol.ts").NativeConversationSnapshot>("native_snapshots").filter((record) => runIds.has(record.run_id)), workers: this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers").filter((worker) => runIds.has(worker.run_id)), checks: this.store.list<import("../shared/protocol.ts").FactoryCheck>("checks").filter((check) => runIds.has(check.run_id)), review_evidence: this.store.list<import("../shared/protocol.ts").FactoryReviewEvidence>("review_evidence").filter((report) => runIds.has(report.run_id)), retrospectives: implementation.project_id ? this.store.list("retrospectives", implementation.project_id) : [], frontier: runs.at(-1)?.action === "implement-spec" ? this.pipeline.frontier(runs.at(-1)!) : [] };
+    const sourceProjects = new Set(this.store.list<import("../shared/github-project.ts").ProjectGitHubSource>("github_sources").filter(source => source.implementation_id === id).map(source => source.project_id));
+    const sources = [...sourceProjects].flatMap(projectId => this.github.sources(projectId).filter(source => source.implementation_id === id).map(source => ({ ...(this.store.get("github_readiness_policies", projectId) ? this.github.describeSource(source) : this.github.legacyOverview(projectId).sources.find(item => item.id === source.id) ?? source), intake: this.github.intake(source) })));
+    const sync = sources[0] ? this.store.get<{ last_sync: string | null; problem: string | null }>("github_sync", sources[0].project_id) : null;
+    const detail: FactoryDetail = { github_sources: sources, github_sync: sync ? { last_sync: sync.last_sync, problem: sync.problem } : null, board: projectFactoryBoard(implementation, { tickets: this.workflow.tickets(id), runs, workers: this.store.list<import("../shared/factory.ts").FactoryWorker>("workers").filter(worker => runIds.has(worker.run_id)), checks: this.store.list<import("../shared/factory.ts").FactoryCheck>("checks").filter(check => runIds.has(check.run_id)), questions: this.workflow.questions(id, questionRunId), ...this.boardContext(id) }), review_batches: this.store.list("review_batches", id), human_feedback_batches: this.store.list<import("../shared/factory.ts").FactoryHumanFeedbackBatch>("review_batches", id).filter(b => b.origin === "human"), human_review_approvals: this.store.list("human_review_approvals", id), human_reviews: this.store.list("human_reviews", id), human_review_deliveries: this.store.list<import("../shared/factory.ts").FactoryHumanReviewDelivery & { origin: string }>("human_review_messages", id).map(({ origin: _origin, ...receipt }) => receipt), automatic_review_batches: this.store.list("automatic_review_batches", id), pull_requests: this.store.list("pull_requests", id), automatic_review: this.store.list("automatic_review", id), automatic_execution: this.store.list("automatic_execution", id), automatic_planning: this.store.list("automatic_planning", id), execution_plans: this.store.list("execution_plans", id), implementation, capacity_waiting: factoryCapacity(this.store, this.settings()).waiting.filter(wait => wait.implementation_id === id), question_context: { run_id: questionRunId ?? null, revision: this.workflow.questionRevision(id, questionRunId), questions: this.workflow.questions(id, questionRunId) }, graph_hash: this.workflow.graphHash(id), question_revision: this.workflow.questionRevision(id), chats: this.store.list("chats", id), messages: this.store.list("messages", id), specifications: this.store.list("specifications", id), tickets: this.workflow.tickets(id), approvals: this.store.list("approvals", id), questions: this.store.list("questions", id), artifacts: this.store.list("artifacts", id), runs, snapshots: this.store.list("snapshots", id), comments: this.store.list("comments", id), events: this.store.list("events", id), native_snapshots: this.store.list<import("../shared/protocol.ts").NativeConversationSnapshot>("native_snapshots").filter((record) => runIds.has(record.run_id)), workers: this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers").filter((worker) => runIds.has(worker.run_id)), checks: this.store.list<import("../shared/protocol.ts").FactoryCheck>("checks").filter((check) => runIds.has(check.run_id)), review_evidence: this.store.list<import("../shared/protocol.ts").FactoryReviewEvidence>("review_evidence").filter((report) => runIds.has(report.run_id)), retrospectives: implementation.project_id ? this.store.list("retrospectives", implementation.project_id) : [], frontier: runs.at(-1)?.action === "implement-spec" ? this.pipeline.frontier(runs.at(-1)!) : [] };
     return { ...detail, conversations: workflowConversations(detail) };
   }
   agentAuthenticated(request: Request, url: URL): boolean {
@@ -168,9 +280,10 @@ export class FactoryService {
   }
   async handleAgent(request: Request, url: URL): Promise<Response> {
     try {
-      const route = /^\/api\/factory-agent\/([a-zA-Z0-9-]+)\/(contract|question|sync-answers|consume|worker|checks|artifact|specification|tickets|proposal|ticket\/[a-zA-Z0-9-]+|worker\/[a-zA-Z0-9-]+\/[a-z-]+)$/.exec(url.pathname);
+      const route = /^\/api\/factory-agent\/([a-zA-Z0-9-]+)\/(contract|question|sync-answers|consume|worker|checks|artifact|specification|tickets|proposal|issue-batch|ticket\/[a-zA-Z0-9-]+|worker\/[a-zA-Z0-9-]+\/[a-z-]+)$/.exec(url.pathname);
       if (!route) throw new FactoryError("not_found", "Unknown scoped tracker operation", 404);
       if (!this.agentAuthenticated(request, url)) throw new FactoryError("unauthorized", "Use this Run's scoped tracker credential", 401);
+      await this.runtime.recover();
       const run = this.store.get<FactoryRun>("runs", route[1]!);
       if (!run || ["completed", "cancelled", "failed"].includes(run.condition)) throw new FactoryError("run_closed", "This Run's control scope has ended", 409);
       if (this.store.get<Implementation>("implementations", run.implementation_id)?.deletion) throw new FactoryError("assignment_deleting", "This Assignment has a pending permanent Delete", 409);
@@ -184,10 +297,16 @@ export class FactoryService {
         return jsonResponse(ticket);
       }
       if (request.method !== "POST" || request.headers.get("x-herdr-factory") !== "1") throw new FactoryError("invalid_operation", "Use an explicit scoped tracker operation", 400);
+      if (run.scope_pause && !["artifact", "question", "sync-answers"].includes(action)) throw new FactoryError("issue_scope_paused", run.scope_pause.reason, 409);
       const body = await this.body(request, action === "artifact" ? Math.ceil(this.settings().max_artifact_bytes / 3) * 4 + 64 * 1024 : 512 * 1024);
-      if (action === "specification" && run.action === "to-spec") return jsonResponse(this.workflow.mutate(run.implementation_id, "specifications", { content: body.content, presentation_run_id: run.id }), 201);
+      if (action === "issue-batch" && ["grill-me", "grill-with-docs", "to-spec", "to-tickets"].includes(run.action)) {
+        const project = (run.manifest as { project?: FactoryProject }).project;
+        if (!project || this.store.get<Implementation>("implementations", run.implementation_id)?.project_id !== project.id) throw new FactoryError("issue_batch_scope_changed", "The planning Run's Project scope changed", 409);
+        return jsonResponse(this.issueBatches.propose(run.implementation_id, { ...body, run_id: run.id } as unknown as import("../shared/issue-batches.ts").IssueBatchProposal), 201);
+      }
+      if (action === "specification" && run.action === "to-spec") return jsonResponse(this.mutateWorkflow(run.implementation_id, "specifications", { content: body.content, presentation_run_id: run.id }), 201);
       if (action === "tickets" && run.action === "implement-spec") return jsonResponse(this.workflow.plan(run, body), 201);
-      if (action === "tickets" && run.action === "to-tickets") return jsonResponse(this.workflow.mutate(run.implementation_id, "tickets", body), 201);
+      if (action === "tickets" && run.action === "to-tickets") return jsonResponse(this.mutateWorkflow(run.implementation_id, "tickets", body), 201);
       if (action === "proposal" && run.action === "retro") {
         const scope = (run.manifest as { retrospective: import("../shared/protocol.ts").FactoryRetrospective }).retrospective;
         return jsonResponse(this.retrospectives.propose(scope.id, body), 201);
@@ -312,7 +431,7 @@ export class FactoryService {
     const nextCondition = ended ? "interrupted" : status === "blocked" ? "needs_you" : ["idle", "done"].includes(status) && !backgroundWorking ? "ready" : "working";
     const reason = ended ? "The native pane ended without an accepted outcome; retained work needs reconciliation" : status === "blocked" ? "The native agent is waiting for an owner answer" : null;
     for (const run of this.store.list<FactoryRun>("runs")) if (run.machine_id === "local" && run.pane_id === paneId && ["working", "ready", "needs_you", "blocked"].includes(run.condition)) {
-      if (this.store.get<Implementation>("implementations", run.implementation_id)?.pause) continue;
+      if (this.store.get<Implementation>("implementations", run.implementation_id)?.pause || run.scope_pause || run.issue_pause || run.implementation_completion_pending || this.store.get("implementation_retirement", run.id)) continue;
       if (!ended && agent !== run.provider) continue;
       const pending = this.store.list<import("../shared/protocol.ts").FactoryQuestion>("questions", run.implementation_id).find((question) => question.run_id === run.id && question.answer === null);
       const condition = pending && !ended ? "needs_you" : nextCondition;
@@ -322,7 +441,7 @@ export class FactoryService {
     }
     for (const worker of this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers")) if (worker.pane_id === paneId && ["working", "ready", "needs_you", "blocked"].includes(worker.condition)) {
       const run = this.store.get<FactoryRun>("runs", worker.run_id);
-      if (run && this.store.get<Implementation>("implementations", run.implementation_id)?.pause) continue;
+      if (run?.scope_pause || run && this.store.get<Implementation>("implementations", run.implementation_id)?.pause) continue;
       if (run?.machine_id !== "local" || !ended && agent !== run.provider) continue;
       const condition = ended ? "interrupted" : status === "blocked" ? "needs_you" : ["idle", "done"].includes(status) && !backgroundWorking ? "ready" : "working";
       const waiting = !ended && ["idle", "done"].includes(status) ? "Native worker is ready; reconcile its candidate and explicitly refresh, check and integrate it" : reason;
@@ -351,6 +470,31 @@ export class FactoryService {
         await this.body(request);
         return jsonResponse(await this.runtime.pauseAssignment(pauseRoute[1]!, pauseRoute[2] === "resume"));
       }
+      if (url.pathname === "/api/factory" || url.pathname.startsWith("/api/factory/")) await this.runtime.recover();
+      const queueRoute = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/queue(?:\/(configure))?$/.exec(url.pathname);
+      if (queueRoute) {
+        if (request.method === "GET" && !queueRoute[2]) { await this.runtime.reconcileCapacity(); return jsonResponse(this.queue.overview(queueRoute[1]!)); }
+        if (request.method !== "POST" || queueRoute[2] !== "configure" || !sameOrigin(request)) return httpError(403, "invalid_origin", "Use Project queue controls from this app");
+        return jsonResponse(this.queue.configure(queueRoute[1]!, await this.body(request)));
+      }
+      const implementationRetryRoute = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/retry$/.exec(url.pathname);
+      if (implementationRetryRoute) {
+        if (request.method !== "POST" || !sameOrigin(request)) return httpError(403, "invalid_origin", "Use Retry from this app");
+        await this.runtime.reconcileCapacity();
+        return jsonResponse(this.queue.retry(implementationRetryRoute[1]!, await this.body(request)));
+      }
+      const issueBatchAction = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/issue-batches\/([a-zA-Z0-9-]+)\/(review|publish|resume)$/.exec(url.pathname);
+      if (issueBatchAction) {
+        if (request.method !== "POST" || !sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Review and publish issue batches from this app");
+        const proof = await this.body(request) as unknown as import("../shared/issue-batches.ts").IssueBatchAction;
+        return jsonResponse(issueBatchAction[3] === "review" ? await this.issueBatches.review(issueBatchAction[1]!, issueBatchAction[2]!, proof, url.origin) : issueBatchAction[3] === "resume" ? await this.issueBatches.resume(issueBatchAction[1]!, issueBatchAction[2]!, proof) : await this.issueBatches.publish(issueBatchAction[1]!, issueBatchAction[2]!, proof));
+      }
+      const issueBatches = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/issue-batches$/.exec(url.pathname);
+      if (issueBatches) {
+        if (request.method === "GET") return jsonResponse(this.issueBatches.overview(issueBatches[1]!));
+        if (request.method === "POST" && sameOrigin(request)) return jsonResponse(this.issueBatches.propose(issueBatches[1]!, await this.body(request) as unknown as import("../shared/issue-batches.ts").IssueBatchProposal), 201);
+        return httpError(403, "invalid_origin", "Use issue batch controls from this app");
+      }
       if (url.pathname === "/api/factory-host/pane-state" && request.method === "POST") {
         const body = await this.body(request); if (typeof body.pane_id !== "string" || (!body.pane_id || body.pane_id.length > 200 || /[\0\r\n]/.test(body.pane_id))) throw new FactoryError("invalid_pane", "Select a native pane");
         return jsonResponse(await this.executionHost.paneState(body.pane_id));
@@ -372,11 +516,29 @@ export class FactoryService {
         const record = { ...(previous ?? this.store.record()), id, machine_id: body.machine_id, pane_id: body.pane_id, ...identity, archived_at: body.archived ? new Date().toISOString() : null, updated_at: new Date().toISOString() };
         this.store.put("pane_archives", record); return jsonResponse(record);
       }
-      const github = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/github(?:\/(configure|sync|settings)|\/pulls\/(\d+)\/(merge|update|rerequest|import|files))?$/.exec(url.pathname);
+      const scheduleRoute = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/github\/schedules\/(configure|run|reconcile)$/.exec(url.pathname);
+      if (scheduleRoute) {
+        if (request.method !== "POST" || !sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1" || request.headers.get("x-herdr-factory") !== "1") return httpError(403, "invalid_origin", "Use Project schedule controls from this app");
+        const body = await this.body(request);
+        if (scheduleRoute[2] === "configure") return jsonResponse(await this.github.configureSchedule(scheduleRoute[1]!, body as unknown as import("../shared/project-schedules.ts").ProjectScheduleConfiguration));
+        if (body.job !== "github_sync" && body.job !== "upstream_sync") throw new FactoryError("invalid_schedule", "Select a built-in synchronization job");
+        if (scheduleRoute[2] === "reconcile" && typeof body.result_id !== "string") throw new FactoryError("invalid_schedule", "Select the interrupted synchronization result");
+        return jsonResponse(await this.github.runSchedule(scheduleRoute[1]!, body.job, scheduleRoute[2] === "reconcile" ? "reconcile" : "manual", body.result_id as string | undefined));
+      }
+      const github = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/github(?:\/(configure|sync|settings|readiness|queue|preview|schedules)|\/pulls\/(\d+)\/(merge|update|rerequest|import|files)|\/issues\/(\d+)\/(approve|prepare|delivery))?$/.exec(url.pathname);
       if (github) {
+        if (request.method === "GET" && github[2] === "schedules") return jsonResponse(this.github.schedules(github[1]!));
+        if (request.method === "GET" && github[2] === "queue") return jsonResponse(this.github.queue(github[1]!));
         if (request.method === "GET" && github[4] === "files") return jsonResponse(await this.github.files(github[1]!, Number(github[3]), url.searchParams.get("head")));
-        if (request.method === "GET" && !github[2] && !github[3]) return jsonResponse(this.github.overview(github[1]!));
+        if (request.method === "GET" && !github[2] && !github[3] && !github[5]) return jsonResponse(this.github.overview(github[1]!));
         if (request.method !== "POST" || !sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1" || request.headers.get("x-herdr-factory") !== "1") return httpError(403, "invalid_origin", "Use GitHub controls from this app");
+        if (github[2] === "preview") return jsonResponse(await this.github.previewQueue(github[1]!));
+        if (github[2] === "queue") return jsonResponse(await this.github.configureQueue(github[1]!, await this.body(request)));
+        if (github[5]) {
+          const body = await this.body(request);
+          return jsonResponse(await (github[6] === "delivery" ? this.github.linkDelivery(github[1]!, Number(github[5]), body) : github[6] === "prepare" ? this.github.prepareIssue(github[1]!, Number(github[5]), body) : body.issue_revision !== undefined ? this.github.approvePlannedIssue(github[1]!, Number(github[5]), body as unknown as import("../shared/github-project.ts").ProjectIssueApprovalRequest) : this.github.approveIssue(github[1]!, Number(github[5]), body)));
+        }
+        if (github[2] === "readiness") return jsonResponse(await this.github.configureReadiness(github[1]!, await this.body(request) as unknown as import("../shared/github-readiness.ts").ReadinessConfiguration));
         if (github[2] === "configure") return jsonResponse(await this.github.configure(github[1]!, await this.body(request) as unknown as import("../shared/github-project.ts").ProjectGitHubConfiguration));
         if (github[2] === "settings") { const body = await this.body(request); return jsonResponse(await this.github.settings(github[1]!, body.account_profile_id)); }
         if (github[2] === "sync") return jsonResponse(await this.github.sync(github[1]!));
@@ -415,6 +577,14 @@ export class FactoryService {
         return jsonResponse(await this.runtime.accountOperation(machine, id, action + (suffix ? "/" + suffix : ""), body), action === "setup" && suffix !== "status" ? 202 : 200, { "cache-control": "no-store" });
       }
       if (url.pathname === "/api/factory-host/accounts/snapshot" && request.method === "POST") { if (request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Use account controls from this app"); return jsonResponse(await this.accounts.freeze((await this.body(request)).bindings as import("../shared/accounts.ts").ProjectAccountBindings)); }
+      if (url.pathname === "/api/factory-host/delivery-read" && request.method === "POST") {
+        if (request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Use delivery controls from this app");
+        return jsonResponse(await readDeliveryGitHub(this.accounts, await this.body(request) as unknown as import("../shared/factory-delivery.ts").DeliveryReadRequest));
+      }
+      if (url.pathname === "/api/factory-host/publication" && request.method === "POST") {
+        if (request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Use publication controls from this app");
+        return jsonResponse(await this.executionHost.publication(await this.body(request) as unknown as import("../shared/factory-publication.ts").PublicationHostRequest));
+      }
       if (url.pathname === "/api/factory/reference-template" && request.method === "GET") return jsonResponse(projectReferenceTemplate);
       const referencePrepare = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/references\/prepare$/.exec(url.pathname);
       if (referencePrepare && request.method === "POST") { const body = await this.body(request); if (typeof body.machine_id !== "string") throw new FactoryError("invalid_machine", "Select an execution Machine"); return jsonResponse(await this.runtime.prepareReferences(referencePrepare[1]!, body.machine_id, body.expected_revision)); }
@@ -460,7 +630,11 @@ export class FactoryService {
       if (hostOutputs && request.method === "GET") return jsonResponse(hostOutputs[2] ? this.executionHost.output(hostOutputs[1]!, url.searchParams.get("name") ?? "", url.searchParams.get("hash") ?? "") : await this.executionHost.outputs(hostOutputs[1]!));
       const prepareRoute = /^\/api\/factory\/machines\/([a-zA-Z0-9_-]+)\/prepare$/.exec(url.pathname);
       if (prepareRoute && request.method === "POST") return jsonResponse(await this.runtime.prepare(prepareRoute[1]!));
-      if (url.pathname === "/api/factory" && request.method === "GET") return jsonResponse({ implementations: this.boardAssignments(), pane_links: this.paneLinks(), conversations: this.store.list<Implementation>("implementations").flatMap(idea => this.conversations(idea)), pane_archives: this.store.list("pane_archives"), projects: this.store.list("projects"), checkouts: this.store.list<ProjectCheckout>("checkouts").map((entry) => { if (url.searchParams.get("navigation") !== "1") return entry; const { instructions: _instructions, ...metadata } = entry; return metadata; }), settings: this.settings(), capacity: factoryCapacity(this.store, this.settings()), progress: this.store.list<Implementation>("implementations").map(idea => this.boardProgress(idea)), activity: this.store.list<Implementation>("implementations").flatMap((idea) => { const run = this.store.list<FactoryRun>("runs", idea.id).at(-1); return run ? [{ implementation_id: idea.id, run_id: run.id, condition: run.condition, action: run.action, waiting_reason: run.waiting_reason, completed_tickets: this.workflow.tickets(idea.id).filter((ticket) => ticket.status === "done").length, total_tickets: this.workflow.tickets(idea.id).length }] : []; }) });
+      if (url.pathname === "/api/factory" && request.method === "GET") {
+        const view = new FactoryReads(this.store).overview(this.settings(), id => this.boardContext(id), url.searchParams.get("navigation") === "1");
+        const entries = new Map(view.projects.filter(project => !project.removed_at && this.store.get("github_readiness_policies", project.id)).flatMap(project => this.github.queue(project.id).entries.map(entry => [entry.implementation_id, entry] as const)));
+        return jsonResponse({ ...view, implementations: view.implementations.map(item => ({ ...item, ...(entries.has(item.id) ? { intake: entries.get(item.id) } : {}) })) });
+      }
       if (url.pathname === "/api/factory/settings" && request.method === "POST") {
         const body = await this.body(request); const settings = { ...this.settings() };
         const known = new Set(Object.keys(settings));
@@ -507,10 +681,19 @@ export class FactoryService {
       if (retroRoute && request.method === "POST") return jsonResponse(this.retrospectives.create(retroRoute[1]!, await this.body(request)), 201);
       const retroApproval = /^\/api\/factory\/retrospectives\/([a-zA-Z0-9-]+)\/approve$/.exec(url.pathname);
       if (retroApproval && request.method === "POST") return jsonResponse(this.retrospectives.approve(retroApproval[1]!, await this.body(request)));
+      const publicationRoute = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/publication(?:\/(publish|reconcile))?$/.exec(url.pathname);
+      if (publicationRoute) {
+        if (request.method === "GET" && !publicationRoute[2]) return jsonResponse(await this.publication.overview(publicationRoute[1]!));
+        if (request.method !== "POST" || !sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Use publication controls from this app");
+        if (publicationRoute[2] === "reconcile") return jsonResponse(await this.publication.reconcile(publicationRoute[1]!));
+        if (publicationRoute[2] === "publish") { const body = await this.body(request); return jsonResponse(await this.publication.publish(publicationRoute[1]!, body.head, "owner", body)); }
+        throw new FactoryError("not_found", "Select Publish PR or reconcile its receipt", 404);
+      }
       const pipelineRoute = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/(workers|checks|accept)$/.exec(url.pathname);
       if (pipelineRoute && request.method === "POST") {
         const body = await this.body(request);
-        const result = pipelineRoute[2] === "workers" ? await this.pipeline.requestWorker(pipelineRoute[1]!, body) : pipelineRoute[2] === "checks" ? await this.pipeline.check(pipelineRoute[1]!) : await this.pipeline.accept(pipelineRoute[1]!, body);
+        if (pipelineRoute[2] === "accept") { const accepted = await this.pipeline.accept(pipelineRoute[1]!, body); await this.publication.automatic(accepted.id); return jsonResponse(accepted); }
+        const result = pipelineRoute[2] === "workers" ? await this.pipeline.requestWorker(pipelineRoute[1]!, body) : await this.pipeline.check(pipelineRoute[1]!);
         return jsonResponse(result, result.condition === "queued" ? 202 : 200);
       }
       const workerRoute = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/workers\/([a-zA-Z0-9-]+)\/(refresh|reconcile|check|integrate|stop|review-evidence)$/.exec(url.pathname);
@@ -558,6 +741,16 @@ export class FactoryService {
           return jsonResponse(checkout, 201);
         }
         const next = { ...project, updated_at: new Date().toISOString() };
+        if (body.auto_publish_pr !== undefined) {
+          if (!sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Use publication controls from this app");
+          if (typeof body.auto_publish_pr !== "boolean") throw new FactoryError("invalid_publication_policy", "Choose whether this Project may publish implementation PRs automatically");
+          next.auto_publish_pr = body.auto_publish_pr;
+        }
+        if (body.delivery_policy !== undefined) { if (body.delivery_policy !== "merge" && body.delivery_policy !== "release") throw new FactoryError("invalid_delivery_policy", "Choose verified merge or containing release"); next.delivery_policy = body.delivery_policy; }
+        if (body.delivery_branch !== undefined) {
+          if (typeof body.delivery_branch !== "string" || !body.delivery_branch || body.delivery_branch.length > 200 || !/^(?![./-])(?!.*(?:\.\.|@\{|\/\/|[\x00-\x20\x7f~^:?*\[\\]))(?!.*(?:\/$|\.$|\.lock(?:\/|$)))[^\s]+$/.test(body.delivery_branch) || body.delivery_branch.split("/").some(part => part.startsWith("."))) throw new FactoryError("invalid_delivery_branch", "Enter a valid delivery branch");
+          next.delivery_branch = body.delivery_branch;
+        }
         if (body.name !== undefined) { if (typeof body.name !== "string" || !body.name.trim() || body.name.length > 200) throw new FactoryError("invalid_project", "Enter a Project name"); next.name = body.name.trim(); }
         if (body.workflow_instructions !== undefined) { if (typeof body.workflow_instructions !== "string" || body.workflow_instructions.length > 20000) throw new FactoryError("invalid_workflow", "Keep Project workflow instructions within 20,000 characters"); next.workflow_instructions = body.workflow_instructions; }
         if (body.context_target_tokens !== undefined) { if (!Number.isInteger(body.context_target_tokens) || Number(body.context_target_tokens) < 150000 || Number(body.context_target_tokens) > 200000) throw new FactoryError("invalid_context_target", "Use a context planning target between 150,000 and 200,000 tokens"); next.context_target_tokens = Number(body.context_target_tokens); }
@@ -612,7 +805,11 @@ export class FactoryService {
           next.execution_preset = selection;
         } else if (next.provider !== project.provider) delete next.execution_preset;
         if (hash(JSON.stringify(this.store.get("projects", project.id))) !== hash(JSON.stringify(project))) throw new FactoryError("project_changed", "Refresh this Project before saving changes", 409);
-        this.store.put("projects", next); this.store.event(null, "project_configured", { project_id: project.id }); return jsonResponse(next);
+        this.store.db.transaction(() => {
+          this.store.put("projects", next);
+          if (body.delivery_policy !== undefined || body.delivery_branch !== undefined) this.store.put("project_delivery_declarations", { id: project.id, policy: next.delivery_policy, branch: next.delivery_branch }, project.id);
+          this.store.event(null, "project_configured", { project_id: project.id });
+        })(); return jsonResponse(next);
       }
       const projectAccountCheck = /^\/api\/factory\/projects\/([a-zA-Z0-9-]+)\/accounts\/verify$/.exec(url.pathname);
       if (projectAccountCheck && request.method === "POST") {
@@ -651,8 +848,11 @@ export class FactoryService {
       if (continueRoute && request.method === "POST") return jsonResponse(await this.continuation.start(continueRoute[1]!, await this.body(request), url.origin), 202);
       if (startRoute && request.method === "POST") {
         const body = await this.body(request);
+        if (body.retry_of !== undefined) throw new FactoryError("invalid_start", "Use the explicit Retry operation");
         return jsonResponse(await this.runtime.requestStart(startRoute[1]!, body, url.origin), 202);
       }
+      const runRetryRoute = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/retry$/.exec(url.pathname);
+      if (runRetryRoute && request.method === "POST") return jsonResponse(await this.runtime.retry(runRetryRoute[1]!, await this.body(request), url.origin), 202);
       const reconcileRoute = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/reconcile$/.exec(url.pathname);
       if (reconcileRoute && request.method === "POST") return jsonResponse(await this.runtime.reconcile(reconcileRoute[1]!));
       const stopRoute = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/stop$/.exec(url.pathname);
@@ -666,6 +866,7 @@ export class FactoryService {
       const answerDelivery = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/send-answers$/.exec(url.pathname);
       if (answerDelivery && request.method === "POST") {
         const run = this.store.get<FactoryRun>("runs", answerDelivery[1]!); if (!run) throw new FactoryError("not_found", "Run not found", 404);
+        if (run.issue_pause) throw new FactoryError("issue_pause_required", "Controlled pause requested; answering does not resume this Run", 409);
         const body = await this.body(request); const revision = this.workflow.questionRevision(run.implementation_id, run.id);
         if (typeof body.idempotency_key !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.idempotency_key)) throw new FactoryError("invalid_delivery", "Send answered context with an explicit receipt key");
         if (body.revision !== revision || this.workflow.questions(run.implementation_id, run.id).some((question) => question.answer === null)) throw new FactoryError("answers_unready", "Send the current answered question revision explicitly", 409);
@@ -681,9 +882,7 @@ export class FactoryService {
       }
       const cleanup = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/cleanup$/.exec(url.pathname);
       if (cleanup && request.method === "POST") {
-        const run = this.store.get<FactoryRun>("runs", cleanup[1]!);
-        if (!run || !["completed", "cancelled", "failed"].includes(run.condition)) throw new FactoryError("run_owned", "Stop and observe this Run before cleanup", 409);
-        const result = await this.runtime.operation(run, "cleanup"); this.store.event(run.implementation_id, "clean_checkouts_removed", { run_id: run.id, result }); return jsonResponse(result);
+        return jsonResponse(await this.pipeline.cleanup(cleanup[1]!));
       }
       const importRoute = /^\/api\/factory\/runs\/([a-zA-Z0-9-]+)\/import-artifacts$/.exec(url.pathname);
       if (importRoute && request.method === "POST") {
@@ -698,7 +897,7 @@ export class FactoryService {
       const workflowRoute = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/(specifications|specification-acceptance|tickets|approvals|order|questions)$/.exec(url.pathname);
       if (workflowRoute && request.method === "POST") {
         const body = await this.body(request);
-        const result = this.workflow.mutate(workflowRoute[1]!, workflowRoute[2]!, workflowRoute[2] === "specifications" ? { content: body.content } : body);
+        const result = this.mutateWorkflow(workflowRoute[1]!, workflowRoute[2]!, workflowRoute[2] === "specifications" ? { content: body.content } : body);
         for (const request of this.store.list<import("../shared/factory.ts").FactoryPlanningRequest & { origin?: string }>("automatic_planning", workflowRoute[1]!)) if (!request.origin) this.store.put("automatic_planning", { ...request, origin: url.origin }, workflowRoute[1]!);
         return jsonResponse(result, workflowRoute[2] === "order" ? 200 : 201);
       }
@@ -748,7 +947,7 @@ export class FactoryService {
         if (typeof body.name !== "string" || !body.name.trim() || body.name.length > 200 || typeof body.path !== "string" || !providers.includes(body.provider as FactoryProvider) || !["app", "github", "gitlab", "local"].includes(String(body.tracker))) return badRequest("invalid_project", "Enter a name, checkout, provider and tracker");
         if (typeof body.machine_id !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(body.machine_id) || !this.registeredMachine(body.machine_id)) throw new FactoryError("invalid_machine", "Select an execution Machine");
         const inspected = await this.runtime.inspect(body.machine_id, body.path);
-        const project: FactoryProject = { ...this.store.record(), name: body.name.trim(), repository: inspected.repository, provider: body.provider as FactoryProvider, machine_id: body.machine_id, tracker: body.tracker as FactoryProject["tracker"], tracker_reference: typeof body.tracker_reference === "string" ? body.tracker_reference : "" };
+        const project: FactoryProject = { ...this.store.record(), name: body.name.trim(), repository: inspected.repository, provider: body.provider as FactoryProvider, machine_id: body.machine_id, tracker: body.tracker as FactoryProject["tracker"], tracker_reference: typeof body.tracker_reference === "string" ? body.tracker_reference : "", auto_publish_pr: false, delivery_policy: "merge", delivery_branch: inspected.branch === "HEAD" ? "main" : inspected.branch };
         let guidance: Implementation | null = null;
         if (body.guided_setup === true) {
           const detected = await this.runtime.discover(project.machine_id, inspected.path);
@@ -775,20 +974,47 @@ export class FactoryService {
         this.store.db.transaction(() => { this.store.put("projects", project); this.store.put("checkouts", checkout, project.id); if (guidance) { this.store.put("implementations", guidance); const chat: FactoryChat = { ...this.store.record(), implementation_id: guidance.id, title: "Setup" }; this.store.put("chats", chat, guidance.id); } this.store.event(null, "project_registered", { project_id: project.id, checkout_id: checkout.id }); })();
         return jsonResponse(project, 201);
       }
+      const deliveryRoute = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/delivery(?:\/(sync))?$/.exec(url.pathname);
+      if (deliveryRoute) {
+        const idea = this.store.get<Implementation>("implementations", deliveryRoute[1]!);
+        if (!idea) throw new FactoryError("not_found", "Assignment not found", 404);
+        if (request.method === "GET" && !deliveryRoute[2]) return jsonResponse(idea.delivery ?? null);
+        if (request.method !== "POST" || !sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Use delivery controls from this app");
+        const body = await this.body(request);
+        const result = deliveryRoute[2] ? await this.delivery.sync(idea.id, body.expected_revision) : await this.delivery.link(idea.id, body as unknown as import("../shared/factory.ts").AssignmentDeliveryConfiguration);
+        if (deliveryRoute[2] && idea.project_id) this.github.upstream.reconcile(this.store.get<FactoryProject>("projects", idea.project_id)!);
+        return jsonResponse(result);
+      }
+      const discardRoute = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/discard$/.exec(url.pathname);
+      if (discardRoute && request.method === "POST") {
+        await this.body(request); return jsonResponse(await this.discard(discardRoute[1]!));
+      }
+      const completionEvidence = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/completion-evidence$/.exec(url.pathname);
+      if (completionEvidence && request.method === "GET") {
+        if (!this.store.get("implementations", completionEvidence[1]!)) throw new FactoryError("not_found", "Assignment not found", 404);
+        return jsonResponse(await new FactoryDelivery(this.store, this.runtime).inspect(completionEvidence[1]!));
+      }
       const completeWork = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/complete-work$/.exec(url.pathname);
       if (completeWork && request.method === "POST") {
         const body = await this.body(request); const id = completeWork[1]!;
         const idea = this.store.get<Implementation>("implementations", id);
         const run = this.store.list<FactoryRun>("runs", id).at(-1);
         if (!idea || !run || run.id !== body.run_id || run.action !== "work" || run.conversation_kind === "human_review" || !run.workspace_id || !run.pane_id) throw new FactoryError("direct_work_required", "Select this Assignment's latest direct work session before marking it done", 409);
+        if (idea.discard_requested_at || idea.outcome === "discarded") throw new FactoryError("assignment_discarded", "This Assignment was discarded or is waiting for its owned work to stop", 409);
         if (idea.stage === "done" && !this.activeWork(id)) return jsonResponse(idea);
-        const scope = hash(JSON.stringify({project_id:idea.project_id,provider:idea.provider,machine_id:idea.machine_id,archived_at:idea.archived_at}));
+        const evidence = await new FactoryDelivery(this.store, this.runtime).inspect(id);
+        if (evidence.repository_changes === "unknown" || !evidence.quiescent || !manualCompletionAllowed(this.store, idea) && evidence.repository_changes !== "none") throw new FactoryError(evidence.repository_changes === "changes" ? "repository_delivery_required" : "completion_evidence_required", evidence.reason!, 409);
+        const scope = hash(JSON.stringify({project_id:idea.project_id,provider:idea.provider,machine_id:idea.machine_id,archived_at:idea.archived_at,discard_requested_at:idea.discard_requested_at}));
         await this.retainHandoff(run.id);
-        await this.runtime.stopRun(run.id, {summary:"Owner marked direct work done; its worktree is retained"});
+        if (!["completed", "cancelled", "failed"].includes(this.store.get<FactoryRun>("runs", run.id)!.condition)) await this.runtime.finishStep(run.id);
+        const finalEvidence = await new FactoryDelivery(this.store, this.runtime).inspect(id);
+        if (finalEvidence.repository_changes === "unknown" || !finalEvidence.quiescent || !manualCompletionAllowed(this.store, idea) && finalEvidence.repository_changes !== "none") throw new FactoryError(finalEvidence.repository_changes === "changes" ? "repository_delivery_required" : "completion_evidence_required", finalEvidence.reason!, 409);
         return jsonResponse(this.store.db.transaction(() => {
           const current = this.store.get<Implementation>("implementations", id)!;
-          if (this.store.list<FactoryRun>("runs", id).at(-1)?.id !== run.id || this.activeWork(id) || hash(JSON.stringify({project_id:current.project_id,provider:current.provider,machine_id:current.machine_id,archived_at:current.archived_at})) !== scope) throw new FactoryError("scope_changed", "The Assignment changed during completion; refresh it before continuing", 409);
-          const next: Implementation = {...current,stage:"done",outcome:"implementation_complete",updated_at:new Date().toISOString()};
+          if (this.store.list<FactoryRun>("runs", id).at(-1)?.id !== run.id || this.activeWork(id) || hash(JSON.stringify({project_id:current.project_id,provider:current.provider,machine_id:current.machine_id,archived_at:current.archived_at,discard_requested_at:current.discard_requested_at})) !== scope) throw new FactoryError("scope_changed", "The Assignment changed during completion; refresh it before continuing", 409);
+          const issueSourced = hasIssueSource(this.store, id);
+          const delivered = ["merged", "released"].includes(current.outcome) && !!(current.delivery_evidence || current.delivery && ["merged", "released"].includes(current.delivery.condition));
+          const next: Implementation = { ...current, ...(delivered ? {} : issueSourced ? { stage: "review" as const, activity: "awaiting_merge" as const, outcome: "implementation_complete" as const } : { stage: "done" as const, activity: undefined, outcome: manualCompletionAllowed(this.store, current) ? "implementation_complete" as const : "research_accepted" as const }), updated_at: new Date().toISOString() };
           this.store.put("implementations",next);this.store.event(id,"direct_work_completed",{run_id:run.id,owner_accepted:true});return next;
         })());
       }
@@ -799,7 +1025,11 @@ export class FactoryService {
         if (!record) throw new FactoryError("not_found", "Assignment not found", 404);
         if (archiveRoute[2] === "archive" && (record.stage !== "done" || this.activeWork(record.id))) throw new FactoryError("assignment_unfinished", "Finish or stop all work and complete the Assignment before archiving", 409);
         const next = { ...record, archived_at: archiveRoute[2] === "archive" ? new Date().toISOString() : null, updated_at: new Date().toISOString() };
-        this.store.put("implementations", next); this.store.event(record.id, "assignment_archive_changed", { archived_at: next.archived_at }); return jsonResponse(next);
+        return jsonResponse(this.store.db.transaction(() => {
+          this.store.put("implementations", next); this.store.event(record.id, "assignment_archive_changed", { archived_at: next.archived_at });
+          if (archiveRoute[2] === "restore") migrateFactoryHistory(this.store, record.id);
+          return this.store.get<Implementation>("implementations", record.id)!;
+        })());
       }
       const configured = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/configure$/.exec(url.pathname);
       if (configured && request.method === "POST") {
@@ -832,11 +1062,35 @@ export class FactoryService {
       }
       const match = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)$/.exec(url.pathname);
       if (match && request.method === "GET") {
+        if (url.searchParams.get("view") === "workflow") {
+          const workflow = new FactoryReads(this.store).workflow(match[1]!, url.searchParams.get("conversation_id") ?? undefined);
+          return workflow ? jsonResponse(workflow) : httpError(404, "not_found", "Implementation not found");
+        }
+        if (url.searchParams.get("view") === "current") {
+          const current = new FactoryReads(this.store).current(match[1]!, this.boardContext(match[1]!));
+          return current ? jsonResponse({ ...current, ...this.compactIssueContext(match[1]!) }) : httpError(404, "not_found", "Implementation not found");
+        }
+        if (url.searchParams.get("view") === "review") {
+          const current = new FactoryReads(this.store).current(match[1]!, {});
+          if (!current) return httpError(404, "not_found", "Implementation not found");
+          const snapshots = this.store.db.query<{ data: string }, [string]>("SELECT json_remove(data, '$.files') AS data FROM records WHERE kind='snapshots' AND parent=? ORDER BY rowid").all(match[1]!).map(row => JSON.parse(row.data));
+          const batches = this.store.db.query<{ data: string }, [string]>("SELECT json_remove(data, '$.reports') AS data FROM records WHERE kind='review_batches' AND parent=? ORDER BY rowid").all(match[1]!).map(row => JSON.parse(row.data));
+          return jsonResponse({ implementation: current.implementation, runs: current.runs, checks: current.checks, review_evidence: current.review_evidence, review_batches: batches, snapshots, comments: this.store.list("comments", match[1]!) } satisfies import("../shared/factory.ts").FactoryReviewDetail);
+        }
+        if (url.searchParams.get("view") === "snapshot") {
+          const snapshot = this.store.get<import("../shared/factory.ts").ReviewSnapshot>("snapshots", url.searchParams.get("record_id") ?? "");
+          return snapshot?.implementation_id === match[1] ? jsonResponse(snapshot) : httpError(404, "not_found", "Review snapshot not found");
+        }
+        if (url.searchParams.get("view") === "report") {
+          const report = this.store.get<import("../shared/factory.ts").FactoryReviewEvidence>("review_evidence", url.searchParams.get("record_id") ?? "");
+          const run = report && this.store.get<FactoryRun>("runs", report.run_id);
+          return report && run?.implementation_id === match[1] ? jsonResponse(report) : httpError(404, "not_found", "Review report not found");
+        }
         const detail = this.detail(match[1]!);
         return detail ? jsonResponse(detail) : httpError(404, "not_found", "Implementation not found");
       }
       return httpError(404, "not_found", "Unknown factory endpoint");
     } catch (error) { return error instanceof FactoryError ? httpError(error.status, error.code, error.message) : error instanceof SyntaxError ? badRequest("invalid_json", "Enter valid JSON") : errorResponse(error); }
   }
-  stop(): void { if (this.stopped) return; this.stopped = true; this.humanApproval.stop(); this.deletion.stop(); this.continuation.stop(); this.planning.stop(); this.execution.stop(); this.github.stop(); this.accounts.stop(); this.runtime.stop(); this.store.close(); }
+  stop(): void { if (this.stopped) return; this.stopped = true; this.humanApproval.stop(); this.deletion.stop(); this.publication.stop(); this.pipeline.stop(); this.continuation.stop(); this.planning.stop(); this.execution.stop(); this.github.stop(); this.accounts.stop(); this.runtime.stop(); this.store.close(); }
 }

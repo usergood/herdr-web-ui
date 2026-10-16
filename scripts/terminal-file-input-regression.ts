@@ -1,3 +1,4 @@
+import { isTerminalProtocolReply } from "./terminal-protocol-replies.ts";
 import assert from "node:assert/strict";
 import type { Page, WebSocket } from "playwright-core";
 
@@ -7,7 +8,7 @@ export async function checkTerminalFileInput(page: Page, socket: WebSocket): Pro
     const timer = setTimeout(() => { off(); reject(new Error("No terminal input arrived")); }, 10_000);
     const listener = ({ payload }: { payload: string | Buffer }): void => {
       const frame = JSON.parse(String(payload));
-      if (frame.type !== "input") return;
+      if (frame.type !== "input" || isTerminalProtocolReply(frame)) return;
       clearTimeout(timer);
       off();
       resolve(frame.text);

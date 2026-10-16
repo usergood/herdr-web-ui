@@ -29,6 +29,32 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 - Accept the presented Specification directly in Specifications with one button or an explicit owner reply. Retain revision and source evidence, reject stale decisions, and keep pending shared-understanding confirmations from blocking later attributable answers.
 - Queue factory Start and child requests durably at capacity and dispatch eligible work
   oldest-first automatically, with restart recovery and visible bounded Machine retries.
+
+## [0.6.0] - 2026-10-16
+
+### Added
+
+- Add default-off automatic implementation of trusted GitHub issues after an explicit readiness identity and current backlog review. Existing and future eligible plans use queue priority, pause and capacity limits, guarded frozen-scope starts, durable recovery and owner Retry. Missing decisions and dependency/sync problems stay visible; current checks and independent reviews free capacity while reviewed work awaits separately approved delivery. Issue/PR publication, merge, release and deployment remain separate actions.
+  ([#31](https://github.com/usergood/saurons-eye/pull/31) by @usergood)
+
+## [0.5.1] - 2026-10-15
+
+### Changed
+- Load Workflow and board current state without retained transcripts, frozen Run context or diffs.
+  Read history and review evidence when opened, and share the board overview with navigation. ([#29](https://github.com/usergood/saurons-eye/pull/29) by @usergood)
+
+## [0.5.0] - 2026-10-15
+
+### Added
+- Five Assignment board lanes, trusted issue readiness, Project queues, reviewed issue batches,
+  explicit PR publication, synchronization schedules and upstream release intake. Repository work
+  finishes only after verified merge or release delivery; pending owner decisions remain visible.
+  ([#27](https://github.com/usergood/saurons-eye/pull/27) by @usergood)
+- Send retained failed review reports to an owned repair worker with exact-head validation and
+  durable delivery receipts, preserving uncertain outcomes across reloads.
+  ([#27](https://github.com/usergood/saurons-eye/pull/27) by @usergood)
+
+### Fixed
 - Continue approved planning from the native chat, retain finished chats, and run
   required verification before implementation. Scope native probe questions separately
   so an obsolete verification attempt cannot block product work or a replacement probe.
@@ -42,6 +68,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 ## [0.4.9] - 2026-10-13
 
 ### Added
+
 - Add native model and reasoning dropdowns for Project defaults and individual
   Inbox starts, with validated choices and frozen parent/worker launch settings.
   ([#21](https://github.com/usergood/saurons-eye/pull/21) by @usergood)
@@ -3380,7 +3407,8 @@ First public version.
 - Installable PWA, a mobile key bar, web push alerts and optional token auth.
 - Distribution as a herdr plugin.
 
-[Unreleased]: https://github.com/devswha/herdr-web-ui/compare/v0.4.8...HEAD
+[Unreleased]: https://github.com/usergood/saurons-eye/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/usergood/saurons-eye/compare/v0.5.1...v0.6.0
 [0.4.8]: https://github.com/devswha/herdr-web-ui/compare/v0.4.7...v0.4.8
 [0.4.7]: https://github.com/devswha/herdr-web-ui/compare/v0.4.6...v0.4.7
 [0.4.6]: https://github.com/devswha/herdr-web-ui/compare/v0.4.5...v0.4.6

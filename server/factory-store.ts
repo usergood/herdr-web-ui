@@ -3,9 +3,12 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { FactoryRecord } from "../shared/factory.ts";
+import { migrateFactoryHistory } from "./factory-history.ts";
 
 /** One transactional record/event store, never a provider's native transcript database. */
 export class FactoryStore {
+  /** Process-scoped invalidation token for on-demand owner views; never persisted state. */
+  revision = randomUUID();
   readonly root: string;
   readonly db: Database;
   constructor(stateDir: string) {
@@ -23,6 +26,7 @@ export class FactoryStore {
     this.db.transaction(() => {
       this.db.exec("CREATE TABLE IF NOT EXISTS records(kind TEXT NOT NULL, id TEXT NOT NULL, parent TEXT, data TEXT NOT NULL, PRIMARY KEY(kind,id)); CREATE INDEX IF NOT EXISTS records_parent ON records(kind,parent); PRAGMA user_version=1;");
     })();
+    migrateFactoryHistory(this);
   }
   list<T>(kind: string, parent?: string): T[] {
     const rows = parent === undefined
@@ -46,9 +50,10 @@ export class FactoryStore {
       if (hostDeleted || deleted && !(kind === "implementations" && value.deletion)) return record;
     }
     this.db.query("INSERT INTO records(kind,id,parent,data) VALUES(?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET parent=excluded.parent,data=excluded.data").run(kind, record.id, parent, JSON.stringify(record));
+    this.revision = randomUUID();
     return record;
   }
-  remove(kind: string, id: string): void { this.db.query("DELETE FROM records WHERE kind=? AND id=?").run(kind, id); }
+  remove(kind: string, id: string): void { this.db.query("DELETE FROM records WHERE kind=? AND id=?").run(kind, id); this.revision = randomUUID(); }
   record(): FactoryRecord { const now = new Date().toISOString(); return { id: randomUUID(), created_at: now, updated_at: now }; }
   event(parent: string | null, kind: string, data: unknown): void {
     const record = this.record();

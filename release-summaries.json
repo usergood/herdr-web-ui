@@ -1,4 +1,190 @@
 {
+  "0.6.0": {
+    "en": {
+      "new": [
+        "Opt in to automatic implementation of trusted GitHub issues after backlog review.",
+        "Control issue queues with priorities, pauses and capacity limits."
+      ],
+      "improved": [
+        "Reuse approved plans and expose readiness and dependency blockers.",
+        "Free implementation slots while work awaits separate merge or release approval."
+      ],
+      "fixed": [
+        "Keep approval current when issue requirements or dependencies change.",
+        "Keep completion accurate when release or merge evidence changes."
+      ]
+    },
+    "ko": {
+      "new": [
+        "백로그 검토 후 신뢰할 수 있는 GitHub 이슈의 자동 구현을 선택할 수 있습니다.",
+        "우선순위, 일시 중지와 실행 한도로 이슈 대기열을 제어합니다."
+      ],
+      "improved": [
+        "승인된 계획을 재사용하고 준비 상태와 의존성 문제를 표시합니다.",
+        "병합이나 릴리스 승인을 기다리는 작업은 구현 슬롯을 반환합니다."
+      ],
+      "fixed": [
+        "이슈 요구 사항이나 의존성이 바뀌면 승인을 갱신하도록 합니다.",
+        "릴리스나 병합 증거가 바뀌어도 완료 상태를 정확하게 유지합니다."
+      ]
+    },
+    "ja": {
+      "new": [
+        "バックログの確認後、信頼できるGitHub課題の自動実装を有効にできます。",
+        "優先度、一時停止、実行数の上限で課題キューを管理できます。"
+      ],
+      "improved": [
+        "承認済みの計画を再利用し、準備状況や依存関係の問題を表示します。",
+        "マージやリリースの承認待ちでも、実装用の枠を次の作業に渡せます。"
+      ],
+      "fixed": [
+        "課題の要件や依存関係が変わると、承認の更新を求めます。",
+        "リリースやマージの証拠が変わっても、完了状態を正しく保ちます。"
+      ]
+    },
+    "zh": {
+      "new": [
+        "审查待办事项后，可选择启用可信 GitHub 问题的自动实现。",
+        "通过优先级、暂停和容量限制管理问题队列。"
+      ],
+      "improved": [
+        "复用已批准的计划，并显示就绪状态和依赖阻塞原因。",
+        "工作等待单独的合并或发布批准时，释放实现名额。"
+      ],
+      "fixed": [
+        "问题需求或依赖变化时，要求更新批准。",
+        "发布或合并证据变化时，保持完成状态准确。"
+      ]
+    },
+    "tr": {
+      "new": [
+        "İş listesini inceledikten sonra güvenilir GitHub sorunlarının otomatik uygulamasını açın.",
+        "Sorun kuyruklarını öncelik, duraklatma ve kapasite sınırlarıyla yönetin."
+      ],
+      "improved": [
+        "Onaylı planları yeniden kullanın; hazırlık ve bağımlılık engellerini görün.",
+        "Ayrı birleştirme veya sürüm onayı bekleyen işler uygulama kapasitesini serbest bırakır."
+      ],
+      "fixed": [
+        "Sorun gereksinimleri veya bağımlılıklar değiştiğinde onayı yenileyin.",
+        "Sürüm veya birleştirme kanıtları değiştiğinde tamamlanma durumunu doğru tutun."
+      ]
+    }
+  },
+  "0.5.1": {
+    "en": {
+      "improved": [
+        "Open Workflow and boards with much smaller updates.",
+        "Load history and review evidence only when you open them."
+      ]
+    },
+    "ko": {
+      "improved": [
+        "더 작은 데이터로 워크플로와 보드를 불러옵니다.",
+        "기록과 검토 증거는 열 때만 불러옵니다."
+      ]
+    },
+    "ja": {
+      "improved": [
+        "ワークフローとボードを、より少ない更新データで表示します。",
+        "履歴とレビューの証拠は、開いたときだけ読み込みます。"
+      ]
+    },
+    "zh": {
+      "improved": [
+        "工作流和看板更新所需的数据量大幅减少。",
+        "仅在打开时加载历史记录和审查证据。"
+      ]
+    },
+    "tr": {
+      "improved": [
+        "İş akışını ve panoları çok daha küçük güncellemelerle açın.",
+        "Geçmişi ve inceleme kanıtlarını yalnızca açtığınızda yükleyin."
+      ]
+    }
+  },
+  "0.5.0": {
+    "en": {
+      "new": [
+        "Track work across five board lanes through verified delivery.",
+        "Send failed review reports directly to a repair worker.",
+        "Manage ready issues, Project queues and reviewed issue batches."
+      ],
+      "improved": [
+        "Edit pull request titles and descriptions before publishing.",
+        "Run up to six tasks and keep finished chats available."
+      ],
+      "fixed": [
+        "Pending questions stay visible until you resolve them.",
+        "Uncertain repair requests cannot be sent twice after a reload.",
+        "Continue approved planning and preserve replies in native chat."
+      ]
+    },
+    "ko": {
+      "new": [
+        "검증된 전달까지 다섯 개 보드 단계에서 작업을 추적합니다.",
+        "실패한 검토 보고서를 수정 작업자에게 바로 보냅니다.",
+        "준비된 이슈, 프로젝트 대기열과 검토된 이슈 묶음을 관리합니다."
+      ],
+      "improved": [
+        "게시 전에 풀 리퀘스트 제목과 설명을 수정합니다.",
+        "최대 여섯 작업을 실행하고 완료된 채팅을 계속 확인합니다."
+      ],
+      "fixed": [
+        "답변할 때까지 대기 중인 질문이 계속 표시됩니다.",
+        "전달이 불확실한 수정 요청은 새로고침 후에도 중복 전송되지 않습니다.",
+        "네이티브 채팅에서 승인된 계획을 이어가고 답변을 보존합니다."
+      ]
+    },
+    "ja": {
+      "new": [
+        "検証済みの引き渡しまで、5つのボード列で作業を追跡できます。",
+        "不合格のレビュー報告を修正担当エージェントに直接送れます。",
+        "準備済みの課題、プロジェクトのキュー、レビュー済みの課題群を管理できます。"
+      ],
+      "improved": [
+        "公開前にプルリクエストのタイトルと説明を編集できます。",
+        "最大6件のタスクを実行し、完了したチャットも引き続き確認できます。"
+      ],
+      "fixed": [
+        "未回答の質問は解決するまで表示されます。",
+        "送信結果が不明な修正依頼は、再読み込み後も重複送信されません。",
+        "ネイティブチャットで承認済みの計画を続行し、返信を保持します。"
+      ]
+    },
+    "zh": {
+      "new": [
+        "通过五个看板阶段跟踪工作，直至完成交付验证。",
+        "将未通过的审查报告直接发送给修复工作者。",
+        "管理就绪问题、项目队列和已审查的问题批次。"
+      ],
+      "improved": [
+        "发布前可编辑拉取请求的标题和说明。",
+        "最多同时运行六项任务，并保留已完成的聊天。"
+      ],
+      "fixed": [
+        "待回答的问题会一直显示，直到解决。",
+        "刷新后不会重复发送交付结果不确定的修复请求。",
+        "在原生聊天中继续已批准的计划，并保留回复。"
+      ]
+    },
+    "tr": {
+      "new": [
+        "İşi, doğrulanmış teslimata kadar beş pano sütununda izleyin.",
+        "Başarısız inceleme raporlarını doğrudan bir düzeltme çalışanına gönderin.",
+        "Hazır sorunları, Proje kuyruklarını ve incelenmiş sorun gruplarını yönetin."
+      ],
+      "improved": [
+        "Yayımlamadan önce çekme isteği başlığını ve açıklamasını düzenleyin.",
+        "Altı görevi aynı anda çalıştırın ve tamamlanan sohbetlere erişin."
+      ],
+      "fixed": [
+        "Bekleyen sorular, siz çözene kadar görünür kalır.",
+        "Sonucu belirsiz düzeltme istekleri yeniden yüklemeden sonra tekrar gönderilmez.",
+        "Onaylı planlamaya yerel sohbette devam edin ve yanıtları koruyun."
+      ]
+    }
+  },
   "0.4.9": {
     "en": {
       "new": [
