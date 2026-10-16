@@ -467,7 +467,9 @@ export class FactoryRuntime {
   }
   async discussReview(parent: FactoryRun, review: import("../shared/factory.ts").FactoryHumanReview, message: FactoryMessage, origin: string, claim: () => void): Promise<FactoryRun> {
     this.assertExecuting(parent.implementation_id);
-    const existing = review.assistant_run_id ? this.store.get<FactoryRun>("runs", review.assistant_run_id) : this.store.list<FactoryRun>("runs", parent.implementation_id).find(r => r.idempotency_key === `human-review-${review.id}`);
+    const reviewRuns = this.store.list<FactoryRun>("runs", parent.implementation_id).filter(r => r.conversation_kind === "human_review");
+    const key = `human-review-${review.id}-${message.id}`;
+    const existing = reviewRuns.find(r => r.id === review.assistant_run_id && !["completed", "cancelled", "failed"].includes(r.condition)) ?? reviewRuns.find(r => r.idempotency_key === key);
     if (existing) {
       // Admission and the durable sending claim precede every native effect.
       this.store.db.transaction(() => { agentCapacityPool(this.store, this.settings()); claim(); }).immediate();
@@ -476,11 +478,13 @@ export class FactoryRuntime {
     }
     const inspected = await this.inspect(parent.machine_id, parent.worktree!);
     if (inspected.head !== review.head) throw new FactoryError("review_stale", "The assistant checkout differs from the captured review", 409);
+    const histories = this.store.list<import("../shared/factory.ts").NativeConversationSnapshot>("native_snapshots").filter(s => reviewRuns.some(r => r.id === s.run_id));
+    const history = histories.flatMap(s => s.turns.map(turn => `${turn.role}: ${turn.parts.flatMap(part => part.kind === "text" || part.kind === "compact" ? [part.text] : []).join("\n")}`)).join("\n\n").slice(-48000);
     const { planning_authority: _authority, ...manifest } = parent.manifest as Record<string, unknown>;
     const run = this.store.db.transaction(() => {
       this.assertExecuting(parent.implementation_id);
       const pool = agentCapacityPool(this.store, this.settings());
-      const record: FactoryRun = { ...parent, ...this.store.record(), action: "work", conversation_kind: "human_review", capacity_pool: pool, condition: "accepted", waiting_reason: null, idempotency_key: `human-review-${review.id}`, base: review.head, checkout: parent.worktree, worktree: null, branch: null, workspace_id: null, pane_id: null, continuation: undefined, suspension: undefined, manifest: { ...manifest, checkout: inspected, human_review: { review, message, snapshot: this.store.get("snapshots", review.snapshot_id!) }, context_message_ids: this.store.list<FactoryMessage>("messages", parent.implementation_id).filter(m => m.chat_id === message.chat_id).map(m => m.id) } };
+      const record: FactoryRun = { ...parent, ...this.store.record(), action: "work", conversation_kind: "human_review", capacity_pool: pool, condition: "accepted", waiting_reason: null, idempotency_key: key, base: review.head, checkout: parent.worktree, worktree: null, branch: null, workspace_id: null, pane_id: null, continuation: undefined, suspension: undefined, manifest: { ...manifest, checkout: inspected, human_review: { review, message, history, history_snapshot_ids: histories.map(s => s.id), snapshot: this.store.get("snapshots", review.snapshot_id!) }, context_message_ids: this.store.list<FactoryMessage>("messages", parent.implementation_id).filter(m => m.chat_id === message.chat_id).map(m => m.id) } };
       claim(); this.store.put("runs", record, parent.implementation_id);
       this.store.put("human_reviews", { ...review, assistant_run_id: record.id }, parent.implementation_id);
       const api = new URL(this.publicUrl ?? origin);

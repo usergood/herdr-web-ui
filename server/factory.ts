@@ -723,7 +723,7 @@ export class FactoryService {
         const body = await this.body(request); const id = completeWork[1]!;
         const idea = this.store.get<Implementation>("implementations", id);
         const run = this.store.list<FactoryRun>("runs", id).at(-1);
-        if (!idea || !run || run.id !== body.run_id || run.action !== "work" || !run.workspace_id || !run.pane_id) throw new FactoryError("direct_work_required", "Select this Assignment's latest direct work session before marking it done", 409);
+        if (!idea || !run || run.id !== body.run_id || run.action !== "work" || run.conversation_kind === "human_review" || !run.workspace_id || !run.pane_id) throw new FactoryError("direct_work_required", "Select this Assignment's latest direct work session before marking it done", 409);
         if (idea.stage === "done" && !this.activeWork(id)) return jsonResponse(idea);
         const scope = hash(JSON.stringify({project_id:idea.project_id,provider:idea.provider,machine_id:idea.machine_id,archived_at:idea.archived_at}));
         await this.retainHandoff(run.id);

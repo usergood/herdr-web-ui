@@ -43,7 +43,7 @@ export class FactoryHumanReview {
     const message = this.store.get<FactoryMessage>("messages", messageId)!;
     this.runtime.assertExecuting(parent.implementation_id);
     const assistant = entry.assistant_run_id ? this.store.get<FactoryRun>("runs", entry.assistant_run_id) : null;
-    if (assistant && assistant.condition !== "ready") throw new FactoryError("continuation_waiting", assistant.waiting_reason ?? "Waiting for the Human Review assistant to finish its current turn", 409);
+    if (assistant && !["ready", "completed", "cancelled", "failed"].includes(assistant.condition)) throw new FactoryError("continuation_waiting", assistant.waiting_reason ?? "Waiting for the Human Review assistant to finish its current turn", 409);
     let claimed = false;
     try {
       const run = await this.runtime.discussReview(parent, entry, message, request.origin, () => { claimed = true; this.store.put("human_review_messages", { ...request, condition: "sending", reason: null }, parent.implementation_id); });

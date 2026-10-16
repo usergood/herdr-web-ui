@@ -50,6 +50,7 @@ try {
       f.setTranscript({ source_id: "browser-review", version: "one", cursor: null, turns: [{ role: "assistant", ts: new Date().toISOString(), parts: [{ kind: "text", text: "The captured change preserves progress." }] }] });
       f.runs.get(assistant.id)!.condition = "ready";
       await review.getByText("The captured change preserves progress.", { exact: true }).waitFor();
+      assert.equal(await page.getByRole("button", { name: "Mark work done", exact: true }).count(), 0);
       f.offline(true);
       await f.api(`/runs/${assistant.id}/reconcile`, {});
       await page.reload();

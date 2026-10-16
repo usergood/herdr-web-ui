@@ -10,6 +10,46 @@ import { tmpdir } from "node:os";
 import { createServer } from "./index.ts";
 
 describe("Human Review through authenticated HTTP", () => {
+  it("rejects direct-work completion of the Human Review assistant without stopping its discussion", async () => {
+    const f = await capacityFixture({ advancingHeads: true });
+    try {
+      const { prefix, detail } = await published(f);
+      const d = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
+      await f.api(`${prefix}/human-review/messages`, { review_id: d.human_reviews[0].id, content: "Discuss the result", idempotency_key: "discussion" });
+      const started = await until(detail, d => d.runs.some((r: any) => r.conversation_kind === "human_review"));
+      const assistant = started.runs.find((r: any) => r.conversation_kind === "human_review");
+      const native = f.runs.get(assistant.id)!; native.workspace_id = "owned-human-review"; native.pane_id = "owned-human-review:p1"; native.condition = "ready";
+      await f.api(`/runs/${assistant.id}/reconcile`, {});
+      const result = await f.api(`${prefix}/complete-work`, { run_id: assistant.id });
+      expect(result.status).toBe(409);
+      expect(await result.json()).toMatchObject({ error: { code: "direct_work_required" } });
+      expect((await detail()).runs.find((r: any) => r.id === assistant.id).condition).toBe("ready");
+    } finally { f.close(); }
+  }, 20000);
+  it("replaces a confirmed stopped native assistant while retaining the same Human Review and earlier history", async () => {
+    const f = await capacityFixture({ advancingHeads: true });
+    try {
+      const { id, prefix, detail } = await published(f);
+      const ready = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
+      const review = ready.human_reviews[0];
+      await f.api(`${prefix}/human-review/messages`, { review_id: review.id, content: "First context", idempotency_key: "first-context" });
+      const started = await until(detail, d => d.runs.some((r: any) => r.conversation_kind === "human_review"));
+      const first = started.runs.find((r: any) => r.conversation_kind === "human_review");
+      f.setTranscript({ source_id: "first-native-context", version: "one", cursor: null, turns: [{ role: "assistant", ts: new Date().toISOString(), parts: [{ kind: "text", text: "Retain this review explanation." }] }] });
+      f.runs.get(first.id)!.condition = "ready";
+      await until(detail, d => d.native_snapshots.some((s: any) => s.run_id === first.id));
+      expect((await f.api(`/runs/${first.id}/stop`, { summary: "Owned native context replacement" })).status).toBe(200);
+      await f.api(`${prefix}/human-review/messages`, { review_id: review.id, content: "Continue our discussion", idempotency_key: "replacement-context" });
+      const continued = await until(detail, d => d.runs.filter((r: any) => r.conversation_kind === "human_review").length === 2);
+      const second = continued.runs.filter((r: any) => r.conversation_kind === "human_review").at(-1);
+      expect(second.manifest.human_review.history).toContain("Retain this review explanation.");
+      expect(continued.human_reviews[0]).toMatchObject({ id: review.id, assistant_run_id: second.id, snapshot_id: review.snapshot_id });
+      f.restart();
+      const restored = await detail();
+      expect(restored.conversations.find((c: any) => c.id === `${id}:human_review`).contexts.map((c: any) => c.run_id)).toEqual([first.id, second.id]);
+      expect(restored.native_snapshots.some((s: any) => s.run_id === first.id)).toBe(true);
+    } finally { f.close(); }
+  }, 25000);
   it("keeps a changed candidate blocked instead of silently replacing the captured review after restart", async () => {
     const f = await capacityFixture({ advancingHeads: true });
     try {
