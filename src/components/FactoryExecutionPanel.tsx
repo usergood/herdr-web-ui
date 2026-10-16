@@ -1,3 +1,4 @@
+import { factoryReasonRole } from "../lib/factoryPresentation.ts";
 import { useState } from "react";
 import type { FactoryRequestBody, FactoryDetail, FactoryProject, Implementation } from "../../shared/protocol.ts";
 import type { ProjectIssueExecutionScope } from "../../shared/github-project.ts";
@@ -45,7 +46,7 @@ export function FactoryExecutionPanel({ detail, project, busy, perform, onOpenPa
     </>}
     {detail.workers.map((worker) => { const owner = detail.runs.find((entry) => entry.id === worker.run_id); const workerActive = !owner?.scope_pause && !owner?.issue_pause && !detail.implementation.pause && !detail.implementation.deletion && !!owner && ["working", "ready", "needs_you", "blocked"].includes(owner.condition); return <article className="factory-message" key={worker.id}>
       <strong>{worker.role}</strong><p>{worker.condition} · {worker.branch}</p>
-      {worker.waiting_reason && <p role="status">{worker.waiting_reason}</p>}
+      {worker.waiting_reason && <p role={factoryReasonRole(worker.condition)}>{worker.waiting_reason}</p>}
       <div className="factory-actions">
         {worker.pane_id && <button className="btn factory-button" onClick={() => onOpenPane(owner?.machine_id ?? run.machine_id, worker.pane_id!)}>{t("Open agent")}</button>}
         <button className="btn factory-button" disabled={busy} onClick={() => void workerCommand(worker.id, worker.run_id, "reconcile")}>{t("Reconcile Run")}</button>

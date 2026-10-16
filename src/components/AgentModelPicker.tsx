@@ -28,7 +28,7 @@ export function AgentModelPicker({ projectId, machineId, provider, accountScope 
       {model?.reasoning.map(entry => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
     </select></label>
     {loading && <p role="status">{t("Loading models…")}</p>}
-    {problem && <p role="status">{t("Model catalog unavailable. Use CLI defaults or refresh after signing in.")}</p>}
+    {problem && <p role="alert">{t("Model catalog unavailable. Use CLI defaults or refresh after signing in.")}</p>}
     <button type="button" className="btn factory-button" disabled={disabled || loading} onClick={() => setRevision(previous => previous + 1)}>{t("Refresh model list")}</button>
   </div>;
 }

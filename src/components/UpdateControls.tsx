@@ -141,7 +141,7 @@ export function HerdrUpdateControls({ enabled, herdrVersion }: { enabled: boolea
     <div className="update-actions">
       <button type="button" className={stale ? "btn btn-primary" : "btn"} disabled={busy} onClick={() => void request()}>{t("Update herdr")}</button>
     </div>
-    {(error || busy) && <p className="settings-hint" role="status">{error ?? t("Updating herdr…")}</p>}
+    {(error || busy) && <p className="settings-hint" role={error ? "alert" : "status"}>{error ?? t("Updating herdr…")}</p>}
     {/* herdr's own words: what it installed, or why it did not */}
     {!busy && status.output && <pre className="update-output" data-failed={status.phase === "error" || undefined}>{status.output}</pre>}
     </div></div>

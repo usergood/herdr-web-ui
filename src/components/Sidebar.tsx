@@ -66,7 +66,7 @@ export function RestoreErrorBadge({ reason }: { reason: string }) {
   const t = useT();
   const label = t("NOT RESTORED");
   return (
-    <span className="badge badge-restore-error sidebar-status" data-status="restore-error" role="status" aria-label={label} title={`${label} — ${reason}`}>
+    <span className="badge badge-restore-error sidebar-status" data-status="restore-error" role="alert" aria-label={label} title={`${label} — ${reason}`}>
       <TriangleAlert aria-hidden="true" />
       <span className="visually-hidden">{label}</span>
     </span>

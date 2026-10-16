@@ -97,6 +97,6 @@ export function FactoryProjectGitHub({ project, busy, perform, checkoutPath, che
       {item.pull.reviewThreads.nodes.filter((thread) => !thread.isResolved).map((thread) => <div key={thread.id}>{thread.comments.nodes.map((comment, index) => <p key={index}>{comment.path}: {comment.body}</p>)}</div>)}
       <div className="factory-actions">{(["import", "update", "rerequest", "merge"] as const).map((action) => <button key={action} className="btn factory-button" disabled={busy || action === "merge" && !!item.blockers.length || action === "update" && item.pull.mergeStateStatus !== "BEHIND"} onClick={() => void perform(async () => { await accountRequest(route + `/pulls/${item.pull.number}/${action}`, { head: item.pull.headRefOid, base: item.pull.baseRefOid, policy_revision: view.policy!.revision }); await refresh(); })}>{action === "import" ? t("Import PR review") : action === "update" ? t("Update branch") : action === "rerequest" ? t("Request review again") : t("Merge PR")}</button>)}</div>
     </article>)}
-    {view?.mutations.map((mutation) => <p role="status" key={mutation.id}>#{mutation.number} · {mutation.action} · {mutation.condition}{mutation.problem ? `: ${mutation.problem}` : ""}</p>)}
+    {view?.mutations.map((mutation) => <p role={mutation.problem ? "alert" : "status"} key={mutation.id}>#{mutation.number} · {mutation.action} · {mutation.condition}{mutation.problem ? `: ${mutation.problem}` : ""}</p>)}
   </section>;
 }

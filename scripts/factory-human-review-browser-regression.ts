@@ -31,6 +31,32 @@ try {
       assert(await review.getByRole("button", { name: "Approve and merge", exact: true }).isDisabled());
       console.log(`PASS blocked snapshot mismatch alert ${viewport.width}x${viewport.height}`);
     } finally { await blockedContext.close(); blockedFixture.close(); }
+    const discussionFixture = await capacityFixture({ advancingHeads: true });
+    const discussionContext = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
+    try {
+      const { id, detail } = await published(discussionFixture);
+      await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
+      discussionFixture.legacyHumanReview();
+      const origin = `http://localhost:${discussionFixture.app.port}`;
+      assert.equal((await discussionContext.request.post(`${origin}/api/auth`, { data: { token: discussionFixture.token } })).status(), 204);
+      const page = await discussionContext.newPage(); page.setDefaultTimeout(10000);
+      await page.goto(`${origin}/#factory/${id}`);
+      await page.getByRole("navigation", { name: "Workflow history", exact: true }).getByRole("button", { name: "Human Review", exact: true }).click();
+      const review = page.getByRole("region", { name: "Human Review", exact: true });
+      await review.getByRole("textbox", { name: "Discuss this review", exact: true }).fill("Discuss the captured candidate without editing");
+      await review.getByRole("button", { name: "Send discussion", exact: true }).click();
+      const blocked = await until(detail, d => d.capacity_waiting.some((w: any) => w.id.startsWith("discussion:") && w.condition === "blocked"));
+      const request = blocked.capacity_waiting.find((w: any) => w.id.startsWith("discussion:") && w.condition === "blocked");
+      assert.match(request.reason, /Human Review bridge support/);
+      await review.getByRole("alert").filter({ hasText: request.reason }).waitFor();
+      assert.equal(await review.getByRole("status").filter({ hasText: request.reason }).count(), 0);
+      await page.reload();
+      await review.getByRole("alert").filter({ hasText: request.reason }).waitFor();
+      assert.equal(discussionFixture.launches.length, 1);
+      assert.equal(discussionFixture.prompts.length, 0);
+      assert.equal((await detail()).human_review_approvals.length, 0);
+      console.log(`PASS blocked discussion alert without launch or approval ${viewport.width}x${viewport.height}`);
+    } finally { await discussionContext.close(); discussionFixture.close(); }
     const f = await capacityFixture({ advancingHeads: true });
     const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
     try {

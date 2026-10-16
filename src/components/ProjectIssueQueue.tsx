@@ -40,7 +40,7 @@ export function ProjectIssueQueue({ projectId, busy, perform }: QueueProps) {
     {queue && <>
       <p role="status">{queue.policy.automatic_implementation ? t("Automatic implementation is on.") : t("Automatic implementation is off.")}</p>
       <p>{t("Enabling covers eligible existing and future issues. Checks and independent reviews still apply.")}</p>
-      {queue.dispatch_problem && <p role="status">{t("Automatic implementation is waiting.")} {queue.dispatch_problem.message}</p>}
+      {queue.dispatch_problem && <p role="alert">{t("Automatic implementation is waiting.")} {queue.dispatch_problem.message}</p>}
       <p role="status">{queue.policy.paused ? t("Queue paused. Admitted work continues.") : t("Queue is not paused.")}</p>
       {typeof queue.implementing_count === "number" && <p>{t("Implementing Assignments: {count}", { count: queue.implementing_count })}</p>}
       <QueueSettings key={queue.policy.revision} queue={queue} busy={busy} save={paused => void perform(async () => { accept(await accountRequest<IssueQueue>(route + "/queue", { expected_revision: queue.policy.revision, automatic_implementation: queue.policy.automatic_implementation, paused })); })} />

@@ -2751,7 +2751,7 @@ export function PaneTerminal({
     // data-direct-typing: xterm's own field raises the soft keyboard here (lib/viewport.ts)
     <div ref={stackRef} className={`terminal-stack${chatView ? " is-chat" : ""}${greeted ? " is-greeted" : ""}`} data-pane-owner={paneId === null ? undefined : paneStorageId(machineId, paneId)} data-direct-typing={coarse && directTyping && !chatView ? "" : undefined}>
       {paneId === null && restoreError !== null && (
-        <div className="terminal-placeholder is-restore-error" role="status">
+        <div className="terminal-placeholder is-restore-error" role="alert">
           <div className="terminal-placeholder-inner">
             <TriangleAlert aria-hidden="true" />
             <span>{t("herdr could not restore this pane")}</span>
@@ -2786,7 +2786,7 @@ export function PaneTerminal({
           </div>
         )}
         {paneId !== null && outputError && !noticesDocked && (
-          <div className="terminal-banner terminal-banner-warning terminal-banner-output-error" role="status">
+          <div className="terminal-banner terminal-banner-warning terminal-banner-output-error" role="alert">
             <span>{outputError}</span>
             <button type="button" className="btn" onClick={() => reattachRef.current()}>{t("Reconnect")}</button>
           </div>
@@ -2933,7 +2933,7 @@ export function PaneTerminal({
                 : caption}
             </div>;
           })()}
-          {queueStore.isUnsaved(queueOwner) && <p className="composer-queue-error" role="status">{t("Queue could not be saved. Keep this tab open or copy the messages before reloading.")}</p>}
+          {queueStore.isUnsaved(queueOwner) && <p className="composer-queue-error" role="alert">{t("Queue could not be saved. Keep this tab open or copy the messages before reloading.")}</p>}
           <ol className="composer-queue-list" id={`queued-list-${queueOwner}`} ref={heldListRef} tabIndex={-1}
             onFocus={() => { setHeldOpened((opened) => heldOpenOnFocus(heldFold, opened)); }}>
           {queued.map((message, index) => <li className="composer-queue-item" key={message.id}>
@@ -2972,7 +2972,7 @@ export function PaneTerminal({
                 <span className="composer-queue-discard-text">{t("Discard")}</span><X aria-hidden="true" />
               </button>
             </div>
-            {queueError?.owner === queueOwner && queueError.id === message.id && <p className="composer-queue-error" role="status">{queueError.text}</p>}
+            {queueError?.owner === queueOwner && queueError.id === message.id && <p className="composer-queue-error" role="alert">{queueError.text}</p>}
           </li>)}
           </ol>
         </section>

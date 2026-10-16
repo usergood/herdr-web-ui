@@ -122,7 +122,7 @@ export function PlanDialog({ paneId, title, onClose }: { paneId: string; title: 
         <div className="modal-body plan-dialog-body">
           {steps === undefined && !failed && <p className="plan-note" role="status">{t("Reading the plan…")}</p>}
           {steps === null && <p className="plan-note">{t("This session keeps no plan right now. Claude Code's task list and Codex's checklist show here as the agent makes them.")}</p>}
-          {failed && <p className="plan-note plan-error" role="status">{t("Couldn't read the plan. Trying again…")}</p>}
+          {failed && <p className="plan-note plan-error" role="alert">{t("Couldn't read the plan. Trying again…")}</p>}
           {steps && steps.length > 0 && (
             <>
               <p className="plan-summary">

@@ -67,7 +67,7 @@ export function FactoryProjectAccounts({ project, machineId, busy, perform, chec
     </form>
     {overview?.profiles.map((profile) => <article className="factory-artifact" key={profile.id}>
       <h4>{profile.name}</h4><p>{names[profile.service]} · {profile.expected_login} · <span role="status">{stateLabel(profile.state, t)}</span></p>
-      {profile.expected_account_id && <p>{profile.expected_account_id}</p>}{profile.problem && <p role="status">{profile.problem}</p>}
+      {profile.expected_account_id && <p>{profile.expected_account_id}</p>}{profile.problem && <p role="alert">{profile.problem}</p>}
       <div className="factory-actions">
         <button className="btn factory-button" disabled={busy || profile.state === "setting_up"} onClick={() => setEditing(profile.id)}>{t("Edit account profile")}</button>
         <button className="btn factory-button" disabled={busy || profile.state === "disabled"} onClick={() => void operate(profile, "setup")}>{t("Start sign-in")}</button>

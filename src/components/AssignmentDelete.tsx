@@ -10,7 +10,7 @@ export function AssignmentDelete({ assignment, busy, perform, onDeleted }: { ass
     {assignment.deletion ? <>
       <p role="status" className="assignment-pause-status">{t("Delete pending")}</p>
       {assignment.deletion.local_cleanup === "complete" && <p>{t("Local cleanup is complete. Required external cleanup is still pending.")}</p>}
-      {assignment.deletion.reasons.map(reason => <p role="status" key={reason}>{reason}</p>)}
+      {assignment.deletion.reasons.map(reason => <p role="alert" key={reason}>{reason}</p>)}
     </> : confirming ? <>
       <p>{t("Permanently delete this Assignment and all its owned work?")}</p>
       <p>{t("This stops execution and removes owned history, dirty worktrees, local branches, linked issues and app-managed recovery data. Shared resources, primary checkouts, pushed branches and PRs are preserved.")}</p>

@@ -1,3 +1,4 @@
+import { factoryReasonRole } from "../lib/factoryPresentation.ts";
 import { ClipboardList, Code, FlaskConical, MessagesSquare, CircleAlert, BookOpen, Settings, History, Clock, GitPullRequest, type LucideIcon } from "lucide-react";
 import type { FactoryBoardItem } from "../../shared/protocol.ts";
 import { useT } from "../lib/i18n.ts";
@@ -23,6 +24,6 @@ export function FactoryBoardStatus({ state, showActivity = true, showTicketProgr
     {showActivity && label && <p className="factory-activity" role="status" aria-label={label}><Icon aria-hidden="true" /><span>{label}</span></p>}
     {state.lane === "needs_you" && <p className="factory-attention" role={state.condition === "failed" ? "alert" : "status"}><CircleAlert aria-hidden="true" />{state.condition === "failed" ? t("Failed") : t("Needs you")}</p>}
     {showTicketProgress && state.ticket_progress && <p>{t("Tickets: {completed}/{total}", state.ticket_progress)}</p>}
-    {state.waiting_reason && <p role="status">{state.waiting_reason}</p>}
+    {state.waiting_reason && <p role={factoryReasonRole(state.condition)}>{state.waiting_reason}</p>}
   </div>;
 }

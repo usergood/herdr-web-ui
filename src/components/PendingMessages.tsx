@@ -74,7 +74,7 @@ export function PendingMessages({ messages, active = true, connected, agent, blo
               void onDiscard(message.id).finally(() => restoreFocus(keyboard, target, stack, owner));
             }}><X aria-hidden="true" /></button>
         </div>
-        {message.error && !uncertain && <p className="pending-message-note" role="status">{(message.error.code === "input_draft" || message.error.code === "held_input") ? submitNote(message.error.code, message.error.message, agent) : t("Not sent: {message}", { message: message.error.message })}</p>}
+        {message.error && !uncertain && <p className="pending-message-note" role="alert">{(message.error.code === "input_draft" || message.error.code === "held_input") ? submitNote(message.error.code, message.error.message, agent) : t("Not sent: {message}", { message: message.error.message })}</p>}
       </li>;
     })}
   </ol>;

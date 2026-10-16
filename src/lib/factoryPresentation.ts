@@ -13,3 +13,8 @@ export function factoryConditionLabel(condition: RunCondition, t: Translate): st
     case "completed": return t("Finished attempt");
   }
 }
+
+/** Failure reasons are assertive; ordinary execution and owner waits stay polite. */
+export function factoryReasonRole(condition: string | null | undefined): "alert" | "status" {
+  return condition === "blocked" || condition === "failed" || condition === "disconnected" || condition === "interrupted" ? "alert" : "status";
+}

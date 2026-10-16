@@ -19,7 +19,7 @@ export function FactoryArtifactPreview({ artifact, previewPath }: { artifact: Pi
     })();
     return () => { live = false; if (objectUrl) URL.revokeObjectURL(objectUrl); };
   }, [artifact.id, artifact.hash, artifact.media_type, previewPath]);
-  if (error) return <p role="status">{t("Attachment unavailable")}</p>;
+  if (error) return <p role="alert">{t("Attachment unavailable")}</p>;
   if (content === null) return <p role="status">{t("Loading…")}</p>;
   return artifact.media_type === "text/html" ? <iframe title={artifact.name} sandbox="" referrerPolicy="no-referrer" srcDoc={content} /> : <img alt={artifact.name} src={content} />;
 }

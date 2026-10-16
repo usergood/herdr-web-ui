@@ -1,3 +1,4 @@
+import { factoryReasonRole } from "../lib/factoryPresentation.ts";
 import type { FactoryCapacity } from "../../shared/factory.ts";
 import { useT } from "../lib/i18n.ts";
 import "./FactoryCapacityPanel.css";
@@ -16,7 +17,7 @@ export function FactoryCapacityPanel({ capacity }: { capacity: FactoryCapacity }
       {capacity.contexts.map(context => <li key={context.id}>
         <strong>{context.assignment_title}</strong> · {context.label} · {context.machine_id} · {context.provider} · {context.condition} · {context.pool === "planning" ? t("Extra planning capacity") : t("Normal capacity")}
         {context.uncertain && <p className="factory-capacity-uncertain">{t("Execution uncertain; reservation retained")}</p>}
-        {context.reason && <p role={context.condition === "blocked" ? "alert" : undefined}>{context.reason}</p>}
+        {context.reason && <p role={factoryReasonRole(context.condition)}>{context.reason}</p>}
       </li>)}
       {capacity.build_reservations.map(build => <li key={build.id}>
         <strong>{build.assignment_title}</strong> · {t("Build limit")} · {build.machine_id} · {build.condition}

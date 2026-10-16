@@ -9,7 +9,7 @@ export function AssignmentPause({ assignment, busy, perform }: { assignment: Imp
   if (assignment.deletion) return null;
   return <section className="assignment-pause factory-section" aria-label={t("Assignment execution")}>
     {pause && <p role="status" className="assignment-pause-status">{pause.condition === "pending" ? t("Pause pending") : t("Paused")}</p>}
-    {pause?.reasons.map(reason => <p role="status" key={reason}>{reason}</p>)}
+    {pause?.reasons.map(reason => <p role="alert" key={reason}>{reason}</p>)}
     <button className="btn factory-button" disabled={busy || !!assignment.deletion || pause?.condition === "pending"} onClick={() => void perform(async () => { await factoryRequest(`/implementations/${assignment.id}/${pause ? "resume" : "pause"}`, {}); })}>
       {pause ? t("Resume Assignment") : t("Pause Assignment")}
     </button>

@@ -103,7 +103,7 @@ export function UsageSettings({ onLocalLogin }: { readonly onLocalLogin: (paneId
     {hub?.configured && <SettingsGroup className="usage-connection-card" section="usage-connection">
       <div className="settings-item usage-connection">
         <Network size={20} aria-hidden="true" />
-        <div className="usage-connection-info"><span className="settings-label">{t("Hub")}</span><span className="settings-hint" role="status">{hub.url} · {hub.ok ? t("Connected") : hub.problem ?? t("Check the hub connection")}</span></div>
+        <div className="usage-connection-info"><span className="settings-label">{t("Hub")}</span><span className="settings-hint" role={hub.ok ? "status" : "alert"}>{hub.url} · {hub.ok ? t("Connected") : hub.problem ?? t("Check the hub connection")}</span></div>
         <div className="usage-connection-actions">
           <button className="btn btn-ghost" type="button" onClick={() => setDialog("hub")}>{t("Edit")}</button>
           <button className="btn btn-ghost" type="button" onClick={() => setConfirmRemoval(true)}>{t("Remove")}</button>

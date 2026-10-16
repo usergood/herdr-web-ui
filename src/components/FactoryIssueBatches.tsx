@@ -61,7 +61,7 @@ export function FactoryIssueBatches({ implementationId, projectId, busy, perform
         <button className="btn factory-issue-batch-button btn-primary" disabled={busy || !policyRevision || batch.condition !== "reviewed" || batch.review?.policy_revision !== policyRevision} onClick={() => act(batch, "publish")}>{t("Publish issue batch")}</button>
         {(batch.condition === "held" || batch.condition === "publishing") && <button className="btn factory-issue-batch-button btn-primary" disabled={busy || !policyRevision || batch.review?.policy_revision !== policyRevision} onClick={() => act(batch, "resume")}>{t("Resume issue batch")}</button>}
       </div>}
-      {batch.intents.length > 0 && <details><summary>{t("Publication receipts")}</summary><ul>{batch.intents.map(intent => <li key={intent.id}>{batch.items.find(item => item.key === intent.item_key)?.title} · {intent.action === "create" ? t("Create issue") : intent.action === "link" ? t("Link dependencies") : t("Apply triage label")} · {intent.condition === "confirmed" ? t("Confirmed") : intent.condition === "uncertain" ? t("Uncertain") : t("Publishing")}{intent.problem && <p>{intent.problem}</p>}</li>)}</ul></details>}
+      {batch.intents.length > 0 && <details><summary>{t("Publication receipts")}</summary><ul>{batch.intents.map(intent => <li key={intent.id}>{batch.items.find(item => item.key === intent.item_key)?.title} · {intent.action === "create" ? t("Create issue") : intent.action === "link" ? t("Link dependencies") : t("Apply triage label")} · {intent.condition === "confirmed" ? t("Confirmed") : intent.condition === "uncertain" ? t("Uncertain") : t("Publishing")}{intent.problem && <p role="alert">{intent.problem}</p>}</li>)}</ul></details>}
     </section>)}
   </section>;
 }

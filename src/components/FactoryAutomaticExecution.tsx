@@ -1,3 +1,4 @@
+import { factoryReasonRole } from "../lib/factoryPresentation.ts";
 import type { FactoryCurrent } from "../../shared/factory.ts";
 import { FactoryDetailSection } from "./FactoryDetailSection.tsx";
 import { FactoryReport } from "./FactoryReport.tsx";
@@ -23,7 +24,7 @@ export function FactoryAutomaticExecution({ detail, onOpenPane }: { detail: Fact
     {progress && <p role={!pause && progress.condition === "blocked" ? "alert" : "status"}><strong>{pause ? pause.condition === "paused" ? t("Paused") : t("Pause pending") : progress.condition}</strong>{!pause && progress.reason && <> · {progress.reason}</>}</p>}
     {workers.map(worker => <article className="factory-message" key={worker.id}>
       <strong>{worker.role === "standards" ? t("Standards") : worker.role === "spec" ? t("Spec") : worker.rework_batch_id ? `${t("Review-fixes")} · ${title(worker.ticket_id)}` : title(worker.ticket_id)}</strong><p>{worker.role} · {worker.suspension?.condition === "stopped" ? t("Paused") : worker.condition}</p>
-      {worker.waiting_reason && <p role="status">{worker.waiting_reason}</p>}
+      {worker.waiting_reason && <p role={factoryReasonRole(worker.condition)}>{worker.waiting_reason}</p>}
       {worker.pane_id && <button className="btn factory-button" onClick={() => onOpenPane(run.machine_id, worker.pane_id!)}>{t("Open agent")}</button>}
     </article>)}
     {checks.map(check => <FactoryDetailSection key={check.id} id={detail.implementation.id} revision={detail.revision} title={`${t("Checks")} · ${check.condition} · ${check.head.slice(0, 12)} · ${check.worker_id ? title(workers.find(w => w.id === check.worker_id)?.ticket_id ?? "") : run.branch}`}>

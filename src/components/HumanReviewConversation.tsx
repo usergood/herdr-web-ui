@@ -1,3 +1,4 @@
+import { factoryReasonRole } from "../lib/factoryPresentation.ts";
 import { useState, type ReactNode } from "react";
 import type { FactoryDetail, ReviewSnapshot } from "../../shared/factory.ts";
 import { factoryRequest } from "../lib/factoryApi.ts";
@@ -50,9 +51,9 @@ export function HumanReviewConversation({ detail, busy, perform, history }: { de
         if (!review.snapshot_id) return;
         await factoryRequest(`/implementations/${detail.implementation.id}/human-review/approve`, { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, idempotency_key: `approve-${review.snapshot_id}` });
       })}>{t("Approve and merge")}</button>
-      {assistant?.waiting_reason && <p role="status">{assistant.waiting_reason}</p>}
-      {detail.human_review_deliveries?.filter(d => d.reason).map(d => <p role="status" key={d.id}>{d.reason}</p>)}
-      {waiting?.map(w => <p role="status" key={w.id}>{w.reason}</p>)}
+      {assistant?.waiting_reason && <p role={factoryReasonRole(assistant.condition)}>{assistant.waiting_reason}</p>}
+      {detail.human_review_deliveries?.filter(d => d.reason).map(d => <p role={d.condition === "uncertain" ? "alert" : "status"} key={d.id}>{d.reason}</p>)}
+      {waiting?.map(w => <p role={factoryReasonRole(w.condition)} key={w.id}>{w.reason}</p>)}
       <div className="human-review-layout"><div className="human-review-candidate">{snapshot && <>
         <details className="human-review-provenance"><summary>{t("Review snapshot")}</summary><dl><dt>{t("Review snapshot")}</dt><dd>{snapshot.id}</dd><dt>{t("Before")}</dt><dd>{snapshot.base}</dd><dt>{t("After")}</dt><dd>{snapshot.head}</dd><dt>{t("Captured workspace")}</dt><dd>{snapshot.machine_id} · {snapshot.mode} · {snapshot.hash}</dd></dl></details>
         <div className="human-review-changes"><nav aria-label={t("Changed files")}><ChangedFiles files={snapshot.files} selected={fileIndex} choose={setFileIndex} /></nav>
