@@ -29,6 +29,7 @@
  * cell-sized box with its lines painted in (terminalBoxGlyphs.ts).
  */
 import type { Terminal } from "@xterm/xterm";
+import { herdrWidthProvider } from "./terminalWidths.ts";
 
 import { BOX_GLYPHS, boxBackground, boxDrawing, boxRun, pixelPlacement, type BoxDrawing } from "./terminalBoxGlyphs.ts";
 
@@ -344,6 +345,7 @@ export function adjustTerminalGlyphs(term: Terminal): () => void {
    * before it until it was committed. The box gets the fit its row will give it.
    */
   const view = screen.querySelector<HTMLElement>(".composition-view");
+  const compositionWidths = herdrWidthProvider();
   const probe = document.createElement("span").style;
   const fitView = (): void => {
     if (!view) return;
@@ -365,8 +367,9 @@ export function adjustTerminalGlyphs(term: Terminal): () => void {
       xtermMeasure.textContent = held;
       measure.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
       const glyphWidth = measure.measureText(first).width;
-      // a glyph wider than its one cell takes two in the row
-      const cells = drawn > cellWidth + MIN_SPACING_PX ? 2 : 1;
+      // Cell ownership follows the same Unicode widths as the row, independently of
+      // the fallback font: a narrow-looking Hangul glyph still occupies two cells.
+      const cells = compositionWidths.wcwidth(first.codePointAt(0) ?? 0x20);
       const fit = glyphFit(cells * cellWidth - drawn, glyphWidth, cellWidth);
       if (fit) {
         size = `${fontSize * fit.scale}px`;

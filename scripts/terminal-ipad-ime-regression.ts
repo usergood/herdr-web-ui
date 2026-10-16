@@ -108,11 +108,25 @@ export async function checkIpadIme(browser: Browser, origin: string, pane: strin
       const sizes = await page.evaluate(() => {
         const row = [...document.querySelectorAll<HTMLElement>(".xterm-rows span")].find((span) => span.textContent?.includes("한"))!;
         const view = document.querySelector<HTMLElement>(".composition-view")!;
-        return { row: getComputedStyle(row).fontSize, view: getComputedStyle(view).fontSize, pending: view.classList.contains("active") ? view.textContent : null };
+        const measure = document.createElement("canvas").getContext("2d")!;
+        const terminal = view.closest<HTMLElement>(".xterm")!;
+        const cache = terminal.querySelector<HTMLElement>(".xterm-width-cache-measure-container")!;
+        const metric = cache.firstElementChild as HTMLElement;
+        const probe = metric.cloneNode(false) as HTMLElement;
+        probe.textContent = "그".repeat(32);
+        cache.append(probe);
+        const drawn = probe.offsetWidth / 32;
+        probe.remove();
+        const style = getComputedStyle(view);
+        measure.font = `${style.fontWeight} 13px ${style.fontFamily}`;
+        return { row: getComputedStyle(row).fontSize, view: style.fontSize, pending: view.classList.contains("active") ? view.textContent : null,
+          diagnostic: { family: style.fontFamily, drawn, canvas: measure.measureText("그").width, viewStyle: view.getAttribute("style"),
+            cacheStyle: cache.getAttribute("style"), screen: terminal.querySelector(".xterm-screen")?.getAttribute("style"), rowStyle: row.getAttribute("style"),
+            viewport: terminal.getBoundingClientRect().width } };
       });
       assert.equal(sizes.pending, "그", "a syllable is pending");
       assert(Math.abs(Number.parseFloat(sizes.view) - Number.parseFloat(sizes.row)) < 0.01,
-        `the pending syllable is drawn at its row's size: ${sizes.view} against ${sizes.row} (platform ${platform})`);
+        `the pending syllable is drawn at its row's size: ${sizes.view} against ${sizes.row} (platform ${platform}); ${JSON.stringify(sizes.diagnostic)}`);
 
       await reset();
       // 망 then ㅏ: the final ㅇ moves on and the editor puts back two syllables at once
@@ -156,15 +170,18 @@ if (import.meta.main) {
   const { createServer } = await import("../server/index.ts");
   const { workspaceCreate, workspaceClose } = await import("../server/herdr/client.ts");
   const { chromium } = await import("playwright-core");
+  const { chromePath } = await import("./chrome-path.ts");
+  const { UsageService } = await import("../server/usage.ts");
   const { mkdtempSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const root = mkdtempSync(join(tmpdir(), "herdr-ipad-replay-"));
-  const server = createServer({ port: 0, hostname: "127.0.0.1", stateDir: root, token: "" });
+  const server = createServer({ port: 0, hostname: "127.0.0.1", stateDir: root, token: "",
+    factory: { accountDiscoveryHome: root, native: { version: async () => null } }, usage: new UsageService(undefined, []) });
   const owned: string[] = [];
   let browser: Browser | undefined;
   try {
-    browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? "/opt/google/chrome/chrome", headless: true });
+    browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     const panes: string[] = [];
     for (let i = 0; i < 2; i++) {
       const made = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-ipad-replay" });
