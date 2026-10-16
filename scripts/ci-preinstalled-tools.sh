@@ -20,9 +20,9 @@ if [[ "${NEED_NODE:-false}" == true ]]; then
 fi
 
 if [[ "${NEED_HERDR:-false}" == true ]]; then
-  herdr_path="$(command -v herdr)" || fail "The runner image must provide herdr 0.9.3."
-  echo "18a8dc65f1c2fa485884344356dea1cfd911c6f06cf46fa78e193f4087f4dba7  $herdr_path" |
-    sha256sum --check --status || fail "The runner image must provide the checksum-pinned herdr 0.9.3."
+  herdr_path="$(command -v herdr)" || fail "The runner image must provide herdr 0.9.5."
+  echo "14d9e8bc8b4a9e0118d77c32266f76d461f09b40342eb23752960bd89f59929d  $herdr_path" |
+    sha256sum --check --status || fail "The runner image must provide the checksum-pinned herdr 0.9.5."
 fi
 
 echo "Using verified tools from the self-hosted runner image"

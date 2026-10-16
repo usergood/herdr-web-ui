@@ -507,7 +507,7 @@ The [CI workflow](../.github/workflows/ci.yml) runs on every PR and `main` push:
   (`tsconfig.tools.json`), build, and
   `bun run test:unit`. This suite does not start herdr.
 - **Integration and browser**: a summary job that fails when any of three jobs fails, each with
-  checksum-pinned herdr 0.9.3, Node 22 and the lockfile's Chromium:
+  checksum-pinned herdr 0.9.5, Node 22 and the lockfile's Chromium:
   - **Integration tests** runs `bun run check integration`: a build and
     `bun run test:integration` on a herdr of the run's own ([Checks](#checks)). The
     integration files can run a few at a time, each worker on a herdr session of its own

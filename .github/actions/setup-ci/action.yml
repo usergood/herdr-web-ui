@@ -10,7 +10,7 @@ inputs:
     required: false
     default: 'false'
   herdr:
-    description: "'true' installs the checksum-pinned herdr 0.9.3 (Linux x86_64) on PATH."
+    description: "'true' installs the checksum-pinned herdr 0.9.5 (Linux x86_64) on PATH."
     required: false
     default: 'false'
 runs:
@@ -55,12 +55,12 @@ runs:
         key: bun-workspace-v2-${{ runner.environment }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.bun-version }}-${{ hashFiles('bun.lock') }}
         restore-keys: |
           bun-workspace-v2-${{ runner.environment }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.bun-version }}-
-    - name: Install checksum-pinned herdr 0.9.3
+    - name: Install checksum-pinned herdr 0.9.5
       if: inputs.herdr == 'true' && runner.environment != 'self-hosted'
       shell: bash
       run: |
         mkdir -p "$RUNNER_TEMP/herdr-bin"
-        curl --fail --location --retry 3 https://github.com/herdrdev/herdr/releases/download/v0.9.3/herdr-linux-x86_64 -o "$RUNNER_TEMP/herdr-bin/herdr"
-        echo "18a8dc65f1c2fa485884344356dea1cfd911c6f06cf46fa78e193f4087f4dba7  $RUNNER_TEMP/herdr-bin/herdr" | sha256sum --check
+        curl --fail --location --retry 3 https://github.com/herdrdev/herdr/releases/download/v0.9.5/herdr-linux-x86_64 -o "$RUNNER_TEMP/herdr-bin/herdr"
+        echo "14d9e8bc8b4a9e0118d77c32266f76d461f09b40342eb23752960bd89f59929d  $RUNNER_TEMP/herdr-bin/herdr" | sha256sum --check
         chmod +x "$RUNNER_TEMP/herdr-bin/herdr"
         echo "$RUNNER_TEMP/herdr-bin" >> "$GITHUB_PATH"

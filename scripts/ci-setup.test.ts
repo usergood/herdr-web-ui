@@ -99,7 +99,7 @@ describe("CI cache contract", () => {
       expect(setup!.uses).toMatch(new RegExp(`^${name}@[0-9a-f]{40}$`));
       expect(setup!.if).toContain("runner.environment != 'self-hosted'");
     }
-    expect(action.runs.steps.find((step) => step.name === "Install checksum-pinned herdr 0.9.3")!.if)
+    expect(action.runs.steps.find((step) => step.name === "Install checksum-pinned herdr 0.9.5")!.if)
       .toContain("runner.environment != 'self-hosted'");
     const workflow = Bun.YAML.parse(readFileSync(join(root, ".github/workflows/ci.yml"), "utf8")) as {
       jobs: Record<string, { steps: Array<{ name?: string; if?: string; with?: Record<string, string> }> }>;
