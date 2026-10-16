@@ -1,4 +1,4 @@
-import { readyIssuePlanningStep } from "../shared/issue-queue.ts";
+import { latestImplementationAttempt, readyIssuePlanningStep } from "../shared/issue-queue.ts";
 import type { FactoryEvent, FactoryRun, Implementation } from "../shared/factory.ts";
 import type { ProjectGitHubSource } from "../shared/github-project.ts";
 import type { IssueQueueEntry, ProjectQueuePolicy } from "../shared/issue-queue.ts";
@@ -26,8 +26,8 @@ export function issueQueueEntry(store: FactoryStore, source: ProjectGitHubSource
   if (idea?.archived_at) reason("assignment_archived");
   if (idea?.outcome !== "none" || idea?.stage === "done") reason("assignment_finished");
   const attempts = issueExecutionAttempts(store, source.implementation_id).filter(run => !(run.id === planningRunId && readyIssuePlanningStep(run)));
-  const latest = attempts.at(-1);
-  if (attempts.length && !(latest?.id === retryRunId && issueRetryAvailable(store, latest))) reason("attempt_exists");
+  const latest = latestImplementationAttempt(attempts);
+  if (attempts.some(run => run.action !== "implement-spec") || latest && !(latest.id === retryRunId && issueRetryAvailable(store, latest))) reason("attempt_exists");
   if (!accountReady) reason("account_unavailable");
   for (const blocker of source.readiness?.blockers ?? ["sync_required"]) reason("readiness_" + blocker);
   if (!source.planning) reason("planning_required");

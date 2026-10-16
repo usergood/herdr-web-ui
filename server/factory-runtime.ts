@@ -1,5 +1,6 @@
 import { factoryCapacity } from "./factory-capacity.ts";
 import { issueRetryAvailable } from "./issue-queue.ts";
+import { latestImplementationAttempt } from "../shared/issue-queue.ts";
 import { existsSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
@@ -148,7 +149,9 @@ export class FactoryRuntime {
     return this.start(previous.implementation_id, { ...body, action: "implement-spec", retry_of: runId }, origin);
   }
   private requireExplicitRetry(id: string): void {
-    if (this.store.list<FactoryRun>("runs", id).some(run => (run.condition === "failed" || run.condition === "cancelled" && run.issue_pause) && (run.manifest as { issue_admission?: unknown }).issue_admission || run.condition === "cancelled" && this.store.get<{ rework_requested?: boolean }>("implementation_retirement", run.id)?.rework_requested)) throw new FactoryError("retry_required", "Failed issue work and stopped paused or retired implementation require the owner’s explicit Retry", 409);
+    const run = latestImplementationAttempt(this.store.list<FactoryRun>("runs", id));
+    const manifest = run?.manifest as { issue_admission?: unknown; rework?: unknown } | undefined;
+    if (run && (run.condition === "failed" && (manifest?.issue_admission || manifest?.rework) || run.condition === "cancelled" && (run.issue_pause && manifest?.issue_admission || this.store.get<{ rework_requested?: boolean }>("implementation_retirement", run.id)?.rework_requested))) throw new FactoryError("retry_required", "Failed issue work and stopped paused or retired implementation require the owner’s explicit Retry", 409);
   }
   /** Continue uses the same current issue authorization as direct admission. */
   validateIssueScope(id: string, scope: unknown, planningRunId?: string): void {
@@ -189,7 +192,7 @@ export class FactoryRuntime {
     if (body.issue_scope !== undefined && action !== "implement-spec") throw new FactoryError("invalid_issue_scope", "Prepared issue scope authorizes implementation only");
     if (action === "implement-spec" && body.retry_of === undefined) this.requireExplicitRetry(id);
     const validateRetry = () => {
-      const latest = this.store.list<FactoryRun>("runs", id).at(-1);
+      const latest = latestImplementationAttempt(this.store.list<FactoryRun>("runs", id));
       if (body.retry_of !== undefined && (latest?.id !== body.retry_of || !issueRetryAvailable(this.store, latest))) throw new FactoryError("retry_superseded", "Refresh the latest attempt before Retry", 409);
     };
     validateRetry();

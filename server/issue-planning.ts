@@ -1,6 +1,6 @@
 import type { IssuePlanning } from "../shared/issue-planning.ts";
 import type { ProjectGitHubSource } from "../shared/github-project.ts";
-import type { FactoryTicket } from "../shared/factory.ts";
+import type { FactoryApproval, FactoryTicket, SpecificationVersion } from "../shared/factory.ts";
 import { FactoryError, hash } from "./factory-host.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { FactoryWorkflow } from "./factory-workflow.ts";
@@ -42,6 +42,15 @@ function sections(content: string): Record<string, string> {
   return result;
 }
 
+/** Only receipts bound to the current issue scope can supply fallback seams. */
+export function effectiveIssueTestingSeams(store: FactoryStore, source: ProjectGitHubSource, specification: SpecificationVersion | null): string | null {
+  if (!specification) return null;
+  const workflow = new FactoryWorkflow(store);
+  const scopeHash = workflow.issueApprovalScope(source).scope_hash;
+  return sections(specification.content)["testing seams"] ?? store.list<FactoryApproval>("approvals", source.implementation_id)
+    .filter(approval => approval.kind === "testing_seams" && approval.revision === specification.id && approval.issue_scope?.source_id === source.id && approval.issue_scope.scope_hash === scopeHash).at(-1)?.scope ?? null;
+}
+
 /** A known edit to selected scope asks the owner while preserving the previous graph. */
 export function reconcileIssuePlan(store: FactoryStore, source: ProjectGitHubSource): void {
   const prior = store.get<IssuePlanning>("github_plans", source.id);
@@ -62,16 +71,18 @@ export function prepareIssuePlan(store: FactoryStore, source: ProjectGitHubSourc
     const pending = questions.filter(question => question.answer === null);
     const retained = workflow.specification(source.implementation_id);
     const appPlan = retained && workflow.approved(source.implementation_id, "specification", retained.id) && workflow.approved(source.implementation_id, "testing_seams", retained.id) ? retained : null;
+    const testingSeams = effectiveIssueTestingSeams(store, source, appPlan ?? retained);
     const currentAppPlan = !appPlan || workflow.issueApproved(source, "specification", appPlan.id) && workflow.issueApproved(source, "testing_seams", appPlan.id) && (!workflow.tickets(source.implementation_id).length || workflow.issueGraphApproved(source));
-    if (currentAppPlan && prior?.condition === "prepared" && !pending.length && (!questions.length || prior.consumed_question_revision === workflow.questionRevision(source.implementation_id)) && prior.source_revision === source.revision && prior.authorization.approval.id === approval.id && retained?.id === prior.specification_id && workflow.graphHash(source.implementation_id) === prior.graph_hash) return prior;
+    if (currentAppPlan && prior?.condition === "prepared" && testingSeams?.trim() && prior.testing_seams === testingSeams && !pending.length && (!questions.length || prior.consumed_question_revision === workflow.questionRevision(source.implementation_id)) && prior.source_revision === source.revision && prior.authorization.approval.id === approval.id && retained?.id === prior.specification_id && workflow.graphHash(source.implementation_id) === prior.graph_hash) return prior;
     const content = appPlan?.content ?? source.current.body;
     const plan = sections(content);
     const breakdown = plan.tickets ? ticketBreakdown(plan.tickets) : null;
     const id = source.implementation_id;
     const retainedGraph = appPlan && workflow.tickets(id).length && workflow.issueGraphApproved(source);
     const missing = (appPlan ? [] : ["scope", "acceptance criteria", "dependencies", "testing seams"]).filter(key => !plan[key] || /\b(?:TBD|TODO|undecided|to be decided)\b/.test(plan[key]!));
+    if (appPlan && !testingSeams?.trim()) missing.push("testing seams");
     if (!currentAppPlan) missing.push("explicit approval of the retained app specification, testing seams and Ticket graph for the current issue scope");
-    if (prior?.condition === "prepared" && (prior.trusted_scope.body !== source.current.body || prior.content !== content)) missing.push("changed scope or testing seams");
+    if (prior?.condition === "prepared" && (prior.trusted_scope.body !== source.current.body || prior.content !== content || prior.testing_seams !== testingSeams)) missing.push("changed scope or testing seams");
     if (!retainedGraph && ("tickets" in plan || content.length > 20_000) && !breakdown) missing.push("an unambiguous bounded Ticket breakdown with acceptance criteria and acyclic dependency keys");
     if (missing.length || pending.length) {
       const questionIds = prior?.question_ids ?? [];
@@ -80,7 +91,7 @@ export function prepareIssuePlan(store: FactoryStore, source: ProjectGitHubSourc
         const question = workflow.mutate(id, "questions", { question: prompt }) as import("../shared/factory.ts").FactoryQuestion;
         questionIds.push(question.id);
       }
-      const waiting: IssuePlanning = { ...store.record(), id: source.id, implementation_id: id, source_id: source.id, source_revision: source.revision, trusted_scope: source.current, condition: "needs_you", origin: appPlan ? "app_plan" : "issue_body", content, dependencies: plan.dependencies ?? "", testing_seams: plan["testing seams"] ?? "", specification_id: appPlan?.id ?? null, graph_hash: null, question_ids: questionIds, consumed_question_revision: null, authorization: { approval, checks_required: true, independent_reviews: ["standards", "spec"] } };
+      const waiting: IssuePlanning = { ...store.record(), id: source.id, implementation_id: id, source_id: source.id, source_revision: source.revision, trusted_scope: source.current, condition: "needs_you", origin: appPlan ? "app_plan" : "issue_body", content, dependencies: plan.dependencies ?? "", testing_seams: plan["testing seams"] ?? (appPlan ? testingSeams : null) ?? "", specification_id: appPlan?.id ?? null, graph_hash: null, question_ids: questionIds, consumed_question_revision: null, authorization: { approval, checks_required: true, independent_reviews: ["standards", "spec"] } };
       store.put("github_plans", waiting, id); store.event(id, "issue_plan_needs_owner", waiting);
       return waiting;
     }
@@ -97,7 +108,7 @@ export function prepareIssuePlan(store: FactoryStore, source: ProjectGitHubSourc
       store.put("graph_versions", { ...store.record(), ...graph }, id);
     }
     const appApprovals = store.list<import("../shared/factory.ts").FactoryApproval>("approvals", id).filter(approval => approval.issue_scope?.source_id === source.id && approval.issue_scope.scope_hash === workflow.issueApprovalScope(source).scope_hash);
-    const prepared: IssuePlanning = { ...store.record(), id: source.id, implementation_id: id, source_id: source.id, source_revision: source.revision, trusted_scope: source.current, condition: "prepared", origin: appPlan ? "app_plan" : "issue_body", content, dependencies: plan.dependencies ?? "", testing_seams: plan["testing seams"] ?? appApprovals.filter(approval => approval.kind === "testing_seams" && approval.revision === specification.id).at(-1)!.scope, specification_id: specification.id, graph_hash: graphHash, question_ids: prior?.question_ids ?? [], consumed_question_revision: questions.length ? answeredRevision : null, ...(appPlan ? { app_approval_ids: appApprovals.filter(approval => approval.revision === specification.id || approval.kind === "ticket_graph" && approval.revision === graphHash).map(approval => approval.id) } : {}), authorization: { approval, checks_required: true, independent_reviews: ["standards", "spec"] } };
+    const prepared: IssuePlanning = { ...store.record(), id: source.id, implementation_id: id, source_id: source.id, source_revision: source.revision, trusted_scope: source.current, condition: "prepared", origin: appPlan ? "app_plan" : "issue_body", content, dependencies: plan.dependencies ?? "", testing_seams: plan["testing seams"] ?? testingSeams!, specification_id: specification.id, graph_hash: graphHash, question_ids: prior?.question_ids ?? [], consumed_question_revision: questions.length ? answeredRevision : null, ...(appPlan ? { app_approval_ids: appApprovals.filter(approval => approval.revision === specification.id || approval.kind === "ticket_graph" && approval.revision === graphHash).map(approval => approval.id) } : {}), authorization: { approval, checks_required: true, independent_reviews: ["standards", "spec"] } };
     store.put("github_plans", prepared, id);
     store.put("github_plan_versions", { ...prepared, id: store.record().id }, id);
     store.event(id, "issue_plan_prepared", prepared);

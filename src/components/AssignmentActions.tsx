@@ -1,4 +1,5 @@
 import { issueImplementationStart } from "../lib/issueStart.ts";
+import { latestImplementationAttempt } from "../../shared/issue-queue.ts";
 import { useEffect, useRef, useState } from "react";
 import { MessageSquare, Play, ListChecks } from "lucide-react";
 import type { FactoryAction, FactoryCapabilities, FactoryDetail, FactoryProject, FactoryProvider, FactoryRun } from "../../shared/protocol.ts";
@@ -29,8 +30,9 @@ export function AssignmentActions({ preset, onPresetChange, detail, project, mac
   const verification = [...detail.runs].reverse().find(run => run.action === "verify-provider");
   const latest = detail.runs.at(-1);
   const reviewed = latest?.implementation_completion;
-  const retiredStopped = !!latest && detail.events.some(event => event.kind === "run_stopped" && (event.data as { run_id?: string; rework_requested?: boolean } | null)?.run_id === latest.id && (event.data as { rework_requested?: boolean }).rework_requested);
-  const manualReworkRetry = latest?.action === "implement-spec" && !issueStart.scope && (latest.condition === "cancelled" && retiredStopped || latest.condition === "failed" && !!(latest.manifest as { rework?: unknown }).rework);
+  const implementationAttempt = latestImplementationAttempt(detail.runs);
+  const retiredStopped = !!implementationAttempt && detail.events.some(event => event.kind === "run_stopped" && (event.data as { run_id?: string; rework_requested?: boolean } | null)?.run_id === implementationAttempt.id && (event.data as { rework_requested?: boolean }).rework_requested);
+  const manualReworkRetry = !!implementationAttempt && !issueStart.scope && (implementationAttempt.condition === "cancelled" && retiredStopped || implementationAttempt.condition === "failed" && !!(implementationAttempt.manifest as { rework?: unknown }).rework);
   const acceptedReview = !!reviewed && detail.approvals.some(approval => approval.kind === "review" && approval.revision === reviewed.head && approval.scope.startsWith(`Run ${latest!.id};`));
   const waitingEvent = detail.events.filter(event => event.kind === "continuation_waiting" && (event.data as { run_id?: string } | null)?.run_id === (active?.id ?? latest?.id)).at(-1);
   const continuationProblem = (waitingEvent?.data as { message?: string } | undefined)?.message;
@@ -88,7 +90,7 @@ export function AssignmentActions({ preset, onPresetChange, detail, project, mac
       {active.action==="implement-spec" && detail.review_evidence.filter(r=>r.run_id===active.id).map(r=><details key={r.id}><summary>{r.axis} · {r.outcome}</summary><pre>{r.content}</pre></details>)}
       <p className="field-hint">{unconfirmedWork?t("Stopping keeps the worktree. You can start a new attempt afterwards."):t("Review and continue from this chat. Finished steps keep their history.")}</p>
     </div> : <div className="factory-actions">
-      {latest && manualReworkRetry && <button className="btn" disabled={disabled} onClick={() => void perform(async () => { await factoryRequest(`/runs/${latest.id}/retry`, { idempotency_key: crypto.randomUUID(), execution_preset: preset }); })}>{t("Retry")}</button>}
+      {implementationAttempt && manualReworkRetry && <button className="btn" disabled={disabled} onClick={() => void perform(async () => { await factoryRequest(`/runs/${implementationAttempt.id}/retry`, { idempotency_key: crypto.randomUUID(), execution_preset: preset }); })}>{t("Retry")}</button>}
       <button className="btn btn-primary" disabled={disabled} onClick={() => void start("work")}><Play />{t("Start work")}</button>
       {!specification && <button className="btn" disabled={disabled} onClick={() => void start("grill-with-docs")}><ListChecks />{t("Plan implementation")}</button>}
       {!specification && discussed && understood && <button className="btn" disabled={disabled || incompleteHandoff} onClick={() => void start("to-spec")}>{t("Create specification")}</button>}

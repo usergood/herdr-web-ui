@@ -1,5 +1,6 @@
 import type { ProjectGitHubIssueRevision, ProjectGitHubSource } from "../../shared/github-project.ts";
 import type { FactoryEvent, FactoryRun, FactoryTicket } from "../../shared/factory.ts";
+import { latestImplementationAttempt } from "../../shared/issue-queue.ts";
 import { useT } from "../lib/i18n.ts";
 import { dependencyReason } from "../lib/dependencyReason.ts";
 import { IssueQueueStatus } from "./IssueQueueStatus.tsx";
@@ -78,7 +79,8 @@ function DependencyDelivery({ source, busy, perform }: { source: ProjectGitHubSo
 export function AssignmentIssueSource({ sources, problem, busy, perform, tickets, graphHash, questionRevision, preset, runs, events }: { sources: ProjectGitHubSource[]; problem: string | null; busy: boolean; perform: (action: () => Promise<void>) => Promise<void>; tickets: FactoryTicket[]; graphHash: string; questionRevision: string; preset: import("../../shared/agent-models.ts").AgentModelSelection; runs: FactoryRun[]; events: FactoryEvent[] }) {
   const t = useT(); const issues = sources.filter(source => source.kind === "issue");
   if (!issues.length) return null;
-  const latest = runs.at(-1);
+  const latest = latestImplementationAttempt(runs);
+  const executionOwned = runs.some(run => !["completed", "failed", "cancelled"].includes(run.condition));
   const retiredStopped = !!latest && events.some(event => event.kind === "run_stopped" && (event.data as { run_id?: string; rework_requested?: boolean } | null)?.run_id === latest.id && (event.data as { rework_requested?: boolean }).rework_requested);
   return <section className="factory-section assignment-issue-source" aria-label={t("GitHub issue source")}>
     <h3>{t("GitHub issue source")}</h3>
@@ -102,7 +104,7 @@ export function AssignmentIssueSource({ sources, problem, busy, perform, tickets
           <p>{source.planning.origin === "app_plan" ? t("Reused approved app plan") : t("Reused trusted issue plan")}</p>
           <p>{t("Approved by {login}", { login: source.planning.authorization.approval.actor.login })} · {source.planning.authorization.approval.provenance === "app_owner" ? t("Owner approval in app") : t("Trusted GitHub label")}</p>
           <p>{t("Required checks and independent Standards and Spec reviews still apply.")}</p>
-          {(latest?.condition === "failed" || latest?.condition === "cancelled" && (latest.issue_pause || retiredStopped)) && (latest.manifest as { issue_admission?: { source: { id: string } } }).issue_admission?.source.id === source.id && source.planning.condition === "prepared" && <button className="btn" disabled={busy || !source.intake || source.intake.reasons.some(reason => reason.code !== "attempt_exists")} onClick={() => void perform(async () => { await accountRequest(`/runs/${latest.id}/retry`, { idempotency_key: crypto.randomUUID(), execution_preset: preset, issue_scope: { source_id: source.id, source_revision: source.revision, graph_hash: source.planning!.graph_hash } }); })}>{t("Retry")}</button>}
+          {(latest?.condition === "failed" || latest?.condition === "cancelled" && (latest.issue_pause || retiredStopped)) && (latest.manifest as { issue_admission?: { source: { id: string } } }).issue_admission?.source.id === source.id && source.planning.condition === "prepared" && <button className="btn" disabled={busy || executionOwned || !source.intake || source.intake.reasons.some(reason => reason.code !== "attempt_exists")} onClick={() => void perform(async () => { await accountRequest(`/runs/${latest.id}/retry`, { idempotency_key: crypto.randomUUID(), execution_preset: preset, issue_scope: { source_id: source.id, source_revision: source.revision, graph_hash: source.planning!.graph_hash } }); })}>{t("Retry")}</button>}
           {source.planning.condition === "prepared" && <button className="btn" disabled={busy || !source.intake?.eligible} onClick={() => void perform(async () => { await accountRequest(`/implementations/${source.implementation_id}/runs`, { action: "implement-spec", idempotency_key: crypto.randomUUID(), execution_preset: preset, issue_scope: { source_id: source.id, source_revision: source.revision, graph_hash: source.planning!.graph_hash } }); })}>{t("Start prepared issue")}</button>}
           <details><summary>{t("Reused planning")}</summary><Markdown>{source.planning.content}</Markdown>
             <p>{source.planning.source_revision}</p><p>{source.planning.graph_hash}</p>
@@ -111,10 +113,10 @@ export function AssignmentIssueSource({ sources, problem, busy, perform, tickets
           </details>
           {source.planning.origin === "app_plan" && source.planning.condition === "needs_you" && source.planning.specification_id && <>
             <p>{t("Approval covers only the displayed source revision, including its plan, acceptance, dependencies and testing seams.")}</p>
-            <button className="btn" disabled={busy || !source.readiness?.eligible} onClick={() => void perform(async () => {
+            <button className="btn" disabled={busy || !source.readiness?.eligible || !source.planning!.testing_seams.trim()} onClick={() => void perform(async () => {
               const prefix = `/implementations/${source.implementation_id}`;
               const issueScope = { source_id: source.id, source_revision: source.revision };
-              for (const kind of ["specification", "testing_seams", ...(tickets.length ? ["ticket_graph"] : [])]) await accountRequest(prefix + "/approvals", { kind, revision: kind === "ticket_graph" ? graphHash : source.planning!.specification_id, scope: `Retain the displayed app plan and testing seams for issue ${source.id} revision ${source.revision}; Ticket graph ${graphHash}`, issue_scope: issueScope });
+              for (const kind of ["specification", "testing_seams", ...(tickets.length ? ["ticket_graph"] : [])]) await accountRequest(prefix + "/approvals", { kind, revision: kind === "ticket_graph" ? graphHash : source.planning!.specification_id, scope: kind === "testing_seams" ? source.planning!.testing_seams : `Retain the displayed app plan and testing seams for issue ${source.id} revision ${source.revision}; Ticket graph ${graphHash}`, issue_scope: issueScope });
             })}>{t("Approve retained app plan for this issue revision")}</button>
           </>}
           {source.planning.condition === "prepared" && <div><h4>{t("Tickets")}</h4>{tickets.filter(ticket => ticket.specification_id === source.planning!.specification_id).map(ticket => <article key={ticket.id}>

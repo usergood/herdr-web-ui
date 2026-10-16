@@ -200,6 +200,172 @@ test("a current app specification can authorize a bounded derived graph without 
   } finally { fixture.close(); }
 }, 20_000);
 
+test("changed applicable testing seams invalidate cached app planning before admission", async () => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { route, readiness } = await fixture.setup();
+    const source = (await fixture.json(route + "/sync", {})).sources[0];
+    const path = `/implementations/${source.implementation_id}`;
+    const issueScope = { source_id: source.id, source_revision: source.revision };
+    const specification = await fixture.json(path + "/specifications", { content: "## Scope\nShow a greeting.\n## Acceptance criteria\nShow hello.\n## Dependencies\nNone." });
+    for (const kind of ["specification", "testing_seams"]) await fixture.json(path + "/approvals", { kind, revision: specification.id, scope: "Public HTTP greeting", issue_scope: issueScope });
+    await fixture.json(route + "/issues/1/approve", { source_revision: source.revision, policy_revision: readiness.revision });
+    await fixture.json(route + "/issues/1/prepare", { source_revision: source.revision });
+    const before = await fixture.json(path);
+    const graph = before.graph_hash;
+    const changed = await fixture.json(path + "/approvals", { kind: "testing_seams", revision: specification.id, scope: "Public HTTP and mobile browser greeting", issue_scope: issueScope });
+    const stale = await fixture.json(path);
+    expect(stale.github_sources[0].planning.condition).toBe("stale");
+    const refused = await fixture.post(path + "/runs", { action: "implement-spec", idempotency_key: "stale-seam-start", issue_scope: { ...issueScope, graph_hash: graph } });
+    expect(refused.status).toBe(409);
+    const waiting = (await fixture.json(route + "/issues/1/prepare", { source_revision: source.revision })).sources[0].planning;
+    expect(waiting.condition).toBe("needs_you");
+    expect(waiting.testing_seams).toBe("Public HTTP and mobile browser greeting");
+    const decisions = await fixture.json(path);
+    expect(decisions.questions).toHaveLength(1);
+    expect(decisions.questions[0].question).toContain("changed scope or testing seams");
+    await fixture.json(path + `/questions/${decisions.questions[0].id}/answer`, { revision: decisions.questions[0].revision, answer: "Use the explicitly approved mobile browser seam." });
+    const renewed = (await fixture.json(route + "/issues/1/prepare", { source_revision: source.revision, question_revision: (await fixture.json(path)).question_revision })).sources[0].planning;
+    expect(renewed).toMatchObject({ condition: "prepared", testing_seams: changed.scope, specification_id: specification.id, graph_hash: graph });
+    expect((await fixture.json(path)).tickets).toEqual(before.tickets);
+    await fixture.json(route + "/sync", {});
+    const admitted = await fixture.json(path + "/runs", { action: "implement-spec", idempotency_key: "renewed-seam-start", issue_scope: { ...issueScope, graph_hash: graph } });
+    expect(admitted.manifest.issue_admission.planning.testing_seams).toBe("Public HTTP and mobile browser greeting");
+    expect((await fixture.json(path)).approvals).toHaveLength(3);
+  } finally { fixture.close(); }
+}, 20_000);
+
+test("local applicable seam changes pause admitted app work even during a GitHub outage", async () => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { route, readiness } = await fixture.setup();
+    const source = (await fixture.json(route + "/sync", {})).sources[0];
+    const path = `/implementations/${source.implementation_id}`;
+    const issueScope = { source_id: source.id, source_revision: source.revision };
+    const specification = await fixture.json(path + "/specifications", { content: "## Scope\nShow a greeting.\n## Acceptance criteria\nShow hello.\n## Dependencies\nNone." });
+    for (const kind of ["specification", "testing_seams"]) await fixture.json(path + "/approvals", { kind, revision: specification.id, scope: "Public HTTP greeting", issue_scope: issueScope });
+    await fixture.json(route + "/issues/1/approve", { source_revision: source.revision, policy_revision: readiness.revision });
+    await fixture.json(route + "/issues/1/prepare", { source_revision: source.revision });
+    const current = (await fixture.json(route + "/sync", {})).sources[0];
+    const run = await fixture.json(path + "/runs", { action: "implement-spec", idempotency_key: "original-app-seams", issue_scope: { ...issueScope, graph_hash: current.planning.graph_hash } });
+    expect((await fixture.tracker(run.id)).run.manifest.issue_admission.planning.testing_seams).toBe("Public HTTP greeting");
+    fixture.save([fixture.issue], true);
+    expect((await fixture.post(route + "/sync", {})).status).toBe(409);
+    expect((await fixture.json(path)).runs[0].condition).toBe("working");
+    await fixture.json(path + "/approvals", { kind: "testing_seams", revision: specification.id, scope: "Generic CLI wording without issue authority" });
+    await fixture.json(path + "/approvals", { kind: "testing_seams", revision: specification.id, scope: "Public HTTP greeting", issue_scope: issueScope });
+    expect((await fixture.json(path)).runs[0].condition).toBe("working");
+    await fixture.json(path + "/approvals", { kind: "testing_seams", revision: specification.id, scope: "Public HTTP and mobile browser greeting", issue_scope: issueScope });
+    const paused = await fixture.json(path);
+    expect(paused.runs[0]).toMatchObject({ condition: "needs_you", issue_pause: { reason: "scope_changed" }, manifest: run.manifest });
+    expect(paused.questions).toHaveLength(1);
+    expect(paused.questions[0]).toMatchObject({ run_id: run.id, answer: null });
+    expect(paused.questions[0].question).toContain("Controlled pause requested: scope_changed");
+    fixture.restart();
+    const contract = await fixture.tracker(run.id);
+    expect(contract.run.manifest).toEqual(run.manifest);
+    expect(contract.run.condition).toBe("needs_you");
+    expect((await fixture.json(path)).questions).toHaveLength(1);
+    expect(fixture.launches).toEqual([run.id]);
+  } finally { fixture.close(); }
+}, 20_000);
+
+test.each([false, true])("same effective app seams preserve planning and admission without synthetic approvals (spec section: %s)", async explicit => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { route, readiness } = await fixture.setup();
+    const source = (await fixture.json(route + "/sync", {})).sources[0];
+    const path = `/implementations/${source.implementation_id}`;
+    const issueScope = { source_id: source.id, source_revision: source.revision };
+    const specification = await fixture.json(path + "/specifications", { content: explicit ? fixture.issue.body : "## Scope\nShow a greeting.\n## Acceptance criteria\nShow hello.\n## Dependencies\nNone." });
+    for (const kind of ["specification", "testing_seams"]) await fixture.json(path + "/approvals", { kind, revision: specification.id, scope: "Public HTTP greeting", issue_scope: issueScope });
+    await fixture.json(route + "/issues/1/approve", { source_revision: source.revision, policy_revision: readiness.revision });
+    await fixture.json(route + "/issues/1/prepare", { source_revision: source.revision });
+    const before = (await fixture.json(route + "/sync", {})).sources[0].planning;
+    const reaffirmed = await fixture.json(path + "/approvals", { kind: "testing_seams", revision: specification.id, scope: explicit ? "Different approval wording, same explicit specification seams" : "Public HTTP greeting", issue_scope: issueScope });
+    const generic = await fixture.json(path + "/approvals", { kind: "testing_seams", revision: specification.id, scope: "Unbound CLI seams" });
+    expect(generic.issue_scope).toBeUndefined();
+    expect((await fixture.json(route + "/issues/1/prepare", { source_revision: source.revision })).sources[0].planning).toEqual(before);
+    const run = await fixture.json(path + "/runs", { action: "implement-spec", idempotency_key: "same-effective-seams", issue_scope: { ...issueScope, graph_hash: before.graph_hash } });
+    expect(run.manifest.issue_admission.planning.testing_seams).toBe(explicit ? "Public HTTP and real browser journeys." : "Public HTTP greeting");
+    expect(run.manifest.issue_admission.planning.app_approval_ids).not.toContain(generic.id);
+    await fixture.json(path + "/approvals", { kind: "testing_seams", revision: specification.id, scope: reaffirmed.scope, issue_scope: issueScope });
+    await fixture.json(path + "/approvals", { kind: "testing_seams", revision: specification.id, scope: "Unbound changed CLI seams" });
+    fixture.restart();
+    const after = await fixture.json(path);
+    expect(after.runs[0]).toMatchObject({ condition: "working", manifest: run.manifest });
+    expect(after.questions).toEqual([]);
+    expect(after.approvals).toHaveLength(6);
+    expect(after.tickets).toHaveLength(1);
+    expect(after.github_sources[0].planning).toEqual(before);
+  } finally { fixture.close(); }
+}, 20_000);
+
+test("fallback seam renewal retains the chosen text and original admitted work through explicit successor recovery", async () => {
+  const fixture = githubReviewFixture(); let release = () => {};
+  try {
+    const { path, run, route, source } = await fixture.prepare(undefined, "Public HTTP greeting");
+    await fixture.integrate(run); await fixture.json(`/runs/${run.id}/checks`, {});
+    await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    const gate = fixture.holdStop(); release = gate.release;
+    const retiring = fixture.post(`/runs/${run.id}/reconcile`, {});
+    await Promise.race([gate.waiting, new Promise((_, reject) => setTimeout(() => reject(new Error("Owned retirement did not reach Stop")), 5000))]);
+    const issueScope = { source_id: source.id, source_revision: source.revision };
+    await fixture.json(path + "/approvals", { kind: "testing_seams", revision: run.specification_id, scope: "Public CLI greeting", issue_scope: issueScope });
+    release(); expect((await retiring).status).toBe(409);
+    await fixture.json(`/runs/${run.id}/stop`, {});
+    fixture.restart(); await fixture.json(`/runs/${run.id}/reconcile`, {});
+    let detail = await fixture.json(path);
+    for (const question of detail.questions.filter((question: any) => question.answer === null)) await fixture.json(path + `/questions/${question.id}/answer`, { revision: question.revision, answer: "Retain work and renew the chosen CLI seam." });
+    const waiting = (await fixture.json(route + "/issues/1/prepare", { source_revision: source.revision, question_revision: (await fixture.json(path)).question_revision })).sources[0].planning;
+    expect(waiting).toMatchObject({ condition: "needs_you", testing_seams: "Public CLI greeting" });
+    for (const kind of ["specification", "testing_seams", "ticket_graph"]) await fixture.json(path + "/approvals", { kind, revision: kind === "ticket_graph" ? run.graph_hash : run.specification_id, scope: kind === "testing_seams" ? waiting.testing_seams : "Retain displayed app plan for the current issue", issue_scope: issueScope });
+    detail = await fixture.json(path);
+    for (const question of detail.questions.filter((question: any) => question.answer === null)) await fixture.json(path + `/questions/${question.id}/answer`, { revision: question.revision, answer: "Use the explicitly chosen Public CLI greeting seam." });
+    await fixture.json(route + "/issues/1/prepare", { source_revision: source.revision, question_revision: (await fixture.json(path)).question_revision });
+    await fixture.json(route + "/sync", {});
+    const successor = await fixture.json(`/runs/${run.id}/retry`, { idempotency_key: "renewed-fallback-rework", issue_scope: { ...issueScope, graph_hash: run.graph_hash } });
+    expect(successor).toMatchObject({ retry_of: run.id, manifest: { rework: { run_id: run.id, head: "a".repeat(40) }, issue_admission: { planning: { testing_seams: "Public CLI greeting" } } } });
+    expect((await fixture.json(path)).runs[0].manifest).toEqual(run.manifest);
+    expect((run.manifest as any).issue_admission.planning.testing_seams).toBe("Public HTTP greeting");
+  } finally { release(); fixture.close(); }
+}, 20_000);
+
+test("missing issue-bound fallback seams remain a targeted owner decision", async () => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { route, readiness } = await fixture.setup();
+    const source = (await fixture.json(route + "/sync", {})).sources[0];
+    const path = `/implementations/${source.implementation_id}`;
+    const specification = await fixture.json(path + "/specifications", { content: "Show hello with separately agreed testing seams." });
+    for (const kind of ["specification", "testing_seams"]) await fixture.json(path + "/approvals", { kind, revision: specification.id, scope: "Generic manual approval" });
+    await fixture.json(route + "/issues/1/approve", { source_revision: source.revision, policy_revision: readiness.revision });
+    const waiting = (await fixture.json(route + "/issues/1/prepare", { source_revision: source.revision })).sources[0].planning;
+    expect(waiting).toMatchObject({ condition: "needs_you", origin: "app_plan", testing_seams: "" });
+    const before = await fixture.json(path);
+    await fixture.json(path + `/questions/${before.questions[0].id}/answer`, { revision: before.questions[0].revision, answer: "Keep the missing seam decision pending." });
+    expect((await fixture.json(route + "/issues/1/prepare", { source_revision: source.revision, question_revision: (await fixture.json(path)).question_revision })).sources[0].planning).toMatchObject({ condition: "needs_you", testing_seams: "" });
+    expect((await fixture.json(path)).approvals).toEqual(before.approvals);
+    expect((await fixture.json(path)).runs).toEqual([]);
+  } finally { fixture.close(); }
+}, 20_000);
+
+test("an empty explicit testing-seams section requires a seam decision rather than approval audit text", async () => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { route, readiness } = await fixture.setup();
+    const source = (await fixture.json(route + "/sync", {})).sources[0];
+    const path = `/implementations/${source.implementation_id}`;
+    const specification = await fixture.json(path + "/specifications", { content: "## Scope\nShow hello.\n## Testing seams\n" });
+    for (const kind of ["specification", "testing_seams"]) await fixture.json(path + "/approvals", { kind, revision: specification.id, scope: "Approval audit text", issue_scope: { source_id: source.id, source_revision: source.revision } });
+    await fixture.json(route + "/issues/1/approve", { source_revision: source.revision, policy_revision: readiness.revision });
+    const waiting = (await fixture.json(route + "/issues/1/prepare", { source_revision: source.revision })).sources[0].planning;
+    expect(waiting).toMatchObject({ condition: "needs_you", testing_seams: "" });
+    expect((await fixture.json(path)).questions[0].question).toContain("testing seams");
+    expect((await fixture.json(path)).runs).toEqual([]);
+  } finally { fixture.close(); }
+}, 20_000);
+
 test("explicit Start admits the prepared trusted plan with its frozen authorization and quality gates", async () => {
   const fixture = githubQueueFixture(true);
   try {
@@ -917,6 +1083,37 @@ test.each(["free", "worker", "build"])("a confirmed owner Stop permits one expli
   } finally { release(); fixture.close(); }
 }, 30_000);
 
+test.each([
+  ["to-spec", "cancelled"], ["to-spec", "completed"], ["verify-provider", "cancelled"], ["verify-provider", "completed"],
+])("%s ending %s after failure preserves explicit Retry of the latest implementation attempt", async (action, condition) => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { path, start } = await prepared(fixture);
+    fixture.setLaunchOutcome("failed");
+    const failed = await fixture.json(path + "/runs", start);
+    fixture.setLaunchOutcome("working");
+    const planning = await fixture.json(path + "/runs", { action, idempotency_key: "planning-after-failure" });
+    const retry = { idempotency_key: "retry-after-planning", issue_scope: start.issue_scope };
+    expect((await fixture.post(`/runs/${failed.id}/retry`, retry)).status).toBe(409);
+    let nativeCondition = "disconnected";
+    fixture.setExecutionHandler(async request => new RegExp(`/runs/${planning.id}/(stop|reconcile)$`).test(new URL(request.url).pathname) ? Response.json({ ...planning, condition: nativeCondition }) : null);
+    await fixture.json(`/runs/${planning.id}/reconcile`, {});
+    fixture.restart();
+    expect((await fixture.post(`/runs/${failed.id}/retry`, retry)).status).toBe(409);
+    expect(fixture.launches).toEqual([failed.id, planning.id]);
+    nativeCondition = condition!;
+    await fixture.json(`/runs/${planning.id}/${condition === "cancelled" ? "stop" : "reconcile"}`, {});
+    fixture.restart();
+    const response = await fixture.post(`/runs/${failed.id}/retry`, retry);
+    expect(response.status).toBe(202);
+    const next = await response.json();
+    expect(next).toMatchObject({ condition: "working", retry_of: failed.id });
+    expect((await fixture.json(path)).runs.map((run: any) => [run.id, run.condition])).toEqual([[failed.id, "failed"], [planning.id, condition], [next.id, "working"]]);
+    const superseded = await fixture.post(`/runs/${failed.id}/retry`, { ...retry, idempotency_key: "obsolete-predecessor" });
+    expect(superseded.status).toBe(409); expect((await superseded.json()).error.code).toBe("retry_superseded");
+  } finally { fixture.close(); }
+}, 20_000);
+
 test("failed issue work waits through sync and restart for explicit owner Retry", async () => {
   const fixture = githubQueueFixture(true);
   try {
@@ -937,6 +1134,25 @@ test("failed issue work waits through sync and restart for explicit owner Retry"
     expect(next.id).not.toBe(failed.id);
     expect((await fixture.json(path)).runs).toEqual([failed, next]);
     expect(fixture.launches).toEqual([failed.id, next.id]);
+  } finally { fixture.close(); }
+}, 20_000);
+
+test("an explicitly retried implementation supersedes the historical failure for later Start decisions", async () => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { path, start } = await prepared(fixture);
+    fixture.setLaunchOutcome("failed");
+    const failed = await fixture.json(path + "/runs", start);
+    fixture.setLaunchOutcome("working");
+    const next = await fixture.json(`/runs/${failed.id}/retry`, { idempotency_key: "newest-implementation", issue_scope: start.issue_scope });
+    fixture.setExecutionHandler(async request => new URL(request.url).pathname.endsWith(`/runs/${next.id}/reconcile`) ? Response.json({ ...next, condition: "completed" }) : null);
+    await fixture.json(`/runs/${next.id}/reconcile`, {});
+    fixture.restart();
+    const response = await fixture.post(path + "/runs", { ...start, idempotency_key: "after-retried-implementation" });
+    expect(response.status).toBe(409);
+    // The latest attempt already exists; the old failed attempt cannot demand Retry forever.
+    expect((await response.json()).error.code).toBe("issue_not_eligible");
+    expect((await fixture.json(path)).runs).toHaveLength(2);
   } finally { fixture.close(); }
 }, 20_000);
 

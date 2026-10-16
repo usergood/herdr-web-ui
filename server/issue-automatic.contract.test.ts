@@ -247,17 +247,19 @@ test("automatic preview reuses an approved app plan and graph without a manual P
   try {
     const { route } = await synced(fixture);
     const source = (await fixture.json(route)).sources[0]; const path = `/implementations/${source.implementation_id}`;
+    const issueScope = { source_id: source.id, source_revision: source.revision };
     const content = fixture.issue.body + "\n## Tickets\nThe approved API Ticket blocks the browser Ticket.";
     const specification = await fixture.json(path + "/specifications", { content });
-    for (const kind of ["specification", "testing_seams"]) await fixture.json(path + "/approvals", { kind, revision: specification.id, scope: "Owned app-plan fixture" });
+    for (const kind of ["specification", "testing_seams"]) await fixture.json(path + "/approvals", { kind, revision: specification.id, scope: "Owned app-plan fixture", issue_scope: issueScope });
     const graph = await fixture.json(path + "/tickets", { specification_id: specification.id, tickets: [{ key: "api", title: "Greeting API", acceptance: "Greeting through HTTP", dependencies: [] }, { key: "browser", title: "Greeting UI", acceptance: "Greeting through browser", dependencies: ["api"] }] });
-    await fixture.json(path + "/approvals", { kind: "ticket_graph", revision: graph.hash, scope: "Owned app graph" });
+    await fixture.json(path + "/approvals", { kind: "ticket_graph", revision: graph.hash, scope: "Owned app graph", issue_scope: issueScope });
     const before = await fixture.json(path);
     await enable(fixture, route);
     const after = await fixture.json(path);
     expect(after.runs[0].manifest.issue_admission.planning).toMatchObject({ origin: "app_plan", content, graph_hash: graph.hash, specification_id: specification.id });
     expect(after.tickets).toEqual(before.tickets);
     expect(after.approvals).toEqual(before.approvals);
+    for (const approval of after.approvals) expect(approval.issue_scope).toMatchObject(issueScope);
   } finally { fixture.close(); }
 }, 20_000);
 

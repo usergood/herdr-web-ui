@@ -880,6 +880,8 @@ test.each(["issue", "manual"])("failed %s rework keeps the produced commit for t
     expect(failed.condition).toBe("failed"); expect(failed.worktree).toBeNull();
     fixture.restart(); fixture.setLaunchFailure(false);
     expect((await fixture.json(path)).runs).toHaveLength(2);
+    const ordinary = await fixture.post(path + "/runs", { ...scope, action: "implement-spec", idempotency_key: "no-implicit-failed-rework" });
+    expect(ordinary.status).toBe(409); expect((await ordinary.json()).error.code).toBe("retry_required");
     const next = await fixture.json(`/runs/${failed.id}/retry`, { ...scope, idempotency_key: "retry-failed-retired-rework" });
     expect(next).toMatchObject({ condition: "working", retry_of: failed.id, manifest: { rework: { run_id: run.id, head: "b".repeat(40) } } });
     expect((await fixture.json(`/runs/${failed.id}/retry`, { ...scope, idempotency_key: "retry-failed-retired-rework" })).id).toBe(next.id);

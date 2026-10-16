@@ -2,7 +2,7 @@ import { readyIssuePlanningStep } from "../shared/issue-queue.ts";
 import { issueExecutionAttempts, issueQueueEntry } from "./issue-queue.ts";
 import { implementingAssignments } from "./factory-capacity.ts";
 import { FactoryWorkflow } from "./factory-workflow.ts";
-import { prepareIssuePlan, reconcileIssuePlan } from "./issue-planning.ts";
+import { effectiveIssueTestingSeams, prepareIssuePlan, reconcileIssuePlan } from "./issue-planning.ts";
 import { combinedDependencies, dependencyPlan } from "./issue-dependencies.ts";
 import { coverageRevision, linkIssueDelivery, verifyIssueDelivery } from "./issue-delivery.ts";
 import { mkdirSync } from "node:fs";
@@ -126,7 +126,7 @@ export class ProjectGitHub {
       const readiness = issueReadiness(policy, source);
       const before = frozen.source.current!; const current = source.current;
       const reason: import("../shared/issue-admission.ts").IssuePause["reason"] | null = detectedChange?.sourceId === source.id && (!detectedChange.runId || detectedChange.runId === run.id) ? detectedChange.reason : current.state === "closed" ? "issue_closed"
-        : current.title !== before.title || current.body !== before.body || JSON.stringify(current.native_dependencies) !== JSON.stringify(before.native_dependencies) || workflow.specification(run.implementation_id)?.id !== run.specification_id || workflow.graphHash(run.implementation_id) !== run.graph_hash ? "scope_changed"
+        : current.title !== before.title || current.body !== before.body || JSON.stringify(current.native_dependencies) !== JSON.stringify(before.native_dependencies) || workflow.specification(run.implementation_id)?.id !== run.specification_id || workflow.graphHash(run.implementation_id) !== run.graph_hash || effectiveIssueTestingSeams(this.store, source, workflow.specification(run.implementation_id)) !== frozen.planning.testing_seams ? "scope_changed"
         : policy?.revision !== frozen.readiness_policy.revision || policy.project_scope !== this.projectScope(id) || readiness.blockers.some(blocker => ["closed", "blocked", "triage_conflict", "role_not_ready", "mapping_conflict"].includes(blocker)) || source.readiness_evidence?.complete && !readiness.approval ? "readiness_revoked" : null;
       if (!reason) continue;
       const pause = { source_id: source.id, source_revision: source.revision, reason, requested_at: new Date().toISOString() };
@@ -223,7 +223,7 @@ export class ProjectGitHub {
     const planning = this.store.get<import("../shared/issue-planning.ts").IssuePlanning>("github_plans", source.id);
     const workflow = new FactoryWorkflow(this.store);
     const appApprovalsCurrent = planning?.origin !== "app_plan" || !!planning.specification_id && workflow.issueApproved(source, "specification", planning.specification_id) && workflow.issueApproved(source, "testing_seams", planning.specification_id) && workflow.issueGraphApproved(source);
-    const current = planning && readiness.eligible && planning.source_revision === source.revision && planning.authorization.approval.id === readiness.approval?.id && (planning.condition !== "prepared" || appApprovalsCurrent && planning.specification_id === workflow.specification(source.implementation_id)?.id && planning.graph_hash === workflow.graphHash(source.implementation_id) && (!workflow.questions(source.implementation_id).length || planning.consumed_question_revision === workflow.questionRevision(source.implementation_id)));
+    const current = planning && readiness.eligible && planning.source_revision === source.revision && planning.authorization.approval.id === readiness.approval?.id && (planning.condition !== "prepared" || appApprovalsCurrent && !!planning.testing_seams.trim() && planning.testing_seams === effectiveIssueTestingSeams(this.store, source, workflow.specification(source.implementation_id)) && planning.specification_id === workflow.specification(source.implementation_id)?.id && planning.graph_hash === workflow.graphHash(source.implementation_id) && (!workflow.questions(source.implementation_id).length || planning.consumed_question_revision === workflow.questionRevision(source.implementation_id)));
     return { ...source, readiness, planning: planning ? { ...planning, condition: planning.condition === "needs_you" && workflow.questions(source.implementation_id).some(question => question.answer === null) ? "needs_you" : current ? planning.condition : "stale" } : undefined };
   }
   intake(source: ProjectGitHubSource): import("../shared/issue-queue.ts").IssueQueueEntry | undefined {

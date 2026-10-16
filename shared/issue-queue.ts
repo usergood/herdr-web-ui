@@ -1,5 +1,10 @@
 import type { FactoryRun } from "./factory.ts";
 
+/** Planning and verification history never supersede an implementation attempt. */
+export function latestImplementationAttempt(runs: readonly FactoryRun[]): FactoryRun | undefined {
+  return runs.filter(run => run.action === "implement-spec").at(-1);
+}
+
 /** A resting planning step or its verification prerequisite may hand off ownership.
  * Native provider proof is still required separately by implementation admission. */
 export function readyIssuePlanningStep(run: FactoryRun | null | undefined): boolean {

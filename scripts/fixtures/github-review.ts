@@ -60,10 +60,15 @@ export function githubReviewFixture() {
     if (action === "review-evidence" && worker) return Response.json({ head, source_id: `owned-review-${worker.id}`, content: `Independent ${worker.role} fixture report`, outcome: reviewOutcome });
     return null;
   });
-  async function prepare(commands?: Pick<FactoryProject, "setup" | "checks">) {
+  async function prepare(commands?: Pick<FactoryProject, "setup" | "checks">, appTestingSeams?: string) {
     const setup = await fixture.setup();
     if (commands) await fixture.json(`/projects/${setup.project.id}/configure`, commands);
     const source = (await fixture.json(setup.route + "/sync", {})).sources[0];
+    if (appTestingSeams !== undefined) {
+      const path = `/implementations/${source.implementation_id}`;
+      const specification = await fixture.json(path + "/specifications", { content: fixture.issue.body.split("\n## Testing seams")[0] });
+      for (const kind of ["specification", "testing_seams"]) await fixture.json(path + "/approvals", { kind, revision: specification.id, scope: appTestingSeams, issue_scope: { source_id: source.id, source_revision: source.revision } });
+    }
     await fixture.json(setup.route + "/issues/1/approve", { source_revision: source.revision, policy_revision: setup.readiness.revision });
     await fixture.json(setup.route + "/issues/1/prepare", { source_revision: source.revision });
     await fixture.json(setup.route + "/sync", {});
