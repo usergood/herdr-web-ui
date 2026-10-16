@@ -1421,4 +1421,12 @@ export const JA: Record<string, string> = {
   "All Tickets ({count})": "すべてのチケット ({count})",
   "Completed": "完了",
   "Queued": "実行待ち",
+  "Human Review opens automatically after checks, independent reviews and PR publication.": "チェック、独立レビュー、PR公開の完了後にヒューマンレビューが自動的に開きます。",
+  "Review the captured result and discuss it with the assistant.": "保存された結果を確認し、アシスタントと相談してください。",
+  "Changed files": "変更されたファイル",
+  "Captured diff": "保存された差分",
+  "No changed files in this snapshot.": "このスナップショットに変更されたファイルはありません。",
+  "Review discussion": "レビューの相談",
+  "Discuss this review": "このレビューについて相談",
+  "Send discussion": "相談を送信",
 };

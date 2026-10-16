@@ -1423,4 +1423,12 @@ export const ZH: Record<string, string> = {
   "All Tickets ({count})": "全部工单 ({count})",
   "Completed": "已完成",
   "Queued": "排队中",
+  "Human Review opens automatically after checks, independent reviews and PR publication.": "检查、独立审查和 PR 发布完成后，会自动打开人工审查。",
+  "Review the captured result and discuss it with the assistant.": "查看已捕获的结果并与助手讨论。",
+  "Changed files": "已更改的文件",
+  "Captured diff": "已捕获的差异",
+  "No changed files in this snapshot.": "此快照中没有更改的文件。",
+  "Review discussion": "审查讨论",
+  "Discuss this review": "讨论此审查",
+  "Send discussion": "发送讨论",
 };

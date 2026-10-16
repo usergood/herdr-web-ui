@@ -27,6 +27,9 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean } = {
   const workerLaunches: string[] = [];
   const reviewOutcomes = new Map<string, "passed" | "failed">();
   const workerContexts = new Map<string, any>();
+  let reviewUnavailable = false;
+  let reviewHead: string | null = null;
+  let reviewFiles = [{ path: "progress.ts", status: "branch:M", diff: "@@ -1 +1 @@\n-before\n+after\n", binary: false, oversized: false }];
   const publications = new Map<string, any>();
   let losePublication = false;
   let loseStop = false;
@@ -45,8 +48,9 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean } = {
       capabilities ??= await api("/providers").then(r => r.json());
       return Response.json({ ...capabilities, providers: capabilities!.providers.map((p: object) => ({ ...p, factory_ready: true })) });
     }
-    if (path === "/review") return Response.json({ repository: `owned-repo:${[...runs.values()].find(run => run.worktree === body.path)?.checkout ?? body.path}`, head: "1".repeat(40), files: [{ path: "progress.ts", status: "M", diff: "@@ -1 +1 @@\n-before\n+after\n", binary: false, oversized: false }] });
-    if (path === "/inspect") return Response.json({ path: body.path, repository: `owned-repo:${[...runs.values()].find(run => run.worktree === body.path)?.checkout ?? body.path}`, head: "1".repeat(40), branch: "main", instructions: [] });
+    if (path === "/review" && reviewUnavailable) return Response.json({ error: { code: "machine_offline", message: "Owned unavailable review capture" } }, { status: 503 });
+    if (path === "/review") return Response.json({ repository: `owned-repo:${[...runs.values()].find(run => run.worktree === body.path)?.checkout ?? body.path}`, head: reviewHead ?? tips.get([...runs.values()].find(run => run.worktree === body.path)?.id ?? "") ?? "1".repeat(40), files: reviewFiles });
+    if (path === "/inspect") return Response.json({ path: body.path, repository: `owned-repo:${[...runs.values()].find(run => run.worktree === body.path)?.checkout ?? body.path}`, head: tips.get([...runs.values()].find(run => run.worktree === body.path)?.id ?? "") ?? "1".repeat(40), branch: "main", instructions: [] });
     if (path === "/launch") {
       launches.push(body.run.id);
       const run = { ...body.run, condition: "working", worktree: join(state, body.run.id), branch: `owned-${body.run.id}`, workspace_id: null, pane_id: null } as FactoryRun;
@@ -148,6 +152,9 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean } = {
     return fetch(`http://localhost:${app.port}${new URL(credential.url).pathname}/${path}`, { method: body === undefined ? "GET" : "POST", headers: { authorization: `Bearer ${credential.token}`, "content-type": "application/json", "x-herdr-factory": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   };
   return { api, agent, assignment, runs, workers, launches, workerLaunches, workerContexts, reviewOutcomes, publications, executedChecks, resumptions, resumeHistories, prompts, state, token, get app() { return app; },
+    reviewUnavailable: (value: boolean) => { reviewUnavailable = value; },
+    reviewHead: (head: string | null) => { reviewHead = head; },
+    reviewFiles: (files: typeof reviewFiles) => { reviewFiles = files; },
     loseNextPublication: () => { losePublication = true; },
     denyPublication: () => { denyPublication = true; },
     changeHead: (runId: string, head: string) => { tips.set(runId, head); },

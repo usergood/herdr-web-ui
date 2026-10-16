@@ -1374,4 +1374,12 @@ export const TR: Record<string, string> = {
   "All Tickets ({count})": "Tüm biletler ({count})",
   "Completed": "Tamamlandı",
   "Queued": "Sırada",
+  "Human Review opens automatically after checks, independent reviews and PR publication.": "Kontroller, bağımsız incelemeler ve PR yayımlama tamamlanınca insan incelemesi otomatik açılır.",
+  "Review the captured result and discuss it with the assistant.": "Kaydedilen sonucu inceleyin ve asistanla tartışın.",
+  "Changed files": "Değişen dosyalar",
+  "Captured diff": "Kaydedilen fark",
+  "No changed files in this snapshot.": "Bu anlık görüntüde değişen dosya yok.",
+  "Review discussion": "İnceleme tartışması",
+  "Discuss this review": "Bu incelemeyi tartışın",
+  "Send discussion": "Tartışmayı gönder",
 };

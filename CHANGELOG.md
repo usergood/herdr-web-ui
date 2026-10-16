@@ -8,6 +8,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 ## [Unreleased]
 
 ### Fixed
+- Hand off checked PRs to Human Review with captured file navigation, bounded Git diffs and an assistant discussion that uses normal capacity only while executing.
 - Continue checked factory work through independent Standards/Spec reviews, bounded automatic repairs and repeat-safe PR publication, with retained reports and desktop/mobile progress.
 - Show named Ticket progress, concurrent workflow activities and blocking reasons across five Assignment board lanes; preserve paused progress and use automatic queue age instead of manual priority.
 - Add permanent Assignment Delete with owned-resource cleanup, durable pending reasons and automatic Machine reconciliation; linked issues and app-managed recovery copies remain pending until their cleanup is confirmed.

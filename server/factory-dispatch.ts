@@ -12,6 +12,7 @@ interface Request extends FactoryCapacityWait {
 /** A queued intent is not an executing reservation. Admission records the native
  * identity before launch; an uncertain launch is observed, never replayed. */
 export class FactoryDispatch {
+  discuss: ((id: string, body: Record<string, unknown>) => Promise<void>) | null = null;
   resumeSuspension: ((id: string, body: Record<string, unknown>) => Promise<void>) | null = null;
   maintenance: (() => Promise<void>) | null = null;
   worker: ((id: string, body: Record<string, unknown>) => Promise<FactoryWorker>) | null = null;
@@ -73,7 +74,7 @@ export class FactoryDispatch {
         try {
           if (!request.run_id && request.scope_hash && request.scope_hash !== this.scope(request.implementation_id)) throw new FactoryError("scope_changed", "The queued execution scope changed; inspect it and submit a new Start request", 409);
           if (request.continuation && request.run_id) {
-            const resume = request.request.suspension ? this.resumeSuspension : this.resume;
+            const resume = request.request.human_review ? this.discuss : request.request.suspension ? this.resumeSuspension : this.resume;
             if (!resume) continue;
             await resume(request.run_id, request.request);
           } else if (request.run_id) {

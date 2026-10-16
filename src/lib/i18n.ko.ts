@@ -1419,4 +1419,12 @@ export const KO: Record<string, string> = {
   "All Tickets ({count})": "전체 티켓 ({count})",
   "Completed": "완료됨",
   "Queued": "실행 대기",
+  "Human Review opens automatically after checks, independent reviews and PR publication.": "검사, 독립 검토 및 PR 게시가 완료되면 사람 검토가 자동으로 열립니다.",
+  "Review the captured result and discuss it with the assistant.": "캡처된 결과를 검토하고 어시스턴트와 논의하세요.",
+  "Changed files": "변경된 파일",
+  "Captured diff": "캡처된 변경 내용",
+  "No changed files in this snapshot.": "이 스냅샷에 변경된 파일이 없습니다.",
+  "Review discussion": "검토 논의",
+  "Discuss this review": "이 검토에 대해 논의하기",
+  "Send discussion": "논의 보내기",
 };

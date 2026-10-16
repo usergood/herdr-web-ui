@@ -18,7 +18,7 @@ export function assignmentProgress(idea: Implementation, tickets: FactoryTicket[
   if (idea.pause?.condition !== "paused") {
     for (const run of runs.filter(executing)) {
       if (["setup", "grill-me", "grill-with-docs", "to-spec", "to-tickets"].includes(run.action)) activities.add("specifying");
-      if (run.action === "work") activities.add("implementing");
+      if (run.action === "work" && run.conversation_kind !== "human_review") activities.add("implementing");
     }
     for (const worker of liveWorkers) activities.add(worker.role !== "implementer" ? "auto_review" : worker.rework_batch_id ? "fixing" : "implementing");
     if (liveChecks.length) activities.add("testing");

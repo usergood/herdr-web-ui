@@ -5,6 +5,7 @@ import { useT } from "../lib/i18n.ts";
 import { RetainedNativeTurn } from "./RetainedNativeTurn.tsx";
 import { SpecificationConversation } from "./SpecificationConversation.tsx";
 import "./WorkflowConversations.css";
+import { HumanReviewConversation } from "./HumanReviewConversation.tsx";
 
 function conversationLabel(kind: FactoryConversationKind, title: string | null, t: ReturnType<typeof useT>): string {
   switch (kind) {
@@ -41,6 +42,7 @@ export function WorkflowConversations({ detail, machines, selectedId, onSelect, 
     <nav aria-label={t("Workflow history")}><WorkflowConversationTree conversations={conversations} selectedId={selected.id} onSelect={onSelect} /></nav>
     <section className="workflow-conversation-history" aria-label={conversationLabel(selected.kind, selected.title, t)}>
       <h4>{conversationLabel(selected.kind, selected.title, t)}</h4>
+      {selected.kind === "human_review" && <HumanReviewConversation detail={detail} busy={busy} perform={perform} />}
       {selected.kind === "specifications" && specification && <SpecificationConversation key={specification.id} detail={detail} specification={specification} busy={busy} perform={perform} />}
       {!selected.contexts.length && <p role="status">{t("No native context yet.")}</p>}
       {selected.contexts.map(context => {

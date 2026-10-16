@@ -36,7 +36,7 @@ Creating a specification revision invalidates the current Ticket graph for futur
 
 ## Work, review and history
 
-Assignment details and the Project sidebar now preserve named Specifications, Orchestrator and Human Review entries across native-context handoffs. Ticket implementations, independent reviewer contexts and repair histories retain their original parentage and provenance. Orchestrator starts automatically after new Specification acceptance as described above; Human Review execution remains separate implementation work. See [Workflow conversation history](workflow-conversations.md) for the current behavior and wire metadata.
+Assignment details and the Project sidebar now preserve named Specifications, Orchestrator and Human Review entries across native-context handoffs. Ticket implementations, independent reviewer contexts and repair histories retain their original parentage and provenance. Orchestrator starts automatically after new Specification acceptance as described above; Checked and independently reviewed PRs now hand off automatically to Human Review as described below. See [Workflow conversation history](workflow-conversations.md) for the current behavior and wire metadata.
 
 The integration branch and worktree belong to the Run. Implementers receive separate worktrees at the current integration tip. The scoped tracker exposes stable Ticket IDs, accepted context, questions, versioned answer consumption, worker operations, checks and proposal operations. Its private capability lives in a 0600 file and cannot approve specifications or control another Run.
 
@@ -91,6 +91,12 @@ Create verified backup captures the database and referenced blobs under one SQLi
 For an upgrade rehearsal, restore a copy, start an isolated instance against that copy, and inspect retained records and artifacts through the UI/API. Keep the original service, checkout and state unchanged. Run the previous compatible application against its own restored copy to rehearse rollback. A newer unsupported schema fails closed. Promotion, credential/device migration and service changes require a separately chosen deployment target and owner dispatch.
 
 Backups cover application records and imported blobs. Git repositories, native transcript stores, worktree outputs that have not been imported, SSH credentials and device/transport configuration require their own machine backups. Do not claim those are present in a database/blob restore.
+
+## Human Review handoff and discussion
+
+After automatic checks and independent Standards/Spec review pass and the PR is published, Orchestrator parks at verified native rest. The app captures the branch diff and retains one Human Review handoff per Run. Open Human Review in Workflow history to navigate its directory/file list beside the discussion and retained native history. Snapshot ID/hash, Machine, base/head, change status and rename paths identify the captured result. Binary files have no text diff; files or diffs over 2 MiB show a size notice. Captures are bounded to 200 files and 16 MiB. Reading captured files/history works without a free Agent context or a connected execution Machine.
+
+Send discussion explicitly queues a retained owner message through normal global capacity. The first admitted message starts a separate read-only Human Review assistant at the captured commit; later messages resume that same conversation. It cannot use the planning allowance or dispatch competing implementation/review work. Verified native rest releases its capacity, and replies are retained automatically. Unknown deliveries retain their identity and uncertainty rather than replaying a message after restart. Machine and capacity waits remain visible. Discussion grants no repair or merge authority; line comments and review dispositions are separate implementation Tickets.
 
 ## Validation
 

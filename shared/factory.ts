@@ -141,7 +141,7 @@ export interface FactoryRun extends FactoryRecord {
 export interface ReviewSnapshot extends FactoryRecord {
   implementation_id: string; run_id: string | null; machine_id: string; repository: string;
   mode: "branch" | "workspace"; base: string; head: string; hash: string;
-  files: { path: string; status: string; diff: string; binary: boolean; oversized: boolean }[];
+  files: { path: string; old_path?: string; status: string; diff: string; binary: boolean; oversized: boolean }[];
 }
 export interface ReviewComment extends FactoryRecord {
   implementation_id: string; run_id: string | null; snapshot_id: string; path: string; change: string;
@@ -178,7 +178,18 @@ export interface FactoryCapacity {
   waiting: FactoryCapacityWait[];
 }
 export interface FactoryOverview { capacity: FactoryCapacity }
+export interface FactoryHumanReviewDelivery {
+  id: string; review_id: string;
+  condition: "queued" | "sending" | "sent" | "uncertain"; reason: string | null;
+}
+export interface FactoryHumanReview extends FactoryRecord {
+  implementation_id: string; run_id: string; conversation_id: string;
+  head: string; snapshot_id: string | null; assistant_run_id: string | null;
+  condition: "capturing" | "ready" | "waiting" | "blocked"; reason: string | null;
+}
 export interface FactoryDetail {
+  human_reviews?: FactoryHumanReview[];
+  human_review_deliveries?: FactoryHumanReviewDelivery[];
   automatic_review_batches?: FactoryAutomaticReviewBatch[];
   pull_requests?: FactoryPullRequest[];
   automatic_review?: FactoryAutomaticReview[];

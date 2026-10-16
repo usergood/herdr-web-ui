@@ -13,7 +13,7 @@ export class FactoryExecution {
   private stopped = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private readonly running = new Set<string>();
-  constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly runtime: FactoryRuntime, private readonly pipeline: FactoryPipeline) { this.schedule(); }
+  constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly runtime: FactoryRuntime, private readonly pipeline: FactoryPipeline, private readonly handoff: (run: FactoryRun) => Promise<void>) { this.schedule(); }
   private schedule(): void {
     this.timer = setTimeout(() => {
       if (this.stopped) return;
@@ -107,7 +107,8 @@ export class FactoryExecution {
     if (!live) return;
     let run: FactoryRun = live;
     const previous = this.store.get<FactoryAutomaticReview>("automatic_review", run.id);
-    if (["blocked", "published"].includes(previous?.condition ?? "") || (previous?.next_attempt_at ?? 0) > Date.now()) return;
+    if (previous?.condition === "published") { await this.handoff(run); return; }
+    if (["blocked"].includes(previous?.condition ?? "") || (previous?.next_attempt_at ?? 0) > Date.now()) return;
     const lastCheck = this.store.list<FactoryCheck>("checks", run.id).filter(c => c.worker_id === null).at(-1);
     let state: FactoryAutomaticReview = previous ?? { ...this.store.record(), id: run.id, run_id: run.id, head: lastCheck?.head ?? "", round: 0, condition: "reviewing", reason: null, attempts: 0, next_attempt_at: 0, check_id: lastCheck?.id ?? "", evidence_ids: [], batch_id: null };
     try {

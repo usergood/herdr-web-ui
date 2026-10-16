@@ -465,6 +465,31 @@ export class FactoryRuntime {
     this.dispatches.set(accepted.run.id, dispatch);
     try { return await dispatch; } finally { this.dispatches.delete(accepted.run.id); }
   }
+  async discussReview(parent: FactoryRun, review: import("../shared/factory.ts").FactoryHumanReview, message: FactoryMessage, origin: string, claim: () => void): Promise<FactoryRun> {
+    this.assertExecuting(parent.implementation_id);
+    const existing = review.assistant_run_id ? this.store.get<FactoryRun>("runs", review.assistant_run_id) : this.store.list<FactoryRun>("runs", parent.implementation_id).find(r => r.idempotency_key === `human-review-${review.id}`);
+    if (existing) {
+      // Admission and the durable sending claim precede every native effect.
+      this.store.db.transaction(() => { agentCapacityPool(this.store, this.settings()); claim(); }).immediate();
+      await this.send(existing, `Human Review discussion of snapshot ${review.snapshot_id}, head ${review.head}. Discuss only; do not edit, create workers, publish or merge.\n\n${message.content}`, new AbortController().signal);
+      return this.store.get<FactoryRun>("runs", existing.id)!;
+    }
+    const inspected = await this.inspect(parent.machine_id, parent.worktree!);
+    if (inspected.head !== review.head) throw new FactoryError("review_stale", "The assistant checkout differs from the captured review", 409);
+    const { planning_authority: _authority, ...manifest } = parent.manifest as Record<string, unknown>;
+    const run = this.store.db.transaction(() => {
+      this.assertExecuting(parent.implementation_id);
+      const pool = agentCapacityPool(this.store, this.settings());
+      const record: FactoryRun = { ...parent, ...this.store.record(), action: "work", conversation_kind: "human_review", capacity_pool: pool, condition: "accepted", waiting_reason: null, idempotency_key: `human-review-${review.id}`, base: review.head, checkout: parent.worktree, worktree: null, branch: null, workspace_id: null, pane_id: null, continuation: undefined, suspension: undefined, manifest: { ...manifest, checkout: inspected, human_review: { review, message, snapshot: this.store.get("snapshots", review.snapshot_id!) }, context_message_ids: this.store.list<FactoryMessage>("messages", parent.implementation_id).filter(m => m.chat_id === message.chat_id).map(m => m.id) } };
+      claim(); this.store.put("runs", record, parent.implementation_id);
+      this.store.put("human_reviews", { ...review, assistant_run_id: record.id }, parent.implementation_id);
+      const api = new URL(this.publicUrl ?? origin);
+      this.store.put("run_access", { id: record.id, token: randomBytes(32).toString("base64url"), url: `${api.origin}/api/factory-agent/${record.id}` });
+      return record;
+    }).immediate();
+    const pending = this.dispatch(run); this.dispatches.set(run.id, pending);
+    try { return await pending; } finally { this.dispatches.delete(run.id); }
+  }
   private async dispatch(record: FactoryRun): Promise<FactoryRun> {
     let run = record;
     let dispatched = false;
@@ -483,7 +508,7 @@ export class FactoryRuntime {
       run = { ...run, capacity_pool: current?.capacity_pool ?? run.capacity_pool, continuation: current?.continuation ?? run.continuation, ...(current?.continuation && ["working", "ready"].includes(run.condition) ? { condition: current.condition, waiting_reason: current.waiting_reason } : {}) };
       this.store.put("runs", run, run.implementation_id);
       this.store.event(run.implementation_id, run.condition === "working" ? "native_launch_confirmed" : "dispatch_uncertain", { run_id: run.id, machine_id: run.machine_id, pane_id: run.pane_id, reason: run.waiting_reason });
-      if (run.condition === "working") { const idea = this.store.get<Implementation>("implementations", run.implementation_id)!; this.store.put("implementations", { ...idea, stage: ["work", "implement-spec"].includes(run.action) ? "running" : "specifying" }); }
+      if (run.condition === "working") { const idea = this.store.get<Implementation>("implementations", run.implementation_id)!; this.store.put("implementations", { ...idea, stage: run.conversation_kind === "human_review" ? "review" : ["work", "implement-spec"].includes(run.action) ? "running" : "specifying" }); }
     })();
     return run;
   }

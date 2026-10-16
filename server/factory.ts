@@ -13,6 +13,7 @@ import { FactoryError, hash, inspectCheckout } from "./factory-host.ts";
 import { FactoryArtifacts } from "./factory-artifacts.ts";
 import { FactoryWorkflow } from "./factory-workflow.ts";
 import { FactoryBackup } from "./factory-backup.ts";
+import { FactoryHumanReview } from "./factory-human-review.ts";
 import { FactoryExecution } from "./factory-execution.ts";
 import { FactoryPlanning } from "./factory-planning.ts";
 import { FactoryRuntime, type MachineEndpoint } from "./factory-runtime.ts";
@@ -48,6 +49,7 @@ export class FactoryService {
   private readonly continuation: FactoryContinuation;
   private readonly planning: FactoryPlanning;
   private readonly execution: FactoryExecution;
+  private readonly humanReview: FactoryHumanReview;
   private readonly retrospectives: FactoryRetrospectives;
   private readonly references: FactoryReferences;
   private readonly accounts: MachineAccounts;
@@ -76,7 +78,10 @@ export class FactoryService {
       const latest = (kinds: string[]) => events.filter(event => kinds.includes(event.kind)).at(-1)?.kind;
       if (latest(["native_snapshot_unavailable", "planning_handoff_retained"]) === "native_snapshot_unavailable" || latest(["planning_documents_unavailable", "planning_documents_retained"]) === "planning_documents_unavailable") throw new FactoryError("handoff_incomplete", "The accepted Specification is retained, but some native planning evidence is unavailable; inspect the preserved conversation before continuing", 409);
     });
-    this.execution = new FactoryExecution(this.store, this.workflow, this.runtime, this.pipeline);
+    this.humanReview = new FactoryHumanReview(this.store, this.runtime, this.review, id => this.retainNative(id));
+    const maintenance = this.runtime.queue.maintenance;
+    this.runtime.queue.maintenance = async () => { await maintenance?.(); for (const run of this.store.list<FactoryRun>("runs")) { try { await this.humanReview.retainAssistant(run); } catch { /* Machine unavailability preserves retained history. */ } } };
+    this.execution = new FactoryExecution(this.store, this.workflow, this.runtime, this.pipeline, run => this.humanReview.handoff(run));
     this.retrospectives = new FactoryRetrospectives(this.store);
     this.github = new ProjectGitHub(this.store, this.accounts, (machineId, path) => this.runtime.discover(machineId, path));
     this.deletion = new FactoryDeletion(this.store, (run, deletionId) => this.runtime.deleteAttempt(run, deletionId));
@@ -145,7 +150,7 @@ export class FactoryService {
     const runs = this.store.list<FactoryRun>("runs", id); const runIds = new Set(runs.map((run) => run.id));
     const active = [...runs].reverse().find(run => !["completed", "cancelled", "failed"].includes(run.condition));
     const questionRunId = active?.action === "verify-provider" ? active.id : undefined;
-    const detail: FactoryDetail = { automatic_review_batches: this.store.list("automatic_review_batches", id), pull_requests: this.store.list("pull_requests", id), automatic_review: this.store.list("automatic_review", id), automatic_execution: this.store.list("automatic_execution", id), automatic_planning: this.store.list("automatic_planning", id), execution_plans: this.store.list("execution_plans", id), implementation, capacity_waiting: factoryCapacity(this.store, this.settings()).waiting.filter(wait => wait.implementation_id === id), question_context: { run_id: questionRunId ?? null, revision: this.workflow.questionRevision(id, questionRunId), questions: this.workflow.questions(id, questionRunId) }, graph_hash: this.workflow.graphHash(id), question_revision: this.workflow.questionRevision(id), chats: this.store.list("chats", id), messages: this.store.list("messages", id), specifications: this.store.list("specifications", id), tickets: this.workflow.tickets(id), approvals: this.store.list("approvals", id), questions: this.store.list("questions", id), artifacts: this.store.list("artifacts", id), runs, snapshots: this.store.list("snapshots", id), comments: this.store.list("comments", id), events: this.store.list("events", id), native_snapshots: this.store.list<import("../shared/protocol.ts").NativeConversationSnapshot>("native_snapshots").filter((record) => runIds.has(record.run_id)), workers: this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers").filter((worker) => runIds.has(worker.run_id)), checks: this.store.list<import("../shared/protocol.ts").FactoryCheck>("checks").filter((check) => runIds.has(check.run_id)), review_evidence: this.store.list<import("../shared/protocol.ts").FactoryReviewEvidence>("review_evidence").filter((report) => runIds.has(report.run_id)), retrospectives: implementation.project_id ? this.store.list("retrospectives", implementation.project_id) : [], frontier: runs.at(-1)?.action === "implement-spec" ? this.pipeline.frontier(runs.at(-1)!) : [] };
+    const detail: FactoryDetail = { human_reviews: this.store.list("human_reviews", id), human_review_deliveries: this.store.list<import("../shared/factory.ts").FactoryHumanReviewDelivery & { origin: string }>("human_review_messages", id).map(({ origin: _origin, ...receipt }) => receipt), automatic_review_batches: this.store.list("automatic_review_batches", id), pull_requests: this.store.list("pull_requests", id), automatic_review: this.store.list("automatic_review", id), automatic_execution: this.store.list("automatic_execution", id), automatic_planning: this.store.list("automatic_planning", id), execution_plans: this.store.list("execution_plans", id), implementation, capacity_waiting: factoryCapacity(this.store, this.settings()).waiting.filter(wait => wait.implementation_id === id), question_context: { run_id: questionRunId ?? null, revision: this.workflow.questionRevision(id, questionRunId), questions: this.workflow.questions(id, questionRunId) }, graph_hash: this.workflow.graphHash(id), question_revision: this.workflow.questionRevision(id), chats: this.store.list("chats", id), messages: this.store.list("messages", id), specifications: this.store.list("specifications", id), tickets: this.workflow.tickets(id), approvals: this.store.list("approvals", id), questions: this.store.list("questions", id), artifacts: this.store.list("artifacts", id), runs, snapshots: this.store.list("snapshots", id), comments: this.store.list("comments", id), events: this.store.list("events", id), native_snapshots: this.store.list<import("../shared/protocol.ts").NativeConversationSnapshot>("native_snapshots").filter((record) => runIds.has(record.run_id)), workers: this.store.list<import("../shared/protocol.ts").FactoryWorker>("workers").filter((worker) => runIds.has(worker.run_id)), checks: this.store.list<import("../shared/protocol.ts").FactoryCheck>("checks").filter((check) => runIds.has(check.run_id)), review_evidence: this.store.list<import("../shared/protocol.ts").FactoryReviewEvidence>("review_evidence").filter((report) => runIds.has(report.run_id)), retrospectives: implementation.project_id ? this.store.list("retrospectives", implementation.project_id) : [], frontier: runs.at(-1)?.action === "implement-spec" ? this.pipeline.frontier(runs.at(-1)!) : [] };
     return { ...detail, conversations: workflowConversations(detail) };
   }
   agentAuthenticated(request: Request, url: URL): boolean {
@@ -165,6 +170,7 @@ export class FactoryService {
       if (this.store.get<Implementation>("implementations", run.implementation_id)?.deletion) throw new FactoryError("assignment_deleting", "This Assignment has a pending permanent Delete", 409);
       if (request.headers.has("origin") && request.headers.get("origin") !== url.origin) throw new FactoryError("invalid_origin", "Use the scoped tracker on its authenticated app origin", 403);
       const action = route[2]!;
+      if (run.conversation_kind === "human_review" && !["contract", "question", "sync-answers", "consume"].includes(action)) throw new FactoryError("discussion_only", "Human Review discussion cannot dispatch implementation, checks or reviews", 409);
       if (action === "contract" && request.method === "GET") return jsonResponse({ tracker_guide: factoryTrackerGuide, pull_requests: this.store.list("pull_requests", run.implementation_id), automatic_review: this.store.get("automatic_review", run.id), automatic_execution: this.store.get("automatic_execution", run.id), execution_plan: this.store.get("execution_plans", run.id), run, workers: this.store.list("workers", run.id), checks: this.store.list("checks", run.id), review_batches: [...this.store.list("review_batches", run.implementation_id), ...this.store.list("automatic_review_batches", run.implementation_id)], messages: this.store.list<FactoryMessage>("messages", run.implementation_id).filter((message) => (run.manifest as { context_message_ids?: string[] }).context_message_ids?.includes(message.id)), question_revision: this.workflow.questionRevision(run.implementation_id, run.id), questions: this.workflow.questions(run.implementation_id, run.id), frontier: run.action === "implement-spec" ? this.pipeline.frontier(run) : [], artifacts: (run.manifest as { artifacts?: FactoryArtifact[] }).artifacts ?? [] });
       if (action.startsWith("ticket/") && request.method === "GET") {
         const ticket = this.workflow.executionTickets(run).find((ticket) => ticket.id === action.slice(7));
@@ -572,6 +578,8 @@ export class FactoryService {
         if (typeof body.machine_id !== "string") throw new FactoryError("invalid_machine", "Select the account execution Machine");
         return jsonResponse(await this.runtime.accountSnapshot(body.machine_id, project.account_bindings?.[body.machine_id] ?? {}));
       }
+      const discussion = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/human-review\/messages$/.exec(url.pathname);
+      if (discussion && request.method === "POST") return jsonResponse(await this.humanReview.discuss(discussion[1]!, await this.body(request), url.origin), 202);
       const reviewRoute = /^\/api\/factory\/implementations\/([a-zA-Z0-9-]+)\/(snapshots|comments)$/.exec(url.pathname);
       if (reviewRoute && request.method === "POST") {
         const body = await this.body(request);

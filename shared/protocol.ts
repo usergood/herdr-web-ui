@@ -1152,6 +1152,9 @@ export const DEFAULT_PORT = 7317;
  * POST /api/factory-host/pane-state ({pane_id}) -> native status/background counts;
  * read-only state for authenticated Machine bridge archive validation.
  * POST /api/factory/implementations/:id/configure (configure) -> Implementation; future defaults only.
+ * POST /api/factory/implementations/:id/human-review/messages (human_review_message) -> FactoryMessage, 202;
+ * repeat-safe explicit discussion, queued on normal capacity; no fixes or merge authority.
+ * FactoryDetail.human_reviews retains the automatic checked-PR handoff and captured snapshot.
  * POST .../chats (chat) -> FactoryChat, 201; POST .../messages (message) -> FactoryMessage, 201.
  * Native messages use source_id/sequence for idempotency; conflicting imports fail 409.
  * POST .../artifacts (artifact) -> FactoryArtifact, 201; size/hash and ownership checked.
@@ -1304,6 +1307,7 @@ export type { ProjectReference, ProjectReferenceLibrary, CodexReferenceContext, 
  */
 export type { AgentModelCatalog, AgentModelSelection, AgentExecutionPreset } from "./agent-models.ts";
 export interface FactoryRequests {
+  human_review_message: { review_id: string; content: string; idempotency_key: string };
   model_catalog: { project_id: string; machine_id: string; provider: import("./factory.ts").FactoryProvider };
   pane_archive: { machine_id: string; pane_id: string; archived: boolean; terminal_id?: string; session_ref?: string | null };
   github_configuration: import("./github-project.ts").ProjectGitHubConfiguration;

@@ -34,6 +34,25 @@ import { forgetTranscriptState } from "./conversation.ts";
  */
 let server: { port: number; stop: () => void };
 
+it("authenticates Human Review discussion, enforces origin/header controls and rejects an unrelated review", async () => {
+  const f = await capacityFixture();
+  try {
+    const id = await f.assignment("Authenticated Human Review");
+    const path = `http://localhost:${f.app.port}/api/factory/implementations/${id}/human-review/messages`;
+    const body = { review_id: crypto.randomUUID(), content: "Discuss this result", idempotency_key: "owned-discussion" };
+    for (const [headers, status] of [
+      [{ "x-herdr-factory": "1" }, 401],
+      [{ authorization: `Bearer ${f.token}` }, 403],
+      [{ authorization: `Bearer ${f.token}`, "x-herdr-factory": "1", origin: "https://foreign.invalid" }, 403],
+      [{ authorization: `Bearer ${f.token}`, "x-herdr-factory": "1" }, 409],
+    ] as const) {
+      const response = await fetch(path, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify(body) });
+      expect(response.status).toBe(status);
+      expect(await response.json()).toMatchObject({ error: { code: expect.any(String), message: expect.any(String) } });
+    }
+  } finally { f.close(); }
+});
+
 it("authenticates permanent Delete, enforces origin/Machine headers and returns a repeat-safe deletion receipt", async () => {
   const f = await capacityFixture();
   try {

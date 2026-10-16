@@ -39,10 +39,16 @@ export async function captureReview(path: string, base: string, mode: ReviewSnap
         const changes = namedChanges(await git(path, ["diff", "--no-ext-diff", "--no-textconv", "--name-status", "-z", "--find-renames", ...group.args, "--"]));
         for (const change of changes) {
           const file = join(path, change.path);
-          const oversized = existsSync(file) && lstatSync(file).size > FILE_LIMIT;
-          const diff = oversized ? "" : await git(path, ["diff", "--no-ext-diff", "--no-textconv", "--find-renames", ...group.args, "--", ...(change.oldPath ? [change.oldPath] : []), change.path]);
-          size += diff.length;
-          files.push({ path: change.path, status: `${group.name}:${change.status}`, diff, binary: /Binary files .* differ|GIT binary patch/.test(diff), oversized });
+          const revisions = mode === "branch" ? [base, head] : ["HEAD"];
+          let oversized = mode === "workspace" && existsSync(file) && lstatSync(file).size > FILE_LIMIT;
+          for (const revision of revisions) {
+            const metadata = await git(path, ["ls-tree", "-l", "-z", revision, "--", ...(change.oldPath ? [change.oldPath] : []), change.path]);
+            if (metadata.split("\0").some(row => Number(/^\d+ \w+ [a-f0-9]+\s+(\d+)\t/.exec(row)?.[1] ?? 0) > FILE_LIMIT)) oversized = true;
+          }
+          let diff = oversized ? "" : await git(path, ["diff", "--no-ext-diff", "--no-textconv", "--find-renames", ...group.args, "--", ...(change.oldPath ? [change.oldPath] : []), change.path]);
+          if (Buffer.byteLength(diff) > FILE_LIMIT) { diff = ""; oversized = true; }
+          size += Buffer.byteLength(diff);
+          files.push({ path: change.path, ...(change.oldPath ? { old_path: change.oldPath } : {}), status: `${group.name}:${change.status}`, diff, binary: /Binary files .* differ|GIT binary patch/.test(diff), oversized });
         }
       }
       if (mode === "workspace") for (const name of (await git(path, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0").filter(Boolean)) {
