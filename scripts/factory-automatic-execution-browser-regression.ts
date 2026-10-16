@@ -39,7 +39,14 @@ try {
       await page.waitForFunction(async prefix => (await fetch(`/api/factory${prefix}`).then(r => r.json())).workers.some((w: { condition: string }) => w.condition === "working"), prefix);
       const worker = (await detail()).workers[0];
       const controls = page.getByRole("region", { name: "Assignment execution", exact: true });
+      f.offline(true);
+      await progress.getByRole("alert").filter({ hasText: "automatic recovery exhausted after six observations" }).waitFor({ timeout: 45_000 });
+      const exhausted = (await detail()).automatic_execution[0];
+      assert.equal(exhausted.attempts, 6);
+      assert.equal((await detail()).workers[0].id, worker.id);
       await controls.getByRole("button", { name: "Pause Assignment", exact: true }).click();
+      await controls.getByText("Pause pending", { exact: true }).waitFor();
+      f.offline(false);
       await controls.getByText("Paused", { exact: true }).waitFor();
       await progress.getByText("Paused", { exact: true }).first().waitFor();
       await controls.getByRole("button", { name: "Resume Assignment", exact: true }).click();
@@ -82,5 +89,5 @@ try {
       assert.deepEqual(errors, []);
     } finally { await context.close(); f.close(); }
   }
-  console.log("PASS automatic execution, named workers, native gate, checks and reload on desktop/mobile at cap one");
+  console.log("PASS automatic execution, exhausted Machine recovery through Pause/Resume, named workers, native gate, checks and reload on desktop/mobile at cap one");
 } finally { await browser.close(); }

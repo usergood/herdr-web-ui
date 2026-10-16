@@ -4,6 +4,7 @@ import { FactoryDispatch } from "./factory-dispatch.ts";
 import { existsSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
+import type { FactoryAutomaticExecution, FactoryExecutionPlan } from "../shared/factory.ts";
 import type { FactoryHostRequests, FactoryAction, FactoryApproval, FactoryArtifact, FactoryMessage, FactoryOutput, FactoryProject, FactoryProvider, FactoryRun, FactorySettings, Implementation, ProjectCheckout } from "../shared/protocol.ts";
 import { FactoryError, git, hash, inspectCheckout } from "./factory-host.ts";
 import { FactoryExecutionHost } from "./factory-execution-host.ts";
@@ -77,6 +78,18 @@ export class FactoryRuntime {
       if (idea.pause?.condition === "pending") throw new FactoryError("pause_pending", "Wait for confirmed shutdown before resuming", 409);
       return this.store.db.transaction(() => {
         for (const run of this.store.list<FactoryRun>("runs", id)) {
+          const progress = this.store.get<FactoryAutomaticExecution>("automatic_execution", run.id);
+          const plan = this.store.get<FactoryExecutionPlan>("execution_plans", run.id);
+          // Only exhausted recoverable observations carry a future retry time.
+          // Genuine validation failures retain their zero deadline and evidence.
+          // A repeated Resume without a confirmed Pause grants no new budget.
+          if (idea.pause?.condition === "paused" && progress?.condition === "blocked" && progress.attempts >= 6 && progress.next_attempt_at > 0 && plan
+            && progress.plan_hash === plan.hash && run.specification_id === plan.specification_id
+            && this.workflow.specification(id)?.id === run.specification_id && this.workflow.approved(id, "specification", run.specification_id)
+            && this.workflow.graphHash(id) === plan.hash && !this.workflow.questions(id, run.id).some(question => question.answer === null)) {
+            this.store.put("automatic_execution", { ...progress, condition: "waiting", reason: "Owner Resume renewed bounded recovery of retained unfinished work", attempts: 0, next_attempt_at: 0, updated_at: new Date().toISOString() }, id);
+            this.store.event(id, "automatic_execution_recovery_resumed", { run_id: run.id, pause_id: idea.pause.id, reason: progress.reason, attempts: progress.attempts });
+          }
           const workers = this.store.list<import("../shared/factory.ts").FactoryWorker>("workers", run.id);
           for (const target of [...workers, run]) {
             if (target.suspension?.condition !== "stopped" || !activeConditions.has(target.condition) || !activeConditions.has(target.suspension.previous_condition)) continue;

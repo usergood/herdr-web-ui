@@ -123,7 +123,7 @@ describe("Automatic Ticket execution through authenticated HTTP", () => {
       const holderRun = await f.api(`/implementations/${holder}/runs`, { action: "work", idempotency_key: "holder" }).then(r => r.json());
       held = f.api(`/runs/${holderRun.id}/checks`, {});
       await gate.started;
-      const { detail, run } = await acceptedPlan(f, 3);
+      const { id, detail, run } = await acceptedPlan(f, 3);
       f.runs.get(run.id)!.condition = "ready";
       const started = await until(detail, d => d.workers.length === 1 && d.workers[0].condition === "working");
       f.workers.get(started.workers[0].id)!.condition = "ready";
@@ -138,6 +138,12 @@ describe("Automatic Ticket execution through authenticated HTTP", () => {
       const retained = await detail();
       expect(retained.checks).toHaveLength(1);
       expect(retained.automatic_execution[0].condition).toBe("blocked");
+      await f.api(`/implementations/${id}/pause`, {});
+      await f.api(`/implementations/${id}/resume`, {});
+      const resumed = await until(detail, d => !d.runs[0].suspension && !d.workers[0].suspension);
+      expect(resumed.automatic_execution[0]).toMatchObject({ condition: "blocked", attempts: 1, next_attempt_at: 0 });
+      expect(resumed.checks).toEqual(retained.checks);
+      expect(f.executedChecks).toHaveLength(2); // The separate holder and the genuine failing worker check.
       expect(f.workerLaunches).toHaveLength(1);
     } finally { gate.release(); await held; f.close(); }
   });
@@ -175,21 +181,42 @@ describe("Automatic Ticket execution through authenticated HTTP", () => {
     } finally { gate.release(); f.close(); }
   });
 
-  it("retains an uncertain writer and exposes bounded recovery exhaustion after six observations", async () => {
+  it("renews exhausted Machine recovery only after confirmed Pause and explicit Resume while preserving integrated Tickets", async () => {
     const f = await capacityFixture();
     try {
-      const { detail, run } = await acceptedPlan(f);
+      const { id, detail, run } = await acceptedPlan(f, 3);
       f.runs.get(run.id)!.condition = "ready";
-      const started = await until(detail, d => d.workers.length === 1 && d.workers[0].condition === "working");
+      const first = await until(detail, d => d.workers.length === 1 && d.workers[0].condition === "working");
+      f.workers.get(first.workers[0].id)!.condition = "ready";
+      const started = await until(detail, d => d.workers.length === 2 && d.workers[1].condition === "working");
+      expect(started.workers[0].condition).toBe("completed");
       f.offline(true);
       const blocked = await until(detail, d => d.automatic_execution?.[0]?.condition === "blocked", 40000);
       expect(blocked.automatic_execution[0]).toMatchObject({ attempts: 6, reason: expect.stringContaining("exhausted after six observations") });
-      expect(blocked.workers[0].id).toBe(started.workers[0].id);
-      expect(blocked.workers[0].condition).not.toBe("completed");
-      expect(f.workerLaunches).toHaveLength(1);
-      expect((await f.api("").then(r => r.json())).capacity.contexts).toEqual(expect.arrayContaining([expect.objectContaining({ worker_id: started.workers[0].id, uncertain: true })]));
+      expect(blocked.workers[1].id).toBe(started.workers[1].id);
+      expect(blocked.workers[1].condition).not.toBe("completed");
+      expect(f.workerLaunches).toHaveLength(2);
+      expect((await f.api("").then(r => r.json())).capacity.contexts).toEqual(expect.arrayContaining([expect.objectContaining({ worker_id: started.workers[1].id, uncertain: true })]));
+      // A repeat Resume without a confirmed Pause grants no fresh recovery budget.
+      expect((await f.api(`/implementations/${id}/resume`, {})).status).toBe(200);
+      expect((await detail()).automatic_execution[0]).toMatchObject({ condition: "blocked", attempts: 6 });
+      expect((await f.api(`/implementations/${id}/pause`, {}).then(r => r.json())).pause.condition).toBe("pending");
+      f.offline(false);
+      await until(detail, d => d.implementation.pause?.condition === "paused");
+      f.restart();
+      expect((await f.api(`/implementations/${id}/resume`, {})).status).toBe(200);
+      await until(detail, d => !d.runs[0].suspension && !d.workers[1].suspension);
+      f.runs.get(run.id)!.condition = "ready";
+      f.workers.get(started.workers[1].id)!.condition = "ready";
+      const done = await until(detail, d => d.automatic_execution?.[0]?.condition === "checked");
+      expect(done.workers.map((w: any) => w.id)).toEqual(started.workers.map((w: any) => w.id));
+      expect(done.tickets.map((t: any) => t.status)).toEqual(["done", "done"]);
+      expect(done.checks[0].id).toBe(started.checks[0].id);
+      expect(done.events.filter((e: any) => e.kind === "ticket_integrated")).toHaveLength(2);
+      expect(done.approvals.map((a: any) => a.kind)).toEqual(["specification"]);
+      expect(f.workerLaunches).toHaveLength(2);
     } finally { f.close(); }
-  }, 45000);
+  }, 60000);
 
   it("keeps completed Ticket progress while the Assignment is paused and automatically continues only unfinished work after Resume", async () => {
     const f = await capacityFixture();
