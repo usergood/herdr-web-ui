@@ -24,6 +24,7 @@ export function factoryCapacity(store: Pick<FactoryStore, "list">, settings?: Fa
     const workers = store.list<FactoryWorker>("workers").filter(consumesCapacity);
     const checks = store.list<FactoryCheck>("checks").filter(check => ["working", "interrupted"].includes(check.condition));
     const implementing = implementingAssignments(store, runs.filter(run => run.action === "implement-spec"));
+    for (const run of active) if (run.action === "work") implementing.add(run.implementation_id);
     const implementations = new Set([...active.map(run => run.implementation_id), ...implementing]);
     for (const child of [...workers, ...checks]) { const parent = parents.get(child.run_id); if (parent) { implementations.add(parent.implementation_id); if (["work", "implement-spec"].includes(parent.action)) implementing.add(parent.implementation_id); } }
     return { implementations, implementing, agents: active.length + workers.length, builds: checks.length };

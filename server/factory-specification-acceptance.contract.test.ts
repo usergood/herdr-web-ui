@@ -150,3 +150,19 @@ describe("Specification acceptance through authenticated HTTP", () => {
   });
 
 });
+
+
+it("explicit owner acceptance retains older scoped approvals and records automatic authority separately", async () => {
+  const f = await capacityFixture();
+  try {
+    const id = await f.assignment("Existing scoped decision"); const prefix = `/implementations/${id}`;
+    const specification = await f.api(prefix + "/specifications", { content: "Present the existing bounded deliverable" }).then(response => response.json());
+    const legacy = await f.api(prefix + "/approvals", { kind: "specification", revision: specification.id, scope: "Previously reviewed bounded plan" }).then(response => response.json());
+    const approval = await f.api(prefix + "/specification-acceptance", { specification_id: specification.id, hash: specification.hash, source: "button" }).then(response => response.json());
+    expect(approval).toMatchObject({ automatic_execution: true, provenance: { kind: "button", specification_hash: specification.hash } });
+    expect(approval.id).not.toBe(legacy.id);
+    const detail = await f.api(prefix).then(response => response.json());
+    expect(detail.approvals).toContainEqual(legacy);
+    expect(detail.automatic_planning).toContainEqual(expect.objectContaining({ approval_id: approval.id, specification_id: specification.id }));
+  } finally { f.close(); }
+});

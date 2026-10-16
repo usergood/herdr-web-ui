@@ -136,6 +136,11 @@ export class ProjectQueue {
         this.store.put<RetryReceipt>("queue_retries", { id: failed.id, implementation_id: id, consumed_run_id: null }, id);
         this.store.event(id, "implementation_retry_requested", { run_id: failed.id });
       }
+      // A previously refused Start is not renewed by reading the queue. This
+      // explicit Retry permits the next owner Start to create a fresh intent.
+      for (const wait of this.store.list<import("../shared/factory.ts").FactoryCapacityWait>("capacity_waits", id)) {
+        if (wait.condition === "blocked" && !wait.run_id && ["work", "implement-spec"].includes(wait.action)) this.store.remove("capacity_waits", wait.id);
+      }
       return this.overview(idea.project_id);
     }).immediate();
   }

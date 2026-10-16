@@ -59,6 +59,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
     }
     if (path === "/review" && reviewUnavailable) return Response.json({ error: { code: "machine_offline", message: "Owned unavailable review capture" } }, { status: 503 });
     if (path === "/review") return Response.json({ repository: `owned-repo:${[...runs.values()].find(run => run.worktree === body.path)?.checkout ?? body.path}`, head: reviewHead ?? tips.get([...runs.values()].find(run => run.worktree === body.path)?.id ?? "") ?? "1".repeat(40), files: reviewFiles });
+    if (path === "/project-discovery") return Response.json({ protocol: 1, path: body.path, repository: `owned-repo:${body.path}`, head: "1".repeat(40), name: "Owned capacity fixture", checks: [], guidance: [], providers: [], permission_modes: {}, github: { repository: null, account_hint: null, directory_scoped: false }, warnings: [] });
     if (path === "/inspect") return Response.json({ path: body.path, repository: `owned-repo:${[...runs.values()].find(run => run.worktree === body.path)?.checkout ?? body.path}`, head: tips.get([...runs.values()].find(run => run.worktree === body.path)?.id ?? "") ?? "1".repeat(40), branch: "main", instructions: [] });
     if (path === "/launch") {
       launches.push(body.run.id);

@@ -222,14 +222,14 @@ export class FactoryWorkflow {
             message = { ...this.store.record(), implementation_id: id, chat_id: chat.id, role: "owner", content: body.content.trim(), source_id: sourceId, sequence: 0 };
             this.store.put("messages", message, id); this.store.event(id, "message_retained", { message_id: message.id, chat_id: chat.id });
           }
-          let approval = this.store.list<FactoryApproval>("approvals", id).find(a => a.kind === "specification" && a.revision === specification.id) ?? null;
+          let approval = this.store.list<FactoryApproval>("approvals", id).find(a => a.kind === "specification" && a.revision === specification.id && a.automatic_execution) ?? null;
           if (!approval && isSpecificationAcceptance(message.content)) {
             approval = { ...this.store.record(), implementation_id: id, kind: "specification", automatic_execution: true, revision: specification.id, scope: `Specification ${specification.id}, SHA-256 ${specification.hash}`, provenance: { kind: "owner_chat", specification_hash: specification.hash, message_id: message.id } };
             this.store.put("approvals", approval, id); this.authorizePlanning(approval); this.store.event(id, "owner_approved", approval);
           }
           return { message, approval };
         }
-        const previous = this.store.list<FactoryApproval>("approvals", id).find(a => a.kind === "specification" && a.revision === specification.id);
+        const previous = this.store.list<FactoryApproval>("approvals", id).find(a => a.kind === "specification" && a.revision === specification.id && a.automatic_execution);
         if (previous) return previous;
         const approval: FactoryApproval = { ...this.store.record(), implementation_id: id, kind: "specification", automatic_execution: true, revision: specification.id, scope: `Specification ${specification.id}, SHA-256 ${specification.hash}`, provenance: { kind: "button", specification_hash: specification.hash } };
         this.store.put("approvals", approval, id); this.authorizePlanning(approval); this.store.event(id, "owner_approved", approval);

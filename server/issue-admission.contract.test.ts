@@ -1614,3 +1614,67 @@ test.each(["app_owner", "github_label"])("a same-second historical revocation be
     expect(detail.questions).toEqual([]);
   } finally { fixture.close(); }
 }, 20_000);
+
+
+test("owner acceptance of a prepared issue starts automatic planning under its exact current issue admission", async () => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { path, source, start } = await prepared(fixture);
+    const before = await fixture.json(path);
+    const specification = before.specifications.at(-1);
+    const approval = await fixture.json(path + "/specification-acceptance", { specification_id: specification.id, hash: specification.hash, source: "button" });
+    expect(approval).toMatchObject({ automatic_execution: true, revision: specification.id, provenance: { kind: "button", specification_hash: specification.hash } });
+    const deadline = Date.now() + 8000;
+    let detail = await fixture.json(path);
+    while (!detail.runs.length && !detail.automatic_planning.some((request: any) => request.condition === "blocked")) {
+      if (Date.now() > deadline) throw new Error("Prepared issue automatic planning did not settle");
+      await new Promise(resolve => setTimeout(resolve, 20));
+      detail = await fixture.json(path);
+    }
+    expect(detail.automatic_planning[0].condition).toBe("started");
+    expect(detail.runs).toHaveLength(1);
+    expect(detail.runs[0]).toMatchObject({ action: "implement-spec", condition: "working", specification_id: specification.id, manifest: { planning_authority: { id: approval.id }, issue_admission: { source: { id: source.id, revision: source.revision }, planning: { specification_id: specification.id, graph_hash: start.issue_scope.graph_hash } } } });
+    expect((await fixture.json(path + "/specification-acceptance", { specification_id: specification.id, hash: specification.hash, source: "button" })).id).toBe(approval.id);
+    fixture.restart();
+    expect((await fixture.json(path)).runs).toHaveLength(1);
+    expect(fixture.launches).toHaveLength(1);
+  } finally { fixture.close(); }
+}, 20_000);
+
+
+for (const drift of ["source", "graph", "queue_pause"] as const) test(`accepted prepared issue does not bypass ${drift} changes during automatic admission`, async () => {
+  const fixture = githubQueueFixture(true);
+  let gate: ReturnType<typeof fixture.holdCapabilities> | undefined;
+  try {
+    const { path, route } = await prepared(fixture);
+    const before = await fixture.json(path);
+    const specification = before.specifications.at(-1);
+    gate = fixture.holdCapabilities();
+    await fixture.json(path + "/specification-acceptance", { specification_id: specification.id, hash: specification.hash, source: "button" });
+    await Promise.race([gate.waiting, new Promise((_, reject) => setTimeout(() => reject(new Error("Automatic admission did not reach the owned Machine")), 8000))]);
+    if (drift === "source") {
+      fixture.issue.body = fixture.issue.body.replace("Show hello.", "Show a different unapproved greeting.");
+      fixture.save();
+      await fixture.json(route + "/sync", {});
+    } else if (drift === "graph") {
+      await fixture.json(path + "/tickets", { specification_id: specification.id, tickets: [{ key: "changed", title: "Changed scope", acceptance: "A different greeting", dependencies: [] }] });
+    } else {
+      const queue = await fixture.json(route + "/queue");
+      await fixture.json(route + "/queue", { expected_revision: queue.policy.revision, automatic_implementation: false, paused: true, max_implementations: queue.policy.max_implementations });
+    }
+    gate.release();
+    const deadline = Date.now() + 8000;
+    let detail = await fixture.json(path);
+    while (!detail.automatic_planning.some((request: any) => request.condition === "blocked")) {
+      if (Date.now() > deadline) throw new Error("Changed prepared admission did not retain its block");
+      await new Promise(resolve => setTimeout(resolve, 20));
+      detail = await fixture.json(path);
+    }
+    expect(detail.runs).toHaveLength(0);
+    expect(fixture.launches).toHaveLength(0);
+    expect(detail.approvals.filter((approval: any) => approval.automatic_execution)).toHaveLength(1);
+    for (const question of before.questions) expect(detail.questions).toContainEqual(question);
+    expect(detail.questions.every((question: any) => question.answer === null)).toBe(true);
+    expect(detail.automatic_planning[0].reason).toBeString();
+  } finally { gate?.release(); fixture.close(); }
+}, 20_000);

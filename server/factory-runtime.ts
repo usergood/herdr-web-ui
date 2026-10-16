@@ -95,8 +95,29 @@ export class FactoryRuntime {
       }
     })();
   }
+  /** An exact owner acceptance can select its already prepared issue scope. The
+   * ordinary issue admission validator still owns readiness, policy and dependencies. */
+  private automaticIssueStart(id: string, body: Record<string, unknown>): Record<string, unknown> {
+    if (body.action !== "implement-spec" || body.issue_scope !== undefined) return body;
+    const request = this.workflow.planningRequest(id, body.idempotency_key);
+    if (!request || !this.store.list<import("../shared/issue-planning.ts").IssuePlanning>("github_plan_versions", id).length) return body;
+    const specification = this.workflow.specification(id);
+    const approval = this.store.get<FactoryApproval>("approvals", request.approval_id);
+    if (!specification || request.specification_id !== specification.id || request.scope_hash !== this.workflow.planningScope(id) || approval?.implementation_id !== id || approval.kind !== "specification" || !approval.automatic_execution || approval.revision !== specification.id || approval.provenance?.specification_hash !== specification.hash) throw new FactoryError("scope_changed", "The accepted Specification execution scope changed", 409);
+    const previous = this.store.list<FactoryRun>("runs", id).find(run => run.idempotency_key === body.idempotency_key);
+    const frozen = previous?.manifest as { planning_authority?: FactoryApproval; issue_admission?: import("../shared/issue-admission.ts").IssueAdmission } | undefined;
+    if (frozen?.planning_authority?.id === approval.id && frozen.issue_admission) return { ...body, issue_scope: { source_id: frozen.issue_admission.source.id, source_revision: frozen.issue_admission.source.revision, graph_hash: frozen.issue_admission.planning.graph_hash } };
+    const plans = this.store.list<import("../shared/issue-planning.ts").IssuePlanning>("github_plans", id).filter(plan => {
+      const source = this.store.get<import("../shared/github-project.ts").ProjectGitHubSource>("github_sources", plan.source_id);
+      return plan.condition === "prepared" && plan.specification_id === specification.id && plan.graph_hash === this.workflow.graphHash(id) && source?.kind === "issue" && source.implementation_id === id && source.revision === plan.source_revision;
+    });
+    if (plans.length !== 1) throw new FactoryError("issue_changed", "Refresh the prepared issue scope before automatic planning", 409);
+    const plan = plans[0]!;
+    return { ...body, issue_scope: { source_id: plan.source_id, source_revision: plan.source_revision, graph_hash: plan.graph_hash } };
+  }
   async requestStart(id: string, body: Record<string, unknown>, origin: string): Promise<FactoryRun | import("../shared/factory.ts").FactoryCapacityWait> {
     this.assertExecuting(id);
+    body = this.automaticIssueStart(id, body);
     if (!actions.includes(body.action as FactoryAction) || typeof body.idempotency_key !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.idempotency_key)) throw new FactoryError("invalid_start", "Select an explicit action with an idempotency key");
     const idea = this.store.get<Implementation>("implementations", id);
     if (!idea) throw new FactoryError("not_found", "Assignment not found", 404);
@@ -105,6 +126,7 @@ export class FactoryRuntime {
     if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Execution is disabled on a restored copy", 409);
     const project = idea.project_id ? this.store.get<FactoryProject>("projects", idea.project_id) : null;
     const action = body.action as FactoryAction;
+    if (["work", "implement-spec"].includes(action)) { await this.queue.flush(); this.projectAdmission(id); }
     const planning = ["grill-me", "grill-with-docs"].includes(action) || action === "to-spec" && !this.workflow.approved(id, "specification", this.workflow.specification(id)?.id ?? "");
     return this.queue.start({ ...this.store.record(), id: `${id}:${body.idempotency_key}`, implementation_id: id, assignment_title: idea.title, action, machine_id: idea.machine_id ?? project?.machine_id ?? "local", provider: idea.provider ?? project?.provider ?? this.settings().provider, idempotency_key: body.idempotency_key, reason: "Waiting for agent capacity", purpose: planning ? "planning" : "execution", condition: "queued", run_id: null }, body, origin);
   }
@@ -398,9 +420,9 @@ export class FactoryRuntime {
   async operation<T>(run: FactoryRun, action: string, body: Record<string, unknown> = {}): Promise<T> {
     if (!["delete", "pause", "resume-context", "resume-status", "transcript", "head", "check-reconcile", "reconcile-worker", "stop-worker"].includes(action)) this.assertExecuting(run.implementation_id);
     if (this.stopped) throw new FactoryError("stopping", "The bridge is stopping", 409);
-    if (this.store.get<FactoryRun>("runs", run.id)?.issue_pause && !["head", "transcript", "review-evidence", "reconcile-worker", "stop-worker", "check-reconcile", "cleanup"].includes(action)) throw new FactoryError("issue_pause_required", "Controlled pause requested; reconcile retained work before continuing", 409);
+    if (this.store.get<FactoryRun>("runs", run.id)?.issue_pause && !["delete", "pause", "resume-status", "head", "transcript", "review-evidence", "reconcile-worker", "stop-worker", "check-reconcile", "cleanup"].includes(action)) throw new FactoryError("issue_pause_required", "Controlled pause requested; reconcile retained work before continuing", 409);
     const current = this.store.get<FactoryRun>("runs", run.id);
-    if (current?.scope_pause && !["transcript", "head", "review-evidence", "stop-worker", "reconcile-worker", "check-reconcile"].includes(action)) throw new FactoryError("issue_scope_paused", current.scope_pause.reason, 409);
+    if (current?.scope_pause && !["delete", "pause", "resume-status", "transcript", "head", "review-evidence", "stop-worker", "reconcile-worker", "check-reconcile"].includes(action)) throw new FactoryError("issue_scope_paused", current.scope_pause.reason, 409);
     if (existsSync(join(this.store.root, "recovery-copy.json")) && !["transcript", "head", "review-evidence"].includes(action)) throw new FactoryError("recovery_copy", "Native control is disabled on a restored copy", 409);
     const result = (run.machine_id === "local" ? await this.host.operation(run.id, action, body) : await this.remote(run.machine_id, `/runs/${run.id}/operations/${action}`, body)) as T;
     if (this.stopped) throw new FactoryError("stopping", "The bridge stopped during the operation; ownership is retained", 409);
@@ -445,6 +467,7 @@ export class FactoryRuntime {
     // Queue callbacks bypass this flush. Registering single-flight ownership
     // afterwards prevents a direct retry from awaiting its own queued admission.
     if (!admitting) await this.queue.flush();
+    body = this.automaticIssueStart(id, body);
     const key = JSON.stringify([id, body.idempotency_key]);
     const scope = hash(JSON.stringify([body.action, issueScopeIdentity(body.issue_scope), body.retry_of ?? null]));
     const existing = this.starts.get(key);
