@@ -96,7 +96,7 @@ describe("Human Review through authenticated HTTP", () => {
   it("replaces a confirmed stopped native assistant while retaining the same Human Review and earlier history", async () => {
     const f = await capacityFixture({ advancingHeads: true });
     try {
-      const { id, prefix, detail, run } = await published(f);
+      const { id, prefix, detail } = await published(f);
       const ready = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
       const review = ready.human_reviews[0];
       await f.api(`${prefix}/human-review/messages`, { review_id: review.id, content: "First context", idempotency_key: "first-context" });
