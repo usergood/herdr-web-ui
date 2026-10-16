@@ -504,13 +504,14 @@ export class ProjectGitHub {
       }
       if (!validProof || proof.title !== source.current.title || proof.body !== source.current.body || proof.state.toLowerCase() !== source.current.state || Date.parse(proof.updatedAt) !== Date.parse(source.current.source_updated_at)) throw new FactoryError("readiness_incomplete", "Issue edit evidence is incomplete or changed; sync again");
       const event = evidence.label_event;
-      evidence.revision = hash(JSON.stringify({ source: source.revision, policy: readiness.revision, event, edited: proof.lastEditedAt, scope_events: scopeEvents.sort(), observation: source.history?.length ?? 0 }));
+      const revocation = this.store.get<{ revision: string; observed_at: string }>("github_readiness_scope_revocations", source.id);
+      evidence.revision = hash(JSON.stringify({ source: source.revision, policy: readiness.revision, event, edited: proof.lastEditedAt, scope_events: scopeEvents.sort(), observation: source.history?.length ?? 0, ...(revocation ? { dependency_revocation: revocation.revision } : {}) }));
       const reviewedAfterEdit = !!event && Date.parse(event.created_at) > scopeChangedAt && (proof.lastEditedAt === null ? Date.parse(event.created_at) >= Date.parse(proof.createdAt) : Date.parse(event.created_at) > Date.parse(proof.lastEditedAt));
       // GitHub's issue timestamps/history here do not prove native relationship
       // history. Require renewal after we first observed this semantic scope,
       // including an empty dependency list. Label/metadata-only observations must
       // not move that boundary or invalidate a renewal already retained.
-      const labelAttestsScope = !!event && labelAttestsObservedScope(source, event);
+      const labelAttestsScope = !!event && labelAttestsObservedScope(source, event) && (!revocation || Date.parse(event.created_at) > Date.parse(revocation.observed_at));
       if (labelAttestsScope && reviewedAfterEdit && event?.event === "labeled" && event.login?.toLowerCase() === readiness.owner.login.toLowerCase() && event.account_id && event.account_id === readiness.owner.account_id && source.current.labels.some(label => label.toLowerCase() === readiness.triage_labels["ready-for-agent"].toLowerCase())) {
         if (!source.readiness_approvals?.some(approval => approval.evidence_revision === evidence.revision && approval.source_revision === source.revision && approval.policy_revision === readiness.revision && approval.event_id === event.id)) {
           source.readiness_approvals = [...source.readiness_approvals ?? [], { id: randomUUID(), evidence_revision: evidence.revision, source_revision: source.revision, policy_revision: readiness.revision, approved_at: event.created_at, actor: readiness.owner, provenance: "github_label", event_id: event.id }];
@@ -549,6 +550,7 @@ export class ProjectGitHub {
         // An added relationship proves drift on its own; absence needs every page.
         if (source?.current?.native_dependencies && !source.current.native_dependencies.some(edge => edge.external_id === item.node_id && edge.repository === repository && edge.number === item.number && edge.url === item.html_url)) {
           this.current(policy);
+          this.revokeDependencyReadiness(policy, source);
           invalidateIssueDelivery(this.store, source);
           this.reconcileAdmissions(policy.id, { sourceId: source.id, reason: "scope_changed" });
         }
@@ -558,6 +560,7 @@ export class ProjectGitHub {
         const native = all.map(({ external_id, repository, number, url }) => ({ external_id, repository, number, url }));
         if (source?.current?.native_dependencies && JSON.stringify(native) !== JSON.stringify(source.current.native_dependencies)) {
           this.current(policy);
+          this.revokeDependencyReadiness(policy, source);
           invalidateIssueDelivery(this.store, source);
           this.reconcileAdmissions(policy.id, { sourceId: source.id, reason: "scope_changed" });
         }
@@ -565,6 +568,12 @@ export class ProjectGitHub {
       }
     }
     throw new FactoryError("github_dependencies_incomplete", "Native issue dependencies exceed the complete snapshot budget; inspect GitHub", 409);
+  }
+  /** Keep positive drift even when pagination, the readiness fence or later sync fails. */
+  private revokeDependencyReadiness(policy: ProjectGitHubPolicy, source: ProjectGitHubSource): void {
+    // Independent of imported history and delivery links: reverting the relationships
+    // must not revive an earlier app approval or the same trusted label event.
+    this.store.put("github_readiness_scope_revocations", { id: source.id, revision: randomUUID(), observed_at: new Date().toISOString() }, policy.id);
   }
   private import(id: string, externalId: string, number: number, revision: string, title: string, description: string, url: string, state: string, kind: "issue" | "fix", observed?: ProjectGitHubIssueRevision): ProjectGitHubSource {
     return this.store.db.transaction(() => {

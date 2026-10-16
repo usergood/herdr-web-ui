@@ -122,7 +122,11 @@ export async function verifyIssueDelivery(store: FactoryStore, edge: GitHubDepen
     const blocked = { ...edge, blocker: "release_unverified" as const, delivery: delivered };
     if (!link.release_tag) return blocked;
     const release = await api(`repos/${edge.repository}/releases/tags/${encodeURIComponent(link.release_tag)}`);
-    if (!isJsonObject(release) || release.tag_name !== link.release_tag || release.html_url !== `https://github.com/${edge.repository}/releases/tag/${link.release_tag}` || release.draft !== false || typeof release.published_at !== "string" || !Number.isFinite(Date.parse(release.published_at))) return blocked;
+    if (!isJsonObject(release) || release.tag_name !== link.release_tag || release.html_url !== `https://github.com/${edge.repository}/releases/tag/${link.release_tag}` || typeof release.draft !== "boolean" || release.published_at !== null && (typeof release.published_at !== "string" || !Number.isFinite(Date.parse(release.published_at)))) return blocked;
+    // GitHub drafts have nullable publication fields. A validated draft is a
+    // positive withdrawal, unlike an unavailable or malformed release response.
+    if (release.draft) return { ...blocked, contradicted: "release" };
+    if (release.published_at === null) return blocked;
     const tagRef = await api(`repos/${edge.repository}/git/ref/tags/${encodeURIComponent(link.release_tag)}`);
     if (!isJsonObject(tagRef) || tagRef.ref !== `refs/tags/${link.release_tag}` || !isJsonObject(tagRef.object)) return blocked;
     let object = tagRef.object;
