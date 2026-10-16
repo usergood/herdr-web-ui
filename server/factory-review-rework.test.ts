@@ -118,7 +118,14 @@ test("a repair batch from another Run or a stale candidate never allocates or qu
     expect((await f.request(prefix)).body.capacity_waiting).toEqual(other.capacity_waiting);
     const before = (await f.request(f.prefix)).body;
     f.commit(f.run.worktree!, "An unrelated later candidate\n");
-    expect(await f.request(f.workerRoute, { role: "implementer", ticket_id: f.ticket.id, review_batch_id: batch.id, idempotency_key: "stale-repair" })).toMatchObject({ status: 409, body: { error: { code: "rework_batch_unavailable" } } });
+    const stale = await f.request(f.workerRoute, { role: "implementer", ticket_id: f.ticket.id, review_batch_id: batch.id, idempotency_key: "stale-repair" });
+    // Native head validation can settle in the background drain before this HTTP
+    // request observes it. Both representations retain the same permanent refusal.
+    if (stale.body.error) expect(stale).toMatchObject({ status: 409, body: { error: { code: "rework_batch_unavailable" } } });
+    else {
+      expect(stale).toMatchObject({ status: 200, body: { id: `${f.run.id}:stale-repair`, run_id: f.run.id, idempotency_key: "stale-repair", condition: "blocked" } });
+      expect(stale.body.reason).toContain("Use the current delivered batch without a prior repair writer");
+    }
     const after = (await f.request(f.prefix)).body;
     expect(after.workers).toEqual(before.workers);
     expect(after.capacity_waiting.every((wait: any) => wait.condition === "blocked")).toBe(true);
