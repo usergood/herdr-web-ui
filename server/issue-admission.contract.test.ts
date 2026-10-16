@@ -1,12 +1,20 @@
 import { expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { join } from "node:path";
 import { githubQueueFixture } from "../scripts/fixtures/github-queue.ts";
 import { githubReviewFixture } from "../scripts/fixtures/github-review.ts";
 
-async function prepared(fixture: ReturnType<typeof githubQueueFixture>) {
+async function prepared(fixture: ReturnType<typeof githubQueueFixture>, githubLabel = false) {
   const setup = await fixture.setup();
   let view = await fixture.json(setup.route + "/sync", {});
-  const source = view.sources[0];
-  await fixture.json(setup.route + "/issues/1/approve", { source_revision: source.revision, policy_revision: setup.readiness.revision });
+  let source = view.sources[0];
+  if (githubLabel) {
+    const at = new Date(Math.ceil(Date.now() / 1000) * 1000 + 1000).toISOString();
+    fixture.save([fixture.issue], false, {}, false, [fixture.issue], { events: [{ id: 200, event: "labeled", label: { name: "ready-for-agent" }, actor: { login: "fictional-owner", id: 1042 }, created_at: at }] });
+    source = (await fixture.json(setup.route + "/sync", {})).sources[0];
+  } else {
+    await fixture.json(setup.route + "/issues/1/approve", { source_revision: source.revision, policy_revision: setup.readiness.revision });
+  }
   await fixture.json(setup.route + "/issues/1/prepare", { source_revision: source.revision });
   view = await fixture.json(setup.route + "/sync", {});
   const current = view.sources[0];
@@ -752,5 +760,170 @@ test("completed planning Runs allow approved issue preparation and one guarded i
     expect((await fixture.post(path + "/runs", start)).status).toBe(202);
     expect((await fixture.post(path + "/runs", { ...start, idempotency_key: "no-duplicate-after-planning" })).status).toBe(409);
     expect((await fixture.json(path)).runs.map((run: any) => run.action)).toEqual(["to-spec", "implement-spec"]);
+  } finally { fixture.close(); }
+}, 20_000);
+
+
+test.each(["fresh_issue", "dependencies", "graphql", "malformed_history"])("observed untrusted relabeling survives later %s failure", async failure => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { path, start, route } = await prepared(fixture);
+    const run = await fixture.json(path + "/runs", start);
+    const worker = await fixture.json(`/runs/${run.id}/workers`, { role: "implementer", ticket_id: run.manifest.tickets[0].id, idempotency_key: "readiness-history-worker" });
+    const at = new Date(Date.now() + 1000).toISOString();
+    const events = [
+      { id: 10, event: "unlabeled", label: { name: "ready-for-agent" }, actor: { login: "fictional-reviewer", id: 9999 }, created_at: at },
+      { id: 11, event: "labeled", label: { name: "ready-for-agent" }, actor: { login: "fictional-reviewer", id: 9999 }, created_at: at },
+    ];
+    if (failure === "malformed_history") events.push({ invalid: true } as never);
+    const fresh = failure === "fresh_issue" ? { ...fixture.issue, updated_at: "invalid" } : fixture.issue;
+    fixture.save([fixture.issue], false, {}, false, [fresh], { events, ...(failure === "dependencies" ? { dependencies: { "1": null } } : { proof: null }) });
+    await fixture.json(route + "/sync", {});
+    const detail = await fixture.json(path);
+    expect(detail.runs[0].issue_pause?.reason).toBe("readiness_revoked");
+    expect(detail.github_sources[0].readiness_evidence.complete).toBe(false);
+    expect(detail.runs[0].manifest).toEqual(run.manifest);
+    expect(detail.workers).toEqual([worker]);
+    fixture.save([fixture.issue], false, {}, false, [fresh], { events, ...(failure === "dependencies" ? { dependencies: { "1": null } } : { proof: null }) });
+    await fixture.json(route + "/sync", {}); fixture.restart();
+    const restored = await fixture.json(path);
+    expect(restored.runs[0].issue_pause?.reason).toBe("readiness_revoked");
+    expect(restored.workers).toEqual([worker]);
+    expect(restored.questions.filter((question: any) => question.run_id === run.id && question.answer === null)).toHaveLength(1);
+  } finally { fixture.close(); }
+}, 20_000);
+
+
+test("upgrade rejects an unproven cached GitHub label approval while preserving explicit owner approval", async () => {
+  const fixture = githubQueueFixture(true);
+  try {
+    fixture.save([fixture.issue], false, {}, true);
+    const { route, readiness } = await fixture.setup();
+    const source = (await fixture.json(route + "/sync", {})).sources[0];
+    await fixture.json(route + "/issues/1/approve", { source_revision: source.revision, policy_revision: readiness.revision });
+    const approved = (await fixture.json(route)).sources[0];
+    const cached = { ...approved, readiness_approvals: [{ ...approved.readiness.approval, provenance: "github_label", approved_at: fixture.issue.updated_at, event_id: "1" }] };
+    // Historical input only: seed the pre-upgrade receipt while stopped. All
+    // observations and assertions use the public HTTP surface.
+    const seed = (value: unknown) => fixture.restart(() => {
+      const db = new Database(join(fixture.root, "factory", "records.sqlite"));
+      try { db.query("UPDATE records SET data=? WHERE kind='github_sources' AND id=?").run(JSON.stringify(value), source.id); }
+      finally { db.close(); }
+    });
+    seed(cached);
+    expect((await fixture.json(route)).sources[0].readiness).toMatchObject({ eligible: false, approval: null, blockers: ["stale"] });
+    expect((await fixture.json(route + "/sync", {})).sources[0].readiness.approval).toBeNull();
+    expect((await fixture.json(`/implementations/${source.implementation_id}`)).runs).toEqual([]);
+    seed(approved);
+    expect((await fixture.json(route)).sources[0].readiness).toMatchObject({ eligible: true, approval: { provenance: "app_owner", id: approved.readiness.approval.id } });
+    expect((await fixture.json(route + "/sync", {})).sources[0].readiness.approval.id).toBe(approved.readiness.approval.id);
+  } finally { fixture.close(); }
+}, 20_000);
+
+
+test("a readiness removal is durable before the next history page fails", async () => {
+  const fixture = githubQueueFixture(true); let release = () => {};
+  try {
+    const { path, start, route } = await prepared(fixture);
+    const run = await fixture.json(path + "/runs", start);
+    const at = new Date(Date.now() + 1000).toISOString();
+    const removed = { id: 10, event: "unlabeled", label: { name: "ready-for-agent" }, actor: { login: "fictional-reviewer", id: 9999 }, created_at: at };
+    const unrelated = Array.from({ length: 99 }, (_, index) => ({ ...removed, id: index + 11, event: "labeled", label: { name: "documentation" } }));
+    fixture.save([fixture.issue], false, {}, false, [fixture.issue], { event_pages: [[removed, ...unrelated], null] });
+    const held = fixture.holdSync("/events?per_page=100&page=2"); release = held.release;
+    const pending = fixture.post(route + "/sync", {});
+    await held.waiting;
+    try {
+      const detail = await fixture.json(path);
+      expect(detail.runs[0].issue_pause?.reason).toBe("readiness_revoked");
+      expect(detail.runs[0].manifest).toEqual(run.manifest);
+    } finally { release(); await pending; }
+    expect((await fixture.json(path)).github_sources[0].readiness_evidence.complete).toBe(false);
+  } finally { release(); fixture.close(); }
+}, 20_000);
+
+test.each(["missing", "malformed", "unavailable", "old_revocation", "unknown_actor", "unrelated"])("%s history without affirmative revocation leaves frozen work running", async failure => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { path, start, route } = await prepared(fixture);
+    const run = await fixture.json(path + "/runs", start);
+    const event = { id: 10, event: "labeled", label: { name: "ready-for-agent" }, actor: { login: "fictional-reviewer", id: 9999 }, created_at: new Date(Date.now() + 1000).toISOString() };
+    const events = failure === "unavailable" ? null : failure === "malformed" ? [{ ...event, created_at: "invalid" }]
+      : failure === "old_revocation" ? [{ ...event, event: "unlabeled", created_at: "2026-10-01T12:00:00Z" }]
+      : failure === "unknown_actor" ? [{ ...event, actor: null }]
+      : failure === "unrelated" ? [{ ...event, label: { name: "documentation" } }] : [];
+    fixture.save([fixture.issue], false, {}, false, [fixture.issue], { events, proof: null });
+    await fixture.json(route + "/sync", {});
+    const detail = await fixture.json(path);
+    expect(detail.github_sources[0].readiness_evidence.complete).toBe(false);
+    expect(detail.runs[0]).toEqual(run);
+    expect(detail.questions).toEqual([]);
+  } finally { fixture.close(); }
+}, 20_000);
+
+
+test("an untrusted ready event alone requests pause before the fresh issue request returns", async () => {
+  const fixture = githubQueueFixture(true); let release = () => {};
+  try {
+    const { path, start, route } = await prepared(fixture);
+    const run = await fixture.json(path + "/runs", start);
+    const events = [{ id: 10, event: "labeled", label: { name: "ready-for-agent" }, actor: { login: "fictional-reviewer", id: 9999 }, created_at: new Date(Date.now() + 1000).toISOString() }];
+    fixture.save([fixture.issue], false, {}, false, [{ ...fixture.issue, updated_at: "invalid" }], { events });
+    const held = fixture.holdSync("=repos/fictional/project/issues/1"); release = held.release;
+    const pending = fixture.post(route + "/sync", {});
+    await held.waiting;
+    try {
+      const detail = await fixture.json(path);
+      expect(detail.runs[0].issue_pause?.reason).toBe("readiness_revoked");
+      expect(detail.runs[0].manifest).toEqual(run.manifest);
+    } finally { release(); await pending; }
+    expect((await fixture.json(path)).github_sources[0].readiness_evidence.complete).toBe(false);
+  } finally { release(); fixture.close(); }
+}, 20_000);
+
+
+test.each(["app_owner", "github_label"])("same-second revocation after the frozen %s event requests controlled pause", async origin => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const ready = { id: 100, event: "labeled", label: { name: "ready-for-agent" }, actor: { login: "fictional-owner", id: 1042 }, created_at: new Date(Math.floor(Date.now() / 1000) * 1000).toISOString() };
+    fixture.save([fixture.issue], false, {}, false, [fixture.issue], { events: [ready] });
+    const { path, start, route } = await prepared(fixture, origin === "github_label");
+    const run = await fixture.json(path + "/runs", start);
+    const approval = run.manifest.issue_admission.planning.authorization.approval;
+    expect(approval.provenance).toBe(origin);
+    const observed = run.manifest.issue_admission.source.readiness_evidence.label_event;
+    const at = new Date(Math.floor(Date.parse(approval.approved_at) / 1000) * 1000).toISOString();
+    const events = [
+      { ...ready, id: Number(observed.id) + 1, event: "unlabeled", created_at: at },
+      { ...ready, id: Number(observed.id) + 2, actor: { login: "fictional-reviewer", id: 9999 }, created_at: at },
+    ];
+    fixture.save([fixture.issue], false, {}, false, [fixture.issue], { events, proof: null });
+    await fixture.json(route + "/sync", {});
+    const detail = await fixture.json(path);
+    expect(detail.runs[0].issue_pause?.reason).toBe("readiness_revoked");
+    expect(detail.github_sources[0].readiness_evidence.complete).toBe(false);
+    expect(detail.runs[0].manifest).toEqual(run.manifest);
+    expect(detail.questions.filter((question: any) => question.run_id === run.id && question.answer === null)).toHaveLength(1);
+  } finally { fixture.close(); }
+}, 20_000);
+
+
+test.each(["app_owner", "github_label"])("a same-second historical revocation before the frozen %s event leaves work running", async origin => {
+  const fixture = githubQueueFixture(true);
+  try {
+    const ready = { id: 100, event: "labeled", label: { name: "ready-for-agent" }, actor: { login: "fictional-owner", id: 1042 }, created_at: new Date(Math.floor(Date.now() / 1000) * 1000).toISOString() };
+    fixture.save([fixture.issue], false, {}, false, [fixture.issue], { events: [ready] });
+    const { path, start, route } = await prepared(fixture, origin === "github_label");
+    const run = await fixture.json(path + "/runs", start);
+    const frozen = run.manifest.issue_admission;
+    const observed = frozen.source.readiness_evidence.label_event;
+    const at = new Date(Math.floor(Date.parse(frozen.planning.authorization.approval.approved_at) / 1000) * 1000).toISOString();
+    const events = [{ ...ready, id: Number(observed.id) - 1, event: "unlabeled", created_at: at }, { ...ready, id: Number(observed.id), created_at: observed.created_at }];
+    fixture.save([fixture.issue], false, {}, false, [fixture.issue], { events, proof: null });
+    await fixture.json(route + "/sync", {});
+    const detail = await fixture.json(path);
+    expect(detail.github_sources[0].readiness_evidence.complete).toBe(false);
+    expect(detail.runs[0]).toEqual(run);
+    expect(detail.questions).toEqual([]);
   } finally { fixture.close(); }
 }, 20_000);

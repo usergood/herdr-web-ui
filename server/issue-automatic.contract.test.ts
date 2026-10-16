@@ -5,6 +5,7 @@ async function synced(fixture: ReturnType<typeof githubQueueFixture>) {
   fixture.save(undefined, false, {}, true);
   const setup = await fixture.setup();
   await fixture.json(setup.route + "/configure", { ...setup.configuration, expected_revision: (await fixture.json(setup.route)).policy.revision, sync_enabled: true });
+  await fixture.renewLabels(setup.route);
   await fixture.json(setup.route + "/sync", {});
   return setup;
 }
@@ -42,7 +43,7 @@ test("reviewed backlog and future trusted plans dispatch once through the existi
     const run = (await fixture.json(`/implementations/${first.implementation_id}`)).runs[0];
     expect(run).toMatchObject({ condition: "working", action: "implement-spec", manifest: { issue_admission: { queue_policy: { automatic_implementation: true }, source: { revision: first.revision } } } });
     const later = { ...fixture.issue, number: 2, node_id: "fictional-2", title: "Future trusted scope" };
-    fixture.save([fixture.issue, later], false, {}, true);
+    fixture.save([fixture.issue, later], false, {}, true); await fixture.renewLabels(route, [2]);
     await fixture.json(route + "/sync", {});
     const view = await fixture.json(route);
     const second = view.sources.find((source: any) => source.number === 2);
@@ -63,7 +64,7 @@ test("the first preview prepares trusted sufficient scope while missing decision
     const { route, configuration } = await fixture.setup();
     await fixture.json(route + "/configure", { ...configuration, expected_revision: (await fixture.json(route)).policy.revision, sync_enabled: true });
     const incomplete = { ...fixture.issue, number: 2, node_id: "fictional-2", title: "Missing decisions", body: "## Scope\nA greeting.\n## Acceptance criteria\nHello.\n## Dependencies\nNone." };
-    fixture.save([fixture.issue, incomplete], false, {}, true);
+    fixture.save([fixture.issue, incomplete], false, {}, true); await fixture.renewLabels(route);
     const preview = await fixture.json(route + "/preview", {});
     expect(preview.eligible_count).toBe(1);
     expect(preview.entries.find((entry: any) => entry.number === 2).lane).toBe("needs_you");
@@ -111,7 +112,7 @@ test.each(["disable", "pause", "scope", "outage", "priority", "readiness", "depe
   try {
     const { route, readiness } = await synced(fixture);
     const later = { ...fixture.issue, number: 2, node_id: "fictional-2", title: "Later trusted scope", html_url: "https://github.com/fictional/project/issues/2" };
-    fixture.save([fixture.issue, later], false, {}, true);
+    fixture.save([fixture.issue, later], false, {}, true); await fixture.renewLabels(route, [2]);
     const preview = await fixture.json(route + "/preview", {});
     const gate = fixture.holdCapabilities(); release = gate.release;
     pending = fixture.post(route + "/queue", { expected_revision: null, automatic_implementation: true, preview_revision: preview.revision, paused: false, max_implementations: 1 });
@@ -152,7 +153,7 @@ test("failed automatic attempts await explicit Retry and uncertain attempts reta
     expect(next).toMatchObject({ retry_of: failed.id, condition: "disconnected" });
     fixture.setHostOffline(true); fixture.restart();
     const later = { ...fixture.issue, number: 2, node_id: "fictional-2", title: "Future trusted scope" };
-    fixture.save([fixture.issue, later], false, {}, true); await fixture.json(route + "/sync", {});
+    fixture.save([fixture.issue, later], false, {}, true); await fixture.renewLabels(route, [2]); await fixture.json(route + "/sync", {});
     expect((await fixture.json(route + "/queue")).implementing_count).toBe(1);
     expect(fixture.launches).toEqual([failed.id, next.id]);
     fixture.setHostOffline(false); await fixture.json(`/runs/${next.id}/reconcile`, {}); await fixture.json(route + "/sync", {});
@@ -186,7 +187,7 @@ test("the existing polling loop starts unrelated queued work after review releas
   try {
     const { run, path, route, configuration } = await fixture.prepare();
     const second = { ...fixture.issue, number: 2, node_id: "fictional-2", title: "Unrelated automatic work" };
-    fixture.save([fixture.issue, second], false, {}, true);
+    fixture.save([fixture.issue, second], false, {}, true); await fixture.renewLabels(route, [2]);
     await fixture.json(route + "/configure", { ...configuration, expected_revision: (await fixture.json(route)).policy.revision, sync_enabled: true });
     await enable(fixture, route);
     const source = (await fixture.json(route)).sources.find((source: any) => source.number === 2);

@@ -259,6 +259,9 @@ try {
       await queue.getByLabel("Pause queue", { exact: true }).check();
       await queue.getByRole("button", { name: "Save queue settings", exact: true }).click();
       await queue.getByText("Queue paused. Admitted work continues.", { exact: true }).waitFor();
+      // First observation cannot attest historical native dependencies. The
+      // fictional owner renews the labels after that observed scope.
+      await automatic.renewLabels(route);
       await queue.getByRole("button", { name: "Preview eligible backlog", exact: true }).click();
       await queue.getByText("Eligible issues: 2", { exact: true }).waitFor();
       await enable.click();

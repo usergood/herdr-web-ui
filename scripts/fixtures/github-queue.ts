@@ -1,6 +1,6 @@
 /** Disposable public HTTP/browser fixture; the CLI never contacts GitHub. */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "../../server/index.ts";
@@ -15,20 +15,23 @@ export function githubQueueFixture(execution = false) {
   const cli = join(root, "gh.mjs");
   const syncGate = join(root, "sync-gate"); const syncEntered = join(root, "sync-entered");
   const issue = { repository_url: "https://api.github.com/repos/fictional/project", number: 1, node_id: "fictional-contract-issue", title: "Fictional scope", body: "## Scope\nShow a greeting.\n## Acceptance criteria\nShow hello.\n## Dependencies\nNone.\n## Testing seams\nPublic HTTP and real browser journeys.", labels: [{ name: "ready-for-agent" }], state: "open", updated_at: "2026-10-01T12:00:00Z", html_url: "https://github.com/fictional/project/issues/1" };
-  const save = (issues = [issue], fail = false, dependencies: Record<string, typeof issue[] | null> = {}, trusted = false, freshIssues = issues, readiness?: { dependencies?: Record<string, typeof issue[] | null>; proof?: Record<string, unknown> | null }, sync?: { issue_pages?: (typeof issue[] | null)[]; dependency_pages?: Record<string, (typeof issue[] | null)[]>; pulls_fail?: boolean }) => {
+  const labelEvents: Record<number, { id: number; event: string; label: { name: string }; actor: { login: string; id: number }; created_at: string }[]> = {};
+  const save = (issues = [issue], fail = false, dependencies: Record<string, typeof issue[] | null> = {}, trusted = false, freshIssues = issues, readiness?: { events?: unknown; event_pages?: unknown[]; dependencies?: Record<string, typeof issue[] | null>; proof?: Record<string, unknown> | null }, sync?: { issue_pages?: (typeof issue[] | null)[]; dependency_pages?: Record<string, (typeof issue[] | null)[]>; pulls_fail?: boolean }) => {
     rmSync(dependencyReads, { force: true });
-    writeFileSync(responses, JSON.stringify({ issues, fail, dependencies, trusted, freshIssues, readiness, sync }));
+    writeFileSync(responses, JSON.stringify({ issues, fail, dependencies, trusted, labelEvents, freshIssues, readiness, sync }));
   };
   save();
   writeFileSync(cli, `import { existsSync, readFileSync, writeFileSync } from "node:fs";
 const data = JSON.parse(readFileSync(${JSON.stringify(responses)}, "utf8")); const endpoint = process.argv[3];
 const gate = existsSync(${JSON.stringify(syncGate)}) ? readFileSync(${JSON.stringify(syncGate)}, "utf8") : null;
-if (gate && endpoint.includes(gate)) {
+if (gate && (gate.startsWith("=") ? endpoint === gate.slice(1) : endpoint.includes(gate))) {
   writeFileSync(${JSON.stringify(syncEntered)}, "entered"); const deadline = Date.now() + 8000;
   while (existsSync(${JSON.stringify(syncGate)})) { if (Date.now() > deadline) throw new Error("Owned GitHub gate timed out"); await new Promise(resolve => setTimeout(resolve, 10)); }
 }
 const number = Number(process.argv.find(arg => arg.startsWith("query="))?.match(/issue[(]number:([0-9]+)/)?.[1] ?? endpoint.match(/issues[/]([0-9]+)/)?.[1]);
 const issue = (endpoint.includes("/issues/") && !endpoint.includes("/events?") && !endpoint.includes("/dependencies/") ? data.freshIssues : data.issues).find(issue => issue.number === number) ?? data.issues[0];
+if (endpoint.includes("/events?") && data.readiness?.event_pages) { console.log(JSON.stringify(data.readiness.event_pages[Number(new URL("https://fixture.invalid/" + endpoint).searchParams.get("page")) - 1] ?? null)); process.exit(0); }
+if (endpoint.includes("/events?") && data.readiness && Object.hasOwn(data.readiness, "events")) { console.log(JSON.stringify(data.readiness.events)); process.exit(0); }
 if (endpoint.includes("/issues?") && data.sync?.issue_pages) { console.log(JSON.stringify(data.sync.issue_pages[Number(new URL("https://fixture.invalid/" + endpoint).searchParams.get("page")) - 1] ?? null)); process.exit(0); }
 if (endpoint.includes("/dependencies/blocked_by") && data.sync?.dependency_pages?.[number]) { console.log(JSON.stringify(data.sync.dependency_pages[number][Number(new URL("https://fixture.invalid/" + endpoint).searchParams.get("page")) - 1] ?? null)); process.exit(0); }
 if (endpoint === "graphql" && !Number.isSafeInteger(number) && data.sync?.pulls_fail) { console.log(JSON.stringify({ errors: [{ message: "Fictional PR outage" }] })); process.exit(0); }
@@ -39,7 +42,7 @@ if (endpoint.includes("/dependencies/blocked_by") && data.readiness?.dependencie
   if (counts[number] > 1 && Object.hasOwn(data.readiness.dependencies, number)) { console.log(JSON.stringify(data.readiness.dependencies[number])); process.exit(0); }
 }
 if (endpoint === "graphql" && Number.isSafeInteger(number) && data.readiness && Object.hasOwn(data.readiness, "proof")) { console.log(JSON.stringify({ data: { repository: { issue: data.readiness.proof } } })); process.exit(0); }
-console.log(JSON.stringify(endpoint === "user" ? {login:"fictional-owner",id:1042} : endpoint.includes("/dependencies/blocked_by") ? data.dependencies[number] ?? [] : endpoint.includes("/issues?") ? data.fail ? {} : data.issues : endpoint.includes("/events?") ? data.trusted ? [{id:number,event:"labeled",label:{name:"ready-for-agent"},actor:{login:"fictional-owner",id:1042},created_at:issue.updated_at}] : [] : endpoint.includes("/issues/") ? issue : endpoint === "graphql" ? {data:{repository:{pullRequests:{nodes:[],pageInfo:{hasNextPage:false,endCursor:null}},issue:{id:issue.node_id,title:issue.title,body:issue.body,state:issue.state.toUpperCase(),createdAt:"2026-09-30T12:00:00Z",updatedAt:issue.updated_at,lastEditedAt:null}}}} : {full_name:"fictional/project"}));`);
+console.log(JSON.stringify(endpoint === "user" ? {login:"fictional-owner",id:1042} : endpoint.includes("/dependencies/blocked_by") ? data.dependencies[number] ?? [] : endpoint.includes("/issues?") ? data.fail ? {} : data.issues : endpoint.includes("/events?") ? data.labelEvents[number] ?? (data.trusted ? [{id:number,event:"labeled",label:{name:"ready-for-agent"},actor:{login:"fictional-owner",id:1042},created_at:issue.updated_at}] : []) : endpoint.includes("/issues/") ? issue : endpoint === "graphql" ? {data:{repository:{pullRequests:{nodes:[],pageInfo:{hasNextPage:false,endCursor:null}},issue:{id:issue.node_id,title:issue.title,body:issue.body,state:issue.state.toUpperCase(),createdAt:"2026-09-30T12:00:00Z",updatedAt:issue.updated_at,lastEditedAt:null}}}} : {full_name:"fictional/project"}));`);
   // Owned remote native transport: no CLI agent, worktree or live herdr is launched.
   let checkout: unknown; let capabilities: unknown;
   let executionHandler: ((request: Request) => Promise<Response | null>) | null = null;
@@ -100,6 +103,30 @@ console.log(JSON.stringify(endpoint === "user" ? {login:"fictional-owner",id:104
     const readiness = await json(route + "/readiness", { expected_revision: null, account_profile_id: account.id, triage_labels: {}, blocked_label: "blocked" });
     return { account, project, route, readiness, configuration };
   }
+  /** Renew through fictional GitHub after the HTTP API observed the exact scope. */
+  async function renewLabels(route: string, numbers?: number[]) {
+    const data = JSON.parse(readFileSync(responses, "utf8"));
+    // Keep the history already returned for other issues; toggling the default
+    // trusted fixture input for a new issue does not relabel admitted siblings.
+    for (const source of (await json(route)).sources) {
+      if (numbers?.includes(source.number) || labelEvents[source.number]) continue;
+      const prior = source.readiness_evidence?.label_event;
+      labelEvents[source.number] = prior ? [{ id: Number(prior.id), event: prior.event, label: { name: "ready-for-agent" }, actor: { login: prior.login, id: Number(prior.account_id) }, created_at: prior.created_at }] : [];
+    }
+    data.labelEvents = labelEvents; writeFileSync(responses, JSON.stringify(data));
+    const view = await json(route + "/sync", {});
+    for (const source of view.sources.filter((source: any) => numbers ? numbers.includes(source.number) : source.current.state === "open")) {
+      const events = labelEvents[source.number] ?? [];
+      const at = new Date().toISOString();
+      labelEvents[source.number] = [...events, { id: source.number * 1000 + events.length + 1, event: "labeled", label: { name: "ready-for-agent" }, actor: { login: "fictional-owner", id: 1042 }, created_at: at }];
+      const issue = data.issues.find((issue: any) => issue.number === source.number);
+      issue.updated_at = at;
+      const fresh = data.freshIssues.find((issue: any) => issue.number === source.number);
+      if (fresh) fresh.updated_at = at;
+    }
+    data.labelEvents = labelEvents;
+    writeFileSync(responses, JSON.stringify(data));
+  }
   function restart(beforeStart?: () => void) { app.stop(); beforeStart?.(); app = createServer({ port: 0, stateDir: root, machines: false, token: "fixture-owner", factory: options }); origin = `http://localhost:${app.port}`; }
   function holdCapabilities() {
     let entered!: () => void; let release!: () => void;
@@ -125,5 +152,5 @@ console.log(JSON.stringify(endpoint === "user" ? {login:"fictional-owner",id:104
     const response = await fetch(origin + `/api/factory-agent/${runId}/contract`, { headers: { authorization: `Bearer ${access.token}` } });
     if (!response.ok) throw new Error(await response.text()); return response.json() as Promise<any>;
   };
-  return { setExecutionHandler(handler: typeof executionHandler) { executionHandler = handler; }, tracker, failNativeRun: (id: string) => { const run = nativeRuns.get(id); if (!run) throw new Error("Unknown fictional Run"); nativeRuns.set(id, { ...run, condition: "failed", waiting_reason: "Fictional native failure" }); }, setHostOffline: (offline: boolean) => { hostOffline = offline; }, holdLaunch, setLaunchOutcome: (outcome: typeof launchOutcome) => { launchOutcome = outcome; }, launches, root, issue, save, post, get, json, setup, restart, headers, holdCapabilities, holdSync, get origin() { return origin; }, close() { app.stop(); host?.stop(true); rmSync(root, { recursive: true, force: true }); } };
+  return { setExecutionHandler(handler: typeof executionHandler) { executionHandler = handler; }, tracker, failNativeRun: (id: string) => { const run = nativeRuns.get(id); if (!run) throw new Error("Unknown fictional Run"); nativeRuns.set(id, { ...run, condition: "failed", waiting_reason: "Fictional native failure" }); }, setHostOffline: (offline: boolean) => { hostOffline = offline; }, holdLaunch, setLaunchOutcome: (outcome: typeof launchOutcome) => { launchOutcome = outcome; }, launches, root, issue, save, renewLabels, post, get, json, setup, restart, headers, holdCapabilities, holdSync, get origin() { return origin; }, close() { app.stop(); host?.stop(true); rmSync(root, { recursive: true, force: true }); } };
 }

@@ -24,6 +24,16 @@ export interface IssueReadinessEvidence {
   label_event: ReadinessLabelEvent | null;
 }
 export interface IssueReadiness { eligible: boolean; roles: TriageRole[]; blockers: ReadinessBlocker[]; approval: IssueReadinessApproval | null }
+/** Relationship history is unknown until an observed semantic scope is renewed. */
+export function labelAttestsObservedScope(source: import("./github-project.ts").ProjectGitHubSource, event: ReadinessLabelEvent): boolean {
+  if (!source.current?.native_dependencies) return false;
+  let observedAt = source.current.fetched_at;
+  for (const observed of (source.history ?? []).slice().reverse()) {
+    if (observed.title !== source.current.title || observed.body !== source.current.body || JSON.stringify(observed.native_dependencies) !== JSON.stringify(source.current.native_dependencies)) break;
+    observedAt = observed.fetched_at;
+  }
+  return Date.parse(event.created_at) > Date.parse(observedAt);
+}
 /** Readiness alone is one prerequisite; it never admits or dispatches a Run. */
 export function issueReadiness(policy: ProjectReadinessPolicy | null, source: import("./github-project.ts").ProjectGitHubSource): IssueReadiness {
   const blockers: ReadinessBlocker[] = [];
@@ -38,7 +48,7 @@ export function issueReadiness(policy: ProjectReadinessPolicy | null, source: im
   if (labels.includes((policy?.blocked_label ?? "blocked").toLowerCase())) blockers.push("blocked");
   const evidence = source.readiness_evidence;
   const event = evidence?.label_event;
-  const approval = source.readiness_approvals?.slice().reverse().find(approval => approval.evidence_revision === evidence?.revision && approval.source_revision === source.revision && approval.policy_revision === policy?.revision && (approval.provenance === "app_owner" || approval.event_id === event?.id)) ?? null;
+  const approval = source.readiness_approvals?.slice().reverse().find(approval => approval.evidence_revision === evidence?.revision && approval.source_revision === source.revision && approval.policy_revision === policy?.revision && (approval.provenance === "app_owner" || approval.event_id === event?.id && !!event && labelAttestsObservedScope(source, event))) ?? null;
   if (!evidence || evidence.source_revision !== source.revision || evidence.policy_revision !== policy?.revision) blockers.push("sync_required");
   else if (!evidence.complete) blockers.push("evidence_incomplete");
   if (!approval) {

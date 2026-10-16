@@ -15,7 +15,7 @@ import { FactoryStore } from "./factory-store.ts";
 import { FactoryError, hash } from "./factory-host.ts";
 import { MachineAccounts } from "./accounts.ts";
 
-import { issueReadiness, TRIAGE_ROLES, type ProjectReadinessPolicy, type ReadinessConfiguration, type TriageLabels } from "../shared/github-readiness.ts";
+import { issueReadiness, labelAttestsObservedScope, TRIAGE_ROLES, type ProjectReadinessPolicy, type ReadinessConfiguration, type TriageLabels } from "../shared/github-readiness.ts";
 
 const pullFields = `number id title body url state isDraft headRefOid baseRefOid headRefName baseRefName author { login } mergeStateStatus reviewDecision headRepository { nameWithOwner } viewerCanUpdate
 reviews(first:100) { nodes { id state body submittedAt author { login } commit { oid } } pageInfo { hasNextPage endCursor } }
@@ -110,7 +110,7 @@ export class ProjectGitHub {
   }
 
   /** Known changes request a pause. Missing metadata alone never cancels frozen work. */
-  private reconcileAdmissions(id: string, detectedChange?: { sourceId: string; reason: import("../shared/issue-admission.ts").IssuePause["reason"] }): void {
+  private reconcileAdmissions(id: string, detectedChange?: { sourceId: string; runId?: string; reason: import("../shared/issue-admission.ts").IssuePause["reason"] }): void {
     const workflow = new FactoryWorkflow(this.store);
     const policy = this.store.get<ProjectReadinessPolicy>("github_readiness_policies", id);
     for (const run of this.store.list<import("../shared/factory.ts").FactoryRun>("runs")) {
@@ -120,7 +120,7 @@ export class ProjectGitHub {
       if (!source?.current) continue;
       const readiness = issueReadiness(policy, source);
       const before = frozen.source.current!; const current = source.current;
-      const reason: import("../shared/issue-admission.ts").IssuePause["reason"] | null = detectedChange?.sourceId === source.id ? detectedChange.reason : current.state === "closed" ? "issue_closed"
+      const reason: import("../shared/issue-admission.ts").IssuePause["reason"] | null = detectedChange?.sourceId === source.id && (!detectedChange.runId || detectedChange.runId === run.id) ? detectedChange.reason : current.state === "closed" ? "issue_closed"
         : current.title !== before.title || current.body !== before.body || JSON.stringify(current.native_dependencies) !== JSON.stringify(before.native_dependencies) || workflow.specification(run.implementation_id)?.id !== run.specification_id || workflow.graphHash(run.implementation_id) !== run.graph_hash ? "scope_changed"
         : policy?.revision !== frozen.readiness_policy.revision || policy.project_scope !== this.projectScope(id) || readiness.blockers.some(blocker => ["closed", "blocked", "triage_conflict", "role_not_ready", "mapping_conflict"].includes(blocker)) || source.readiness_evidence?.complete && !readiness.approval ? "readiness_revoked" : null;
       if (!reason) continue;
@@ -396,6 +396,29 @@ export class ProjectGitHub {
     }
     throw new FactoryError("github_inventory_limit", "Issue inventory exceeds the bounded synchronization budget", 409);
   }
+  /** Positive revocation is durable before the next fallible history/fence read. */
+  private observeReadinessRevocation(policy: ProjectGitHubPolicy, source: ProjectGitHubSource, event: import("../shared/github-readiness.ts").ReadinessLabelEvent): void {
+    const readiness = this.store.get<ProjectReadinessPolicy>("github_readiness_policies", policy.id)!;
+    const revoked = event.event === "unlabeled" || event.login !== null && event.account_id !== null && (event.login.toLowerCase() !== readiness.owner.login.toLowerCase() || event.account_id !== readiness.owner.account_id);
+    if (!revoked) return;
+    for (const run of this.store.list<import("../shared/factory.ts").FactoryRun>("runs")) {
+      const frozen = (run.manifest as { issue_admission?: import("../shared/issue-admission.ts").IssueAdmission }).issue_admission;
+      if (frozen?.source.id !== source.id) continue;
+      const approval = frozen.planning.authorization.approval;
+      const eventTime = Date.parse(event.created_at); const approvalTime = Date.parse(approval.approved_at);
+      const evidence = frozen.source.readiness_evidence;
+      // GitHub timestamps have second precision; owner approvals have milliseconds.
+      // Within that second, a new event beyond the frozen complete observation
+      // cannot be dismissed as older just because its timestamp was rounded down.
+      const newlyObserved = evidence?.complete && (!evidence.label_event || Number(event.id) > Number(evidence.label_event.id));
+      const afterApproval = eventTime > approvalTime
+        || Math.floor(eventTime / 1000) === Math.floor(approvalTime / 1000) && newlyObserved;
+      if (afterApproval) {
+        this.current(policy);
+        this.reconcileAdmissions(policy.id, { sourceId: source.id, runId: run.id, reason: "readiness_revoked" });
+      }
+    }
+  }
   private async collectReadiness(policy: ProjectGitHubPolicy, scope: AccountBindingSnapshot, source: ProjectGitHubSource): Promise<void> {
     const readiness = this.store.get<ProjectReadinessPolicy>("github_readiness_policies", policy.id);
     if (!readiness || !source.current) return;
@@ -413,8 +436,10 @@ export class ProjectGitHub {
           if (!["labeled", "unlabeled"].includes(event.event)) continue;
           if (typeof event.label?.name !== "string") throw new FactoryError("readiness_incomplete", "Readiness history is incomplete");
           if (event.label.name.toLowerCase() !== readiness.triage_labels["ready-for-agent"].toLowerCase()) continue;
+          const observed = { id: String(event.id), event: event.event as "labeled" | "unlabeled", login: typeof event.actor?.login === "string" ? event.actor.login : null, account_id: Number.isSafeInteger(event.actor?.id) ? String(event.actor.id) : null, created_at: event.created_at };
+          this.observeReadinessRevocation(policy, source, observed);
           if (evidence.label_event && (Date.parse(event.created_at) < Date.parse(evidence.label_event.created_at) || Date.parse(event.created_at) === Date.parse(evidence.label_event.created_at) && event.id <= Number(evidence.label_event.id))) continue;
-          evidence.label_event = { id: String(event.id), event: event.event, login: typeof event.actor?.login === "string" ? event.actor.login : null, account_id: Number.isSafeInteger(event.actor?.id) ? String(event.actor.id) : null, created_at: event.created_at };
+          evidence.label_event = observed;
         }
         if (events.length < 100) { evidence.complete = true; break; }
       }
@@ -461,9 +486,11 @@ export class ProjectGitHub {
       const event = evidence.label_event;
       evidence.revision = hash(JSON.stringify({ source: source.revision, policy: readiness.revision, event, edited: proof.lastEditedAt, scope_events: scopeEvents.sort(), observation: source.history?.length ?? 0 }));
       const reviewedAfterEdit = !!event && Date.parse(event.created_at) > scopeChangedAt && (proof.lastEditedAt === null ? Date.parse(event.created_at) >= Date.parse(proof.createdAt) : Date.parse(event.created_at) > Date.parse(proof.lastEditedAt));
-      const previousScope = source.history?.at(-2);
-      const scopeChanged = previousScope && (previousScope.title !== source.current.title || previousScope.body !== source.current.body || JSON.stringify(previousScope.native_dependencies ?? []) !== JSON.stringify(source.current.native_dependencies ?? []));
-      const labelAttestsScope = !scopeChanged || source.readiness_evidence && event?.id !== source.readiness_evidence.label_event?.id;
+      // GitHub's issue timestamps/history here do not prove native relationship
+      // history. Require renewal after we first observed this semantic scope,
+      // including an empty dependency list. Label/metadata-only observations must
+      // not move that boundary or invalidate a renewal already retained.
+      const labelAttestsScope = !!event && labelAttestsObservedScope(source, event);
       if (labelAttestsScope && reviewedAfterEdit && event?.event === "labeled" && event.login?.toLowerCase() === readiness.owner.login.toLowerCase() && event.account_id && event.account_id === readiness.owner.account_id && source.current.labels.some(label => label.toLowerCase() === readiness.triage_labels["ready-for-agent"].toLowerCase())) {
         if (!source.readiness_approvals?.some(approval => approval.evidence_revision === evidence.revision && approval.source_revision === source.revision && approval.policy_revision === readiness.revision && approval.event_id === event.id)) {
           source.readiness_approvals = [...source.readiness_approvals ?? [], { id: randomUUID(), evidence_revision: evidence.revision, source_revision: source.revision, policy_revision: readiness.revision, approved_at: event.created_at, actor: readiness.owner, provenance: "github_label", event_id: event.id }];

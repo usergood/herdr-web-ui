@@ -17,6 +17,7 @@ test("sufficient conventional Markdown issue plans reuse their declared public t
   const data = JSON.parse(readFileSync(f.state, "utf8"));
   const content = externalPlan.replaceAll("## ", "### ").replace("Scope", "What to build").replace("Testing seams", "Test plan").replace("GET /hello returns hello", "GET /hello?name=Fixture returns hello");
   Object.assign(data.issues[0], { body: content, labels: [{ name: "ready-for-agent" }] }); data.events = [readinessEvent()]; writeFileSync(f.state, JSON.stringify(data));
+  await renewLabelAfterObservation(f, route, data);
   const source = (await f.post(route + "/sync", {})).body.sources[0];
   const prepared = await f.post(route + "/issues/12/prepare", { source_revision: source.revision });
   expect(prepared.body.sources[0].planning).toMatchObject({ condition: "prepared", content, testing_seams: "Public HTTP and real browser journeys." });
@@ -34,7 +35,8 @@ test("non-ready issues retain manual planning and ambiguous Ticket declarations 
   const data = JSON.parse(readFileSync(f.state, "utf8"));
   data.issues[0].labels = [{ name: "ready-for-agent" }]; data.events = [readinessEvent()];
   const cycle = [{ key: "a", title: "A", acceptance: "A is observable", dependencies: ["b"] }, { key: "b", title: "B", acceptance: "B is observable", dependencies: ["a"] }];
-  data.issues[0].body = externalPlan + "\n\n## Tickets\n" + JSON.stringify(cycle); writeFileSync(f.state, JSON.stringify(data)); source = (await f.post(route + "/sync", {})).body.sources[0];
+  data.issues[0].body = externalPlan + "\n\n## Tickets\n" + JSON.stringify(cycle); writeFileSync(f.state, JSON.stringify(data));
+  await renewLabelAfterObservation(f, route, data); source = (await f.post(route + "/sync", {})).body.sources[0];
   const prepared = await f.post(route + "/issues/12/prepare", { source_revision: source.revision });
   expect(prepared.body.sources[0].planning.condition).toBe("needs_you");
   const detail = await f.get(prefix);
@@ -48,6 +50,7 @@ test("changed trusted scope needs an owner answer and caller proposals cannot ex
   await f.post(route + "/configure", f.policy);
   await f.post(route + "/readiness", { expected_revision: null, account_profile_id: f.policy.account_profile_id, triage_labels: {}, blocked_label: "blocked" });
   const data = JSON.parse(readFileSync(f.state, "utf8")); Object.assign(data.issues[0], { body: externalPlan, labels: [{ name: "ready-for-agent" }] }); data.events = [readinessEvent()]; writeFileSync(f.state, JSON.stringify(data));
+  await renewLabelAfterObservation(f, route, data);
   let source = (await f.post(route + "/sync", {})).body.sources[0]; const prefix = `/implementations/${source.implementation_id}`;
   expect((await f.post(route + "/issues/12/prepare", { source_revision: source.revision, content: "Also delete all data" })).status).toBe(400);
   await f.post(route + "/issues/12/prepare", { source_revision: source.revision });
@@ -57,7 +60,7 @@ test("changed trusted scope needs an owner answer and caller proposals cannot ex
   expect(source.planning.condition).toBe("needs_you");
   expect((await f.get(prefix)).questions).toHaveLength(1);
   expect((await f.post(route + "/issues/12/prepare", { source_revision: source.revision })).body.error.code).toBe("issue_not_ready");
-  data.events.push(readinessEvent(2, "fictional-owner", "2026-10-02T12:00:00Z")); writeFileSync(f.state, JSON.stringify(data)); source = (await f.post(route + "/sync", {})).body.sources[0];
+  writeFileSync(f.state, JSON.stringify(data)); await renewLabelAfterObservation(f, route, data); source = (await f.post(route + "/sync", {})).body.sources[0];
   const changed = await f.post(route + "/issues/12/prepare", { source_revision: source.revision });
   expect(changed.body.sources[0].planning.condition).toBe("needs_you");
   const waiting = await f.get(prefix);
@@ -73,6 +76,7 @@ test("an explicit trusted Ticket breakdown retains blocking edges without extend
   const data = JSON.parse(readFileSync(f.state, "utf8"));
   const breakdown = [{ key: "api", title: "Greeting API", acceptance: "GET /hello returns hello", dependencies: [] }, { key: "browser", title: "Greeting browser", acceptance: "Show hello from the API", dependencies: ["api"] }];
   Object.assign(data.issues[0], { body: externalPlan + "\n\n## Tickets\n```json\n" + JSON.stringify(breakdown) + "\n```", labels: [{ name: "ready-for-agent" }] }); data.events = [readinessEvent()]; writeFileSync(f.state, JSON.stringify(data));
+  await renewLabelAfterObservation(f, route, data);
   const source = (await f.post(route + "/sync", {})).body.sources[0];
   expect((await f.post(route + "/issues/12/prepare", { source_revision: source.revision })).status).toBe(200);
   const detail = await f.get(`/implementations/${source.implementation_id}`);
@@ -89,6 +93,7 @@ test("selected incomplete planning asks only missing decisions and consumes actu
   const data = JSON.parse(readFileSync(f.state, "utf8"));
   Object.assign(data.issues[0], { body: externalPlan.split("\n\n## Testing seams")[0], labels: [{ name: "ready-for-agent" }] }); data.events = [readinessEvent()];
   writeFileSync(f.state, JSON.stringify(data));
+  await renewLabelAfterObservation(f, route, data);
   let source = (await f.post(route + "/sync", {})).body.sources[0]; const prefix = `/implementations/${source.implementation_id}`;
   const prepared = await f.post(route + "/issues/12/prepare", { source_revision: source.revision });
   expect(prepared.status).toBe(200); expect(prepared.body.sources[0].planning.condition).toBe("needs_you");
@@ -100,8 +105,8 @@ test("selected incomplete planning asks only missing decisions and consumes actu
   expect((await f.get(prefix)).questions).toHaveLength(1);
   const question = detail.questions[0];
   expect((await f.post(prefix + `/questions/${question.id}/answer`, { revision: question.revision, answer: "Use public HTTP and real browser journeys; I will add them to the issue plan." })).status).toBe(200);
-  Object.assign(data.issues[0], { body: externalPlan, updated_at: "2026-10-02T12:00:00Z" }); data.events.push(readinessEvent(2, "fictional-owner", "2026-10-02T12:00:00Z"));
-  writeFileSync(f.state, JSON.stringify(data)); source = (await f.post(route + "/sync", {})).body.sources[0];
+  Object.assign(data.issues[0], { body: externalPlan, updated_at: "2026-10-02T12:00:00Z" });
+  writeFileSync(f.state, JSON.stringify(data)); await renewLabelAfterObservation(f, route, data); source = (await f.post(route + "/sync", {})).body.sources[0];
   expect((await f.post(route + "/issues/12/prepare", { source_revision: source.revision })).body.error.code).toBe("answers_unconsumed");
   detail = await f.get(prefix);
   const resolved = await f.post(route + "/issues/12/prepare", { source_revision: source.revision, question_revision: detail.question_revision });
@@ -116,6 +121,7 @@ test("selected issue planning reuses its retained approved app plan and blocking
   await f.post(route + "/readiness", { expected_revision: null, account_profile_id: f.policy.account_profile_id, triage_labels: {}, blocked_label: "blocked" });
   const data = JSON.parse(readFileSync(f.state, "utf8")); data.issues[0].labels = [{ name: "ready-for-agent" }]; data.events = [readinessEvent()];
   writeFileSync(f.state, JSON.stringify(data));
+  await renewLabelAfterObservation(f, route, data);
   const source = (await f.post(route + "/sync", {})).body.sources[0]; const prefix = `/implementations/${source.implementation_id}`;
   const retainedContent = "## Problem Statement\nVisitors need a greeting.\n\n## Solution\nAdd a fictional greeting endpoint.\n\n## User Stories\n1. As a visitor, I want to see hello.\n\n## Implementation Decisions\nThe API Ticket blocks the browser Ticket.\n\n## Testing Decisions\nPublic HTTP and real browser journeys.\n\n## Out of Scope\nOther greetings.\n\n## Further Notes\nKeep the approved graph.";
   const specification = (await f.post(prefix + "/specifications", { content: retainedContent })).body;
@@ -141,6 +147,7 @@ test("trusted issue planning prepares a bounded graph with exact provenance with
   const data = JSON.parse(readFileSync(f.state, "utf8"));
   Object.assign(data.issues[0], { body: externalPlan, labels: [{ name: "ready-for-agent" }] }); data.events = [readinessEvent()];
   writeFileSync(f.state, JSON.stringify(data));
+  await renewLabelAfterObservation(f, route, data);
   const source = (await f.post(route + "/sync", {})).body.sources[0];
   const prepared = await f.post(route + "/issues/12/prepare", { source_revision: source.revision });
   expect(prepared.status).toBe(200);
@@ -490,6 +497,43 @@ test("Project triage mappings explain non-ready, conflicting and blocked issue s
   expect((await f.get(route)).sources[0].readiness.blockers).toContain("mapping_conflict");
 });
 
+test("first import cannot use an old ready label to approve unknown native relationship history", async () => {
+  const f = await fixture(); const route = `/projects/${f.project.id}/github`;
+  await f.post(route + "/configure", f.policy);
+  const policy = (await f.post(route + "/readiness", { expected_revision: null, account_profile_id: f.policy.account_profile_id, triage_labels: {}, blocked_label: "blocked" })).body;
+  const data = JSON.parse(readFileSync(f.state, "utf8"));
+  Object.assign(data.issues[0], { body: externalPlan, labels: [{ name: "ready-for-agent" }] });
+  // The unmet prerequisite was removed after this trusted label. Neither REST
+  // timestamps nor an empty current relationship list establish that history.
+  data.events = [readinessEvent()]; data.dependencies = {};
+  writeFileSync(f.state, JSON.stringify(data));
+  let source = (await f.post(route + "/sync", {})).body.sources[0];
+  expect(source.readiness).toMatchObject({ eligible: false, approval: null, blockers: ["stale"] });
+  expect(source.readiness_approvals ?? []).toEqual([]);
+  expect((await f.post(route + "/issues/12/prepare", { source_revision: source.revision })).body.error.code).toBe("issue_not_ready");
+  f.restart();
+  source = (await f.post(route + "/sync", {})).body.sources[0];
+  expect(source.readiness.approval).toBeNull();
+  // Metadata-only observations cannot turn that label into a scope approval.
+  data.issues[0].updated_at = "2026-10-03T12:00:00Z";
+  writeFileSync(f.state, JSON.stringify(data));
+  const metadata = (await f.post(route + "/sync", {})).body.sources[0];
+  expect(metadata.revision).toBe(source.revision);
+  expect(metadata.readiness.approval).toBeNull();
+  expect((await f.post(route + "/issues/12/approve", { source_revision: source.revision, policy_revision: policy.revision })).status).toBe(200);
+  expect((await f.get(route)).sources[0].readiness).toMatchObject({ eligible: true, approval: { provenance: "app_owner", source_revision: source.revision } });
+});
+
+async function renewLabelAfterObservation(f: Awaited<ReturnType<typeof fixture>>, route: string, data: any): Promise<void> {
+  const observed = (await f.post(route + "/sync", {})).body.sources.find((source: any) => source.number === 12);
+  expect(observed.readiness.approval).toBeNull();
+  const lastId = Math.max(0, ...(data.events ?? []).map((event: any) => event.id));
+  const at = new Date().toISOString();
+  data.events.push(readinessEvent(lastId + 1, "fictional-owner", at));
+  data.issues.find((issue: any) => issue.number === 12).updated_at = at;
+  writeFileSync(f.state, JSON.stringify(data));
+}
+
 function readinessEvent(id = 1, login = "fictional-owner", at = "2026-10-01T12:00:00Z") {
   return { id, event: "labeled", actor: { login, id: login === "fictional-owner" ? 1042 : 9999 }, label: { name: "ready-for-agent" }, created_at: at };
 }
@@ -506,16 +550,17 @@ test("only current-scope trusted label evidence authorizes readiness and retains
   source = (await f.post(route + "/sync", {})).body.sources[0];
   expect(source.readiness.blockers).toContain("evidence_missing");
   data.events = [readinessEvent()]; writeFileSync(f.state, JSON.stringify(data));
+  await renewLabelAfterObservation(f, route, data);
   source = (await f.post(route + "/sync", {})).body.sources[0];
   expect(source.readiness).toMatchObject({ eligible: true, blockers: [], roles: ["ready-for-agent"] });
-  expect(source.readiness.approval).toMatchObject({ source_revision: source.revision, policy_revision: configured.body.revision, provenance: "github_label", actor: { login: "fictional-owner", account_id: "1042" }, event_id: "1" });
+  expect(source.readiness.approval).toMatchObject({ source_revision: source.revision, policy_revision: configured.body.revision, provenance: "github_label", actor: { login: "fictional-owner", account_id: "1042" }, event_id: "2" });
   f.restart(); expect((await f.get(route)).sources[0].readiness.approval).toEqual(source.readiness.approval);
   data.issues[0].body = "Scope: changed plan, acceptance, dependencies and testing seams"; data.issues[0].updated_at = "2026-10-02T12:00:00Z";
   writeFileSync(f.state, JSON.stringify(data));
   const changed = (await f.post(route + "/sync", {})).body.sources[0];
   expect(changed.readiness.eligible).toBe(false); expect(changed.readiness.blockers).toContain("stale");
   expect(changed.readiness_approvals).toContainEqual(source.readiness.approval);
-  data.events.push(readinessEvent(2, "fictional-owner", "2026-10-02T12:00:00Z")); writeFileSync(f.state, JSON.stringify(data));
+  writeFileSync(f.state, JSON.stringify(data)); await renewLabelAfterObservation(f, route, data);
   const renewed = (await f.post(route + "/sync", {})).body.sources[0];
   expect(renewed.readiness.eligible).toBe(true); expect(renewed.readiness.approval.source_revision).toBe(changed.revision);
 });
@@ -527,6 +572,7 @@ test("metadata timestamps preserve trusted scope approval and prepared app plann
   const data = JSON.parse(readFileSync(f.state, "utf8"));
   Object.assign(data.issues[0], { body: externalPlan, labels: [{ name: "ready-for-agent" }] }); data.events = [readinessEvent()];
   writeFileSync(f.state, JSON.stringify(data));
+  await renewLabelAfterObservation(f, route, data);
   const source = (await f.post(route + "/sync", {})).body.sources[0];
   await f.post(route + "/issues/12/prepare", { source_revision: source.revision });
   const before = await f.get(`/implementations/${source.implementation_id}`);
@@ -580,10 +626,11 @@ test("readiness fails closed through outages, policy changes and withdrawn label
   await f.post(route + "/configure", f.policy);
   let configured = (await f.post(route + "/readiness", { expected_revision: null, account_profile_id: f.policy.account_profile_id, triage_labels: {}, blocked_label: "blocked" })).body;
   const data = JSON.parse(readFileSync(f.state, "utf8")); data.issues[0].labels = [{ name: "ready-for-agent" }]; data.events = [readinessEvent()]; writeFileSync(f.state, JSON.stringify(data));
+  await renewLabelAfterObservation(f, route, data);
   let source = (await f.post(route + "/sync", {})).body.sources[0]; expect(source.readiness.eligible).toBe(true);
-  data.events = []; writeFileSync(f.state, JSON.stringify(data));
+  const retainedEvents = data.events; data.events = []; writeFileSync(f.state, JSON.stringify(data));
   source = (await f.post(route + "/sync", {})).body.sources[0]; expect(source.readiness.eligible).toBe(false);
-  data.events = [readinessEvent()]; writeFileSync(f.state, JSON.stringify(data));
+  data.events = retainedEvents; writeFileSync(f.state, JSON.stringify(data));
   source = (await f.post(route + "/sync", {})).body.sources[0]; expect(source.readiness.eligible).toBe(true);
   data.issues = { partial: true }; writeFileSync(f.state, JSON.stringify(data));
   expect((await f.post(route + "/sync", {})).status).toBe(409);
@@ -600,8 +647,9 @@ test("an edit in the label's timestamp second cannot reuse its approval", async 
   await f.post(route + "/configure", f.policy);
   await f.post(route + "/readiness", { expected_revision: null, account_profile_id: f.policy.account_profile_id, triage_labels: {}, blocked_label: "blocked" });
   const data = JSON.parse(readFileSync(f.state, "utf8")); data.issues[0].labels = [{ name: "ready-for-agent" }]; data.events = [readinessEvent()]; writeFileSync(f.state, JSON.stringify(data));
-  expect((await f.post(route + "/sync", {})).body.sources[0].readiness.eligible).toBe(true);
-  data.issues[0].body = "A later edit in the same second"; data.last_edited_at = "2026-10-01T12:00:00Z"; writeFileSync(f.state, JSON.stringify(data));
+  await renewLabelAfterObservation(f, route, data);
+  const approved = (await f.post(route + "/sync", {})).body.sources[0]; expect(approved.readiness.eligible).toBe(true);
+  data.issues[0].body = "A later edit in the same second"; data.last_edited_at = approved.readiness.approval.approved_at; writeFileSync(f.state, JSON.stringify(data));
   const source = (await f.post(route + "/sync", {})).body.sources[0];
   expect(source.readiness.eligible).toBe(false); expect(source.readiness.blockers).toContain("stale");
 });
@@ -611,13 +659,14 @@ test("later edit evidence invalidates retained approvals even when the visible i
   await f.post(route + "/configure", f.policy);
   const readiness = (await f.post(route + "/readiness", { expected_revision: null, account_profile_id: f.policy.account_profile_id, triage_labels: {}, blocked_label: "blocked" })).body;
   const data = JSON.parse(readFileSync(f.state, "utf8")); data.issues[0].labels = [{ name: "ready-for-agent" }]; data.events = [readinessEvent()]; writeFileSync(f.state, JSON.stringify(data));
+  await renewLabelAfterObservation(f, route, data);
   const approved = (await f.post(route + "/sync", {})).body.sources[0]; expect(approved.readiness.eligible).toBe(true);
-  data.last_edited_at = "2026-10-01T12:00:00Z"; writeFileSync(f.state, JSON.stringify(data));
+  data.last_edited_at = approved.readiness.approval.approved_at; writeFileSync(f.state, JSON.stringify(data));
   const restored = (await f.post(route + "/sync", {})).body.sources[0];
   expect(restored.readiness.eligible).toBe(false); expect(restored.readiness.blockers).toContain("stale");
   expect((await f.post(route + "/issues/12/approve", { source_revision: restored.revision, policy_revision: readiness.revision })).status).toBe(200);
   data.events.push({ id: 2, event: "unlabeled", actor: { login: "fictional-owner", id: 1042 }, label: { name: "ready-for-agent" }, created_at: "2026-10-01T12:00:00Z" });
-  data.events.push(readinessEvent(3, "fictional-reviewer")); writeFileSync(f.state, JSON.stringify(data));
+  data.events.push(readinessEvent(4, "fictional-reviewer", new Date(Date.now() + 2000).toISOString())); writeFileSync(f.state, JSON.stringify(data));
   const relabeled = (await f.post(route + "/sync", {})).body.sources[0];
   expect(relabeled.readiness.eligible).toBe(false); expect(relabeled.readiness.blockers).toContain("untrusted");
 });
@@ -829,9 +878,11 @@ test("an approved plan can discover an already-closed prerequisite and require i
 test("the first backlog preview retains closed prerequisites from the newly prepared trusted issue plan", async () => {
   const f = await fixture(); const route = `/projects/${f.project.id}/github`;
   const issues = [{ ...dependencyIssue(12), body: externalPlan.replace("None.", '[{"repository":"fictional/project","number":24,"requires":"merge"}]'), labels: [{ name: "ready-for-agent" }] }, { ...dependencyIssue(24), state: "closed" }, { ...dependencyIssue(36), state: "closed" }];
-  writeFileSync(f.state, JSON.stringify({ issues, pulls: [], events: [readinessEvent()], dependencies: { 24: [issues[2]] } }));
+  const data = { issues, pulls: [], events: [readinessEvent()], dependencies: { 24: [issues[2]] } };
+  writeFileSync(f.state, JSON.stringify(data));
   await f.post(route + "/configure", f.policy);
   await f.post(route + "/readiness", { expected_revision: null, account_profile_id: f.policy.account_profile_id, triage_labels: {}, blocked_label: "blocked" });
+  await renewLabelAfterObservation(f, route, data);
   expect((await f.post(route + "/preview", {})).status).toBe(200);
   const sources = (await f.get(route)).sources;
   expect(sources.map((source: { number: number }) => source.number)).toEqual([12, 24, 36]);
@@ -856,6 +907,7 @@ test("native relationship edits invalidate readiness and owner approval checks t
   const policy = (await f.post(route + "/readiness", { expected_revision: null, account_profile_id: f.policy.account_profile_id, triage_labels: {}, blocked_label: "blocked" })).body;
   const data = JSON.parse(readFileSync(f.state, "utf8")); data.issues[0].labels = [{ name: "ready-for-agent" }]; data.issues.push(dependencyIssue(24)); data.events = [readinessEvent()];
   writeFileSync(f.state, JSON.stringify(data));
+  await renewLabelAfterObservation(f, route, data);
   let source = (await f.post(route + "/sync", {})).body.sources.find((source: { number: number }) => source.number === 12);
   expect(source.readiness.eligible).toBe(true); expect(source.dependencies.edges).toEqual([]);
   data.dependencies = { 12: [dependencyIssue(24)] }; writeFileSync(f.state, JSON.stringify(data));
@@ -868,7 +920,7 @@ test("native relationship edits invalidate readiness and owner approval checks t
   data.dependencies = {}; writeFileSync(f.state, JSON.stringify(data));
   expect((await f.post(route + "/issues/12/approve", { source_revision: source.revision, policy_revision: policy.revision })).status).toBe(409);
   expect((await f.get(route)).sources.find((source: { number: number }) => source.number === 12).dependencies.fresh).toBe(false);
-  data.events.push(readinessEvent(2, "fictional-owner", "2026-10-02T12:00:00Z")); data.issues[0].updated_at = "2026-10-02T12:00:00Z"; writeFileSync(f.state, JSON.stringify(data));
+  data.issues[0].updated_at = "2026-10-02T12:00:00Z"; writeFileSync(f.state, JSON.stringify(data)); await renewLabelAfterObservation(f, route, data);
   source = (await f.post(route + "/sync", {})).body.sources.find((source: { number: number }) => source.number === 12);
   expect(source.readiness.eligible).toBe(true); expect(source.dependencies.edges).toEqual([]);
 });
@@ -1065,9 +1117,11 @@ test("prepared trusted issue plans retain explicit dependency requirements witho
   const f = await fixture(); const route = `/projects/${f.project.id}/github`;
   const issues = [{ ...dependencyIssue(12), labels: [{ name: "ready-for-agent" }] }, dependencyIssue(24)];
   issues[0]!.body = externalPlan.replace("None.", JSON.stringify([{ repository: "fictional/project", number: 24, requires: "release" }]));
-  writeFileSync(f.state, JSON.stringify({ issues, pulls: [], dependencies: {}, events: [readinessEvent()] }));
+  const data = { issues, pulls: [], dependencies: {}, events: [readinessEvent()] };
+  writeFileSync(f.state, JSON.stringify(data));
   await f.post(route + "/configure", f.policy);
   await f.post(route + "/readiness", { expected_revision: null, account_profile_id: f.policy.account_profile_id, triage_labels: {}, blocked_label: "blocked" });
+  await renewLabelAfterObservation(f, route, data);
   const source = (await f.post(route + "/sync", {})).body.sources.find((s: { number: number }) => s.number === 12);
   const prepared = await f.post(route + "/issues/12/prepare", { source_revision: source.revision });
   expect(prepared.body.sources.find((s: { number: number }) => s.number === 12).planning.condition).toBe("prepared");
