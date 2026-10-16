@@ -136,6 +136,7 @@ try {
       await advanced.locator(":scope > summary").click();
       const runHistory = advanced.locator("section").filter({ has: page.getByRole("heading", { name: "Run history", exact: true }) });
       const planningRun = runHistory.getByRole("article").filter({ has: page.locator("strong").filter({ hasText: /^to-spec$/ }) });
+      await planningRun.waitFor();
       assert.equal(await planningRun.count(), 1);
       await planningRun.getByText(`${planning.provider} · ${planning.machine_id} · working`, { exact: true }).waitFor();
       assert.deepEqual((await fixture.json(path)).runs.map((run: any) => [run.id, run.action, run.condition]), [[failed.id, "implement-spec", "failed"], [planning.id, "to-spec", "working"]]);

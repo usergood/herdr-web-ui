@@ -161,15 +161,21 @@ try {
       await stale.integrate(retried); const checked = await stale.json(`/runs/${retried.id}/checks`, {});
       await stale.review(retried, "standards"); await stale.review(retried, "spec");
       assert.equal((await stale.json(`/runs/${retried.id}/reconcile`, {})).condition, "ready");
-      await page.reload(); await page.getByText("Advanced controls", { exact: true }).last().click();
+      await page.reload();
+      const review = page.locator("details").filter({ has: page.locator(":scope > summary").filter({ hasText: /^Review changes$/ }) });
+      await review.locator(":scope > summary").click();
+      const resolve = review.getByRole("button", { name: "Resolve with fresh evidence", exact: true });
+      await resolve.waitFor();
       const resolved = page.waitForResponse(response => response.url().endsWith(`/comments/${detail.comments[0].id}/resolve`) && response.request().method() === "POST");
-      await page.getByRole("button", { name: "Resolve with fresh evidence", exact: true }).click();
+      await resolve.click();
       const resolution = await resolved;
       assert.equal(resolution.status(), 200); assert.equal(resolution.request().postDataJSON().head, checked.head);
       assert.equal((await resolution.json()).run_id, run.id);
       assert.equal((await stale.json(`/runs/${retried.id}/reconcile`, {})).condition, "completed");
       await page.reload();
+      const accepted = page.waitForResponse(response => response.url().endsWith(`/runs/${retried.id}/accept`) && response.request().method() === "POST");
       await page.getByRole("region", { name: "Next step", exact: true }).getByRole("button", { name: "Accept reviewed head", exact: true }).click();
+      assert.equal((await accepted).status(), 200);
       assert.equal((await stale.json(path)).approvals.some((approval: any) => approval.kind === "review" && approval.scope.startsWith(`Run ${retried.id};`)), true);
     } finally { await page.close(); stale.close(); }
   }
