@@ -1,12 +1,13 @@
-import { useEffect, useRef, useState, type MouseEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from "react";
 import { FolderOpen, X } from "lucide-react";
 
 import "./NewSessionDialog.css";
 
 import type { AgentKind } from "../../shared/protocol.ts";
+import { MAX_LABEL_CHARS } from "../../shared/labels.ts";
 import { ApiError } from "../lib/api.ts";
 import { AgentPicker, rememberAgent, rememberedAgent } from "./AgentPicker.tsx";
-import { DirectoryBrowser } from "./DirectoryBrowser.tsx";
+import { DirectoryBrowser, homeRelative } from "./DirectoryBrowser.tsx";
 import { RecentFolderChips } from "./RecentFolderChips.tsx";
 import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { useT } from "../lib/i18n.ts";
@@ -79,7 +80,8 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
   const prefillRef = useRef(prefill);
   prefillRef.current = prefill;
 
-  useEffect(() => {
+  // The previous launch may have left disabled fields: reset them before the opening paint.
+  useLayoutEffect(() => {
     if (!open) return;
     const filled = prefillRef.current;
     setCwd(filled?.cwd ?? defaultCwdRef.current ?? "");
@@ -201,7 +203,10 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
                   {t("Browse")}
                 </button>
               </div>
-              {browsing && <DirectoryBrowser start={cwd} onPick={(picked) => { setCwd(picked); setBrowsing(false); }} />}
+              {/* Browse updates Directory as you open folders, so Start uses what the path bar shows
+                  even when Use this folder was never pressed (issue #1162); a folder under home
+                  keeps the `~/…` form typed or picked, rather than turning absolute on opening Browse. */}
+              {browsing && <DirectoryBrowser start={cwd} onPick={(picked) => { setCwd(picked); setBrowsing(false); }} onFolder={(path, home) => setCwd(homeRelative(path, home))} />}
               <span className="field-hint">{t("absolute path or ~/…")}</span>
             </div>
           )}
@@ -215,6 +220,7 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
             <input
               className="input"
               value={name}
+              maxLength={MAX_LABEL_CHARS}
               disabled={fieldsDisabled}
               autoComplete="off"
               placeholder={tab ? String(tab.number) : directoryBasename(cwd)}

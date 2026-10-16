@@ -202,7 +202,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
     mergeEffects, mergeObservations,
     mergeFailure: (code: string | null) => { mergeFailure = code; },
     loseNextMerge: () => { loseMerge = true; },
-    releaseMerged: () => { for (const result of mergeResults.values()) Object.assign(result, { condition: "released", release_tag: "fixture-release", reason: null }); },
+    releaseMerged: (tag = "fixture-release") => { for (const result of mergeResults.values()) Object.assign(result, { condition: "released", release_tag: tag, reason: null }); },
     legacyHumanReview: () => { legacyHumanReview = true; },
     reviewUnavailable: (value: boolean) => { reviewUnavailable = value; },
     reviewHead: (head: string | null) => { reviewHead = head; },

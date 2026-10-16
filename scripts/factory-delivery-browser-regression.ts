@@ -9,7 +9,8 @@ import { paneRename } from "../server/herdr/client.ts";
 const f = await factoryDeliveryFixture();
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
-  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  const page = await context.newPage();
   page.setDefaultTimeout(10_000);
   const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
   const origin = `http://localhost:${f.app.port}`;
@@ -29,17 +30,24 @@ try {
   assert.equal(await milestone.count(), 1, "One Delivery milestone selector on mobile");
   assert.equal(await milestone.inputValue(), "release");
   assert(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth), "Delivery settings fit a phone");
-  await page.route("**/api/factory/project-discovery", route => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "owned_discovery_failed", message: "Owned Project discovery failed" } }) }));
-  await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.reload();
-  await dialog.getByRole("tab", { name: "Workflow", exact: true }).click();
-  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
-    await page.setViewportSize(viewport);
-    await dialog.getByRole("alert").filter({ hasText: "Owned Project discovery failed" }).waitFor();
-    assert.equal(await milestone.count(), 1);
-    assert.equal(await dialog.getByRole("status").filter({ hasText: "Owned Project discovery failed" }).count(), 0);
-  }
-  await page.unroute("**/api/factory/project-discovery");
+  const discoveryPage = await page.context().newPage();
+  try {
+    discoveryPage.setDefaultTimeout(10_000);
+    discoveryPage.on("pageerror", error => errors.push(error.message));
+    await discoveryPage.setViewportSize({ width: 1440, height: 1000 });
+    await discoveryPage.route("**/api/factory/project-discovery", route => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "owned_discovery_failed", message: "Owned Project discovery failed" } }) }));
+    await discoveryPage.goto(`${origin}/#projects/${f.project.id}`);
+    await discoveryPage.getByRole("button", { name: `Project settings for ${f.project.name}`, exact: true }).click();
+    const discoveryDialog = discoveryPage.getByRole("dialog", { name: "Project settings", exact: true });
+    await discoveryDialog.getByRole("tab", { name: "Workflow", exact: true }).click();
+    for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+      await discoveryPage.setViewportSize(viewport);
+      await discoveryDialog.getByRole("alert").filter({ hasText: "Owned Project discovery failed" }).waitFor();
+      assert.equal(await discoveryDialog.getByRole("combobox", { name: "Delivery milestone", exact: true }).count(), 1);
+      assert.equal(await discoveryDialog.getByRole("status").filter({ hasText: "Owned Project discovery failed" }).count(), 0);
+    }
+  } finally { await discoveryPage.close(); }
+
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "hidden" });
   const run = await f.start();

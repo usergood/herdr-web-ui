@@ -22,3 +22,11 @@ it("refuses a file over the attachment limit before any of it is sent, and sends
   expect(await uploadPaneImage("p1", atLimit)).toBe("/work/.herdr-web-ui/site.zip");
   expect(requests).toEqual(["/api/pane/image"]);
 });
+
+it("refuses a 40 MiB file in the browser with the 32 MB limit named, before upload (regression: 8 MB limit on main)", async () => {
+  globalThis.fetch = (async (): Promise<Response> => { throw new Error("must not upload"); }) as unknown as typeof fetch;
+  const refused = await uploadPaneImage("p1", new File([new Uint8Array(40 * 1024 * 1024)], "big.zip", { type: "application/zip" })).catch((error: unknown) => error);
+  expect(refused).toBeInstanceOf(AttachmentTooLargeError);
+  expect((refused as Error).message).toContain("32 MB");
+  expect(MAX_ATTACHMENT_BYTES).toBe(32 * 1024 * 1024);
+});

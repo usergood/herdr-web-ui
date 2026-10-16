@@ -1,8 +1,10 @@
 import type { AccountBindingSnapshot } from "../shared/accounts.ts";
-import type { FactoryCheck, FactoryHumanApproval, FactoryMergeResult, FactoryProject, FactoryPullRequest, FactoryReviewEvidence, FactoryRun, FactoryWorker } from "../shared/factory.ts";
+import type { FactoryCheck, FactoryHumanApproval, FactoryMergeResult, FactoryProject, FactoryPullRequest, FactoryReviewEvidence, FactoryRun, FactoryWorker, Implementation } from "../shared/factory.ts";
 import type { ProjectGitHubPolicy } from "../shared/github-project.ts";
 import type { MachineAccounts } from "./accounts.ts";
 import { FactoryError, git } from "./factory-host.ts";
+import { containsDeliveryChange, type DeliveryTree } from "./factory-delivery.ts";
+import { captureReview } from "./factory-review.ts";
 import type { FactoryStore } from "./factory-store.ts";
 
 type Connection<T> = { nodes: T[]; pageInfo: { hasNextPage: boolean } };
@@ -36,13 +38,15 @@ export class FactoryMerge {
   }
   private async perform(id: string, body: Record<string, unknown>): Promise<FactoryMergeResult> {
     const run = await this.observe(id);
-    const frozen = run.manifest as { project?: FactoryProject; account_snapshot?: AccountBindingSnapshot; github_policy?: ProjectGitHubPolicy | null };
+    const frozen = run.manifest as { project?: FactoryProject; account_snapshot?: AccountBindingSnapshot; github_policy?: ProjectGitHubPolicy | null; implementation?: Implementation; checkout?: { repository?: string } };
     const policy = frozen.project?.pull_request;
     const approval = body.approval as FactoryHumanApproval | undefined;
     const pr = body.pull_request as FactoryPullRequest | undefined;
     const publication = pr ? this.store.get<FactoryPullRequest & { condition: string }>("host_publications", `${id}:${pr.head}`) : null;
     if (!this.accounts || !policy || !frozen.account_snapshot || run.action !== "implement-spec" || !run.worktree || !run.branch || run.condition !== "ready") throw new FactoryError("merge_unconfigured", "Merge requires a resting owned Run, frozen destination and verified GitHub account", 409);
     if (!approval || approval.provenance?.kind !== "owner_button" || !approval.provenance.origin || approval.run_id !== id || approval.implementation_id !== run.implementation_id || approval.head !== body.head || !approval.snapshot_id || !approval.review_id || !pr || pr.run_id !== id || pr.head !== body.head || pr.repository !== policy.repository || pr.base_branch !== policy.base_branch || pr.branch !== run.branch || !publication || publication.condition !== "published" || publication.number !== pr.number || publication.head !== pr.head || publication.repository !== pr.repository || publication.base_branch !== pr.base_branch || publication.branch !== pr.branch || pr.url !== `https://github.com/${policy.repository}/pull/${pr.number}`) throw new FactoryError("merge_authority_changed", "Owner authority must match the exact published candidate and frozen target", 409);
+    const scope = frozen.implementation?.delivery_scope;
+    if (scope && (scope.github_repository && scope.github_repository !== pr.repository || scope.branch && scope.branch !== pr.base_branch || scope.repository && scope.repository !== frozen.checkout?.repository)) throw new FactoryError("merge_authority_changed", "The published candidate differs from the Assignment's frozen delivery destination", 409);
     const check = this.store.list<FactoryCheck>("host_checks", id).filter(c => c.worker_id === null).at(-1);
     const reports = Array.isArray(body.reports) ? body.reports.map(r => r && typeof r.worker_id === "string" ? this.store.get<FactoryReviewEvidence>("host_review_evidence", r.worker_id) : null) : [];
     const latestReports = this.store.list<FactoryReviewEvidence>("host_review_evidence", id);
@@ -73,6 +77,11 @@ export class FactoryMerge {
       assertLive();
     };
     await assertCurrent();
+    const baseline = scope ? scope.base : run.base;
+    if (!baseline) throw new FactoryError("merge_coverage_unverified", "The Assignment has no retained delivery baseline", 409);
+    const candidate = await captureReview(run.worktree, baseline, "branch");
+    if (candidate.head !== pr.head || !candidate.files.length || candidate.files.some(file => file.new_oid === undefined || file.new_mode === undefined)) throw new FactoryError("merge_coverage_unverified", "The approved candidate's intended changes could not be verified", 409);
+    const changes = candidate.files.map(file => ({ path: file.path, oid: file.new_oid!, mode: file.new_mode!, ...(file.old_path ? { old_path: file.old_path } : {}) }));
     const key = `${id}:${pr.head}`;
     let intent = this.store.get<Intent>("host_merges", key);
     if (intent && (intent.approval.id !== approval.id || JSON.stringify(intent.pr) !== JSON.stringify(pr))) {
@@ -84,6 +93,11 @@ export class FactoryMerge {
     intent ??= { id: key, approval, pr, condition: "prepared" };
     this.store.put("host_merges", intent, id);
     const api = async (path: string, args: string[] = [], guard = assertLive) => { const value = await this.accounts!.github(frozen.account_snapshot!, ["api", path, ...args], guard); assertLive(); return value; };
+    const containsChanges = async (ref: string) => {
+      const tree = await api(`repos/${pr.repository}/git/trees/${encodeURIComponent(ref)}?recursive=1`) as DeliveryTree;
+      if (tree?.truncated !== false || !Array.isArray(tree.tree)) throw new FactoryError("merge_coverage_unverified", "GitHub delivery tree evidence is incomplete", 409);
+      return changes.every(file => containsDeliveryChange(tree, file));
+    };
     const readPull = async () => {
       const [owner, name] = policy.repository.split("/");
       const response = await api("graphql", ["-f", `query=query { repository(owner:${JSON.stringify(owner)},name:${JSON.stringify(name)}) { pullRequest(number:${pr.number}) { ${fields} } } }`]) as { errors?: unknown; data?: { repository?: { pullRequest?: Pull } } };
@@ -129,16 +143,22 @@ export class FactoryMerge {
       return ["identical", "ahead"].includes(compare.status) && compare.merge_base_commit?.sha === sha;
     };
     const target = await api(`repos/${pr.repository}/commits/${encodeURIComponent(`heads/${pr.base_branch}`)}`) as { sha: string };
-    if (!/^[a-f0-9]{40}$/.test(target.sha) || !await contains(target.sha)) throw new FactoryError("merge_coverage_unverified", "The authorized target does not contain the PR's confirmed merge commit", 409);
+    if (!/^[a-f0-9]{40}$/.test(target.sha) || !await contains(target.sha) || !await containsChanges(sha) || !await containsChanges(target.sha)) throw new FactoryError("merge_coverage_unverified", "The confirmed merge and authorized target do not contain all approved changes", 409);
+    const latestTarget = await api(`repos/${pr.repository}/commits/${encodeURIComponent(`heads/${pr.base_branch}`)}`) as { sha: string };
+    if (latestTarget.sha !== target.sha) throw new FactoryError("merge_coverage_unverified", "The delivery branch changed during verification; observe its current content again", 409);
     this.store.put("host_merges", { ...intent, condition: "verified", merge_sha: sha }, id);
     result.merge_sha = sha; result.condition = "merged"; result.reason = null;
-    if (frozen.project?.delivery_policy === "release") {
+    if ((frozen.implementation?.delivery_scope?.milestone ?? frozen.project?.delivery_policy) === "release") {
       result.condition = "awaiting_release"; result.reason = "Merge verified; waiting for a published release containing it";
       const releases = await api(`repos/${pr.repository}/releases`) as { draft: boolean; prerelease: boolean; tag_name: string }[];
       if (!Array.isArray(releases)) throw new FactoryError("merge_coverage_unverified", "The published release inventory could not be verified", 409);
       for (const release of releases.slice(0, 100)) if (!release.draft && !release.prerelease && typeof release.tag_name === "string" && release.tag_name) {
         const commit = await api(`repos/${pr.repository}/commits/${encodeURIComponent(`tags/${release.tag_name}`)}`) as { sha: string };
-        if (/^[a-f0-9]{40}$/.test(commit.sha) && await contains(commit.sha)) { result.condition = "released"; result.release_tag = release.tag_name; result.reason = null; break; }
+        if (/^[a-f0-9]{40}$/.test(commit.sha) && await contains(commit.sha) && await containsChanges(commit.sha)) {
+          const latest = await api(`repos/${pr.repository}/commits/${encodeURIComponent(`tags/${release.tag_name}`)}`) as { sha: string };
+          if (latest.sha !== commit.sha) throw new FactoryError("merge_coverage_unverified", "The release tag changed during delivery verification; observe it again", 409);
+          result.condition = "released"; result.release_tag = release.tag_name; result.reason = null; break;
+        }
       }
     }
     return result;

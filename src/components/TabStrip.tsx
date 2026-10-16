@@ -1,16 +1,18 @@
 /**
  * Herdr's tab row, visible for a single tab too. Left-click selects; right-click opens
- * New tab / Rename / Close at the pointer. Pane actions belong to PaneCanvas.
- * A phone keeps an ellipsis on the selected tab as a touch entry to the same menu. Where the
+ * New tab with agent / Rename / Close at the pointer. The + opens a shell tab at once, as herdr's
+ * own new tab does. Pane actions belong to PaneCanvas.
+ * A phone keeps an ellipsis on the selected tab as a touch entry to its trimmed menu. Where the
  * canvas shows a split tab's panes one at a time (SOLO_PANE_QUERY), that menu lists them first.
  * That menu also carries the open pane's actions, so a lone pane shows no ellipsis of its own.
  */
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
-import { ArrowLeft, ArrowRight, Ellipsis, Pencil, Plus, Terminal, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Bot, Ellipsis, Pencil, Plus, Terminal, X } from "lucide-react";
 
 import "./TabStrip.css";
 
 import type { HerdrPane, HerdrTab, PaneInfo, SessionSnapshot, WorkspaceInfo } from "../../shared/protocol.ts";
+import { MAX_LABEL_CHARS } from "../../shared/labels.ts";
 import { ApiError } from "../lib/api.ts";
 import { useFacesArrived } from "../lib/fontFaces.ts";
 import { focusWorkspaceListToggle } from "../lib/focus.ts";
@@ -23,24 +25,26 @@ import { rosterPanes } from "../lib/dagPane.ts";
 import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { useTabReorder } from "../lib/useTabReorder.ts";
-import { paneStatus, rollupStatus } from "../lib/status.ts";
+import { indicatorGlyph, paneStatus, rollupStatus } from "../lib/status.ts";
+import { useSettings } from "../lib/settings.ts";
 import { AgentMark } from "./AgentMark.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { displayPaneTitle } from "./Sidebar.tsx";
 import { RowMenu, type RowMenuItem } from "./RowMenu.tsx";
 import { paneDrag } from "../lib/paneDrag.ts";
+import { lastViewedPane, rememberViewedPane } from "../lib/lastViewedPane.ts";
 
 const said = (reason: unknown): string => reason instanceof ApiError ? reason.detail : reason instanceof Error ? reason.message : String(reason);
-
-/** the pane each tab was last seen on, per PC: a tab clicked again opens where it was left */
-const lastViewed = new Map<string, string>();
 
 export interface TabStripProps {
   snapshot: SessionSnapshot;
   workspace: WorkspaceInfo;
   selectedPane: PaneInfo;
   onSelectPane: (paneId: string) => void;
+  /** the New tab dialog, where an agent is picked */
   onNewTab: () => void;
+  /** a shell tab in this workspace, with no dialog; rejects with herdr's refusal */
+  onNewTerminal: () => Promise<void>;
   /** the open pane's actions (PaneCanvas), offered in the touch menu */
   paneActions?: (paneId: string) => RowMenuItem[];
   /** the panel the tabs control: each half of a split view has its own (lib/split.ts) */
@@ -49,8 +53,9 @@ export interface TabStripProps {
   splitDrag?: boolean;
 }
 
-export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNewTab, paneActions, panelId = PANE_TABPANEL_ID, splitDrag = false }: TabStripProps) {
+export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNewTab, onNewTerminal, paneActions, panelId = PANE_TABPANEL_ID, splitDrag = false }: TabStripProps) {
   const t = useT();
+  const { settings } = useSettings();
   const machineId = useMachineId();
   const { closeTab, renameTab, moveTab } = useMachineApi();
   const touchMenu = useMediaQuery("(pointer: coarse), (max-width: 768px)");
@@ -104,7 +109,8 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   const nameOf = (tab: HerdrTab): string => sent?.tabId === tab.tab_id ? sent.label : tabLabel(tab, t, tabs.findIndex((candidate) => candidate.tab_id === tab.tab_id) + 1);
 
   useEffect(() => {
-    lastViewed.set(`${machineId}:${selectedPane.tab_id}`, selectedPane.pane_id);
+    // the pane each tab was last seen on, per PC: a tab clicked again opens where it was left
+    rememberViewedPane("tab", machineId, selectedPane.tab_id, selectedPane.pane_id);
   }, [machineId, selectedPane.tab_id, selectedPane.pane_id]);
 
   // a picker, a name field or a question whose tab left (closed in the TUI) goes with it
@@ -201,7 +207,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   const paneFor = (tab: HerdrTab): PaneInfo | undefined => {
     const own = panesOf(tab);
     const pick = (id: string | null | undefined) => (id ? own.find((pane) => pane.pane_id === id) : undefined);
-    return pick(lastViewed.get(`${machineId}:${tab.tab_id}`))
+    return pick(lastViewedPane("tab", machineId, tab.tab_id))
       ?? pick(snapshot.layouts?.find((layout) => layout.tab_id === tab.tab_id)?.focused_pane_id)
       ?? own.find((pane) => pane.focused)
       ?? own[0];
@@ -218,9 +224,10 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   // an empty name is not sent: herdr would keep it, and its own tab row would show nothing
   const saveRename = (tab: HerdrTab): void => {
     const label = editing?.value.trim() ?? "";
+    if (label === "") { setError(t("A tab needs a name.")); return; }
     refocus.current = tab.tab_id;
     setEditing(null);
-    if (label === "" || label === nameOf(tab)) return;
+    if (label === nameOf(tab)) return;
     setSent({ tabId: tab.tab_id, label });
     void renameTab(tab.tab_id, label).catch((reason: unknown) => {
       if (latest.current.machineId !== machineId || latest.current.workspaceId !== workspace.workspace_id) return;
@@ -314,10 +321,14 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
 
   // Native tab menu: pane actions live on the pane itself. A split tab drawn one pane at a time
   // has no other way to its panes, so they lead its menu, the open one marked.
-  // The touch menu also holds the open pane's actions, between its panes and the tab's own.
+  // The touch menu also holds the open pane's actions, between its panes and the tab's own,
+  // A one-pane-at-a-time canvas omits split and zoom, but must keep unzoom to free the other panes.
   const pickerItems = (tab: HerdrTab, touch: boolean): RowMenuItem[] => {
     const own = soloPanes ? panesOf(tab) : [];
-    const paneItems = touch && tab.tab_id === selectedPane.tab_id ? paneActions?.(selectedPane.pane_id) ?? [] : [];
+    const layout = snapshot.layouts?.find((entry) => entry.tab_id === tab.tab_id);
+    const paneItems = touch && tab.tab_id === selectedPane.tab_id
+      ? (paneActions?.(selectedPane.pane_id) ?? []).filter((item) => !soloPanes
+        || (item.id === "zoom" ? layout?.zoomed : item.id !== "split-right" && item.id !== "split-down")) : [];
     const groups: RowMenuItem[][] = [
       own.length < 2 ? [] : own.map((pane): RowMenuItem => ({
         id: `pane:${pane.pane_id}`, label: displayPaneTitle(pane), icon: Terminal,
@@ -329,12 +340,13 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     ].filter((group) => group.length > 0);
     return groups.flatMap((group, at) => at === 0 ? group : group.map((item, index) => index === 0 ? { ...item, divider: true } : item));
   };
+  // the strip's + opens a shell tab; the menu keeps the dialog, where an agent is picked
   const tabActions = (tab: HerdrTab): RowMenuItem[] => [
     ...(!reorder.moving && tabs.findIndex((entry) => entry.tab_id === tab.tab_id) > 0
       ? [{ id: "move-left", label: t("Move tab left"), icon: ArrowLeft, run: () => reorder.moveAdjacent(tab.tab_id, -1) }] : []),
     ...(!reorder.moving && tabs.findIndex((entry) => entry.tab_id === tab.tab_id) < tabs.length - 1
       ? [{ id: "move-right", label: t("Move tab right"), icon: ArrowRight, run: () => reorder.moveAdjacent(tab.tab_id, 1) }] : []),
-    { id: "new-tab", label: t("New tab"), icon: Plus, run: onNewTab },
+    { id: "new-agent-tab", label: t("New tab with agent…"), icon: Bot, run: onNewTab },
     { id: "rename-tab", label: t("Rename tab"), icon: Pencil, run: () => beginRename(tab) },
     { id: "close-tab", label: t("Close tab"), icon: X, danger: true, run: () => requestClose(tab) },
   ];
@@ -363,7 +375,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
                   aria-label={t("Tab name")}
                   autoFocus
                   size={Math.max(8, editing.value.length + 1)}
-                  maxLength={80}
+                  maxLength={MAX_LABEL_CHARS}
                   placeholder={name}
                   value={editing.value}
                   onFocus={(event) => event.currentTarget.select()}
@@ -407,7 +419,9 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
                   // the middle button closes a tab, as it does a browser's
                   onAuxClick={(event) => { if (event.button === 1) { event.preventDefault(); requestClose(tab); } }}
                 >
-                  {(status === "working" || status === "blocked" || status === "waiting" || status === "done") && <span className="tab-strip-dot" data-status={status} aria-hidden="true" />}
+                  {(status === "working" || status === "blocked" || status === "waiting" || status === "done") && (settings.statusIndicators === "classic"
+                    ? <span className="tab-strip-dot" data-status={status} aria-hidden="true" />
+                    : <span className="tab-strip-dot tab-strip-glyph" data-status={status} aria-hidden="true">{indicatorGlyph(status, settings.statusIndicators)}</span>)}
                   <span className="tab-strip-label">{name}</span>
                 </button>
               )}
@@ -417,7 +431,8 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
             </div>
           );
         })}
-        <button type="button" className="tab-strip-add" aria-label={t("New tab")} title={t("New tab")} onClick={onNewTab}>
+        <button type="button" className="tab-strip-add" aria-label={t("New terminal")} title={t("New terminal")}
+          onClick={() => { setError(null); void onNewTerminal().catch((reason: unknown) => setError(t("New terminal failed: {reason}", { reason: said(reason) }))); }}>
           <Plus aria-hidden="true" />
         </button>
         {error && <span className="tab-strip-error" role="alert">{error}</span>}

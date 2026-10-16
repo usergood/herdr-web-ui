@@ -16,6 +16,122 @@ function temp(prefix: string): string {
   return root;
 }
 
+describe("omo's loaded commands", () => {
+  const put = (path: string, text: string) => { mkdirSync(join(path, ".."), { recursive: true }); writeFileSync(path, text); };
+  const skill = (root: string, name: string) => put(join(root, name, "SKILL.md"), `---\nname: ${name}\ndescription: From ${root}\n---\n`);
+  const fixture = () => {
+    const home = temp("omo-commands-");
+    const agentDir = join(home, "custom-agent");
+    const pluginDir = join(home, "plugin");
+    return { home, agentDir, pluginDir, skillRoots: [join(agentDir, "skills"), join(home, ".agents", "skills"), join(pluginDir, "skills")] };
+  };
+
+  it("lists omo builtins and all three roots, with first-root precedence", () => {
+    const { home, agentDir, pluginDir, skillRoots } = fixture();
+    skillRoots.forEach((root, index) => { skill(root, `root-${index}`); skill(root, "shared"); });
+    const commands = paneCommands("omo", null, home, { agentDir, pluginDir });
+    const builtins = commands.filter((command) => command.source === "builtin").map((command) => command.name);
+    expect(builtins).toEqual(["changelog", "clone", "compact", "copy", "exit", "export", "favorite-models", "fork", "hotkeys", "import", "login", "logout", "model", "name", "new", "quit", "reload", "rename", "resume", "scoped-models", "session", "sessions", "settings", "share", "thinking", "trust"]);
+    expect(commands.filter((command) => command.source === "skill").map((command) => command.name)).toEqual(["skill:root-0", "skill:root-1", "skill:root-2", "skill:shared"]);
+    expect(commands.find((command) => command.name === "skill:shared")?.description).toBe(`From ${join(agentDir, "skills")}`);
+    // the person's own roots, then omo's bundled one; a name both hold is the person's
+    expect(commands.filter((command) => command.source === "skill").map((command) => [command.name, command.origin])).toEqual([["skill:root-0", "user"], ["skill:root-1", "user"], ["skill:root-2", "bundled"], ["skill:shared", "user"]]);
+    expect(paneCommands("claude", null, home).some((command) => command.origin !== undefined)).toBe(false);
+  });
+
+  it("uses default roots without a plugin and excludes untrusted project skills", () => {
+    const home = temp("omo-default-");
+    const cwd = temp("omo-project-");
+    skill(join(home, ".omo", "agent", "skills"), "personal");
+    skill(join(home, ".agents", "skills"), "global");
+    skill(join(cwd, ".omo", "skills"), "project");
+    skill(join(cwd, ".agents", "skills"), "ancestor");
+    const commands = paneCommands("omo", cwd, home);
+    expect(commands.filter((command) => command.source === "skill").map((command) => command.name)).toEqual(["skill:global", "skill:personal"]);
+    expect(paneCommands("omo", cwd, temp("omo-empty-")).every((command) => command.source === "builtin")).toBe(true);
+    expect(paneCommands("pi", cwd, home).some((command) => command.name === "favorite-models")).toBe(false);
+  });
+
+  it("recurses in every root but stops at a declared skill", () => {
+    const { home, agentDir, pluginDir, skillRoots } = fixture();
+    skillRoots.forEach((root, index) => {
+      skill(join(root, "group"), `inner-${index}`);
+      skill(root, `outer-${index}`);
+      skill(join(root, `outer-${index}`), `hidden-${index}`);
+    });
+    const commands = paneCommands("omo", null, home, { agentDir, pluginDir });
+    expect(commands.filter((command) => command.source === "skill").map((command) => command.name)).toEqual(["skill:inner-0", "skill:inner-1", "skill:inner-2", "skill:outer-0", "skill:outer-1", "skill:outer-2"]);
+  });
+
+  it("applies pi and agents loose-markdown modes with parent-directory names", () => {
+    const { home, agentDir, pluginDir, skillRoots } = fixture();
+    for (const root of skillRoots) {
+      put(join(root, "solo.md"), "---\ndescription: Root markdown\n---\n");
+      put(join(root, "group", "inner.md"), "---\ndescription: Nested markdown\n---\n");
+    }
+    const commands = paneCommands("omo", null, home, { agentDir, pluginDir });
+    expect(commands.filter((command) => command.source === "skill")).toEqual([
+      { name: "skill:group", description: "Nested markdown", source: "skill", origin: "user" },
+      { name: "skill:skills", description: "Root markdown", source: "skill", origin: "user" },
+    ]);
+  });
+
+  it("rejects absent and blank descriptions, including loose markdown", () => {
+    const { home, agentDir } = fixture();
+    for (const filename of ["missing/SKILL.md", "blank/SKILL.md", "missing.md", "blank.md"]) {
+      put(join(agentDir, "skills", filename), `---\nname: invalid\n${filename.startsWith("blank") ? 'description: "   "\\n' : ""}---\nBody is not a description.\n`);
+    }
+    expect(paneCommands("omo", null, home, { agentDir }).filter((command) => command.source === "skill")).toEqual([]);
+  });
+
+  it("reads long UTF-8 frontmatter without interpreting the skill body", () => {
+    const { home, agentDir } = fixture();
+    const description = "한".repeat(3000);
+    put(join(agentDir, "skills", "long", "SKILL.md"), `---\ndescription: ${description}\n---\nname: body-is-not-metadata\n`);
+    expect(paneCommands("omo", null, home, { agentDir }).filter((command) => command.source === "skill")).toEqual([
+      { name: "skill:long", description, source: "skill", origin: "user" },
+    ]);
+  });
+
+  it("honours root and nested ignores without hiding sibling paths", () => {
+    const { home, agentDir } = fixture();
+    const root = join(agentDir, "skills");
+    skill(root, "hidden");
+    skill(join(root, "group"), "secret");
+    skill(join(root, "other"), "secret");
+    put(join(root, ".gitignore"), "hidden/\n");
+    put(join(root, "group", ".gitignore"), "secret/\n");
+    const commands = paneCommands("omo", null, home, { agentDir });
+    expect(commands.filter((command) => command.source === "skill").map((command) => command.name)).toEqual(["skill:secret"]);
+    expect(commands.find((command) => command.name === "skill:secret")?.description).toBe(`From ${join(root, "other")}`);
+  });
+
+  it("re-includes an allowed directory and its contents after a wildcard ignore", () => {
+    const { home, agentDir } = fixture();
+    const root = join(agentDir, "skills");
+    skill(root, "keep");
+    skill(root, "hidden");
+    put(join(root, ".ignore"), "*\n!keep/\n!keep/**\n");
+    expect(paneCommands("omo", null, home, { agentDir }).filter((command) => command.source === "skill").map((command) => command.name)).toEqual(["skill:keep"]);
+  });
+
+  it("follows skill links and skips broken links, cycles, hidden directories and node_modules", () => {
+    const { home, agentDir } = fixture();
+    const root = join(agentDir, "skills");
+    const shared = temp("omo-linked-");
+    skill(shared, "linked");
+    mkdirSync(root, { recursive: true });
+    symlinkSync(join(shared, "linked"), join(root, "alias"), "dir");
+    symlinkSync(join(shared, "absent"), join(root, "broken"), "dir");
+    symlinkSync(".", join(root, "cycle"), "dir");
+    skill(join(root, ".hidden"), "hidden");
+    skill(join(root, "node_modules"), "dependency");
+    skill(root, "fd-hidden");
+    put(join(root, ".fdignore"), "fd-hidden/\n");
+    expect(paneCommands("omo", null, home, { agentDir }).filter((command) => command.source === "skill").map((command) => command.name)).toEqual(["skill:linked"]);
+  });
+});
+
 describe("paneCommands", () => {
   it("returns sorted built-ins for supported agents and none for unknown agents", () => {
     const claude = paneCommands("claude", null, temp("commands-home-"));
@@ -48,6 +164,68 @@ describe("paneCommands", () => {
 
 describe("skills and plugins", () => {
   const write = (path: string, text: string) => { mkdirSync(join(path, ".."), { recursive: true }); writeFileSync(path, text); };
+
+  it("offers linked skills and commands while skipping broken links and cycles", () => {
+    const home = temp("linked-home-");
+    const cwd = temp("linked-project-");
+    const shared = temp("linked-resources-");
+    write(join(shared, "skill", "SKILL.md"), "---\ndescription: Shared skill\n---\n");
+    write(join(shared, "review.md"), "Shared review\n");
+    write(join(shared, "team", "check.md"), "Shared check\n");
+    symlinkSync(".", join(shared, "team", "cycle"), "dir");
+    const plugin = join(home, "plugin");
+    for (const root of [join(home, ".claude"), join(cwd, ".claude"), join(home, ".codex"), join(cwd, ".codex"), join(home, ".agents"), join(home, ".pi", "agent"), plugin]) {
+      const skills = join(root, "skills");
+      mkdirSync(skills, { recursive: true });
+      symlinkSync(join(shared, "skill"), join(skills, "linked"), "dir");
+      symlinkSync(join(shared, "missing"), join(skills, "broken"), "dir");
+      symlinkSync("cycle", join(skills, "cycle"), "dir");
+    }
+    for (const commands of [join(home, ".claude", "commands"), join(cwd, ".claude", "commands"), join(home, ".codex", "prompts"), join(plugin, "commands")]) {
+      mkdirSync(commands, { recursive: true });
+      symlinkSync(join(shared, "review.md"), join(commands, "review.md"));
+      symlinkSync(join(shared, "missing.md"), join(commands, "broken.md"));
+      symlinkSync("cycle.md", join(commands, "cycle.md"));
+      symlinkSync(join(shared, "team"), join(commands, "team"), "dir");
+      symlinkSync(join(shared, "team"), join(commands, "alias"), "dir");
+      symlinkSync(".", join(commands, "cycle"), "dir");
+    }
+    write(join(home, ".claude", "plugins", "installed_plugins.json"), JSON.stringify({ plugins: { "tools@market": [{ installPath: plugin }] } }));
+    write(join(home, ".claude", "settings.json"), JSON.stringify({ enabledPlugins: { "tools@market": true } }));
+
+    expect(paneCommands("claude", cwd, home).filter((command) => command.source !== "builtin")).toEqual([
+      { name: "alias:check", description: "Shared check", source: "project" },
+      { name: "alias:check", description: "Shared check", source: "user" },
+      { name: "linked", description: "Shared skill", source: "skill" },
+      { name: "linked", description: "Shared skill", source: "skill" },
+      { name: "review", description: "Shared review", source: "project" },
+      { name: "review", description: "Shared review", source: "user" },
+      { name: "team:check", description: "Shared check", source: "project" },
+      { name: "team:check", description: "Shared check", source: "user" },
+      { name: "tools:alias:check", description: "Shared check", source: "plugin" },
+      { name: "tools:linked", description: "Shared skill", source: "plugin" },
+      { name: "tools:review", description: "Shared review", source: "plugin" },
+      { name: "tools:team:check", description: "Shared check", source: "plugin" },
+    ]);
+    expect(paneCommands("codex", cwd, home).filter((command) => command.source !== "builtin")).toEqual([
+      { name: "linked", description: "Shared skill", source: "skill", trigger: "$" },
+      { name: "linked", description: "Shared skill", source: "skill", trigger: "$" },
+      { name: "prompts:alias:check", description: "Shared check", source: "user" },
+      { name: "prompts:review", description: "Shared review", source: "user" },
+      { name: "prompts:team:check", description: "Shared check", source: "user" },
+    ]);
+    const previousPiAgentDir = process.env["PI_CODING_AGENT_DIR"];
+    process.env["PI_CODING_AGENT_DIR"] = join(home, ".pi", "agent");
+    try {
+      expect(paneCommands("pi", null, home).filter((command) => command.source !== "builtin")).toEqual([
+        { name: "skill:linked", description: "Shared skill", source: "skill" },
+        { name: "skill:linked", description: "Shared skill", source: "skill" },
+      ]);
+    } finally {
+      if (previousPiAgentDir === undefined) delete process.env["PI_CODING_AGENT_DIR"];
+      else process.env["PI_CODING_AGENT_DIR"] = previousPiAgentDir;
+    }
+  });
 
   it("offers Claude's skills, user and project, and the enabled plugins' skills and commands", () => {
     const home = temp("skills-home-");

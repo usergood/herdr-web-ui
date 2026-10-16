@@ -16,7 +16,8 @@ describe("starting an Inbox idea through the public API", () => {
       version: async () => "owned-child-fixture",
       createWorkspace: async options => { const result = await workspaceCreate(options); owned.push(result.workspace.workspace_id); return result; },
       startAgent: async options => { await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "claude", state: "working" }); },
-      paneState: async id => { const pane = (await sessionSnapshot()).panes.find(pane => pane.pane_id === id); return pane ? { ...pane, background_tasks: id === backgroundPane ? background : 0, background_wait: id === backgroundPane && background > 0 ? true as const : undefined } : null; },
+      snapshot: async () => { const snapshot = await sessionSnapshot(); return { ...snapshot, panes: snapshot.panes.map(pane => pane.pane_id === backgroundPane && background > 0 ? { ...pane, agent_status: "idle" as const } : pane) }; },
+      paneState: async id => { const pane = (await sessionSnapshot()).panes.find(pane => pane.pane_id === id); return pane ? { ...pane, ...(id === backgroundPane && background > 0 ? { agent_status: "idle" as const } : {}), background_tasks: id === backgroundPane ? background : 0, background_wait: id === backgroundPane && background > 0 ? true as const : undefined } : null; },
     } } });
     const post = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
     try {
@@ -29,14 +30,20 @@ describe("starting an Inbox idea through the public API", () => {
       const ready = await post(`/runs/${run.id}/reconcile`, {}).then(response => response.json()); expect(ready.condition).toBe("ready");
       const worker = await post(`/runs/${run.id}/workers`, { role: "standards", idempotency_key: "child" }).then(response => response.json()); expect(worker.condition).toBe("working");
       const startB = () => post(`/implementations/${b.id}/runs`, { action: "work", idempotency_key: "b" });
-      expect((await startB()).status).toBe(409);
+      const queuedB = await startB(); expect(queuedB.status).toBe(202);
+      expect(await queuedB.json()).toMatchObject({ condition: "queued", reason: expect.stringContaining("1/1") });
+      expect((await fetch(`http://localhost:${app.port}/api/factory/implementations/${b.id}`).then(response => response.json())).runs).toEqual([]);
       backgroundPane = worker.pane_id; background = 1;
-      await herdrRpc("pane.report_agent", { pane_id: worker.pane_id, source: "manual", agent: "claude", state: "idle" });
+      // The native fixture exposes idle foreground plus background work while the
+      // bridge's aggregate native status truthfully remains working.
       const observe = () => post(`/runs/${run.id}/workers/${worker.id}/reconcile`, {}).then(response => response.json());
-      expect((await observe()).condition).toBe("working"); expect((await startB()).status).toBe(409);
-      background = 0; expect((await observe()).condition).toBe("ready"); expect((await startB()).status).toBe(202);
+      expect((await observe()).condition).toBe("working");
+      expect(await startB().then(response => response.json())).toMatchObject({ condition: "queued", reason: expect.stringContaining("1/1") });
+      expect((await fetch(`http://localhost:${app.port}/api/factory/implementations/${b.id}`).then(response => response.json())).runs).toEqual([]);
+      background = 0; await herdrRpc("pane.report_agent", { pane_id: worker.pane_id, source: "manual", agent: "claude", state: "idle" }); expect((await observe()).condition).toBe("ready"); expect(await startB().then(response => response.json())).toMatchObject({ condition: "working" });
       // A ready parent cannot allocate another child when a different task owns the sole slot.
-      const blockedChild = await post(`/runs/${run.id}/workers`, { role: "spec", idempotency_key: "blocked-child" }); expect(blockedChild.status).toBe(409); expect((await blockedChild.json()).error.code).toBe("capacity_exhausted");
+      const blockedChild = await post(`/runs/${run.id}/workers`, { role: "spec", idempotency_key: "blocked-child" }); expect(blockedChild.status).toBe(202); expect(await blockedChild.json()).toMatchObject({ condition: "queued", run_id: run.id, reason: expect.stringContaining("1/1") });
+      expect((await fetch(`http://localhost:${app.port}/api/factory/implementations/${a.id}`).then(response => response.json())).workers).toMatchObject([{ id: worker.id, condition: "ready" }]);
       expect((await sessionSnapshot()).panes.some(pane => pane.pane_id === worker.pane_id)).toBe(true);
     } finally { app.stop(); for (const id of owned) await workspaceClose(id).catch(() => {}); rmSync(root, { recursive: true, force: true }); }
   }, 60_000);
@@ -74,23 +81,35 @@ describe("starting an Inbox idea through the public API", () => {
         const response = await post(`/implementations/${idea.id}/runs`, { action: "work", idempotency_key: "start" }); expect(response.status).toBe(202); runs.push(await response.json());
       }
       const start = (index: number) => post(`/implementations/${ideas[index]!.id}/runs`, { action: "work", idempotency_key: "start" });
-      const full = await start(6); expect(full.status).toBe(409); expect((await full.json()).error.code).toBe("capacity_exhausted");
-      await herdrRpc("pane.report_agent", { pane_id: runs[0]!.pane_id, source: "manual", agent: "codex", state: "idle" });
-      const ready = await waitCondition(ideas[0]!.id, "ready"); expect(ready.implementation.stage).toBe("running"); expect(ready.implementation.outcome).toBe("none");
-      expect((await sessionSnapshot()).panes.some(pane => pane.pane_id === runs[0]!.pane_id)).toBe(true);
-      const sameTask = await post(`/implementations/${ideas[0]!.id}/runs`, { action: "work", idempotency_key: "another" }); expect(sameTask.status).toBe(409); expect((await sameTask.json()).error.code).toBe("implementation_owned");
+      const full = await start(6); expect(full.status).toBe(202); expect(await full.json()).toMatchObject({ condition: "queued", reason: expect.stringContaining("6/6") });
+      expect((await read(ideas[6]!.id)).runs).toEqual([]);
       const question = await post(`/implementations/${ideas[0]!.id}/questions`, { run_id: runs[0]!.id, question: "Owned owner decision" }).then(response => response.json());
-      expect((await start(6)).status).toBe(409);
+      await herdrRpc("pane.report_agent", { pane_id: runs[0]!.pane_id, source: "manual", agent: "codex", state: "idle" });
+      const ready = await waitCondition(ideas[0]!.id, "needs_you"); expect(ready.implementation.stage).toBe("running"); expect(ready.implementation.outcome).toBe("none");
+      expect((await sessionSnapshot()).panes.some(pane => pane.pane_id === runs[0]!.pane_id)).toBe(true);
+      const sameTask = await post(`/implementations/${ideas[0]!.id}/runs`, { action: "work", idempotency_key: "another" });
+      const rejected = await sameTask.json();
+      if (sameTask.status === 409) expect(rejected.error.code).toBe("implementation_owned");
+      else expect({ status: sameTask.status, body: rejected }).toMatchObject({ status: 202, body: { condition: "blocked", reason: expect.stringContaining("ownership") } });
+      expect((await read(ideas[0]!.id)).runs).toHaveLength(1);
+      // Waiting for an owner answer releases execution capacity without accepting work.
+      expect((await waitCondition(ideas[6]!.id, "working")).runs).toHaveLength(1);
+      expect((await read(ideas[0]!.id)).questions).toContainEqual(expect.objectContaining({ id: question.id, answer: null }));
       expect((await post(`/implementations/${ideas[0]!.id}/questions/${question.id}/answer`, { revision: question.revision, answer: "Owned answer" })).status).toBe(200);
+      const access = JSON.parse(readFileSync(join(ready.runs[0].worktree, ".saurons-eye-access.json"), "utf8"));
+      const contract = await fetch(access.url + "/contract", { headers: { authorization: `Bearer ${access.token}` } }).then(response => response.json());
+      expect((await fetch(access.url + "/consume", { method: "POST", headers: { authorization: `Bearer ${access.token}`, "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify({ revision: contract.question_revision }) })).status).toBe(200);
       expect((await post(`/runs/${runs[0]!.id}/reconcile`, {}).then(response => response.json())).condition).toBe("ready");
+      expect((await waitCondition(ideas[6]!.id, "working")).runs).toHaveLength(1);
       expect((await start(6)).status).toBe(202);
       await herdrRpc("pane.report_agent", { pane_id: runs[0]!.pane_id, source: "manual", agent: "codex", state: "working" }); await waitCondition(ideas[0]!.id, "working");
-      expect((await start(7)).status).toBe(409);
-      await herdrRpc("pane.report_agent", { pane_id: runs[1]!.pane_id, source: "manual", agent: "codex", state: "blocked" }); await waitCondition(ideas[1]!.id, "needs_you"); expect((await start(7)).status).toBe(409);
+      expect(await start(7).then(response => response.json())).toMatchObject({ condition: "queued" }); expect((await read(ideas[7]!.id)).runs).toEqual([]);
+      await herdrRpc("pane.report_agent", { pane_id: runs[1]!.pane_id, source: "manual", agent: "codex", state: "blocked" }); await waitCondition(ideas[1]!.id, "needs_you"); expect(await start(7).then(response => response.json())).toMatchObject({ condition: "queued" }); expect((await read(ideas[7]!.id)).runs).toEqual([]);
       await workspaceClose(runs[2]!.workspace_id);
-      expect((await post(`/runs/${runs[2]!.id}/reconcile`, {})).status).toBe(200); await waitCondition(ideas[2]!.id, "disconnected"); expect((await start(7)).status).toBe(409);
+      expect((await post(`/runs/${runs[2]!.id}/reconcile`, {})).status).toBe(200); await waitCondition(ideas[2]!.id, "disconnected"); expect(await start(7).then(response => response.json())).toMatchObject({ condition: "queued" }); expect((await read(ideas[7]!.id)).runs).toEqual([]);
       // Two finished chats leave five active or uncertain contexts, even while both remain open.
       for (const index of [0, 3]) { await herdrRpc("pane.report_agent", { pane_id: runs[index]!.pane_id, source: "manual", agent: "codex", state: "idle" }); await waitCondition(ideas[index]!.id, "ready"); }
+      expect((await waitCondition(ideas[7]!.id, "working")).runs).toHaveLength(1);
       expect((await start(7)).status).toBe(202);
     } finally { app.stop(); for (const id of owned) await workspaceClose(id).catch(() => {}); rmSync(root, { recursive: true, force: true }); }
   });

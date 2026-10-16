@@ -58,11 +58,18 @@ it("keeps the terminal cursor at a block that blinks unless a saved shape or bli
   expect(sanitizeSettings({ terminalCursorBlink: "false" }).terminalCursorBlink).toBe(true);
 });
 
-it("keeps sidebar rows on two lines unless one line was chosen", () => {
-  expect(sanitizeSettings({}).sidebarRows).toBe("two");
-  expect(sanitizeSettings({ sidebarRows: "one" }).sidebarRows).toBe("one");
+it("keeps the suggestion chip off until this device turns it on, whatever an older version stored", () => {
+  expect(sanitizeSettings({}).suggestionChip).toBe(false);
+  expect(sanitizeSettings({ showSuggestionChip: true }).suggestionChip).toBe(false);
+  expect(sanitizeSettings({ suggestionChip: true }).suggestionChip).toBe(true);
+  expect(sanitizeSettings({ suggestionChip: "true" }).suggestionChip).toBe(false);
+});
+
+it("keeps sidebar rows on one line unless two lines were chosen", () => {
+  expect(sanitizeSettings({}).sidebarRows).toBe("one");
+  expect(sanitizeSettings({ sidebarRows: "two" }).sidebarRows).toBe("two");
   for (const sidebarRows of [null, true, "three", 2]) {
-    expect(sanitizeSettings({ sidebarRows }).sidebarRows).toBe("two");
+    expect(sanitizeSettings({ sidebarRows }).sidebarRows).toBe("one");
   }
 });
 
@@ -100,8 +107,9 @@ it("draws agent logos in their brand colors unless Mono was chosen", () => {
   for (const agentMarks of [null, "Mono", "off", 1]) {
     expect(sanitizeSettings({ agentMarks }).agentMarks).toBe("color");
   }
-
 });
+
+
 
 describe("clipboard from a pane", () => {
   it("is on in a fresh install", () => {
@@ -413,15 +421,6 @@ describe("microphone button", () => {
   });
 });
 
-describe("suggestion chip", () => {
-  it("stays on until turned off in settings", () => {
-    expect(DEFAULT_SETTINGS.showSuggestionChip).toBe(true);
-    expect(sanitizeSettings({}).showSuggestionChip).toBe(true);
-    expect(sanitizeSettings({ showSuggestionChip: false }).showSuggestionChip).toBe(false);
-    expect(sanitizeSettings({ showSuggestionChip: "no" }).showSuggestionChip).toBe(true);
-  });
-});
-
 describe("quick replies row", () => {
   it("stays hidden until chosen in settings", () => {
     expect(DEFAULT_SETTINGS.showQuickReplies).toBe(false);
@@ -446,12 +445,19 @@ describe("quick replies row", () => {
   });
 });
 
+describe("language", () => {
+  it("keeps every supported language and falls back for an unknown choice", () => {
+    expect(sanitizeSettings({ language: "ko" }).language).toBe("ko");
+    expect(sanitizeSettings({ language: "tr" }).language).toBe("tr");
+    expect(sanitizeSettings({ language: "unknown" }).language).toBe("system");
+  });
+});
+
 describe("palette", () => {
   it("defaults to amber, the look before this setting, and keeps only a known palette", () => {
     expect(DEFAULT_SETTINGS.palette).toBe("amber");
     // settings stored before palettes existed carry no palette key
     expect(sanitizeSettings({ theme: "light" }).palette).toBe("amber");
-    expect(sanitizeSettings({ palette: "report" }).palette).toBe("report");
     expect(sanitizeSettings({ palette: "charcoal" }).palette).toBe("charcoal");
     expect(sanitizeSettings({ palette: "catppuccin" }).palette).toBe("catppuccin");
     expect(sanitizeSettings({ palette: "lilac" }).palette).toBe("lilac");
@@ -466,21 +472,27 @@ describe("palette", () => {
     expect(sanitizeSettings({ ...reloaded, theme: "light" }).palette).toBe("forest");
   });
 
+  it("preserves Catppuccin through a saved settings round-trip and unrelated edits", () => {
+    const saved = sanitizeSettings({ palette: "catppuccin", theme: "dark" });
+    const reloaded = sanitizeSettings(JSON.parse(JSON.stringify(saved)));
+    expect(reloaded.palette).toBe("catppuccin");
+    expect(sanitizeSettings({ ...reloaded, theme: "light" }).palette).toBe("catppuccin");
+  });
+
   const css = readFileSync(join(import.meta.dir, "..", "styles.css"), "utf8");
   const block = (selector: string): string => {
     const start = css.indexOf(`${selector} {`);
     expect(start).toBeGreaterThanOrEqual(0);
     return css.slice(start, css.indexOf("}", start));
   };
-  const paper = '[data-theme="light"]:is([data-palette="report"], [data-palette="charcoal"])';
   // each case lists its blocks from the most specific to the base; the first one naming a token wins
   const cases = [
     { theme: "dark", palette: "amber", layers: [":root"] },
     { theme: "light", palette: "amber", layers: ['[data-theme="light"]', ":root"] },
     { theme: "dark", palette: "report", layers: ['[data-theme="dark"][data-palette="report"]', ":root"] },
-    { theme: "light", palette: "report", layers: [paper, '[data-theme="light"]', ":root"] },
+    { theme: "light", palette: "report", layers: ['[data-theme="light"][data-palette="report"]', '[data-theme="light"]:is([data-palette="report"], [data-palette="charcoal"])', '[data-theme="light"]', ":root"] },
     { theme: "dark", palette: "charcoal", layers: ['[data-theme="dark"][data-palette="charcoal"]', ":root"] },
-    { theme: "light", palette: "charcoal", layers: ['[data-theme="light"][data-palette="charcoal"]', paper, '[data-theme="light"]', ":root"] },
+    { theme: "light", palette: "charcoal", layers: ['[data-theme="light"]:is([data-palette="report"], [data-palette="charcoal"])', '[data-theme="light"]', ":root"] },
     { theme: "dark", palette: "catppuccin", layers: ['[data-theme="dark"][data-palette="catppuccin"]', ":root"] },
     { theme: "light", palette: "catppuccin", layers: ['[data-theme="light"][data-palette="catppuccin"]', '[data-theme="light"]', ":root"] },
     { theme: "dark", palette: "lilac", layers: ['[data-theme="dark"][data-palette="lilac"]', ":root"] },
@@ -597,11 +609,10 @@ describe("default lens", () => {
   });
 });
 
-it("highlights code unless turned off, and keeps a stored choice only when it is a boolean", () => {
-  expect(DEFAULT_SETTINGS.highlightCode).toBe(true);
-  expect(sanitizeSettings({ highlightCode: false }).highlightCode).toBe(false);
-  expect(sanitizeSettings({ highlightCode: "no" }).highlightCode).toBe(true);
-  expect(sanitizeSettings({}).highlightCode).toBe(true);
+it("keeps the file viewer's wrap setting only when it is a boolean", () => {
+  expect(DEFAULT_SETTINGS.wrapCode).toBe(false);
+  expect(sanitizeSettings({ wrapCode: true }).wrapCode).toBe(true);
+  expect(sanitizeSettings({ wrapCode: "yes" }).wrapCode).toBe(false);
 });
 
 it("keeps the file viewer's wrap setting only when it is a boolean", () => {

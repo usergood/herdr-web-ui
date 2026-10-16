@@ -119,7 +119,9 @@ try {
     // Browser locale alone does not override the app's remembered language.
     // Preserve a language changed through Settings across subsequent reloads.
     if (!localStorage.getItem("herdr-web-ui:settings")) {
-      localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en", alertsOn: false }));
+      // Two lines: the task row (pane title over its place) is what this script reads; One line,
+      // the default, is ui-regression's sidebar-rows check
+      localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en", alertsOn: false, sidebarRows: "two" }));
       localStorage.setItem(legacyFoldKey, "1");
     }
     for (const id of ids) localStorage.setItem(`herdr-web-ui:view:${id}`, "chat");
@@ -195,7 +197,7 @@ try {
   await page.getByRole("tab", { name: "Tab 1", exact: true }).click({ button: "right" });
   const tabMenu = page.getByRole("menu", { name: "Tab 1", exact: true });
   await tabMenu.waitFor();
-  assert.deepEqual(await tabMenu.getByRole("menuitem").allTextContents(), ["New tab", "Rename tab", "Close tab"]);
+  assert.deepEqual(await tabMenu.getByRole("menuitem").allTextContents(), ["New tab with agent…", "Rename tab", "Close tab"]);
   await page.keyboard.press("Escape");
   await tabMenu.waitFor({ state: "detached" });
   assert.equal(await page.locator(".pane-frame:visible").count(), 2, "both split panes are visible");
@@ -206,27 +208,28 @@ try {
     "selecting a split pane keeps the workspace label in Spaces");
   // Both entry points act on the workspace clicked, without changing the selected pane.
   const alphaWorkspace = workspaceSelector(alpha.workspaceId);
-  await page.locator(`${alphaWorkspace} .workspace-header`).hover();
-  await page.locator(`${alphaWorkspace} .row-menu-toggle`).click();
+  // a desktop draws no row ⋯: the context-menu key opens the menu at the focused row
+  await page.locator(`${alphaWorkspace} .workspace-select`).focus();
+  await page.keyboard.press("Shift+F10");
   const workspaceMenu = page.getByRole("menu");
   await workspaceMenu.waitFor();
   const workspaceActions = await workspaceMenu.getByRole("menuitem").allTextContents();
-  assert.deepEqual(workspaceActions, ["Rename workspace", "Close workspace"],
-    "a non-Git workspace's explicit menu contains only native workspace actions");
+  assert.deepEqual(workspaceActions, ["Pin workspace", "Rename workspace", "Close workspace"],
+    "a non-Git workspace's keyboard menu contains only native workspace actions");
   assert.equal(await page.locator(paneSelector(split.pane.pane_id)).getAttribute("aria-current"), "true",
-    "opening another workspace's explicit menu keeps the active pane");
+    "opening another workspace's keyboard menu keeps the active pane");
   await page.keyboard.press("Escape");
   await workspaceMenu.waitFor({ state: "detached" });
   await page.locator(`${alphaWorkspace} .workspace-select`).click({ button: "right" });
   await workspaceMenu.waitFor();
   assert.deepEqual(await workspaceMenu.getByRole("menuitem").allTextContents(), workspaceActions,
-    "right-click and the explicit workspace menu have identical actions and order");
+    "right-click and the keyboard workspace menu have identical actions and order");
   assert.equal(await page.locator(paneSelector(split.pane.pane_id)).getAttribute("aria-current"), "true",
     "right-clicking another workspace keeps the active pane");
   await page.keyboard.press("Escape");
   await workspaceMenu.waitFor({ state: "detached" });
-  // Renaming a pane is still available on that pane's own menu.
-  await page.locator(`[data-layout-pane=${JSON.stringify(split.pane.pane_id)}] .pane-frame-menu`).click();
+  // Renaming a pane is still available on that pane's own menu (a mouse opens it by right-click).
+  await page.locator(`[data-layout-pane=${JSON.stringify(split.pane.pane_id)}] .pane-frame-head`).click({ button: "right" });
   await page.getByRole("menuitem", { name: "Rename pane", exact: true }).click();
   const paneRename = page.getByRole("dialog", { name: "Rename pane", exact: true });
   const paneName = paneRename.getByRole("textbox", { name: "Pane name", exact: true });

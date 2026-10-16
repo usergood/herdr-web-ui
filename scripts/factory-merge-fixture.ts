@@ -4,9 +4,10 @@ import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "../server/index.ts";
+import type { Implementation } from "../shared/factory.ts";
 import { FactoryStore } from "../server/factory-store.ts";
 
-export async function mergeFixture(options: { milestone?: "merge" | "release" } = {}) {
+export async function mergeFixture(options: { milestone?: "merge" | "release"; assignmentMilestone?: "merge" | "release"; assignmentScope?: Partial<NonNullable<Implementation["delivery_scope"]>> } = {}) {
   const root = mkdtempSync(join(tmpdir(), "factory-merge-")); const repo = join(root, "repo"); mkdirSync(repo);
   const git = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
   git(["init", "-b", "main"]); git(["config", "user.name", "Fixture"]); git(["config", "user.email", "fixture@example.invalid"]);
@@ -35,6 +36,7 @@ else if(path==='graphql'){
 else if(path?.endsWith('/merge')){ if(state.deny) { console.log(JSON.stringify({merged:false,message:state.deny}));process.exit(0); }
 const sha=git(['commit-tree',git(['rev-parse',${JSON.stringify(head + "^{tree}")}]),'-p',git(['rev-parse','main']),'-m','Owned squash merge']); git(['update-ref','refs/heads/main',sha]); state.pull.state='MERGED';state.pull.merged=true;state.pull.mergeCommit={oid:sha};writeFileSync(file,JSON.stringify(state));if(state.lose)process.exit(1);out={merged:true,sha};}
 else if(path?.includes('/compare/')){ const range=decodeURIComponent(path.split('/compare/')[1]);const [base,head]=range.split('...');try{git(['merge-base','--is-ancestor',base,head]);out={status:base===head?'identical':'ahead',merge_base_commit:{sha:base}};}catch{out={status:'diverged'};} }
+else if(path?.includes('/git/trees/'))out={truncated:false,tree:git(['ls-tree','-r','-z',decodeURIComponent(path.split('/git/trees/')[1].split('?')[0])]).split('\\0').filter(Boolean).map(row=>{const match=/^(\\d+) (\\w+) ([a-f0-9]+)\\t([\\s\\S]+)$/.exec(row);return{mode:match[1],type:match[2],sha:match[3],path:match[4]};})};
 else if(path?.endsWith('/releases'))out=state.release?[{draft:false,prerelease:false,tag_name:state.release}]:[];
 else if(path?.includes('/commits/'))out={sha:git(['rev-parse',decodeURIComponent(path.split('/commits/')[1])+'^{commit}'])};
 else out={}; console.log(JSON.stringify(out));`);
@@ -50,17 +52,21 @@ else out={}; console.log(JSON.stringify(out));`);
   const initialProject = await post("factory/projects", { name: "Fixture", path: repo, machine_id: "local", provider: "codex", tracker: "app" }).then(r => r.json());
   const project = await post(`factory/projects/${initialProject.id}/configure`, { delivery_policy: options.milestone ?? "merge" }).then(r => r.json());
   const overview = await fetch(`http://localhost:${app.port}/api/factory`, { headers }).then(r => r.json());
+  app.stop();
   const store = new FactoryStore(stateDir); const record = store.record();
   const pr = { ...record, id: `${id}:${head}`, run_id: id, head, repository: "fictional/project", base_branch: "main", branch, number: 27, url: pull.url, check_id: "", evidence_ids: ["owned-standards", "owned-spec"] };
   const validator = join(root, "check.mjs");
   writeFileSync(validator, `import { readFileSync } from "node:fs"; process.exit(JSON.parse(readFileSync(${JSON.stringify(responses)}, "utf8")).fail_check ? 1 : 0);`);
-  const run = { ...record, id, action: "implement-spec", implementation_id: "owned-assignment", provider: "codex", machine_id: "local", condition: "ready", pane_id: pane.pane_id, workspace_id: pane.workspace_id, checkout: repo, worktree: repo, branch, base, manifest: { github_policy: { repository: "fictional/project", trusted_reviewers: ["reviewer"], required_checks: ["Required CI"] }, checkout: overview.checkouts[0], project: { ...project, checks: [[process.execPath, validator]], pull_request: { repository: "fictional/project", base_branch: "main" } }, planning_authority: { automatic_execution: true }, account_snapshot: { host_id: accountOverview.host_id, profiles: [{ id: profile.id, revision: profile.revision, service: "github", identity: profile.verified_identity }] } } };
+  const run = { ...record, id, action: "implement-spec", implementation_id: "owned-assignment", provider: "codex", machine_id: "local", condition: "ready", pane_id: pane.pane_id, workspace_id: pane.workspace_id, checkout: repo, worktree: repo, branch, base, manifest: { implementation: { delivery_scope: { milestone: options.assignmentMilestone ?? options.milestone ?? "merge", repository: project.repository, branch: "main", base, github_repository: "fictional/project", ...options.assignmentScope } }, github_policy: { repository: "fictional/project", trusted_reviewers: ["reviewer"], required_checks: ["Required CI"] }, checkout: overview.checkouts[0], project: { ...project, checks: [[process.execPath, validator]], pull_request: { repository: "fictional/project", base_branch: "main" } }, planning_authority: { automatic_execution: true }, account_snapshot: { host_id: accountOverview.host_id, profiles: [{ id: profile.id, revision: profile.revision, service: "github", identity: profile.verified_identity }] } } };
   store.put("host_leases", { id, signature: "owned", run });
   for (const axis of ["standards", "spec"]) store.put("host_review_evidence", { ...record, id: `owned-${axis}`, worker_id: `owned-${axis}`, run_id: id, axis, head, outcome: "passed", source_id: `owned-source-${axis}`, content: "FACTORY_REVIEW: PASS" }, id);
   const route = `factory-host/runs/${id}/operations/`;
+  app = createServer(serverOptions);
   const current = await post(route + "head", {}).then(r => r.json());
   const checked = await post(route + "check", { check: { ...record, id: crypto.randomUUID(), run_id: id, worker_id: null, head: "", workspace_hash: "", commands: [], condition: "working" } }).then(r => r.json()); pr.check_id = checked.id;
+  app.stop();
   store.put("host_publications", { ...pr, condition: "published" }, id); store.close();
+  app = createServer(serverOptions);
   const approval = { ...record, implementation_id: run.implementation_id, review_id: id, run_id: id, snapshot_id: crypto.randomUUID(), head, idempotency_key: "owned-approval", provenance: { kind: "owner_button", origin: "http://localhost" }, condition: "pending", reason: null, merge_sha: null, release_tag: null };
   const body = { ...current, approval, pull_request: pr, check_id: checked.id, evidence_ids: pr.evidence_ids, reports: ["standards", "spec"].map(axis => ({ worker_id: `owned-${axis}`, source_id: `owned-source-${axis}` })) };
   const saveState = (value: unknown) => { const temporary = `${responses}.${process.pid}.tmp`; writeFileSync(temporary, JSON.stringify(value)); renameSync(temporary, responses); };

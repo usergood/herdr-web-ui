@@ -128,6 +128,12 @@ export class FactoryHumanApprovalService {
     if (this.stopped || receipt.superseded_by_batch_id || this.busy.has(receipt.id)) return;
     this.busy.add(receipt.id);
     try {
+      const idea = this.store.get<Implementation>("implementations", receipt.implementation_id)!;
+      if (receipt.condition === "merged" && idea.delivery_scope?.milestone === "release") {
+        receipt = { ...receipt, condition: "awaiting_release", release_tag: null, reason: "Merge verified; waiting for the Assignment's required containing release" };
+        this.store.put("human_review_approvals", receipt, receipt.implementation_id);
+        this.store.put("implementations", { ...idea, stage: "review", outcome: "merged" });
+      }
       if (["merged", "released"].includes(receipt.condition)) { await this.finishDelivery(receipt); return; }
       const review = this.store.get<FactoryHumanReview>("human_reviews", receipt.review_id)!;
       if (receipt.repair_batch_id && receipt.repair_scope !== this.repairScope(receipt.implementation_id, receipt.run_id)) throw new FactoryError("repair_scope_changed", "The owner context changed; review the repair scope before granting new merge authority", 409);
@@ -151,9 +157,10 @@ export class FactoryHumanApprovalService {
       }
       receipt = { ...receipt, merge_not_sent: false };
       this.store.put("human_review_approvals", receipt, receipt.implementation_id);
-      const result = await this.runtime.operation<FactoryMergeResult>(run, "merge", { approval: receipt, pull_request: pr, head: pr.head, workspace_hash: check.workspace_hash, check_id: check.id, evidence_ids: pr.evidence_ids, reports: reports.map(r => ({ worker_id: r.worker_id, source_id: r.source_id })) } satisfies import("../shared/factory.ts").FactoryMergeRequest);
+      let result = await this.runtime.operation<FactoryMergeResult>(run, "merge", { approval: receipt, pull_request: pr, head: pr.head, workspace_hash: check.workspace_hash, check_id: check.id, evidence_ids: pr.evidence_ids, reports: reports.map(r => ({ worker_id: r.worker_id, source_id: r.source_id })) } satisfies import("../shared/factory.ts").FactoryMergeRequest);
       this.runtime.assertExecuting(receipt.implementation_id);
-      if (result.run_id !== run.id || result.head !== receipt.head || result.repository !== pr.repository || result.base_branch !== pr.base_branch || result.number !== pr.number || !["merged", "awaiting_release", "released", "uncertain"].includes(result.condition) || result.condition !== "uncertain" && !/^[a-f0-9]{40}$/.test(result.merge_sha ?? "")) throw new FactoryError("merge_uncertain", "The Machine did not verify this exact merge and target", 409);
+      if (result.run_id !== run.id || result.head !== receipt.head || result.repository !== pr.repository || result.base_branch !== pr.base_branch || result.number !== pr.number || !["merged", "awaiting_release", "released", "uncertain"].includes(result.condition) || result.condition !== "uncertain" && !/^[a-f0-9]{40}$/.test(result.merge_sha ?? "") || result.condition === "released" && (typeof result.release_tag !== "string" || !result.release_tag.trim())) throw new FactoryError("merge_uncertain", "The Machine did not verify this exact merge and target", 409);
+      if (result.condition === "merged" && this.store.get<Implementation>("implementations", receipt.implementation_id)?.delivery_scope?.milestone === "release") result = { ...result, condition: "awaiting_release", release_tag: null, reason: "Merge verified; waiting for the Assignment's required containing release" };
       const observations = result.condition === "uncertain" ? (receipt.observations ?? 0) + 1 : 0;
       this.store.db.transaction(() => {
         this.store.put("human_review_approvals", { ...receipt, ...result, observations, next_observation_at: Date.now() + (result.condition === "awaiting_release" ? 30000 : Math.min(30000, 1000 * 2 ** observations)), ...(observations >= 6 ? { condition: "blocked" as const } : {}), id: receipt.id, reason: observations >= 6 ? `${result.reason}; six observations could not confirm the outcome. Inspect the PR and use the same approval to observe again` : result.reason, updated_at: new Date().toISOString() }, receipt.implementation_id);

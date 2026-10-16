@@ -8,7 +8,7 @@ import { published, until } from "./factory-human-review-fixture.ts";
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
-    for (const scenario of ["merge", "release", "stale", "failing", "protected", "denied", "lost", "pending"] as const) {
+    for (const scenario of ["frozen_release", "merge", "release", "stale", "failing", "protected", "denied", "lost", "pending"] as const) {
       const f = await capacityFixture({ advancingHeads: true });
       f.setTranscript({ source_id: "owned-delivery-history", version: "one", cursor: null, turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: "Retained implementation delivery history." }] }] });
       const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
@@ -17,8 +17,15 @@ try {
           { path: "progress.ts", status: "branch:M", diff: "@@ -1 +1 @@\n-before\n+after\n", binary: false, oversized: false },
           { path: "logo.bin", status: "branch:A", diff: "", binary: true, oversized: false },
         ]);
-        const { id, detail, run } = await published(f, scenario === "release" ? "release" : "merge");
+        const { id, detail, run } = await published(f, scenario === "release" || scenario === "frozen_release" ? "release" : "merge");
         await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
+        if (scenario === "frozen_release") {
+          const frozen = await detail();
+          assert.equal(frozen.implementation.delivery_scope.milestone, "release");
+          assert.equal((await f.api(`/projects/${frozen.implementation.project_id}/configure`, { delivery_policy: "merge" })).status, 200);
+          assert.equal((await f.api("").then(response => response.json())).projects.find((project: { id: string }) => project.id === frozen.implementation.project_id).delivery_policy, "merge");
+          assert.equal((await detail()).implementation.delivery_scope.milestone, "release", "Future Project policy preserves the Assignment's frozen release requirement");
+        }
         const occupied = await f.assignment("Occupied approval capacity");
         const occupiedRun = await f.api(`/implementations/${occupied}/runs`, { action: "work", idempotency_key: "occupy" }).then(r => r.json());
         if (scenario === "failing") { f.failNextCheck(); assert.equal((await f.api(`/runs/${run.id}/checks`, {}).then(r => r.json())).condition, "failed"); }
@@ -57,7 +64,18 @@ try {
           await draft.fill("Unfinished review feedback"); assert(await approve.isDisabled()); await draft.fill("");
         }
         assert.equal(await page.getByRole("button", { name: "Accept reviewed head", exact: true }).count(), 0);
-        await approve.click();
+        if (scenario === "frozen_release") {
+          // The owned fictional Machine emulates an older merge-only response; durable connection scope stays frozen.
+          const nativeProject = (f.runs.get(run.id)!.manifest as { project: { delivery_policy: string } }).project;
+          const nativeMilestone = nativeProject.delivery_policy;
+          const approved = page.waitForResponse(response => response.url().endsWith(`/implementations/${id}/human-review/approve`) && response.request().method() === "POST");
+          nativeProject.delivery_policy = "merge";
+          try {
+            await approve.click();
+            assert.equal((await approved).status(), 200);
+            assert.equal(f.mergeEffects.length, 1, "The old Machine's merge-only receipt precedes restoring its native manifest");
+          } finally { nativeProject.delivery_policy = nativeMilestone; }
+        } else await approve.click();
         if (scenario === "failing") {
           await page.getByText("Retain passing configured checks and independent Standards and Spec reports for this candidate", { exact: true }).waitFor();
           assert.notEqual((await detail()).implementation.stage, "done"); assert.equal(f.mergeEffects.length, 0);
@@ -75,12 +93,24 @@ try {
           f.mergeFailure(null);
           await review.getByText("Merge verified", { exact: true }).waitFor();
           assert.equal((await detail()).implementation.stage, "done");
-        } else if (scenario === "release") {
-          await review.getByText("Merge verified; waiting for a published release containing it", { exact: true }).waitFor();
-          assert.equal((await detail()).implementation.stage, "review");
+        } else if (scenario === "release" || scenario === "frozen_release") {
+          const waiting = await detail();
+          assert.equal(waiting.implementation.stage, "review", "A merge receipt cannot complete a release-required Assignment");
+          const releaseWait = scenario === "frozen_release" ? "Merge verified; waiting for the Assignment's required containing release" : "Merge verified; waiting for a published release containing it";
+          await review.getByText(releaseWait, { exact: true }).waitFor();
+          assert.equal(waiting.human_review_approvals.length, 1);
+          assert.equal(waiting.human_review_approvals[0].condition, "awaiting_release");
+          assert.notEqual(waiting.runs.find((candidate: { id: string }) => candidate.id === run.id).condition, "completed");
+          assert.equal(await page.getByRole("button", { name: "Archive task", exact: true }).count(), 0);
+          const approvalId = waiting.human_review_approvals[0].id;
           f.releaseMerged();
           await review.getByText("Release verified", { exact: true }).waitFor({ timeout: 45000 });
-          assert.equal((await detail()).implementation.outcome, "released");
+          const released = await detail();
+          assert.equal(released.implementation.stage, "done");
+          assert.equal(released.implementation.outcome, "released");
+          assert.equal(released.human_review_approvals.length, 1);
+          assert.equal(released.human_review_approvals[0].id, approvalId, "A later valid release completes under the retained approval without another click");
+          assert.equal(released.human_review_approvals[0].release_tag, "fixture-release");
         } else {
           await review.getByText("Merge verified", { exact: true }).waitFor();
           assert.equal((await detail()).implementation.stage, "done");
@@ -107,12 +137,12 @@ try {
         }
         await page.reload();
         assert.equal((await detail()).human_review_approvals.length, scenario === "failing" ? 0 : 1);
-        if (["merge", "lost", "release", "pending"].includes(scenario)) assert.equal(f.mergeEffects.length, 1);
+        if (["merge", "lost", "release", "frozen_release", "pending"].includes(scenario)) assert.equal(f.mergeEffects.length, 1);
         assert.equal(f.launches.length, scenario === "merge" ? 3 : 2);
         assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
         assert.deepEqual(errors, []);
       } finally { await context.close(); f.close(); }
     }
   }
-  console.log("PASS Human Review merge authority, stale/protected/denied targets, lost replies, retained CI waits, release completion, delivery archive and postdelivery discussion on desktop/mobile");
+  console.log("PASS Human Review merge authority, stale/protected/denied targets, lost replies, retained CI waits, frozen release authority despite newer Project/old Machine policy, release completion, delivery archive and postdelivery discussion on desktop/mobile");
 } finally { await browser.close(); }

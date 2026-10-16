@@ -1,7 +1,14 @@
 import { hasIssueSource } from "./issue-delivery.ts";
-import type { FactoryRun, FactoryWorker, FactoryCheck, FactoryQuestion, ReviewSnapshot, Implementation } from "../shared/factory.ts";
+import type { FactoryRun, FactoryWorker, FactoryCheck, FactoryQuestion, ReviewSnapshot, Implementation, DeliveryChange } from "../shared/factory.ts";
 import type { FactoryStore } from "./factory-store.ts";
 import type { FactoryRuntime } from "./factory-runtime.ts";
+
+/** Exact intended Git content, including mode changes, deletions and renamed paths. */
+export interface DeliveryTree { truncated: boolean; tree: { path: string; mode: string; type: string; sha: string }[] }
+export function containsDeliveryChange(tree: DeliveryTree, file: DeliveryChange): boolean {
+  const entry = tree.tree.find(entry => entry.path === file.path);
+  return file.oid === null ? !entry : entry?.sha === file.oid && entry.mode === file.mode && (!file.old_path || !tree.tree.some(entry => entry.path === file.old_path));
+}
 
 /** A later owner question cannot revive execution already accepted and stopped.
  * This observes physical retirement only; completion and delivery keep their gates. */

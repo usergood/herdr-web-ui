@@ -8,7 +8,8 @@
       ],
       "improved": [
         "Pause and resume Assignments while retaining work and conversation history.",
-        "See named Tickets, live activity tags and automatic queue progress on the board."
+        "See named Tickets, live activity tags and automatic queue progress on the board.",
+        "Updated file browsing, workspaces, tabs and account sign-in from upstream."
       ],
       "fixed": [
         "Keep merge approval tied to reviewed changes and recover pending checks automatically.",
@@ -23,7 +24,8 @@
       ],
       "improved": [
         "작업과 대화 기록을 보존하면서 과제를 일시 중지하고 재개합니다.",
-        "보드에서 티켓 이름, 현재 활동과 자동 대기열 진행 상태를 확인합니다."
+        "보드에서 티켓 이름, 현재 활동과 자동 대기열 진행 상태를 확인합니다.",
+        "업스트림의 파일 탐색, 워크스페이스, 탭 및 계정 로그인을 반영했습니다."
       ],
       "fixed": [
         "병합 승인을 검토한 변경에 연결하고 대기 중 검사를 자동으로 복구합니다.",
@@ -38,7 +40,8 @@
       ],
       "improved": [
         "作業と会話履歴を保ったまま、課題を一時停止して再開できます。",
-        "ボードでチケット名、現在の活動、自動キューの進行状況を確認できます。"
+        "ボードでチケット名、現在の活動、自動キューの進行状況を確認できます。",
+        "上流のファイル閲覧、ワークスペース、タブ、アカウント認証の改善を取り込みました。"
       ],
       "fixed": [
         "マージ承認をレビュー済みの変更に結び付け、保留中の検証を自動で再確認します。",
@@ -53,7 +56,8 @@
       ],
       "improved": [
         "暂停和恢复任务时保留工作和对话历史。",
-        "在看板上查看工单名称、实时活动标签和自动队列进度。"
+        "在看板上查看工单名称、实时活动标签和自动队列进度。",
+        "同步上游的文件浏览、工作区、标签页和账户登录改进。"
       ],
       "fixed": [
         "将合并批准绑定到已审查的更改，并自动恢复等待中的检查。",
@@ -68,7 +72,8 @@
       ],
       "improved": [
         "İşi ve konuşma geçmişini koruyarak görevleri duraklatın ve sürdürün.",
-        "Panoda bilet adlarını, canlı etkinlik etiketlerini ve otomatik kuyruk ilerlemesini görün."
+        "Panoda bilet adlarını, canlı etkinlik etiketlerini ve otomatik kuyruk ilerlemesini görün.",
+        "Dosya tarama, çalışma alanları, sekmeler ve hesap girişindeki yenilikler eklendi."
       ],
       "fixed": [
         "Birleştirme onayını incelenen değişikliklere bağlayın; bekleyen kontrolleri kurtarın.",
@@ -259,6 +264,66 @@
         "Bekleyen sorular, siz çözene kadar görünür kalır.",
         "Sonucu belirsiz düzeltme istekleri yeniden yüklemeden sonra tekrar gönderilmez.",
         "Onaylı planlamaya yerel sohbette devam edin ve yanıtları koruyun."
+      ]
+    }
+  },
+  "0.4.11": {
+    "en": {
+      "fixed": [
+        "With Claude Code 2.1.301, /effort from Chat shows its card again.",
+        "Claude's plan card finds its plan file again, with View plan, on recent Claude Code.",
+        "Under a light theme, white text from Claude Code stays readable in the terminal.",
+        "A connection that keeps dropping no longer retries four times a second.",
+        "Codex's folder trust question shows as a card when Codex starts in a new folder."
+      ]
+    },
+    "ko": {
+      "fixed": [
+        "Claude Code 2.1.301에서 채팅의 /effort 카드가 다시 뜹니다.",
+        "최신 Claude Code에서도 계획 카드가 계획 파일을 다시 찾고 '계획 보기'가 보입니다.",
+        "라이트 테마에서도 Claude Code의 흰 글자가 터미널에서 읽힙니다.",
+        "연결이 계속 끊길 때 1초에 네 번씩 재접속하지 않습니다.",
+        "Codex를 새 폴더에서 시작할 때 폴더 신뢰 질문이 카드로 뜹니다."
+      ]
+    },
+    "ja": {
+      "fixed": [
+        "Claude Code 2.1.301 で、チャットの /effort カードが再び表示されます。",
+        "最新の Claude Code でも計画カードが計画ファイルを見つけ、「計画を表示」が出ます。",
+        "ライトテーマでも Claude Code の白い文字がターミナルで読めます。",
+        "接続が切れ続けるとき、1 秒に 4 回再接続しなくなりました。",
+        "Codex を新しいフォルダーで起動したとき、フォルダー信頼の質問がカードで出ます。"
+      ]
+    },
+    "zh": {
+      "fixed": [
+        "在 Claude Code 2.1.301 中，聊天里的 /effort 卡片重新出现。",
+        "在最新的 Claude Code 中，计划卡片能重新找到计划文件，并显示“查看计划”。",
+        "浅色主题下，Claude Code 的白色文字在终端中也清晰可读。",
+        "连接反复断开时，不再每秒重连四次。",
+        "在新文件夹中启动 Codex 时，文件夹信任问题会以卡片显示。"
+      ]
+    }
+  },
+  "0.4.10": {
+    "en": {
+      "improved": [
+        "Phones and tablets hide the suggestion chip by default; Settings → Chat turns it on."
+      ]
+    },
+    "ko": {
+      "improved": [
+        "휴대폰과 태블릿에서 입력창 위 제안 칩은 기본으로 꺼집니다. 설정 → 채팅에서 켤 수 있습니다."
+      ]
+    },
+    "ja": {
+      "improved": [
+        "スマートフォンとタブレットでは入力欄の上の提案チップが既定でオフです。設定 → チャットでオンにできます。"
+      ]
+    },
+    "zh": {
+      "improved": [
+        "手机和平板上输入框上方的建议标签默认关闭，可在设置 → 聊天中打开。"
       ]
     }
   },

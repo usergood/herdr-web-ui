@@ -170,6 +170,8 @@ function FallbackMark({ agent, size }: { agent: string; size: number }) {
 }
 
 const DRAWN_MARKS = new Set(["claude", "omp", "codex", "cursor", "opencode", "gjc", "omo"]);
+export { hasBrandColors } from "../lib/agentMark.ts";
+
 /** Whether `agent` has a mark of its own rather than the fallback's initial. */
 export function hasAgentMark(agent: string): boolean {
   return DRAWN_MARKS.has(agent) || Object.hasOwn(AGENT_SVG_MARKS, agent);

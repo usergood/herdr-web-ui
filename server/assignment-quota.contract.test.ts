@@ -70,3 +70,26 @@ test("restored local and GitHub Assignment quotas do not serialize approved inde
     for (const max_implementations of [1, 6, null]) expect((await f.post(route + "/queue", { expected_revision: queue.policy.revision, automatic_implementation: true, paused: false, max_implementations })).status).toBe(400);
   } finally { f.close(); }
 }, 30_000);
+
+test("a competing top-level Start cannot replay after owner Stop without a fresh explicit request", async () => {
+  const f = await capacityFixture();
+  try {
+    await f.api("/settings", { max_agents: 1 });
+    const id = await f.assignment("Exclusive owned Assignment");
+    const start = (key: string) => f.api(`/implementations/${id}/runs`, { action: "work", idempotency_key: key });
+    const first = await start("first").then(response => response.json());
+    expect(first.condition).toBe("working");
+    const competing = await start("competing-before-stop");
+    expect(competing.status).toBe(409); expect((await competing.json()).error.code).toBe("implementation_owned");
+    expect((await f.api(`/runs/${first.id}/stop`, {}).then(response => response.json())).condition).toBe("cancelled");
+    // Reading the old key drains pending work too: it must remain visibly blocked.
+    const replay = await start("competing-before-stop");
+    expect(replay.status).toBe(202); expect(await replay.json()).toMatchObject({ condition: "blocked", idempotency_key: "competing-before-stop", run_id: null });
+    expect((await f.api(`/implementations/${id}`).then(response => response.json())).runs).toMatchObject([{ id: first.id, condition: "cancelled" }]);
+    expect(f.launches).toEqual([first.id]);
+    const fresh = await start("fresh-after-stop").then(response => response.json());
+    expect(fresh).toMatchObject({ condition: "working", idempotency_key: "fresh-after-stop" });
+    expect(fresh.id).not.toBe(first.id);
+    expect(f.launches).toEqual([first.id, fresh.id]);
+  } finally { f.close(); }
+}, 15_000);

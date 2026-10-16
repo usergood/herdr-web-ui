@@ -13,7 +13,7 @@ const app = mkdtempSync(join(tmpdir(), "herdr-pane-paging-demo-"));
 // Capture only fictional paging fixtures for PR evidence.
 const evidence = process.env.UI_EVIDENCE_DIR;
 const settled = (page: Page) => page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
-const returnControl = (page: Page) => page.locator(".pane-frame.is-current .chat-view .chat-new-messages");
+const returnControl = (page: Page) => page.locator(".pane-frame.is-current .chat-new-messages");
 const inputs = (page: Page): Promise<unknown[]> => page.evaluate(() => (window as unknown as { pagingInputs: unknown[] }).pagingInputs);
 const scrollGeometry = (page: Page) => page.evaluate(() => {
   const node = document.querySelector<HTMLElement>(".pane-frame.is-current .chat-view");
@@ -23,9 +23,20 @@ const scrollGeometry = (page: Page) => page.evaluate(() => {
     gap: node.scrollHeight - node.clientHeight - node.scrollTop, rectHeight: node.getBoundingClientRect().height,
     inlineStyle: node.getAttribute("style"), computedHeight: getComputedStyle(node).height,
     content: content && { height: content.getBoundingClientRect().height, inlineStyle: content.getAttribute("style"), source: content.dataset.conversationSource },
-    returnControls: [...node.querySelectorAll<HTMLElement>(".chat-new-messages")].map((button) => ({ label: button.getAttribute("aria-label"), text: button.textContent, className: button.className, height: button.getBoundingClientRect().height })),
+    returnControls: [...document.querySelectorAll<HTMLElement>(".pane-frame.is-current .chat-new-messages")].map((button) => ({ label: button.getAttribute("aria-label"), text: button.textContent, className: button.className, height: button.getBoundingClientRect().height })),
     loading: node.querySelector(".chat-inline-state")?.textContent ?? null };
 });
+// The demo's api pane opens mid-turn and ends that turn 4.5 s later (site/demo/transport.ts): the
+// answer lands and the work block folds, so the transcript's height changes under the reader. Paging
+// asserts exact scroll positions, so it starts only once that turn has ended and its fold has settled.
+async function demoTurnEnded(page: Page): Promise<void> {
+  await page.waitForFunction(() => {
+    const transcript = document.querySelector(".pane-frame.is-current .chat-view");
+    const last = transcript ? [...transcript.querySelectorAll(".chat-turn-agent")].at(-1) : undefined;
+    return last !== undefined && last.querySelector(".chat-agent-meta") !== null && transcript!.querySelector(".work-block.is-live, .animated-height.is-moving") === null;
+  }, undefined, { timeout: 20000 });
+  await settled(page);
+}
 async function followedBottom(page: Page, phase: string): Promise<void> {
   try {
     await page.waitForFunction(() => {
@@ -93,7 +104,7 @@ try {
         await appFaces(page);
         const transcript = page.locator(".pane-frame.is-current .chat-view");
         await transcript.locator(".chat-turn-agent").first().waitFor();
-        await settled(page);
+        await demoTurnEnded(page);
         await page.locator(".pane-frame.is-current .composer-text").focus();
         await transcript.evaluate((node: HTMLElement) => {
           node.dataset.fractionalPaging = "";
@@ -101,7 +112,8 @@ try {
           const content = node.firstElementChild as HTMLElement;
           content.style.minHeight = "0"; content.style.height = "200.75px"; content.style.overflow = "hidden";
           const style = document.createElement("style");
-          style.textContent = "[data-fractional-paging]::before { display: none; }";
+          // a line taller than the view leaves each page one pixel
+          style.textContent = "[data-fractional-paging]::before { display: none; } [data-fractional-paging] :is(.chat-turn-agent > .markdown, .chat-bubble) { line-height: 1000px; }";
           document.head.append(style);
           node.scrollTop = node.scrollHeight;
           node.dispatchEvent(new Event("scroll", { bubbles: true }));
@@ -174,6 +186,7 @@ try {
           const composer = page.locator(".pane-frame.is-current .composer-text");
           await composer.waitFor();
           await page.waitForFunction(() => { const node = document.querySelector(".pane-frame.is-current .chat-view")!; return node.scrollHeight > node.clientHeight + 100; });
+          await demoTurnEnded(page);
           await composer.fill("Keep this draft\nand its selection");
           await composer.evaluate((node: HTMLTextAreaElement) => { node.focus(); node.setSelectionRange(5, 15); });
           const beforeInput = await inputs(page);
@@ -326,6 +339,8 @@ try {
           await page.reload();
           await page.locator(".conn-live").waitFor();
           await composer.waitFor();
+          // The reload starts a fresh demo turn.
+          await demoTurnEnded(page);
           await page.keyboard.press("Meta+Shift+Comma");
           await openSettingsPage(page, "Shortcuts");
           assert.equal(await page.getByRole("combobox", { name: "Scroll pane up", exact: true }).inputValue(), "u", "paging overrides survive reload");

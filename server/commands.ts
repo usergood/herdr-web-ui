@@ -1,6 +1,7 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import { piAgentDir } from "./pi-models.ts";
-import { join, relative, sep } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
+import { SkillIgnore } from "./skill-ignore.ts";
 
 import type { SlashCommand } from "../shared/protocol.ts";
 
@@ -8,6 +9,7 @@ const BUILTINS: Record<string, readonly string[]> = {
   claude: ["clear", "compact", "config", "cost", "effort", "goal", "help", "init", "memory", "model", "permissions", "review", "status", "doctor", "login", "logout", "pr-comments", "release-notes", "terminal-setup", "vim"],
   omp: ["help", "clear", "compact", "model", "new", "sessions", "exit"],
   codex: ["clear", "compact", "diff", "help", "model", "new", "quit", "review", "status"],
+  omo: ["settings", "model", "thinking", "scoped-models", "favorite-models", "export", "import", "share", "copy", "rename", "name", "session", "changelog", "hotkeys", "fork", "clone", "trust", "login", "logout", "new", "compact", "resume", "sessions", "reload", "quit", "exit"],
   // pi 0.87.1, as its own palette lists them, less /tree — the way omp's list curates its own
   // commands. The chat reads pi's tree browser as nothing at all: no card, and the pane still looks
   // idle while the terminal waits for arrow keys. Offering the one command that opens it from the
@@ -29,6 +31,21 @@ const PI_DESCRIPTIONS: Record<string, string> = {
   bug: "<description> — Report a bug to the Pi developers", trust: "Save project trust decision for future sessions",
   reload: "Reload keybindings, extensions, skills, prompts, themes, and context files", hotkeys: "Show all keyboard shortcuts",
   changelog: "Show changelog entries", quit: "Quit pi",
+};
+
+/** senpi 2026.10.16's palette, with omo's application name. */
+const OMO_DESCRIPTIONS: Record<string, string> = {
+  settings: "Open settings menu", model: "Select model (opens selector UI)", thinking: "Set thinking level",
+  "scoped-models": "Enable/disable models for Ctrl+P cycling", "favorite-models": "Manage favorite models for Ctrl+P cycling",
+  export: "Export session (HTML default, or specify path: .html/.jsonl)", import: "Import and resume a session from a JSONL file",
+  share: "Share session as a secret GitHub gist", copy: "Copy last agent message to clipboard",
+  rename: "Rename the current session", name: "Alias of /rename (set session display name)", session: "Show session info and stats",
+  changelog: "Show changelog entries", hotkeys: "Show all keyboard shortcuts", fork: "Create a new fork from a previous user message",
+  clone: "Duplicate the current session at the current position", trust: "Save project trust decision for future sessions",
+  login: "Configure provider authentication", logout: "Remove provider authentication", new: "Start a new session",
+  compact: "Manually compact the session context", resume: "Resume a different session",
+  sessions: "Alias of /resume (browse and resume past sessions)",
+  reload: "Reload keybindings, extensions, skills, prompts, themes, and context files", quit: "Quit omo", exit: "Quit omo",
 };
 
 const DESCRIPTIONS: Record<string, string> = {
@@ -65,14 +82,79 @@ function skills(root: string, source: SlashCommand["source"], options: { prefix?
   if (!existsSync(root)) return [];
   const result: SlashCommand[] = [];
   for (const entry of readdirSync(root, { withFileTypes: true })) {
-    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-    const file = join(root, entry.name, "SKILL.md");
-    if (!existsSync(file)) continue;
+    if (entry.name.startsWith(".")) continue;
+    const directory = join(root, entry.name);
     let markdown: string;
-    try { markdown = readFileSync(file, "utf8"); } catch { continue; }
+    try {
+      if (!statSync(directory).isDirectory()) continue;
+      markdown = readFileSync(join(directory, "SKILL.md"), "utf8");
+    } catch { continue; }
     const name = skillName(markdown, entry.name);
     result.push({ name: options.prefix ? `${options.prefix}:${name}` : name, description: description(markdown), source, ...(options.trigger ? { trigger: options.trigger } : {}) });
   }
+  return result;
+}
+
+/** omo's loaded roots have different loose-markdown rules, but share one ignore walk. */
+function omoSkills(root: string, mode: "pi" | "agents", origin: NonNullable<SlashCommand["origin"]>): SlashCommand[] {
+  const result: SlashCommand[] = [];
+  const ignore = new SkillIgnore();
+  const ancestors = new Set<string>();
+  const load = (path: string): void => {
+    try {
+      const fd = openSync(path, "r");
+      let markdown = "";
+      try {
+        const chunks: Buffer[] = [];
+        for (;;) {
+          const chunk = Buffer.alloc(8192);
+          const count = readSync(fd, chunk, 0, chunk.length, null);
+          chunks.push(chunk.subarray(0, count));
+          markdown = Buffer.concat(chunks).toString("utf8");
+          if (!markdown.startsWith("---") && !markdown.startsWith("\uFEFF---")) return;
+          if (/\r?\n---(?:\s*\r?\n|$)/.test(markdown) || count < chunk.length) break;
+        }
+      } finally { closeSync(fd); }
+      const header = markdown.match(/^\uFEFF?---\s*\r?\n([\s\S]*?)\r?\n---(?:\s*\r?\n|$)/)?.[1];
+      if (!header) return;
+      const fields: unknown = Bun.YAML.parse(header);
+      if (typeof fields !== "object" || fields === null || !("description" in fields) || typeof fields.description !== "string" || !fields.description.trim()) return;
+      const name = "name" in fields && typeof fields.name === "string" && fields.name ? fields.name : basename(dirname(path));
+      result.push({ name: `skill:${name}`, description: fields.description, source: "skill", origin });
+    } catch { return; /* missing, unreadable or malformed skills are not loaded */ }
+  };
+  const visit = (directory: string): void => {
+    let canonical: string;
+    try { canonical = realpathSync(directory); } catch { return; }
+    if (ancestors.has(canonical)) return;
+    ancestors.add(canonical);
+    try {
+      const prefix = relative(root, directory).split(sep).join("/");
+      for (const filename of [".gitignore", ".ignore", ".fdignore"]) {
+        try { ignore.add(readFileSync(join(directory, filename), "utf8"), prefix ? `${prefix}/` : ""); }
+        catch { continue; /* optional ignore file */ }
+      }
+      const entries = readdirSync(directory, { withFileTypes: true });
+      const declared = join(directory, "SKILL.md");
+      if (entries.some((entry) => entry.name === "SKILL.md") && !ignore.ignores(relative(root, declared).split(sep).join("/"))) {
+        try {
+          if (statSync(declared).isFile()) { load(declared); return; }
+        } catch { /* a broken SKILL.md link does not hide other entries */ }
+      }
+      for (const entry of entries) {
+        if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+        const path = join(directory, entry.name);
+        try {
+          const target = statSync(path);
+          const relativePath = relative(root, path).split(sep).join("/");
+          if (ignore.ignores(relativePath + (target.isDirectory() ? "/" : ""))) continue;
+          if (target.isDirectory()) visit(path);
+          else if (target.isFile() && entry.name.endsWith(".md") && (mode === "pi" ? directory === root : directory !== root)) load(path);
+        } catch { continue; /* broken links and unreadable directories are skipped */ }
+      }
+    } finally { ancestors.delete(canonical); }
+  };
+  visit(root);
   return result;
 }
 
@@ -98,15 +180,26 @@ function pluginCommands(home: string): SlashCommand[] {
 
 function customCommands(root: string, source: SlashCommand["source"]): SlashCommand[] {  if (!existsSync(root)) return [];
   const result: SlashCommand[] = [];
+  // Guard only the current ancestry: sibling links can expose different command namespaces.
+  const ancestors = new Set<string>();
   const visit = (directory: string): void => {
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      const path = join(directory, entry.name);
-      if (entry.isDirectory()) visit(path);
-      else if (entry.isFile() && entry.name.endsWith(".md")) {
-        const relativeName = relative(root, path).slice(0, -3).split(sep).join(":");
-        result.push({ name: relativeName, description: description(readFileSync(path, "utf8")), source });
+    let canonical: string;
+    try { canonical = realpathSync(directory); } catch { return; }
+    if (ancestors.has(canonical)) return;
+    ancestors.add(canonical);
+    try {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name);
+        try {
+          const target = statSync(path);
+          if (target.isDirectory()) visit(path);
+          else if (target.isFile() && entry.name.endsWith(".md")) {
+            const relativeName = relative(root, path).slice(0, -3).split(sep).join(":");
+            result.push({ name: relativeName, description: description(readFileSync(path, "utf8")), source });
+          }
+        } catch { continue; }
       }
-    }
+    } finally { ancestors.delete(canonical); }
   };
   visit(root);
   return result;
@@ -142,9 +235,22 @@ function piTemplates(root: string, source: SlashCommand["source"]): SlashCommand
   return result;
 }
 
-export function paneCommands(agent: string | null | undefined, cwd: string | null | undefined, home = process.env.HOME ?? ""): SlashCommand[] {
+export function paneCommands(agent: string | null | undefined, cwd: string | null | undefined, home = process.env.HOME ?? "", omo: { agentDir?: string | null; pluginDir?: string | null } = {}): SlashCommand[] {
   if (!agent || !(agent in BUILTINS)) return [];
-  const commands: SlashCommand[] = (BUILTINS[agent] ?? []).map((name) => ({ name, description: (agent === "pi" ? PI_DESCRIPTIONS[name] : undefined) ?? DESCRIPTIONS[name] ?? `Run /${name}`, source: "builtin" }));
+  const commands: SlashCommand[] = (BUILTINS[agent] ?? []).map((name) => ({ name, description: (agent === "omo" ? OMO_DESCRIPTIONS[name] : agent === "pi" ? PI_DESCRIPTIONS[name] : undefined) ?? DESCRIPTIONS[name] ?? `Run /${name}`, source: "builtin" }));
+  if (agent === "omo") {
+    const loaded = [
+      ...omoSkills(join(omo.agentDir ?? join(home, ".omo", "agent"), "skills"), "pi", "user"),
+      ...omoSkills(join(home, ".agents", "skills"), "agents", "user"),
+      ...(omo.pluginDir ? omoSkills(join(omo.pluginDir, "skills"), "pi", "bundled") : []),
+    ];
+    const names = new Set<string>();
+    for (const skill of loaded) {
+      if (names.has(skill.name)) continue;
+      names.add(skill.name);
+      commands.push(skill);
+    }
+  }
   if (agent === "claude") {
     commands.push(...customCommands(join(home, ".claude", "commands"), "user"));
     if (cwd) commands.push(...customCommands(join(cwd, ".claude", "commands"), "project"));

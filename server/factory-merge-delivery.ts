@@ -4,10 +4,10 @@ import type { DeliveryReadRequest } from "../shared/factory-delivery.ts";
 import { FactoryError, hash } from "./factory-host.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { FactoryRuntime } from "./factory-runtime.ts";
-import { deliveryExecutionEnded, FactoryDelivery } from "./factory-delivery.ts";
+import { containsDeliveryChange, deliveryExecutionEnded, FactoryDelivery, type DeliveryTree } from "./factory-delivery.ts";
 
 interface Pull { number: number; html_url: string; state: string; merged: boolean; merge_commit_sha: string | null; base: { ref: string; repo: { full_name: string } }; head: { sha: string } }
-interface Tree { truncated: boolean; tree: { path: string; mode: string; type: string; sha: string }[] }
+type Tree = DeliveryTree;
 interface Release { id: number; tag_name: string; draft: boolean; published_at: string | null }
 const oid = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{40,64}$/.test(value);
 
@@ -112,10 +112,6 @@ export class FactoryMergeDelivery {
           if (result.truncated !== false || !Array.isArray(result.tree)) throw new FactoryError("delivery_incomplete", "GitHub tree evidence is incomplete; inspect and correct the delivery links", 409);
           return result;
         };
-        const contains = (tree: Tree, file: DeliveryChange): boolean => {
-          const entry = tree.tree.find(entry => entry.path === file.path);
-          return file.oid === null ? !entry : entry?.sha === file.oid && entry.mode === file.mode && (!file.old_path || !tree.tree.some(entry => entry.path === file.old_path));
-        };
         const target = await read<{ name: string; commit: { sha: string } }>({ kind: "branch", ref: linked.branch });
         if (target.name !== linked.branch || !oid(target.commit?.sha)) throw new FactoryError("delivery_wrong_target", "GitHub could not verify the frozen delivery branch", 409);
         delivery.branch_head = target.commit.sha;
@@ -138,7 +134,7 @@ export class FactoryMergeDelivery {
           const mergedTree = await tree(pull.merge_commit_sha);
           const paths = delivery.changes.filter(file => {
             const change = changed.get(file.path);
-            return change && (file.oid === null ? change.status === "removed" : change.sha === file.oid) && (!file.old_path || change.previous_filename === file.old_path) && contains(mergedTree, file);
+            return change && (file.oid === null ? change.status === "removed" : change.sha === file.oid) && (!file.old_path || change.previous_filename === file.old_path) && containsDeliveryChange(mergedTree, file);
           }).map(file => file.path);
           if (!paths.length) throw new FactoryError("delivery_unrelated", `PR #${number} does not cover the intended changes. Correct its link or discard this Assignment.`, 409);
           for (const path of paths) covered.add(path);
@@ -146,7 +142,7 @@ export class FactoryMergeDelivery {
         }
         if (delivery.changes.some(file => !covered.has(file.path))) throw new FactoryError("delivery_partial", "Linked merges cover only part of the intended changes. Link every required delivery PR or discard this Assignment.", 409);
         const branchTree = await tree(target.commit.sha);
-        if (delivery.changes.some(file => !contains(branchTree, file))) throw new FactoryError("delivery_partial", "The delivery branch does not contain all intended changes. Inspect its current content and correct the delivery evidence.", 409);
+        if (delivery.changes.some(file => !containsDeliveryChange(branchTree, file))) throw new FactoryError("delivery_partial", "The delivery branch does not contain all intended changes. Inspect its current content and correct the delivery evidence.", 409);
         const latestTarget = await read<{ name: string; commit: { sha: string } }>({ kind: "branch", ref: linked.branch });
         if (latestTarget.name !== linked.branch || latestTarget.commit?.sha !== target.commit.sha) throw new FactoryError("delivery_branch_changed", "The delivery branch changed during verification. Sync delivery again against its current revision.", 409);
         if (this.scope(id) !== scope) throw new FactoryError("delivery_changed", "The Assignment changed during delivery verification", 409);
@@ -187,7 +183,7 @@ export class FactoryMergeDelivery {
               }
               if (!contained) continue;
               const releasedTree = await tree(commit.sha);
-              if (delivery.changes.some(file => !contains(releasedTree, file))) continue;
+              if (delivery.changes.some(file => !containsDeliveryChange(releasedTree, file))) continue;
               const latestCommit = await read<{ sha: string }>({ kind: "commit", ref: `tags/${release.tag_name}` });
               const latestRelease = await read<Release>({ kind: "release", number: release.id });
               if (latestCommit.sha !== commit.sha || latestRelease.id !== release.id || latestRelease.tag_name !== release.tag_name || latestRelease.draft !== false || latestRelease.published_at !== release.published_at) throw new FactoryError("delivery_release_changed", "The release or its tag changed during verification. Sync delivery again against its current revision.", 409);

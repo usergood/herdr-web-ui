@@ -89,7 +89,8 @@ export class FactoryDispatch {
           if (this.stopped) return;
           const code = error instanceof FactoryError ? error.code : "dispatch_unavailable";
           const capacity = code === "capacity_exhausted";
-          const ineligible = ["assignment_paused", "assignment_deleting", "ticket_not_ready", "ticket_owned", "writers_active", "shared_writer_owned", "answers_unready", "implementation_owned", "inactive_assignment", "continuation_waiting"].includes(code);
+          const competingStart = code === "implementation_owned" && request.run_id === null;
+          const ineligible = !competingStart && ["assignment_paused", "assignment_deleting", "ticket_not_ready", "ticket_owned", "writers_active", "shared_writer_owned", "answers_unready", "implementation_owned", "inactive_assignment", "continuation_waiting"].includes(code);
           const retry = ["machine_offline", "machine_disconnected", "remote_factory_unavailable"].includes(code);
           const attempts = request.attempts + (retry ? 1 : 0);
           const blocked = !capacity && !ineligible && (!retry || attempts >= 6);

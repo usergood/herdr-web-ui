@@ -30,6 +30,7 @@ if ($Plan) {
     [ordered]@{ mode = $(if ($Update) { 'update' } else { 'fresh' }); install_ref = $Ref; update_to = $(if ($Update) { $UpdateTo } else { $null }); check_updates = [bool]$Update } | ConvertTo-Json -Compress
     return
 }
+$env:HERDR_WEB_NO_OPEN = '1'
 $origin = 'http://127.0.0.1:7317'
 $pluginId = 'usergood.saurons-eye'
 # where the official installers put both tools; a terminal opened before them has neither on PATH

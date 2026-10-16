@@ -495,12 +495,14 @@ test("owner acceptance cannot release a still-working implementation coordinator
   try {
     const { run, path } = await fixture.prepare();
     await fixture.integrate(run); const check = await fixture.json(`/runs/${run.id}/checks`, {});
-    await fixture.review(run, "standards"); await fixture.review(run, "spec");
     fixture.setCoordinator("working");
+    expect((await fixture.json(`/runs/${run.id}/reconcile`, {})).condition).toBe("working");
+    await fixture.review(run, "standards"); await fixture.review(run, "spec");
     const accepted = await fixture.post(`/runs/${run.id}/accept`, { head: check.head });
     expect(accepted.status).toBe(409);
     expect((await fixture.json(path)).approvals).toEqual([]);
     fixture.setCoordinator("ready");
+    expect((await fixture.json(`/runs/${run.id}/reconcile`, {})).condition).toBe("completed");
     expect((await fixture.post(`/runs/${run.id}/accept`, { head: check.head })).status).toBe(200);
   } finally { fixture.close(); }
 }, 20_000);

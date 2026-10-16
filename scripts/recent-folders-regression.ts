@@ -8,6 +8,7 @@ import type { Machine } from "../shared/machines.ts";
 import type { WorkspaceCreated } from "../shared/protocol.ts";
 import { sessionSnapshot, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { passingFolder } from "../src/lib/recent-directories.ts";
+import { chromePath } from "./chrome-path.ts";
 
 await import("./test-herdr.ts");
 const { createServer } = await import("../server/index.ts");
@@ -22,11 +23,11 @@ const owned = new Set<string>();
 const server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state"), usage: new UsageService(undefined, []) });
 try {
   const browser = await chromium.launch({
-    executablePath: process.env["CHROME_PATH"] ?? "/opt/google/chrome/chrome",
+    executablePath: chromePath(),
     headless: true, args: ["--no-sandbox"],
   });
   try {
-    const evidence = process.env["UI_EVIDENCE_DIR"] || join(root, "evidence");
+    const evidence = process.env["UI_EVIDENCE_DIR"] ?? join(root, "evidence");
     mkdirSync(evidence, { recursive: true });
     for (const width of [1440, 1920, 390]) {
       for (const theme of ["dark", "light"]) {

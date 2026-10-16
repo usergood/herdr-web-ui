@@ -188,7 +188,7 @@ if (siteUrl) {
 
 // the demo: the real client, relative paths, the transport in front of it
 const demoApp = join(out, "demo", "app");
-if (!(await run([join(root, "node_modules/.bin/vite"), "build", "--base", "./", "--outDir", demoApp, "--emptyOutDir", "--logLevel", "warn"]))) throw new Error("vite build for the demo failed");
+if (!(await run([process.execPath, "--bun", join(root, "node_modules/.bin/vite"), "build", "--base", "./", "--outDir", demoApp, "--emptyOutDir", "--logLevel", "warn"]))) throw new Error("vite build for the demo failed");
 
 const bundle = await Bun.build({
   entrypoints: [join(root, "site/demo/transport.ts")],

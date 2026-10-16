@@ -77,6 +77,43 @@ install_bun() {
   rm -rf "$bun_scratch"
 }
 
+# After a first install, on a PC with a desktop: opens the app in the browser, which is where its
+# Install button is. Over SSH, or with no desktop, it says how to reach the app instead of opening
+# one nobody sees. Nothing here can fail the install, and nothing reads stdin.
+open_app() {
+  [ "$new_install" = 1 ] || return 0
+  origin=$(bun "$root/scripts/plugin.ts" status </dev/null | awk '$1 == "running" { print $2 }')
+  [ -n "$origin" ] || return 0
+  hostport=${origin#*://}
+  hostport=${hostport%%/*}
+  host=${hostport%:*}
+  case "$hostport" in *:*) port=${hostport##*:} ;; *) port=80 ;; esac
+  loopback=0
+  case "$host" in 127.0.0.1 | localhost) loopback=1 ;; esac
+  opener=""
+  if [ -z "${CI:-}" ] && [ -z "${HERDR_WEB_NO_OPEN:-}" ] && [ -z "${SSH_CONNECTION:-}" ] && [ -z "${SSH_TTY:-}" ] && [ "$loopback" = 1 ]; then
+    if [ "$os" = darwin ]; then
+      ! command -v open >/dev/null 2>&1 || opener=open
+    elif [ -n "${BROWSER:-}" ] && command -v "$BROWSER" >/dev/null 2>&1; then
+      opener=$BROWSER
+    elif command -v xdg-open >/dev/null 2>&1 && { [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; }; then
+      opener=xdg-open
+    fi
+  fi
+  echo
+  if [ -n "$opener" ]; then
+    "$opener" "$origin" </dev/null >/dev/null 2>&1 &
+    say "opened $origin in your browser: click Install in the address bar to add the app"
+  elif [ -n "${SSH_CONNECTION:-}${SSH_TTY:-}" ]; then
+    say "from your own PC, tunnel to this one and open the app there: ssh -L $port:127.0.0.1:$port <this-pc>"
+    say "the phone address above also opens it"
+  elif [ "$loopback" = 1 ]; then
+    say "open $origin in your browser and click Install in the address bar to add the app"
+  else
+    say "open $origin in your browser"
+  fi
+}
+
 install_node() {
   case "$platform" in
     linux-x64) node_sha=b294a556e639d64338823920e5866c21c02741742d2e1529ee1a225c1ec9252a ;;
@@ -179,6 +216,7 @@ main() {
   node_major=$(node --version 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\).*/\1/p')
   [ "${node_major:-0}" -ge 18 ] || install_node
 
+  new_install=0
   if herdr plugin list 2>/dev/null | grep -q "$PLUGIN "; then
     say "already installed as a herdr plugin; Settings → Updates keeps it current"
   else
@@ -189,6 +227,7 @@ main() {
     # herdr previews the whole manifest first; on success its last word is enough, on failure all of it
     log=$(mktemp)
     if herdr plugin install "$REPO" --ref "$ref" --yes </dev/null >"$log" 2>&1; then
+      new_install=1
       grep '^Installed ' "$log" || true
       rm -f "$log"
     else
@@ -241,6 +280,8 @@ main() {
       say "no phone address yet, and this version cannot set one up: update it in Settings → Updates, then run this again"
     fi
   fi
+
+  open_app
 
   case ":$original_path:" in
     *":$BIN_DIR:"*) ;;

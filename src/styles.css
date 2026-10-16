@@ -27,7 +27,7 @@
   --border: #2d2924;
   --border-strong: #3e3830;
   /* the chat's user bubble: no edge where --bg-elevated alone parts it from --bg (the dark
-     amber, report and charcoal palettes), --border where the two surfaces sit close */
+     amber, report, charcoal, lilac and forest palettes), --border where the two surfaces sit close */
   --bubble-border: transparent;
 
   /* text */
@@ -52,6 +52,12 @@
   --status-done-tint: rgba(147, 195, 107, 0.14);
   --danger-tint: rgba(255, 123, 112, 0.12);
   --danger-text: #ffd9d4;
+  /* herdr's TUI state colors, from its default theme (Catppuccin Mocha; Latte in light) */
+  --indicator-working: #f9e2af;
+  --indicator-blocked: #f38ba8;
+  --indicator-done: #94e2d5;
+  --indicator-idle: #a6e3a1;
+  --indicator-unknown: #6c7086;
   /* a note that the view is partial (a file cut short, code left plain): warning yellow */
   --notice: #e8c55c;
 
@@ -97,16 +103,20 @@
   /* "JetBrains Mono Web" is the bundled face (fonts/fonts.css): after the icon font, which draws
      the private use area alone, and never in the terminal's own stack (lib/fontFamily.ts) */
   --font-mono: "Symbols Nerd Font Mono", "JetBrains Mono Web", ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, "D2Coding", monospace;
-  --fs-2xs: 11px;
-  --fs-xs: 12px;
-  --fs-sm: 13px;
-  --fs-md: 14px;
-  --fs-chat: 15px; /* text that is read at length: chat prose, the user's bubble, the message box with a mouse */
-  --fs-lg: 16px;
-  --fs-xl: 18px;
-  --fs-display: 22px;
+  /* Settings → Appearance → Interface font size: the chosen body size over the density's (lib/settings.ts
+     writes it on <html>). Every size below is the scale at 1, except --fs-input: the floor under which
+     iOS Safari zooms a focused field stays a floor */
+  --ui-scale: 1;
+  --fs-2xs: calc(11px * var(--ui-scale));
+  --fs-xs: calc(12px * var(--ui-scale));
+  --fs-sm: calc(13px * var(--ui-scale));
+  --fs-md: calc(14px * var(--ui-scale));
+  --fs-chat: calc(15px * var(--ui-scale)); /* text that is read at length: chat prose, the user's bubble, the message box with a mouse */
+  --fs-lg: calc(16px * var(--ui-scale));
+  --fs-xl: calc(18px * var(--ui-scale));
+  --fs-display: calc(22px * var(--ui-scale));
   /* the pairing code: a size of its own, still on the density scale (compact overrides it) */
-  --fs-pairing: 32px;
+  --fs-pairing: calc(32px * var(--ui-scale));
   --fs-input: 16px; /* the one size iOS Safari does not zoom on focus */
   --lh-tight: 1.2;
   --lh-base: 1.5;
@@ -144,6 +154,8 @@
   --sidebar-w: 320px;
   --control-h: 34px;
   --touch-target: 40px;
+  /* the phone header's controls: the bar (--header-h) holds them */
+  --touch-target-header: 44px;
   --keybar-h: 48px;
   --row-h: 56px;
   --chip-h: 20px;
@@ -161,6 +173,9 @@
      pane not measured yet. Never a percentage here: each column would resolve it against its
      own box and the columns would differ by their gutters */
   --chat-w: var(--content-w);
+  /* a long user message folds to this many lines of its prose (ChatView.css caps the bubble's body
+     at the count; lib/userMessageFold.ts folds a message past it) */
+  --chat-fold-lines: 12;
   --pending-max-h: min(20dvh, 12rem);
   --palette-w: 640px;
   --palette-top: 12vh;
@@ -236,6 +251,11 @@
   --status-blocked-tint: rgba(168, 35, 35, 0.12);
   --status-done-tint: rgba(47, 99, 23, 0.12);
   --danger-tint: rgba(168, 35, 35, 0.1);
+  --indicator-working: #df8e1d;
+  --indicator-blocked: #d20f39;
+  --indicator-done: #179299;
+  --indicator-idle: #40a02b;
+  --indicator-unknown: #9ca0b0;
   --danger-text: #8f1d1d;
   --notice: #7a5a00;
   --scrim: rgba(40, 32, 22, 0.35);
@@ -309,8 +329,7 @@
   --syntax-meta: #b392f0;
 }
 
-/* Report and charcoal share plain paper in light; charcoal's own light block below
-   swaps the blue for ink */
+/* Report and charcoal share plain paper in light; report restores its blue accent below. */
 [data-theme="light"]:is([data-palette="report"], [data-palette="charcoal"]) {
   --notice: #8a5300;
   --bg: #f2f2f0;
@@ -323,8 +342,8 @@
   --text: #242424;
   --text-dim: #5f5b56;
   --text-strong: #111111;
-  --accent: #1f5fcc;
-  --accent-tint: rgba(31, 95, 204, 0.1);
+  --accent: #242424;
+  --accent-tint: rgba(36, 36, 36, 0.08);
   --primary: #242424;
   --primary-hover: #3a3a3a;
   --primary-text: #fafaf9;
@@ -335,8 +354,8 @@
   --shadow-card: 0 4px 16px rgba(20, 20, 20, 0.06);
   --term-bg: #fafaf9;
   --term-fg: #242424;
-  --term-cursor: #1f5fcc;
-  --term-selection: #cfe0fb;
+  --term-cursor: #242424;
+  --term-selection: #dedad3;
   --syntax-keyword: #b3261e;
   --syntax-string: #22743a;
   --syntax-number: #8a5300;
@@ -345,9 +364,17 @@
   --syntax-meta: #6f42c1;
 }
 
+/* Report retains the blue marks and selection of its light terminal theme. */
+[data-theme="light"][data-palette="report"] {
+  --accent: #1f5fcc;
+  --accent-tint: rgba(31, 95, 204, 0.1);
+  --term-cursor: #1f5fcc;
+  --term-selection: #cfe0fb;
+}
+
 /* Charcoal: neutral charcoal, a Ghostty-style terminal (the panel is its #171717), no
    chrome hue - selection, focus, cursor and the user's action are near-white; agent
-   states are muted as in the terminal palette. Light keeps the base paper with ink. */
+   states are muted as in the terminal palette. Light is the paper block above. */
 [data-theme="dark"][data-palette="charcoal"] {
   --notice: #d9b26a;
   --bg: #0f0f0f;
@@ -387,13 +414,6 @@
   --syntax-type: #9fb4c2;
   --syntax-variable: #dcd8d0;
   --syntax-meta: #b8a5c9;
-}
-
-[data-theme="light"][data-palette="charcoal"] {
-  --accent: #242424;
-  --accent-tint: rgba(36, 36, 36, 0.08);
-  --term-cursor: #242424;
-  --term-selection: #dedad3;
 }
 
 /* Catppuccin (catppuccin.com/palette): Mocha in dark, Latte in light, mapped by the
@@ -670,15 +690,15 @@
 }
 
 [data-density="compact"] {
-  --fs-2xs: 10px;
-  --fs-xs: 11px;
-  --fs-sm: 12px;
-  --fs-md: 13px;
-  --fs-chat: 14px;
-  --fs-lg: 15px;
-  --fs-xl: 17px;
-  --fs-display: 21px;
-  --fs-pairing: 26px;
+  --fs-2xs: calc(10px * var(--ui-scale));
+  --fs-xs: calc(11px * var(--ui-scale));
+  --fs-sm: calc(12px * var(--ui-scale));
+  --fs-md: calc(13px * var(--ui-scale));
+  --fs-chat: calc(14px * var(--ui-scale));
+  --fs-lg: calc(15px * var(--ui-scale));
+  --fs-xl: calc(17px * var(--ui-scale));
+  --fs-display: calc(21px * var(--ui-scale));
+  --fs-pairing: calc(26px * var(--ui-scale));
   --lh-base: 1.45;
   --header-h: 46px;
   --sidebar-w: 300px;
@@ -707,6 +727,14 @@ body,
 #root {
   height: 100%;
   margin: 0;
+}
+
+/* No pull-to-refresh: a reload drops held drafts and the terminal client. Chrome before 144
+   ignores a container's overscroll-behavior when it has nothing to scroll (a short chat), so the
+   drag chains to the page; there it takes both html and body, html alone still reloads (#427). */
+html,
+body {
+  overscroll-behavior-y: contain;
 }
 
 body {
@@ -760,6 +788,9 @@ button {
   /* the sidebar column's width: the one the user dragged its edge to (--sidebar-user-w, written
      by App), else the density's; never more than half the window */
   --sidebar-shown-w: min(var(--sidebar-user-w, var(--sidebar-w)), 50vw);
+  /* the docked file panel's width (FileViewer.css): the one its edge was dragged to (--file-panel-user-w,
+     written by App), else min(42vw, 560px). The panel yields first to leave 320px for the pane. */
+  --file-panel-shown-w: min(max(320px, min(var(--file-panel-user-w, min(42vw, 560px)), 60vw)), calc(100vw - var(--sidebar-shown-w) - 320px));
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -803,6 +834,10 @@ button {
 
 .app.sidebar-collapsed .sidebar {
   display: none;
+}
+
+.app.sidebar-collapsed {
+  --sidebar-shown-w: 0px;
 }
 
 .scrim {
@@ -1020,6 +1055,27 @@ button {
   flex: 0 0 auto;
 }
 
+/* From 769px the lens switch is its two words and nothing around them: no track, no glyphs, the
+   chosen lens on the hover fill. Files follows it as an action of its own, after a hairline. */
+@media (min-width: 769px) {
+  .app-header .view-switch {
+    padding: 0;
+    background: transparent;
+    border-color: transparent;
+  }
+
+  .app-header .view-switch > button svg {
+    display: none;
+  }
+}
+
+.header-divider {
+  flex: 0 0 auto;
+  width: var(--hairline);
+  height: var(--chip-h);
+  background: var(--border);
+}
+
 /* the workspace-list toggle and the palette: in the bar below 769px and beside a collapsed
    sidebar, the sidebar's own top row otherwise (further down) */
 .header-side {
@@ -1102,11 +1158,6 @@ button {
   display: inline-flex;
 }
 
-/* nothing to offer but the palette, which has its own button above phone width */
-.header-more.is-phone-only {
-  display: none;
-}
-
 /* alerts are off on this device: the one state of the menu worth a glance. The button's name
    and the Alerts item say it in words. */
 .header-more-dot {
@@ -1173,6 +1224,29 @@ button {
     padding: env(safe-area-inset-top, 0px) var(--space-3) 0 calc(var(--space-3) + env(safe-area-inset-left, 0px));
     border-right: var(--hairline) solid var(--border);
     background: var(--bg-panel);
+  }
+}
+
+/* Installed desktop app with the title bar folded away (manifest display_override): the header
+   takes the title bar's place, so it drags the window and leaves room for the window controls
+   Chrome draws over its left (macOS) or right edge. */
+@media (display-mode: window-controls-overlay) {
+  .app-header {
+    -webkit-app-region: drag;
+    app-region: drag;
+    padding-left: calc(var(--space-3) + env(titlebar-area-x, 0px));
+    padding-right: calc(var(--space-3) + 100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw));
+  }
+
+  .app-header :is(button, a, input, select, textarea, [tabindex]) {
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
+  }
+}
+
+@media (display-mode: window-controls-overlay) and (min-width: 769px) {
+  .app:not(.sidebar-collapsed) .header-side {
+    padding-left: calc(var(--space-3) + env(titlebar-area-x, 0px));
   }
 }
 
@@ -1762,9 +1836,8 @@ button {
     display: inline-flex;
   }
 
-  /* drawer mode: the collapse toggle has nothing to collapse, and sign out is in the palette */
-  .sidebar-toggle,
-  .lock-button {
+  /* drawer mode: the collapse toggle has nothing to collapse */
+  .sidebar-toggle {
     display: none;
   }
 
@@ -1814,7 +1887,8 @@ button {
   }
 }
 
-/* the key bar (KeyBar.css) shows under the same query and carries env(safe-area-inset-bottom) itself */
+/* the key bar (KeyBar.css) shows under the same query and carries env(safe-area-inset-bottom) itself,
+   the one bar that reaches the bottom of the screen (KeyBar.tsx) */
 @media (pointer: coarse), (max-width: 768px) {
   .terminal-host:has(.key-bar) {
     padding-bottom: 0; /* no pane = no bar, and the host keeps the inset */
@@ -1842,15 +1916,29 @@ button {
   .header-desktop-only {
     display: none;
   }
-
-  .header-more.is-phone-only {
-    display: inline-flex;
-  }
 }
 
 /* just above phone width the lens labels would squeeze the pane title to a glyph: icons only */
 @media (max-width: 560px) {
   .view-switch .header-desktop-only { display: none; }
+}
+
+/* phones: every header control is a full thumb target, the lens buttons too (the track loses
+   its inset so the bar still holds them) */
+@media (max-width: 768px) {
+  .app-header .icon-button {
+    width: var(--touch-target-header);
+    height: var(--touch-target-header);
+  }
+
+  .app-header .view-switch {
+    padding: 0;
+  }
+
+  .app-header .view-switch > button {
+    min-width: var(--touch-target-header);
+    height: var(--touch-target-header);
+  }
 }
 
 /* ---------- phone: an app, not a page ---------- */
