@@ -119,8 +119,17 @@ try {
           await lens.getByTitle(label("Chat transcript (⌘⇧J)"), { exact: true }).tap();
           assert.equal(await terminal.getAttribute("role"), null, "chat exposes no empty terminal landmark");
           assert.equal(await terminal.getAttribute("aria-label"), null);
+          const widthBeforeSettings = await page.evaluate(() => window.innerWidth);
           await openSettings(page);
-          assert.equal(await page.evaluate(() => window.innerWidth), width, `Settings keeps the ${width}px phone viewport (${language})`);
+          const settingsWidth = await page.evaluate(() => window.innerWidth);
+          assert.equal(widthBeforeSettings, width, `The header keeps the ${width}px phone viewport (${language})`);
+          const overflowingHeaderControls = await page.locator(".app-header button").evaluateAll((buttons, viewportWidth) => buttons.flatMap((button) => {
+            const box = button.getBoundingClientRect();
+            return box.width > 0 && (box.left < -0.5 || box.right > viewportWidth + 0.5)
+              ? [button.getAttribute("aria-label") ?? button.textContent?.trim() ?? ""] : [];
+          }), width);
+          assert.deepEqual(overflowingHeaderControls, [], "every visible header control stays inside the phone viewport");
+          assert.equal(settingsWidth, width, `Settings keeps the ${width}px phone viewport (${language})`);
           for (const name of PAGES) {
             await openSettingsPage(page, label(name), label("Back to settings"));
             // what a page asks the server for (devices, the phone address, the accounts) has arrived

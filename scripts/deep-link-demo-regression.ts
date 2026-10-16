@@ -534,7 +534,7 @@ try {
       });
       console.log("PASS a pane Back selects under an open modal does not take the keyboard out of it");
 
-      // Phone touch controls cannot open the palette; resizing restores the Files entry.
+      // Phones open the palette from More; resizing also restores the Files entry.
       const palettePhone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" });
       try {
         await palettePhone.addInitScript(() => localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en" })));
@@ -545,7 +545,15 @@ try {
         await page.locator(".header-more-button").tap();
         const more = page.getByRole("dialog", { name: "More", exact: true });
         await more.waitFor();
-        assert.equal(await more.getByRole("button", { name: "Command palette", exact: true }).count(), 0, "More has no palette entry");
+        const palette = page.getByRole("dialog", { name: "Command palette", exact: true });
+        assert.equal(await more.getByRole("button", { name: "Command palette", exact: true }).count(), 1, "More exposes one palette entry");
+        await more.getByRole("button", { name: "Command palette", exact: true }).tap();
+        await palette.waitFor();
+        await more.waitFor({ state: "detached" });
+        await page.keyboard.press("Escape");
+        await palette.waitFor({ state: "detached" });
+        await page.locator(".header-more-button").tap();
+        await more.waitFor();
         await more.getByRole("button", { name: "Browse files", exact: true }).tap();
         const files = page.getByRole("dialog", { name: "Files", exact: true });
         await files.waitFor();
@@ -557,7 +565,6 @@ try {
         await page.setViewportSize({ width: 1024, height: 768 });
         await browse.waitFor();
         await browse.click();
-        const palette = page.getByRole("dialog", { name: "Command palette", exact: true });
         await palette.waitFor();
         await page.keyboard.press("Escape");
         await palette.waitFor({ state: "detached" });
@@ -566,7 +573,7 @@ try {
         await page.keyboard.press("ControlOrMeta+Shift+K");
         await palette.waitFor();
       } finally { await palettePhone.close(); }
-      console.log("PASS phone header, More and Files omit palette entry points; wider Files and keyboard shortcuts still open it");
+      console.log("PASS phone More opens the palette; wider Files and hardware keyboard shortcuts retain their entry points");
 
       // a phone's ⋯ sheet is an entry of its own: Back closes it and stays on the pane; a sheet
       // closed by Cancel or by an item leaves no entry behind, so the next Back goes to the pane before

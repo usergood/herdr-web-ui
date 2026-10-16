@@ -1941,6 +1941,20 @@ button {
   }
 }
 
+/* Keep Plan, Inbox and More alongside both lenses on a small phone without shrinking
+   their controls: the surrounding spacing yields before the viewport grows. */
+@media (max-width: 360px) {
+  .app-header {
+    gap: var(--space-1);
+    padding-right: calc(var(--space-2) + env(safe-area-inset-right, 0px));
+    padding-left: calc(var(--space-2) + env(safe-area-inset-left, 0px));
+  }
+
+  .header-meta {
+    gap: var(--space-1);
+  }
+}
+
 /* ---------- phone: an app, not a page ---------- */
 
 /* Over the chat on a phone the header is glass, as an iPhone's bar is: the transcript scrolls on

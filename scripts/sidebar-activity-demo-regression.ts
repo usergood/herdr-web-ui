@@ -149,6 +149,13 @@ try {
           const head = tree.locator(`.workspace-select[data-pane="${panes.api}"]`);
           const headId = await head.evaluate((row) => row.closest(".workspace-group")?.getAttribute("data-workspace"));
           assert.ok(headId);
+          const workspaceLabel = await page.evaluate(async (workspaceId) => {
+            const response = await fetch("/api/session");
+            if (!response.ok) throw new Error(`workspace roster: ${response.status}`);
+            const { snapshot } = await response.json() as { snapshot: { workspaces: { workspace_id: string; label: string }[] } };
+            return snapshot.workspaces.find((workspace) => workspace.workspace_id === workspaceId)?.label;
+          }, headId);
+          assert.ok(workspaceLabel, "the repository has a label in the public workspace roster");
           const worktrees = await page.evaluate(async (workspaceId) => {
             const made: { workspace_id: string; pane_id: string }[] = [];
             for (const branch of ["pin-first", "pin-second"]) {
@@ -207,7 +214,7 @@ try {
           await page.keyboard.press("Alt+ArrowUp");
           assert.deepEqual(await card.locator(".workspace-name").allTextContents(), ["pin-first", headName], "a worktree shortcut reorders independently of the tree");
           assert.deepEqual(await titles(), groupedOrder, "shortcut reordering does not move tree worktrees");
-          const fold = tree.getByRole("button", { name: `Collapse worktrees of ${headName}`, exact: true });
+          const fold = tree.getByRole("button", { name: `Collapse worktrees of ${workspaceLabel}`, exact: true });
           await fold.click();
           assert.equal(await firstTree.count(), 0, "collapsing hides the unselected tree worktree");
           assert.equal(await worktreeShortcut.isVisible(), true, "collapsing never hides its favorite shortcut");
@@ -469,7 +476,7 @@ try {
       }, undefined, true);
       console.log("PASS on a phone the ⋯ pins an agent from its sheet; a tap on the row selects it and opens no menu");
 
-      await withPage(browser, { agentOrder: "activity" }, async (page) => {
+      await withPage(browser, { agentOrder: "activity", quietOpenedDone: true }, async (page) => {
         assert.equal((await agentTitles(page))[0], WEB, "the blocked agent is pinned on top");
         assert.equal(await page.locator(".agents-sidebar .agent-group").count(), 0, "Activity mixes workspaces, so it draws no cards");
         assert.match(await agent(page, WEB).locator(".agent-context").textContent() ?? "", /web-dashboard/, "a row outside a card names its workspace");
@@ -492,7 +499,7 @@ try {
         // opening it here leaves herdr's DONE as it is
         await agent(page, INFRA).locator(".agent-select").click();
         await waitStatus(page, INFRA, "idle");
-        assert.equal(await workspaceStatus(page, "infra"), "idle", "its workspace row reads ready too");
+        assert.equal(await page.locator(`.machine-workspaces .workspace-select[data-pane="${panes.infra}"] .sidebar-status`).getAttribute("data-status"), "idle", "its workspace row reads ready too");
         assert.equal(await agentStatus(page, API), "done", "a finish never opened keeps its dot");
         // the run starts from an empty record: the opened finish is in it at herdr's counter for that
         // finish (a look made at a stand-in is saved once a roster read brings the counter), the

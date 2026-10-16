@@ -433,6 +433,7 @@ One set for both themes: the card is island black wherever it shows.
   `.terminal-host`. While a phone's soft keyboard is up (`data-keyboard`), `--app-height` follows
   `visualViewport` so the keyboard does not cover input; otherwise the shell is `100dvh`, because an
   iPhone home screen app reports a visual viewport shorter than the screen without a keyboard.
+- At `360px` and below, header padding uses `--space-2` and header/meta gaps use `--space-1`, keeping Plan, Inbox, More and both lenses within the viewport without shrinking their controls.
 - The header is one line at every width. Anatomy, left to right: mobile drawer toggle / desktop
   sidebar toggle and the command palette (`.header-side`); the flexible context, agent mark and
   title then the PC › workspace › folder crumb; segmented Chat/Terminal switch; from `769px` a
