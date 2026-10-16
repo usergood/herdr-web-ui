@@ -1,3 +1,4 @@
+import { readyIssuePlanningStep } from "../shared/issue-queue.ts";
 import type { FactoryEvent, FactoryRun, Implementation } from "../shared/factory.ts";
 import type { ProjectGitHubSource } from "../shared/github-project.ts";
 import type { IssueQueueEntry, ProjectQueuePolicy } from "../shared/issue-queue.ts";
@@ -16,7 +17,7 @@ export function issueRetryAvailable(store: FactoryStore, run: FactoryRun | undef
 }
 
 /** One eligibility result is shared by previews, source detail and the board. */
-export function issueQueueEntry(store: FactoryStore, source: ProjectGitHubSource, policy: ProjectQueuePolicy, accountReady: boolean, retryRunId?: string): IssueQueueEntry {
+export function issueQueueEntry(store: FactoryStore, source: ProjectGitHubSource, policy: ProjectQueuePolicy, accountReady: boolean, retryRunId?: string, planningRunId?: string): IssueQueueEntry {
   const idea = store.get<Implementation>("implementations", source.implementation_id);
   const workflow = new FactoryWorkflow(store);
   const reasons: IssueQueueEntry["reasons"] = [];
@@ -24,7 +25,7 @@ export function issueQueueEntry(store: FactoryStore, source: ProjectGitHubSource
   if (!idea || idea.project_id !== source.project_id) reason("assignment_moved");
   if (idea?.archived_at) reason("assignment_archived");
   if (idea?.outcome !== "none" || idea?.stage === "done") reason("assignment_finished");
-  const attempts = issueExecutionAttempts(store, source.implementation_id);
+  const attempts = issueExecutionAttempts(store, source.implementation_id).filter(run => !(run.id === planningRunId && readyIssuePlanningStep(run)));
   const latest = attempts.at(-1);
   if (attempts.length && !(latest?.id === retryRunId && issueRetryAvailable(store, latest))) reason("attempt_exists");
   if (!accountReady) reason("account_unavailable");

@@ -1,3 +1,4 @@
+import { issueContinuationFixture } from "./fixtures/issue-continuation.ts";
 /** Built app, owned HTTP/CLI fixtures, desktop and mobile. Build before running. */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
@@ -161,6 +162,45 @@ try {
   }
   assert.deepEqual(errors, []);
   console.log("PASS: desktop/mobile existing implementation controls use guarded issue admission, pause and outage rules");
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    for (const condition of ["ready", "working", "disconnected"] as const) {
+      const continuation = issueContinuationFixture();
+      const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });
+      page.setDefaultTimeout(10_000); page.on("pageerror", recordPageError);
+      try {
+        continuation.setPlanningCondition(condition);
+        const { path, planning, body, project } = await continuation.preparedPlanning();
+        await page.goto(continuation.origin + `/#factory/${planning.implementation_id}`);
+        const button = page.getByRole("region", { name: "Next step", exact: true }).getByRole("button", { name: "Continue workflow", exact: true });
+        await button.waitFor();
+        if (condition !== "ready") {
+          assert(await button.isDisabled());
+          assert.equal((await continuation.json(path)).runs.length, 1);
+          continue;
+        }
+        // A different Assignment's ready chat cannot retire the displayed step.
+        const other = await continuation.json("/implementations", { title: "Unrelated browser plan", project_id: project.id, description: "Owned unrelated planning" });
+        const unrelated = await continuation.json(`/implementations/${other.id}/runs`, { action: "to-spec", idempotency_key: "browser-unrelated-step" });
+        await continuation.json(`/runs/${unrelated.id}/reconcile`, {});
+        const rejected = await page.evaluate(async ({ path, body, runId }) => {
+          const response = await fetch("/api/factory" + path + "/continue", { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1", "x-herdr-machine": "1", authorization: "Bearer fixture-owner" }, body: JSON.stringify({ ...body, run_id: runId, idempotency_key: "browser-wrong-step" }) });
+          return { status: response.status, code: (await response.json()).error.code };
+        }, { path, body, runId: unrelated.id });
+        assert.deepEqual(rejected, { status: 409, code: "step_changed" });
+        const started = page.waitForResponse(response => response.url().endsWith(path + "/continue") && response.request().method() === "POST");
+        await button.click();
+        const response = await started; assert.equal(response.status(), 202);
+        assert.equal(response.request().postDataJSON().run_id, planning.id);
+        assert.deepEqual(response.request().postDataJSON().issue_scope, body.issue_scope);
+        const detail = await continuation.json(path);
+        assert.deepEqual(detail.runs.map((run: any) => [run.action, run.condition]), [["to-tickets", "completed"], ["implement-spec", "working"]]);
+        assert(detail.messages.some((message: any) => message.content.includes("Retained fictional planning handoff.")));
+        assert.equal(detail.runs[1].manifest.issue_admission.source.id, body.issue_scope.source_id);
+      } finally { await page.close(); continuation.close(); }
+    }
+  }
+  assert.deepEqual(errors, []);
+  console.log("PASS: desktop/mobile exact ready planning Continue retains handoff and admission; working, uncertain and unrelated predecessors cannot retire");
   const { project, route, readiness } = await fixture.setup();
   const second = { ...fixture.issue, number: 2, node_id: "fictional-2", title: "Later greeting", html_url: "https://github.com/fictional/project/issues/2" };
   const blocked = { ...fixture.issue, number: 3, node_id: "fictional-3", title: "Blocked greeting", labels: [{ name: "blocked" }, { name: "ready-for-agent" }] };

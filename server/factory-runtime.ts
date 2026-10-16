@@ -32,7 +32,7 @@ export class FactoryRuntime {
   private stopped = false;
   private recovery: Promise<void> | null = null;
   private readonly recoveryIds: string[];
-  constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly host: FactoryExecutionHost, private readonly endpoint: MachineEndpoint, private readonly readArtifact: (record: FactoryArtifact) => Buffer, private readonly publicUrl: string | null, private readonly references: FactoryReferences, private readonly accounts: MachineAccounts, private readonly issueAdmission: (id: string, scope: unknown, retryRunId?: string) => import("../shared/issue-admission.ts").IssueAdmission, private readonly reconcileImplementation: (id: string) => Promise<FactoryRun>) { this.recoveryIds = this.store.list<FactoryRun>("runs").filter(run => activeConditions.has(run.condition) || run.implementation_completion_pending || run.implementation_completion).map(run => run.id); }
+  constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly settings: () => FactorySettings, private readonly host: FactoryExecutionHost, private readonly endpoint: MachineEndpoint, private readonly readArtifact: (record: FactoryArtifact) => Buffer, private readonly publicUrl: string | null, private readonly references: FactoryReferences, private readonly accounts: MachineAccounts, private readonly issueAdmission: (id: string, scope: unknown, retryRunId?: string, planningRunId?: string) => import("../shared/issue-admission.ts").IssueAdmission, private readonly reconcileImplementation: (id: string) => Promise<FactoryRun>) { this.recoveryIds = this.store.list<FactoryRun>("runs").filter(run => activeConditions.has(run.condition) || run.implementation_completion_pending || run.implementation_completion).map(run => run.id); }
   /** Restart observes durable identities once before accepting another operation. Never relaunch. */
   recover(): Promise<void> {
     return this.recovery ??= (async () => {
@@ -186,9 +186,10 @@ export class FactoryRuntime {
     // A prepared issue remains governed by admission even after its current evidence
     // becomes stale or its plan needs owner decisions. Never fall back to manual Start.
     if (action === "implement-spec" && body.issue_scope === undefined && this.store.list<import("../shared/issue-planning.ts").IssuePlanning>("github_plan_versions", id).some(plan => plan.specification_id && plan.graph_hash)) throw new FactoryError("issue_scope_required", "Select the displayed prepared issue scope before starting implementation", 409);
-    const issueAdmission = body.issue_scope === undefined ? null : this.issueAdmission(id, body.issue_scope, retryRunId);
+    let planningRunId = body.issue_scope !== undefined ? continuation?.runId : undefined;
+    let issueAdmission = body.issue_scope === undefined ? null : this.issueAdmission(id, body.issue_scope, retryRunId, planningRunId);
     const validateIssue = () => {
-      if (issueAdmission && hash(JSON.stringify(this.issueAdmission(id, body.issue_scope, retryRunId))) !== hash(JSON.stringify(issueAdmission))) throw new FactoryError("issue_changed", "The issue admission evidence changed; review it before starting", 409);
+      if (issueAdmission && hash(JSON.stringify(this.issueAdmission(id, body.issue_scope, retryRunId, planningRunId))) !== hash(JSON.stringify(issueAdmission))) throw new FactoryError("issue_changed", "The issue admission evidence changed; review it before starting", 409);
     };
     if (["work", "implement-spec", "grill-with-docs", "to-tickets", "retro", "apply-retro"].includes(action) && !project) throw new FactoryError("project_required", "Select a Project before starting this action", 409);
     const retrospective = ["retro", "apply-retro"].includes(action) ? this.store.get<import("../shared/protocol.ts").FactoryRetrospective>("retrospectives", String(body.retrospective_id)) : null;
@@ -258,6 +259,16 @@ export class FactoryRuntime {
       if (hash(JSON.stringify(beforeScope)) !== hash(JSON.stringify(afterScope))) throw new FactoryError("scope_changed", "The Assignment changed during its handoff; inspect it before continuing", 409);
       if (checkout && hash(JSON.stringify(this.store.get("checkouts", checkout.id))) !== hash(JSON.stringify(checkout))) throw new FactoryError("scope_changed", "The checkout changed during its handoff; inspect it before continuing", 409);
       implementation = current;
+      if (issueAdmission && planningRunId) {
+        // The exact predecessor has retired. Recheck normal eligibility, then freeze
+        // its fresh queue proof; all source/authorization evidence must stay identical.
+        planningRunId = undefined;
+        const next = this.issueAdmission(id, body.issue_scope, retryRunId);
+        const { queue_revision: beforeQueue, ...before } = issueAdmission;
+        const { queue_revision: afterQueue, ...after } = next;
+        if (hash(JSON.stringify(before)) !== hash(JSON.stringify(after))) throw new FactoryError("issue_changed", "The issue admission evidence changed during its handoff", 409);
+        issueAdmission = next;
+      }
     }
     const selectedEvidence = new Set(retrospective?.evidence_ids ?? []);
     const selectedArtifacts = (): FactoryArtifact[] => {

@@ -1,3 +1,4 @@
+import { readyIssuePlanningStep } from "../shared/issue-queue.ts";
 import type { FactoryProject, FactoryRun, Implementation, ProjectCheckout } from "../shared/protocol.ts";
 import { FactoryError, hash } from "./factory-host.ts";
 import { FactoryStore } from "./factory-store.ts";
@@ -90,6 +91,11 @@ export class FactoryContinuation {
     const source = typeof body.run_id === "string" ? this.store.get<FactoryRun>("runs", body.run_id) : null;
     const active = this.store.list<FactoryRun>("runs", id).filter(run => !["completed", "cancelled", "failed"].includes(run.condition));
     if (body.run_id !== null && (!source || source.implementation_id !== id) || active.some(run => run.id !== source?.id)) throw new FactoryError("step_changed", "Refresh the Assignment's current step before continuing", 409);
+    if (body.issue_scope !== undefined && source) {
+      const observed = await this.runtime.reconcile(source.id);
+      if (!readyIssuePlanningStep(observed)) throw new FactoryError("step_not_ready", "Continue only the exact ready planning step", 409);
+      this.validateScope(id, scopeHash, body);
+    }
     let action = body.action;
     if (action === "implement-spec") {
       if (source?.action === "verify-provider" && !["cancelled", "failed"].includes(source.condition)) await this.runtime.verifyProvider(source);
@@ -108,7 +114,8 @@ export class FactoryContinuation {
         const observed = await this.runtime.reconcile(source.id);
         if (observed.condition !== "ready") throw new FactoryError("step_not_ready", observed.waiting_reason ?? "The current step is still working; continue when its proposal is ready", 409);
         await this.retain(source.id, body.allow_partial_handoff === true);
-        await this.runtime.finishStep(source.id);
+        const finished = await this.runtime.finishStep(source.id);
+        if (body.issue_scope !== undefined && finished.condition !== "completed") throw new FactoryError("step_not_finished", "Observe the retained planning step before continuing", 409);
       } } : {}) });
       if (this.stopped) return run;
       this.store.put("workflow_continuations", { ...record, run_id: run.id, condition: action === "verify-provider" && body.action === "implement-spec" ? "verifying" : "started" }, id);

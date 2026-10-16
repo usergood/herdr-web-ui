@@ -1,3 +1,10 @@
+import type { FactoryRun } from "./factory.ts";
+
+/** Only a resting planning step may hand its ownership to issue implementation. */
+export function readyIssuePlanningStep(run: FactoryRun | null | undefined): boolean {
+  return !!run && run.condition === "ready" && !run.issue_pause && ["grill-me", "grill-with-docs", "to-spec", "to-tickets"].includes(run.action);
+}
+
 /** Automatic starts require explicit opt-in bound to a reviewed backlog. */
 export interface ProjectQueuePolicy {
   project_id: string; revision: string | null; automatic_implementation: boolean;

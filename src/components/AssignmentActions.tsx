@@ -41,7 +41,7 @@ export function AssignmentActions({ preset, onPresetChange, detail, project, mac
   async function launch(action: FactoryAction) {
       if (!capability?.skills_verified) await factoryRequest(`/machines/${encodeURIComponent(machineId)}/prepare`, {});
       const issueScope = action === "implement-spec" ? issueStart.scope : undefined;
-      const direct = action === "work" || !!issueScope;
+      const direct = action === "work" || !!issueScope && !active;
       const run = await factoryRequest<FactoryRun>(prefix + (direct ? "/runs" : "/continue"), { ...(direct ? {} : { run_id: active?.id ?? null, allow_partial_handoff: acknowledgedHandoff === active?.id }), ...(issueScope ? { issue_scope: issueScope } : {}), action, execution_preset: preset, idempotency_key: crypto.randomUUID(), expected: { provider, machine_id: machineId, project_id: detail.implementation.project_id, specification_id: specification?.id ?? null, graph_hash: detail.graph_hash } });
       if (!live.current) return;
       if (run.condition !== "working" || !run.pane_id) throw new Error(run.waiting_reason ?? t("The agent did not start. Open advanced controls to inspect the retained attempt."));
