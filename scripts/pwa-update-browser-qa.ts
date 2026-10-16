@@ -93,6 +93,8 @@ try {
   for (const folder of ["server", "shared"]) {
     cpSync(join(repo, folder), join(app, folder), { recursive: true, filter: (path) => !path.endsWith(".test.ts") });
   }
+  mkdirSync(join(app, "docs", "factory"), { recursive: true });
+  copyFileSync(join(repo, "docs", "factory", "skills.lock.json"), join(app, "docs", "factory", "skills.lock.json"));
   for (const file of ["package.json", "tsconfig.json"]) copyFileSync(join(repo, file), join(app, file));
   symlinkSync(join(repo, "node_modules"), join(app, "node_modules"), process.platform === "win32" ? "junction" : "dir");
   cpSync(process.env.PWA_BASELINE_DIR ? resolve(process.env.PWA_BASELINE_DIR) : current, baseline, { recursive: true });
