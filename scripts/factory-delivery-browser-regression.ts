@@ -17,6 +17,7 @@ try {
   const dialog = page.getByRole("dialog", { name: "Project settings", exact: true });
   await dialog.getByRole("tab", { name: "Workflow", exact: true }).click();
   const milestone = dialog.getByRole("combobox", { name: "Delivery milestone", exact: true });
+  assert.equal(await milestone.count(), 1, "One Delivery milestone selector on desktop");
   assert.equal(await milestone.inputValue(), "merge");
   assert.equal(await dialog.getByRole("textbox", { name: "Delivery branch", exact: true }).inputValue(), "main");
   await milestone.selectOption("release");
@@ -25,8 +26,19 @@ try {
   await dialog.getByRole("button", { name: "Save Project settings", exact: true }).click();
   assert.equal((await save).status(), 200);
   await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await milestone.count(), 1, "One Delivery milestone selector on mobile");
   assert.equal(await milestone.inputValue(), "release");
   assert(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth), "Delivery settings fit a phone");
+  await page.route("**/api/factory/project-discovery", route => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "owned_discovery_failed", message: "Owned Project discovery failed" } }) }));
+  await page.reload();
+  await dialog.getByRole("tab", { name: "Workflow", exact: true }).click();
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    await dialog.getByRole("alert").filter({ hasText: "Owned Project discovery failed" }).waitFor();
+    assert.equal(await milestone.count(), 1);
+    assert.equal(await dialog.getByRole("status").filter({ hasText: "Owned Project discovery failed" }).count(), 0);
+  }
+  await page.unroute("**/api/factory/project-discovery");
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "hidden" });
   const run = await f.start();

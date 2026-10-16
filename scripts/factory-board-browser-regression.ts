@@ -63,6 +63,9 @@ async function ticketProgressBoard(): Promise<void> {
       await page.getByRole("region", { name: "Queued", exact: true }).getByRole("button", { name: "Queued for capacity", exact: true }).waitFor();
       await page.getByRole("region", { name: "Done", exact: true }).getByRole("button", { name: "Finished research", exact: true }).waitFor();
       await page.getByRole("region", { name: "Needs you", exact: true }).getByRole("button", { name: "Failed work needs you", exact: true }).waitFor();
+      const failedCard = page.getByRole("article", { name: "Failed work needs you", exact: true });
+      await failedCard.getByRole("alert").filter({ hasText: /^Failed$/ }).waitFor();
+      assert.equal(await failedCard.getByRole("status").filter({ hasText: /^Failed$/ }).count(), 0);
       gate.release(); await check;
       await f.api(`/runs/${run.id}/workers/${worker.id}/refresh`, {});
       await f.api(`/runs/${run.id}/workers/${worker.id}/check`, {});
@@ -144,6 +147,13 @@ try {
     assert.equal(await card.getByText("Tickets: 0/2", { exact: true }).count(), activity === "implementing" ? 1 : 0);
     assert.equal(await card.getByText(/0\/0/).count(), 0);
   }
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    const attention = page.getByRole("article", { name: "Browser Reviewing", exact: true });
+    await attention.getByRole("status").filter({ hasText: /^Needs you$/ }).waitFor();
+    assert.equal(await attention.getByRole("alert").count(), 0, "Ordinary owner attention remains a status");
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
   await page.getByRole("combobox", { name: "Run condition", exact: true }).selectOption("needs_you");
   await page.getByRole("button", { name: "Browser Reviewing", exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Browser Implementing", exact: true }).count(), 0);
