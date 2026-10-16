@@ -59,6 +59,7 @@ try {
           else if (condition === "finished") {
             const native = f.runs.get(run.id)!;
             native.workspace_id = `owned-finished-${run.id}`; native.pane_id = `${native.workspace_id}:p1`;
+            f.researchReady(run.id);
             assert.equal((await f.api(`/runs/${run.id}/reconcile`, {})).status, 200);
             assert.equal((await f.api(`/implementations/${target}/complete-work`, { run_id: run.id })).status, 200);
           }

@@ -4,6 +4,7 @@ import type { Machine } from "../../shared/machines.ts";
 import { factoryRead } from "../lib/factoryApi.ts";
 import { useT } from "../lib/i18n.ts";
 import { RetainedNativeTurn } from "./RetainedNativeTurn.tsx";
+import { Markdown } from "./Markdown.tsx";
 import { SpecificationConversation } from "./SpecificationConversation.tsx";
 import "./WorkflowConversations.css";
 import { HumanReviewConversation } from "./HumanReviewConversation.tsx";
@@ -64,6 +65,7 @@ function ConversationHistory({ detail, selected, machines, busy, perform, onOpen
   const t = useT();
   const snapshots = new Map(detail.native_snapshots.map(s => [s.id, s]));
   const specification = detail.specifications.at(-1);
+  const preparedIssuePlan = detail.github_sources?.some(source => source.kind === "issue" && source.planning?.condition === "prepared" && source.planning.specification_id === specification?.id && source.planning.graph_hash === detail.graph_hash);
   const history = selected.contexts.map(context => {
     const pane = machines.find(m => m.id === context.machine_id && m.state === "connected")?.snapshot?.panes.find(p => p.pane_id === context.pane_id && p.workspace_id === context.workspace_id && p.cwd === context.worktree);
     return <article className="factory-message" key={`${context.run_id}:${context.worker_id ?? "coordinator"}`}>
@@ -82,7 +84,7 @@ function ConversationHistory({ detail, selected, machines, busy, perform, onOpen
   return <section className="workflow-conversation-history" aria-label={conversationLabel(selected.kind, selected.title, t)}>
       <h4>{conversationLabel(selected.kind, selected.title, t)}</h4>
       {selected.kind === "human_review" && <HumanReviewConversation detail={detail} busy={busy} perform={perform} history={history} />}
-      {selected.kind === "specifications" && specification && <SpecificationConversation key={specification.id} detail={detail} specification={specification} busy={busy} perform={perform} />}
+      {selected.kind === "specifications" && specification && (preparedIssuePlan ? <Markdown>{specification.content}</Markdown> : <SpecificationConversation key={specification.id} detail={detail} specification={specification} busy={busy} perform={perform} />)}
       {!selected.contexts.length && <p role="status">{t("No native context yet.")}</p>}
       {selected.kind !== "human_review" && history}
   </section>;

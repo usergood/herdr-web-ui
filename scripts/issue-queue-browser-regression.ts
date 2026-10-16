@@ -428,14 +428,15 @@ try {
       assert(await first.isVisible());
       await region.getByRole("article").first().getByRole("link", { name: "#1 · Fictional scope", exact: true }).waitFor();
       await region.getByLabel("Pause queue", { exact: true }).check();
-      await region.getByLabel("Implementing Assignment limit", { exact: true }).fill("2");
+      assert.equal(await region.getByLabel("Implementing Assignment limit", { exact: true }).count(), 0, "Assignment quotas are absent; Pause remains independently configurable");
       await region.getByRole("button", { name: "Save queue settings", exact: true }).click();
       await region.getByText("Queue paused. Admitted work continues.", { exact: true }).waitFor();
       await region.getByText("Preview changed. Review the backlog again.", { exact: true }).waitFor();
       await page.reload();
       await reopenGitHubSettings();
       assert(await region.getByLabel("Pause queue", { exact: true }).isChecked());
-      assert.equal(await region.getByLabel("Implementing Assignment limit", { exact: true }).inputValue(), "2");
+      assert.equal(await region.getByLabel("Implementing Assignment limit", { exact: true }).count(), 0, "Assignment quotas remain absent after reload");
+      assert.equal("max_implementing_assignments" in (await fixture.json(route + "/queue")).policy, false);
       const refreshedPreview = page.waitForResponse(response => response.url().endsWith(route + "/preview") && response.request().method() === "POST");
       await region.getByRole("button", { name: "Preview eligible backlog", exact: true }).click();
       assert.equal((await refreshedPreview).status(), 200);
@@ -467,7 +468,7 @@ try {
     } finally { await page.close(); }
   }
   assert.deepEqual(errors, []);
-  console.log("PASS: desktop/mobile backlog count/reasons, stale preview, automatic creation order, pause, limits, Needs you and outage; no starts");
+  console.log("PASS: desktop/mobile backlog count/reasons, stale preview, automatic creation order, pause without Assignment quotas, Needs you and outage; no starts");
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
     const admitted = githubQueueFixture(true);
     const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });
