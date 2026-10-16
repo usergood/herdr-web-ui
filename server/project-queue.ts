@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { FactoryProject, FactoryRun, FactorySettings, Implementation } from "../shared/factory.ts";
-import type { ProjectGitHubOverview } from "../shared/github-project.ts";
+import type { ProjectGitHubOverview, ProjectIssueReadiness } from "../shared/github-project.ts";
 import type { ProjectQueueOverview } from "../shared/project-queue.ts";
 import type { ProjectGitHubSource } from "../shared/github-project.ts";
 import { FactoryError } from "./factory-host.ts";
@@ -13,7 +13,7 @@ type AdmissionHold = { id: string; approval_id: string; problem: string };
 
 /** Queue selection shares the factory's record store and reservation owner. */
 export class ProjectQueue {
-  constructor(private readonly store: FactoryStore, private readonly settings: () => FactorySettings, private readonly issues: (id: string) => ProjectGitHubOverview) {}
+  constructor(private readonly store: FactoryStore, private readonly settings: () => FactorySettings, private readonly issues: (id: string) => ProjectGitHubOverview<ProjectIssueReadiness>) {}
   private project(id: string): FactoryProject {
     const project = this.store.get<FactoryProject>("projects", id);
     if (!project) throw new FactoryError("not_found", "Project not found", 404);

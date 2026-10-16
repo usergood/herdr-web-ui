@@ -10,6 +10,8 @@ export class FactoryError extends Error {
   constructor(readonly code: string, message: string, readonly status = 400) { super(message); }
 }
 export function hash(content: string | Uint8Array): string { return createHash("sha256").update(content).digest("hex"); }
+/** Canonical evidence for a committed workspace with no relevant untracked inputs. */
+export const CLEAN_WORKSPACE_HASH = hash(JSON.stringify({ diff: "", files: [] }));
 export function withinRoot(root: string, path: string): boolean { const part = relative(root, path); return part !== "" && part !== ".." && !part.startsWith(".." + sep) && !isAbsolute(part); }
 const execute = promisify(execFile);
 

@@ -14,7 +14,12 @@ export async function checkFolderFilter(page: Page, dialog: Locator, createReque
   const filter = dialog.getByRole("searchbox", { name: "Filter folders" });
   await filter.waitFor();
   await filter.fill("A");
-  await until(async () => (await dialog.locator(".dir-browser-item").allTextContents()).join() === "a", "case-insensitive folder filter");
+  try {
+    await until(async () => (await dialog.locator(".dir-browser-item").allTextContents()).join() === "a", "case-insensitive folder filter");
+  } catch (error) {
+    console.error("Folder filter state", { query: await filter.inputValue(), names: await dialog.locator(".dir-browser-item").allTextContents(), path: await dialog.locator(".dir-browser-path").getAttribute("title") });
+    throw error;
+  }
   const composition = await filter.evaluate((input) => [
     { key: "Enter", isComposing: true },
     { key: "Enter", keyCode: 229 },

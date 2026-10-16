@@ -1,3 +1,4 @@
+import { isTerminalProtocolReply } from "./terminal-protocol-replies.ts";
 import assert from "node:assert/strict";
 import type { Browser } from "playwright-core";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -33,7 +34,7 @@ export async function checkCommandArrows(browser: Browser, origin: string, paneI
         });
         socket.on("framesent", ({ payload }) => {
           const message = JSON.parse(String(payload));
-          if (message.type === "input") inputs.push({ pane_id: message.pane_id, text: message.text });
+          if (message.type === "input" && !isTerminalProtocolReply(message)) inputs.push({ pane_id: message.pane_id, text: message.text });
         });
       });
       await page.goto(`${origin}/?pane=${encodeURIComponent(paneId)}`);

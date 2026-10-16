@@ -1,4 +1,6 @@
+import { manualCompletionAllowed } from "./factory-delivery.ts";
 import type { FactoryRun, FactoryWorker, FactoryCheck, FactoryProject, Implementation, ProjectCheckout, ReviewSnapshot } from "../shared/factory.ts";
+import { deliveryScopeCurrent } from "./issue-delivery.ts";
 import type { FactoryStore } from "./factory-store.ts";
 
 const oid = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{40,64}$/.test(value);
@@ -16,6 +18,19 @@ function verifiedDelivery(idea: Implementation, requireRelease = idea.delivery_s
     && delivery.pull_numbers.length > 0 && delivery.pulls.length === delivery.pull_numbers.length
     && delivery.pulls.every(pull => delivery.pull_numbers.includes(pull.number) && oid(pull.head) && oid(pull.merge_commit))
     && delivery.changes.length > 0 && delivery.changes.every(change => (change.oid === null || oid(change.oid)) && delivery.pulls.some(pull => pull.covered_paths.includes(change.path)));
+}
+
+/** Intake coverage is also verified delivery; retain its independent proof on upgrade. */
+function verifiedIssueDelivery(store: FactoryStore, idea: Implementation): boolean {
+  const proof = idea.delivery_evidence;
+  if (!proof || !["merged", "released"].includes(idea.outcome)) return false;
+  const source = store.get<import("../shared/github-project.ts").ProjectGitHubSource>("github_sources", proof.source_id);
+  const link = source && store.get<import("../shared/github-project.ts").IssueDeliveryLink>("github_delivery_links", source.id);
+  const requiresRelease = proof.requires === "release" || idea.delivery_scope?.milestone === "release";
+  return !!source && source.implementation_id === idea.id && !!link && link.revision === proof.coverage_revision && deliveryScopeCurrent(store, source, link)
+    && proof.merges.length > 0 && proof.merges.length === link.intended_prs.length
+    && proof.merges.every(merge => oid(merge.head) && oid(merge.merge_commit) && merge.target_branch === link.target_branch && link.intended_prs.some(pull => pull.number === merge.number && pull.head === merge.head))
+    && (!requiresRelease || idea.outcome === "released" && !!proof.release && proof.release.tag === link.release_tag && oid(proof.release.commit) && Number.isFinite(Date.parse(proof.release.published_at)));
 }
 
 function retainedScope(runs: FactoryRun[]): Implementation["delivery_scope"] {
@@ -41,7 +56,11 @@ export function migrateFactoryHistory(store: FactoryStore, restoredId?: string):
         && store.list<FactoryCheck>("checks", run.id).every(check => !["working", "interrupted"].includes(check.condition)));
       if (quiescent && idea.outcome === "discarded" && Number.isFinite(Date.parse(idea.discard_requested_at ?? ""))) continue;
       if (quiescent && !retainedChanges && idea.outcome === "research_accepted" && idea.completion_evidence?.repository_changes === "none" && idea.completion_evidence.quiescent && idea.completion_evidence.reason === null && Number.isFinite(Date.parse(idea.completion_evidence.checked_at))) continue;
-      if (quiescent && verifiedDelivery(idea)) continue;
+      if (quiescent && manualCompletionAllowed(store, idea) && idea.outcome === "implementation_complete"
+        && !store.list<import("../shared/github-project.ts").ProjectGitHubSource>("github_sources").some(source => source.implementation_id === idea.id && source.kind === "issue")
+        && (store.list<import("../shared/factory.ts").FactoryApproval>("approvals", idea.id).some(approval => approval.kind === "review" && runs.some(run => approval.scope.startsWith(`Run ${run.id};`)))
+          || store.list<import("../shared/factory.ts").FactoryEvent>("events", idea.id).some(event => event.kind === "direct_work_completed" && (event.data as { owner_accepted?: boolean })?.owner_accepted))) continue;
+      if (quiescent && (verifiedDelivery(idea) || verifiedIssueDelivery(store, idea))) continue;
       const changes = retainedChanges || idea.completion_evidence?.repository_changes === "changes" ? "changes" : "unknown";
       const pendingRelease = verifiedDelivery(idea, false) && idea.delivery_scope?.milestone === "release";
       const reason = !quiescent

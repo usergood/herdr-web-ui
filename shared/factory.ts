@@ -17,6 +17,10 @@ export type RunCondition = "accepted" | "working" | "ready" | "needs_you" | "blo
 export type FactoryAction = "work" | "setup" | "grill-me" | "grill-with-docs" | "to-spec" | "to-tickets" | "implement-spec" | "retro" | "apply-retro" | "verify-provider";
 export interface FactoryRecord { id: string; created_at: string; updated_at: string }
 export interface Implementation extends FactoryRecord {
+  /** Workflow activity is separate from verified delivery and the Board lane. */
+  activity?: "awaiting_merge";
+  delivery_evidence?: NonNullable<import("./github-project.ts").GitHubDependencyEdge["delivery"]> & { source_id: string; source_revision: string; requires: "merge" | "release" };
+  intake?: import("./issue-queue.ts").IssueQueueEntry;
   title: string; description: string; project_id: string | null; provider: FactoryProvider | null;
   machine_id: string | null; stage: FactoryStage; position: number;
   outcome: "none" | "implementation_complete" | "research_accepted" | "pr_open" | "merged" | "released" | "discarded";
@@ -77,7 +81,13 @@ export interface FactoryTicket extends FactoryRecord {
   dependencies: string[]; status: "proposed" | "ready" | "working" | "review" | "done";
   tracker_reference: string | null;
 }
-export interface FactoryApproval extends FactoryRecord { implementation_id: string; kind: "specification" | "testing_seams" | "ticket_graph" | "review" | "shared_understanding"; revision: string; scope: string; /** Existing trusted readiness receipt, when a decision was reused rather than newly approved. */ source_approval_id?: string }
+export interface FactoryApproval extends FactoryRecord {
+  implementation_id: string; kind: "specification" | "testing_seams" | "ticket_graph" | "review" | "shared_understanding"; revision: string; scope: string;
+  /** Issue scope observed by the app at this explicit planning decision; absent on legacy receipts. */
+  issue_scope?: { source_id: string; source_revision: string; scope_hash?: string };
+  /** Trusted readiness receipt reused by the Project issue workflow. */
+  source_approval_id?: string;
+}
 export interface FactoryQuestion extends FactoryRecord { implementation_id: string; run_id: string | null; question: string; answer_kind?: "text" | "confirmation"; answer: string | null; revision: string }
 export interface FactoryArtifact extends FactoryRecord {
   implementation_id: string; chat_id: string; name: string; media_type: string;
@@ -92,14 +102,21 @@ export interface ProjectReferenceLibrary { project_id: string; revision: string;
 export interface CodexReferenceContext { project_id: string; machine_id: string; revision: string; index_path: string; prompt: string }
 export interface ProjectReferencePayload { library: ProjectReferenceLibrary; files: { id: string; content_base64: string }[] }
 export interface FactoryRun extends FactoryRecord {
+  /** Execution was reconciled at this checked revision; owner acceptance remains separate. */
+  implementation_completion?: { head: string; workspace_hash: string; check_id: string; standards_id: string; spec_id: string };
+  implementation_completion_pending?: boolean;
   implementation_id: string; action: FactoryAction; provider: FactoryProvider; machine_id: string;
   condition: RunCondition; waiting_reason: string | null; idempotency_key: string;
   specification_id: string | null; graph_hash: string | null; base: string | null;
   checkout: string | null; worktree: string | null; branch: string | null;
   workspace_id: string | null; pane_id: string | null; manifest: unknown;
+  retry_of?: string;
+  issue_pause?: import("./issue-admission.ts").IssuePause;
   scope_pause?: { source_id: string; approved_revision: string; observed_revision: string; condition: "requested" | "paused" | "uncertain"; reason: string };
   accepted_result?: { head: string; workspace_hash: string; check_id: string; review_ids: string[]; question_revision: string };
 }
+/** Frozen manifest.rework source for an explicit Retry; the retired lease stays closed. */
+export interface FactoryRework { run_id: string; head: string; workspace_hash: string }
 export interface ReviewSnapshot extends FactoryRecord {
   implementation_id: string; run_id: string | null; machine_id: string; repository: string;
   mode: "branch" | "workspace"; base: string; head: string; hash: string;
@@ -117,6 +134,9 @@ export interface FactorySettings {
   max_artifact_bytes: number; max_storage_bytes: number; skills_path: string | null;
 }
 export interface FactoryDetail {
+  /** Absent on older servers. Source observations are separate from notes and frozen Runs. */
+  github_sources?: import("./github-project.ts").ProjectGitHubSource[];
+  github_sync?: { last_sync: string | null; problem: string | null } | null;
   /** Absent on older bridges. */
   board?: FactoryBoardItem;
   graph_hash: string; question_revision: string;
@@ -144,7 +164,7 @@ export interface FactoryPaneArchive extends FactoryRecord { machine_id: string; 
 export interface FactoryOverview { pane_links?: FactoryPaneLink[]; pane_archives?: FactoryPaneArchive[] }
 export interface FactoryOverview { /** Absent on older bridges. */ board?: FactoryBoardItem[] }
 export interface FactoryProviderCapability { provider: FactoryProvider; version: string | null; installed: boolean; skills_verified: boolean; factory_ready: boolean; reasons: string[] }
-export interface FactoryCapabilities { providers: FactoryProviderCapability[]; skill_manifest: { commit: string; hash: string; file_count: number } | null; factory_host_protocol: 1; project_reference_protocol?: 1; account_profile_protocol?: 1 }
+export interface FactoryCapabilities { providers: FactoryProviderCapability[]; skill_manifest: { commit: string; hash: string; file_count: number } | null; factory_host_protocol: 1; implementation_rework_protocol?: 1; project_reference_protocol?: 1; account_profile_protocol?: 1 }
 export interface FactoryOutput { name: string; media_type: string; hash: string; size: number }
 export interface FactoryWorker extends FactoryRecord {
   run_id: string; ticket_id: string; role: "implementer" | "standards" | "spec";
@@ -172,7 +192,7 @@ export interface NativeConversationSnapshot extends FactoryRecord {
 }
 
 /** Pollable owner decisions. Historical collections and evidence bodies are fetched on demand. */
-export type FactoryCurrent = Pick<FactoryDetail, "implementation" | "board" | "graph_hash" | "question_revision" | "question_context" | "specifications" | "tickets" | "approvals" | "questions" | "events" | "runs"> & {
+export type FactoryCurrent = Pick<FactoryDetail, "github_sources" | "github_sync" | "implementation" | "board" | "graph_hash" | "question_revision" | "question_context" | "specifications" | "tickets" | "approvals" | "questions" | "events" | "runs"> & {
   /** Changes when retained data changes, including evidence outside this summary. */
   revision: string;
   checks: Omit<FactoryCheck, "commands">[];

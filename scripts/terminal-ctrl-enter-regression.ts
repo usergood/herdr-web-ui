@@ -1,3 +1,4 @@
+import { isTerminalProtocolReply } from "./terminal-protocol-replies.ts";
 import assert from "node:assert/strict";
 import type { Browser } from "playwright-core";
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -51,7 +52,7 @@ process.stdin.on("data", (data) => {
     const inputs: Array<{ pane_id: string; text: string }> = [];
     page.on("websocket", (socket) => socket.on("framesent", ({ payload }) => {
       const message = JSON.parse(String(payload));
-      if (message.type === "input") inputs.push(message);
+      if (message.type === "input" && !isTerminalProtocolReply(message)) inputs.push(message);
     }));
     await page.goto(`${origin}/?pane=${encodeURIComponent(paneId)}`);
     await page.locator(".conn-live").waitFor();

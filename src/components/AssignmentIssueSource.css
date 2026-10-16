@@ -1,0 +1,28 @@
+.assignment-issue-source {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.assignment-issue-revision {
+  min-width: 0;
+  padding-block: var(--space-2);
+  border-bottom: var(--hairline) solid var(--border);
+}
+
+.assignment-native-dependencies ul {
+  padding-inline-start: var(--space-4);
+}
+
+.assignment-native-dependencies li {
+  margin-block: var(--space-3);
+}
+
+.assignment-dependency-delivery form {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.assignment-delivery-input {
+  min-width: 0;
+  width: 100%;
+}

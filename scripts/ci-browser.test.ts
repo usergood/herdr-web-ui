@@ -48,6 +48,10 @@ describe("browser lane", () => {
       { script: "scripts/demo-build.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/ui-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/factory-browser-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/github-source-browser-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/issue-planning-browser-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/issue-queue-browser-regression.ts", seconds: expect.any(Number), code: 0 },
+      { script: "scripts/issue-retry-browser-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/factory-board-browser-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/factory-loading-browser-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/factory-delivery-browser-regression.ts", seconds: expect.any(Number), code: 0 },
@@ -84,7 +88,9 @@ describe("browser lane", () => {
   it("summarizes every script and exits zero on success without enabling local evidence", async () => {
     const { text, code, evidence } = await lane();
     expect(code).toBe(0);
-    expect(rows(text)).toHaveLength(68);
+    expect(rows(text)).toHaveLength(72);
+    expect(rows(text).map((row) => row.script)).toContain("scripts/issue-planning-browser-regression.ts");
+    expect(rows(text).map((row) => row.script)).toContain("scripts/issue-queue-browser-regression.ts");
     expect(rows(text).map((row) => row.script)).toContain("scripts/upstream-releases-browser-regression.ts");
     expect(rows(text).map((row) => row.script)).toContain("scripts/upstream-preparation-browser-regression.ts");
     expect(rows(text).map((row) => row.script)).toContain("scripts/portal-regression.ts");

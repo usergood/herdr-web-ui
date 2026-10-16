@@ -7,6 +7,10 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 
 ## [Unreleased]
 
+### Added
+
+- Add default-off automatic implementation of trusted GitHub issues after an explicit readiness identity and current backlog review. Existing and future eligible plans use queue priority, pause and capacity limits, guarded frozen-scope starts, durable recovery and owner Retry. Missing decisions and dependency/sync problems stay visible; current checks and independent reviews free capacity while reviewed work awaits separately approved delivery. Issue/PR publication, merge, release and deployment remain separate actions.
+
 ## [0.5.1] - 2026-10-15
 
 ### Changed
@@ -38,6 +42,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 ## [0.4.9] - 2026-10-13
 
 ### Added
+
 - Add native model and reasoning dropdowns for Project defaults and individual
   Inbox starts, with validated choices and frozen parent/worker launch settings.
   ([#21](https://github.com/usergood/saurons-eye/pull/21) by @usergood)

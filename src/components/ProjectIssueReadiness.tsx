@@ -17,15 +17,16 @@ export function ProjectIssuePolicy({ form, change }: { form: ProjectGitHubConfig
 
 export function ProjectIssueReadiness({ source, policyRevision, route, busy, perform, onChanged }: { source: ProjectGitHubSource; policyRevision: string; route: string; busy: boolean; perform: (action: () => Promise<void>) => Promise<void>; onChanged: (view: ProjectGitHubOverview) => void }) {
   const t = useT();
-  const [plan, setPlan] = useState<ProjectIssuePlan>(source.readiness?.approval?.plan ?? { acceptance_criteria: "", dependencies: [], testing_seams: [], planning_decisions: [] });
+  const readiness = source.readiness && "reasons" in source.readiness ? source.readiness : undefined;
+  const [plan, setPlan] = useState<ProjectIssuePlan>(readiness?.approval?.plan ?? { acceptance_criteria: "", dependencies: [], testing_seams: [], planning_decisions: [] });
   const [problem, setProblem] = useState("");
   const reasons: Record<IssueReadinessReason, string> = { start_planning: t("Start planning explicitly from Inbox."), human_only: t("This issue requires human implementation."), wontfix: t("This issue will not be actioned."), conflicting_triage: t("Correct conflicting triage labels."), approval_required: t("Approval of this issue revision is required."), automatic_implementation_disabled: t("Automatic implementation is disabled for this Project."), issue_closed: t("This issue is closed."), batch_incomplete: t("The whole batch is held until every issue and dependency link is confirmed.") };
   return <section className="factory-section project-issue-readiness" role="region" aria-label={t("Issue #{number}", { number: source.number })}>
     <h4><a href={source.url} target="_blank" rel="noreferrer">#{source.number} · {source.issue?.title}</a></h4>
     <p>{source.triage_roles?.join(" · ")}</p>
-    <div role="status">{source.readiness?.eligible ? <p>{t("Eligible for automatic implementation")}</p> : source.readiness?.reasons.map(reason => <p key={reason}>{reasons[reason]}</p>)}</div>
+    <div role="status">{readiness?.eligible ? <p>{t("Eligible for automatic implementation")}</p> : readiness?.reasons.map(reason => <p key={reason}>{reasons[reason]}</p>)}</div>
     <details><summary>{t("Issue scope")}</summary><pre className="project-issue-scope">{source.issue?.body}</pre></details>
-    {source.readiness?.approval?.issue_revision === source.revision && !source.readiness.approval.revoked_at && source.readiness.approval.policy_revision === policyRevision && <p>{t("Approved by {actor}", { actor: source.readiness.approval.actor })}</p>}
+    {readiness?.approval?.issue_revision === source.revision && !readiness.approval.revoked_at && readiness.approval.policy_revision === policyRevision && <p>{t("Approved by {actor}", { actor: readiness.approval.actor })}</p>}
     {source.state === "open" && source.triage_roles?.length === 1 && source.triage_roles[0] === "ready-for-agent" && <form className="factory-form" onSubmit={event => { event.preventDefault(); void perform(async () => { try { setProblem(""); onChanged(await accountRequest<ProjectGitHubOverview>(`${route}/issues/${source.number}/approve`, { issue_revision: source.revision, policy_revision: policyRevision, plan: { ...plan, testing_seams: plan.testing_seams.map(s => s.trim()).filter(Boolean), planning_decisions: plan.planning_decisions.map(s => s.trim()).filter(Boolean) } })); } catch (error) { setProblem((error as Error).message); } }); }}>
       <label>{t("Acceptance criteria")}<textarea className="input" required maxLength={50000} value={plan.acceptance_criteria} onChange={event => setPlan({ ...plan, acceptance_criteria: event.target.value })} /></label>
       <label>{t("Confirmed testing seams")}<textarea className="input" required value={plan.testing_seams.join("\n")} onChange={event => setPlan({ ...plan, testing_seams: event.target.value.split("\n") })} /></label>

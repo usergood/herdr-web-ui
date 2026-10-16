@@ -958,6 +958,38 @@ describe("HTML file previews", () => {
 });
 
 describe("factory records", () => {
+  it("exposes issue revision and fetch evidence on both Project and Assignment responses", async () => {
+    const state = mkdtempSync(join(tmpdir(), "saurons-issue-contract-")); const repo = join(state, "repo"); mkdirSync(repo);
+    writeFileSync(join(repo, "README.md"), "Owned issue contract fixture\n");
+    for (const args of [["init", "-b", "main"], ["add", "."], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "initial"], ["remote", "add", "origin", "https://github.com/fictional/project.git"]]) expect(Bun.spawnSync(["git", ...args], { cwd: repo }).exitCode).toBe(0);
+    const cli = join(state, "gh.mjs");
+    writeFileSync(cli, `const path = process.argv[3]; console.log(JSON.stringify(path === "user" ? {login:"fictional-owner",id:1042} : path?.includes("/dependencies/blocked_by") ? [{node_id:"fictional-dependency-24",number:24,repository_url:"https://api.github.com/repos/fictional/project",html_url:"https://github.com/fictional/project/issues/24",state:"closed",updated_at:"2026-10-01T12:00:00Z"}] : path?.includes("/issues?") ? [{number:12,node_id:"fictional-issue",title:"Contract source",body:"Independent acceptance",labels:[{name:"needs-plan"}],state:"open",updated_at:"2026-10-01T12:00:00Z",html_url:"https://github.com/fictional/project/issues/12"}] : path === "graphql" ? {data:{repository:{pullRequests:{nodes:[],pageInfo:{hasNextPage:false,endCursor:null}}}}} : {}));`);
+    const app = createServer({ port: 0, stateDir: state, machines: false, factory: { accountDiscoveryHome: state, accountTools: { github: { executable: process.execPath, args: [cli] } } } });
+    const request = async (path: string, body?: unknown) => {
+      const response = await fetch(`http://localhost:${app.port}/api/factory${path}`, body === undefined ? {} : { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1", "x-herdr-machine": "1" }, body: JSON.stringify(body) });
+      expect(response.ok).toBe(true); return response.json();
+    };
+    try {
+      const profile = await request("/machines/local/accounts", { name: "Fixture", service: "github", expected_login: "fictional-owner" });
+      await request(`/machines/local/accounts/${profile.id}/verify`, { expected_revision: profile.revision });
+      const project = await request("/projects", { name: "Fixture", path: repo, machine_id: "local", provider: "codex", tracker: "app" });
+      const route = `/projects/${project.id}/github`;
+      const policy = await request(route + "/configure", { expected_revision: null, repository: "fictional/project", account_profile_id: profile.id, sync_enabled: false, import_issues: true, import_fixes: false, auto_update: false, auto_merge: false, trusted_reviewers: [], required_checks: [], review_context: "Owned fixture", poll_minutes: 5 });
+      const synced = await request(route + "/sync", {}); const source = synced.sources[0];
+      expect(source.current).toMatchObject({ title: "Contract source", body: "Independent acceptance", labels: ["needs-plan"], state: "open", repository: "fictional/project", account_profile_id: profile.id, policy_revision: policy.revision, source_updated_at: "2026-10-01T12:00:00Z" });
+      expect(source.dependencies).toMatchObject({ complete: true, fresh: true, source_revision: source.revision, account_profile_id: profile.id, policy_revision: policy.revision, edges: [{ external_id: "fictional-dependency-24", repository: "fictional/project", number: 24, state: "closed", implementation_id: null, resolution: "missing", blocker: "missing" }] });
+      expect(source.current.native_dependencies).toEqual([{ external_id: "fictional-dependency-24", repository: "fictional/project", number: 24, url: "https://github.com/fictional/project/issues/24" }]);
+      expect(source.current.revision).toMatch(/^[a-f0-9]{64}$/); expect(source.history).toEqual([source.current]);
+      expect(Number.isFinite(Date.parse(source.current.fetched_at))).toBe(true);
+      const unready = await fetch(`http://localhost:${app.port}/api/factory${route}/issues/12/prepare`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1", "x-herdr-machine": "1" }, body: JSON.stringify({ source_revision: source.revision }) });
+      expect(unready.status).toBe(409);
+      expect(await unready.json()).toEqual({ error: { code: "issue_not_ready", message: "Resolve current issue readiness before reusing planning" } });
+      const detail = await request(`/implementations/${source.implementation_id}`);
+      expect(detail.github_sources).toEqual(synced.sources);
+      expect(detail.github_sync).toEqual({ last_sync: synced.last_sync, problem: null });
+    } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+
   it("projects an untouched Assignment into Inbox without empty Ticket progress", async () => {
     const state = mkdtempSync(join(tmpdir(), "saurons-eye-board-"));
     const app = createServer({ port: 0, token: "", stateDir: state, machines: false, factory: { accountDiscoveryHome: state } });
@@ -4920,6 +4952,121 @@ it("refuses cross-origin changes while allowing same-origin and CLI requests", a
   } finally { instance.stop(); await workspaceClose(created.workspace.workspace_id); rmSync(root, { recursive: true, force: true }); }
 });
 
+it("Project issue queue endpoints expose revision-bound previews without creating Runs", async () => {
+  const { githubQueueFixture } = await import("../scripts/fixtures/github-queue.ts");
+  const fixture = githubQueueFixture();
+  try {
+    const { route, project } = await fixture.setup();
+    const response = await fixture.post(route + "/preview", {});
+    expect(response.status).toBe(200);
+    const preview = await response.json() as import("../shared/issue-queue.ts").IssueQueue;
+    expect(preview).toMatchObject({ policy: { project_id: project.id, automatic_implementation: false, max_implementations: 1 }, global_limit: 6, effective_limit: 1, eligible_count: 0, preview_current: true, preview: { revision: preview.revision, eligible_count: 0 } });
+    const stale = await fixture.post(route + "/queue", { expected_revision: "stale", automatic_implementation: false, paused: true, max_implementations: 1 });
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toEqual({ error: { code: "queue_policy_changed", message: "Refresh the Project queue settings" } });
+    expect((await fixture.json("")).activity).toEqual([]);
+  } finally { fixture.close(); }
+});
+
+it("issue Start scope uses the existing guarded Run endpoint and standard error contract", async () => {
+  const { githubQueueFixture } = await import("../scripts/fixtures/github-queue.ts");
+  const fixture = githubQueueFixture();
+  try {
+    const { route } = await fixture.setup();
+    const source = (await fixture.json(route + "/sync", {})).sources[0];
+    const path = `/implementations/${source.implementation_id}/runs`;
+    const body: import("../shared/protocol.ts").FactoryRequests["start"] = { action: "implement-spec", idempotency_key: "contract-issue-start", issue_scope: { source_id: source.id, source_revision: source.revision, graph_hash: "unprepared" } };
+    expect((await fixture.post(path, body, { ...fixture.headers, "x-herdr-factory": "" })).status).toBe(403);
+    expect((await fixture.post(path, body, { ...fixture.headers, origin: "https://fictional.invalid" })).status).toBe(403);
+    const response = await fixture.post(path, body);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: { code: "issue_changed", message: "Refresh the prepared issue scope before starting" } });
+    expect((await fixture.json(`/implementations/${source.implementation_id}`)).runs).toEqual([]);
+  } finally { fixture.close(); }
+});
+
+
+it.each(["issue", "retired"])("%s Retry uses the guarded factory mutation and structured error contract", async kind => {
+  const state = mkdtempSync(join(tmpdir(), "issue-retry-route-"));
+  const app = createServer({ port: 0, stateDir: state, machines: false });
+  try {
+    const url = `http://localhost:${app.port}/api/factory/runs/unknown-attempt/retry`;
+    const body: import("../shared/protocol.ts").FactoryRequests["issue_retry"] = { idempotency_key: "owner-retry", ...(kind === "issue" ? { issue_scope: { source_id: "unknown", source_revision: "unknown", graph_hash: "unknown" } } : {}) };
+    const unguarded = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    expect(unguarded.status).toBe(403);
+    expect((await unguarded.json()).error.code).toBe("invalid_origin");
+    const missing = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toEqual({ error: { code: "not_found", message: "Run not found" } });
+  } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+});
+
+it("automatic issue policy requires an exact preview and retains a separate paused opt-in", async () => {
+  const { githubQueueFixture } = await import("../scripts/fixtures/github-queue.ts");
+  const fixture = githubQueueFixture();
+  try {
+    const { route, configuration } = await fixture.setup();
+    await fixture.json(route + "/configure", { ...configuration, expected_revision: (await fixture.json(route)).policy.revision, sync_enabled: true });
+    const config: import("../shared/protocol.ts").QueueConfiguration = { expected_revision: null, automatic_implementation: true, paused: true, max_implementations: 1 };
+    const missing = await fixture.post(route + "/queue", config);
+    expect(missing.status).toBe(409);
+    expect(await missing.json()).toEqual({ error: { code: "queue_preview_required", message: "Review the current eligible backlog before enabling automatic implementation" } });
+    const preview = await fixture.json(route + "/preview", {});
+    const enabled = await fixture.post(route + "/queue", { ...config, preview_revision: preview.revision });
+    expect(enabled.status).toBe(200);
+    expect(await enabled.json()).toMatchObject({ policy: { automatic_implementation: true, paused: true }, eligible_count: 0, dispatch_problem: null });
+    expect((await fixture.json("")).activity).toEqual([]);
+  } finally { fixture.close(); }
+});
+
+
+it("retired implementation Retry requires Machine support for copying produced work", async () => {
+  const { githubReviewFixture } = await import("../scripts/fixtures/github-review.ts");
+  const fixture = githubReviewFixture();
+  try {
+    const { run, path, route } = await fixture.prepare();
+    await fixture.integrate(run); await fixture.json(`/runs/${run.id}/checks`, {});
+    await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    await fixture.json(`/runs/${run.id}/reconcile`, {});
+    fixture.setHead("b".repeat(40)); await fixture.json(`/runs/${run.id}/reconcile`, {});
+    await fixture.json(`/runs/${run.id}/stop`, {});
+    fixture.setReworkSupported(false);
+    const source = (await fixture.json(route)).sources[0];
+    const response = await fixture.post(`/runs/${run.id}/retry`, { idempotency_key: "unsupported-rework", issue_scope: { source_id: source.id, source_revision: source.revision, graph_hash: run.graph_hash } });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: { code: "rework_host_required", message: "Update the execution Machine before recovering retained implementation work" } });
+    expect((await fixture.json(path)).runs).toMatchObject([{ id: run.id, condition: "cancelled" }]);
+    expect((await fixture.json(path)).runs).toHaveLength(1);
+  } finally { fixture.close(); }
+}, 15_000);
+
+it("issue source responses expose authoritative coverage applicability without rewriting link provenance", async () => {
+  const { githubQueueFixture } = await import("../scripts/fixtures/github-queue.ts");
+  const fixture = githubQueueFixture();
+  try {
+    const { route } = await fixture.setup();
+    const original = (await fixture.json(route + "/sync", {})).sources[0];
+    const linked = (await fixture.json(route + "/issues/1/delivery", { source_revision: original.revision, expected_revision: null, target_branch: "main", intended_prs: [{ number: 27, head: "a".repeat(40) }], release_tag: null })).sources[0];
+    expect(linked).toMatchObject({ delivery_scope_current: true });
+    const currentPath = `/implementations/${original.implementation_id}?view=current`;
+    expect((await fixture.json(currentPath)).github_sources[0]).toMatchObject({ delivery: linked.delivery, delivery_scope_current: true });
+    fixture.issue.labels.push({ name: "documentation" }); fixture.save();
+    await fixture.json(route + "/sync", {});
+    for (const view of [await fixture.json(route), await fixture.json(`/implementations/${original.implementation_id}`), await fixture.json(currentPath)]) {
+      const source = (view.sources ?? view.github_sources)[0];
+      expect(source.revision).not.toBe(original.revision);
+      expect(source.delivery_scope_current).toBe(true);
+      expect(source.delivery).toEqual(linked.delivery);
+    }
+    fixture.issue.body += "\nChanged intended behavior"; fixture.save();
+    const changed = (await fixture.json(route + "/sync", {})).sources[0];
+    expect(changed).toMatchObject({ delivery_scope_current: false });
+    expect(changed.delivery).toEqual(linked.delivery);
+    const currentSource = (await fixture.json(currentPath)).github_sources[0];
+    expect(currentSource).toMatchObject({ delivery: linked.delivery, delivery_scope_current: false });
+    for (const field of ["history", "delivery_history", "readiness_approvals"]) expect(field in currentSource).toBe(false);
+  } finally { fixture.close(); }
+});
 // Report-only repair uses the same authenticated owner endpoint as inline findings.
 it("validates report-only request-changes ownership and rejects mixed batch shapes", async () => {
   const { reviewReworkFixture } = await import("./factory-review-rework.fixture.ts");

@@ -25,6 +25,7 @@ try {
   assert.equal((await published).status(), 200);
   await publication.getByText("Publication needs reconciliation", { exact: true }).waitFor();
   await page.reload();
+  await publication.getByText("Publication needs reconciliation", { exact: true }).waitFor();
   assert.equal(await publication.getByRole("button", { name: "Publish PR", exact: true }).count(), 0);
   await page.setViewportSize({ width: 320, height: 844 });
   await publication.getByRole("button", { name: "Reconcile PR publication", exact: true }).click();

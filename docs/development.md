@@ -12,6 +12,12 @@ bun run dev      # Vite on :5173, proxies /api and /ws
 
 `bun run server` and `bun run dev` never update themselves; only `bun run start` and the plugin run the update supervisor.
 
+## Project issue automation
+
+Use [Project GitHub workflow](factory/github-project-workflow.md#issue-readiness-and-automatic-implementation) to select readiness authority, review the backlog and opt into automatic implementation. The policy is independent of synchronization/import and PR automation, defaults off, and uses the existing sync loop and guarded Run admission. A failed attempt needs explicit Retry; outage and uncertain ownership block new starts. [Runtime guidance](factory/runtime.md#github-issue-implementation) describes recovery and the separate delivery approvals.
+
+The public HTTP fixtures in `server/issue-automatic.contract.test.ts` use disposable state, repositories and fictional GitHub/native transports. The registered `scripts/issue-queue-browser-regression.ts` covers real desktop/mobile opt-in and the existing queue, Start, controlled-pause and awaiting-merge journeys; `scripts/issue-retry-browser-regression.ts` covers explicit Retry/reconciliation. Build before browser checks and use the normal check reservations; never enable a live Project policy for QA. The demo contract is checked in `scripts/settings-pages-demo-regression.ts` against the lane's fictional demo build.
+
 ## Checks
 
 For desktop/mobile media of the fork's Inbox, references, specifications, Tickets, review and

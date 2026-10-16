@@ -7,6 +7,8 @@ import type { AccountOverview } from "../../shared/accounts.ts";
 import { useT } from "../lib/i18n.ts";
 import { accountRequest } from "../lib/accountsApi.ts";
 import { factoryRequest } from "../lib/factoryApi.ts";
+import { ProjectIssueQueue } from "./ProjectIssueQueue.tsx";
+import { ProjectReadinessSettings } from "./ProjectReadinessSettings.tsx";
 import { NativeAccountImport } from "./NativeAccountImport.tsx";
 import { ProjectIssuePolicy, ProjectIssueReadiness } from "./ProjectIssueReadiness.tsx";
 import { ProjectSyncSchedules } from "./ProjectSyncSchedules.tsx";
@@ -65,7 +67,7 @@ export function FactoryProjectGitHub({ project, busy, perform, checkoutPath, che
       {!ready && <p className="field-hint">{t("Import a saved login below or finish sign-in in Accounts. Created accounts remain visible until ready.")}</p>}
       <label><input type="checkbox" checked={form.sync_enabled} onChange={event => setForm({ ...form, sync_enabled: event.target.checked })} />{t("Automatic sync")}</label>
       <label><input type="checkbox" checked={form.import_issues} onChange={event => setForm({ ...form, import_issues: event.target.checked })} />{t("Import GitHub issues")}</label>
-      <ProjectIssuePolicy form={form} change={setForm} />
+      {!view?.readiness_policy && <ProjectIssuePolicy form={form} change={setForm} />}
       <details><summary>{t("Advanced GitHub automation")}</summary>
         <p>{t("Repository standards provide review guidance. Automation stays off until you choose its rules.")}</p>
         <label><input type="checkbox" checked={form.import_fixes} onChange={event => setForm({ ...form, import_fixes: event.target.checked })} />{t("Import requested changes")}</label>
@@ -77,12 +79,14 @@ export function FactoryProjectGitHub({ project, busy, perform, checkoutPath, che
       </details>
       <button className="btn" disabled={busy || !ready || !form.repository}>{t("Save Project settings")}</button>
     </form>
+    {view?.policy && <ProjectReadinessSettings key={view.readiness_policy?.revision ?? "unset"} projectId={project.id} policy={view.readiness_policy ?? null} accounts={accounts} busy={busy} perform={perform} refresh={refresh} />}
+    {view?.policy && <ProjectIssueQueue key={project.id} projectId={project.id} busy={busy} perform={perform} />}
     <NativeAccountImport machineId="local" path={checkoutPath} busy={busy} perform={perform} onImported={profile => { const id = epoch.current; setForm(current => ({ ...current, account_profile_id: profile.id })); void reloadAccounts().catch(error => { if (id === epoch.current) setProblem(error.message); }); }} />
     <ProjectSyncSchedules projectId={project.id} configured={!!view?.policy} busy={busy} perform={perform} onSaved={async () => { const next = await refresh(); if (next.policy) setForm(current => ({ ...current, expected_revision: next.policy!.revision, sync_enabled: next.policy!.sync_enabled, poll_minutes: next.policy!.poll_minutes })); }} />
     <button type="button" className="btn" disabled={busy || !view?.policy} onClick={() => void perform(async () => { setView(await accountRequest<ProjectGitHubOverview>(route + "/sync", {})); })}>{t("Sync GitHub")}</button>
     {view?.problem && <p role="alert">{view.problem}</p>}
     {view?.last_sync && <p>{new Date(view.last_sync).toLocaleString()}</p>}
-    {view?.sources.filter(source => source.kind === "issue").map(source => <ProjectIssueReadiness key={`${source.id}:${source.revision}`} source={source} policyRevision={view.policy!.revision} route={route} busy={busy} perform={perform} onChanged={setView} />)}
+    {view?.sources.filter(source => source.kind === "issue" && source.readiness && "reasons" in source.readiness).map(source => <ProjectIssueReadiness key={`${source.id}:${source.revision}`} source={source} policyRevision={view.policy!.revision} route={route} busy={busy} perform={perform} onChanged={setView} />)}
     {view?.pulls.map((item) => <article className="factory-section" key={item.id}>
       <a href={item.pull.url} target="_blank" rel="noreferrer">#{item.pull.number} · {item.pull.title}</a>
       <p>{item.pull.author?.login} · {item.pull.headRefName} → {item.pull.baseRefName}</p>
