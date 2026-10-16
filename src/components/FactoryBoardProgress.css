@@ -1,0 +1,11 @@
+.factory-progress { margin-top: var(--space-3); overflow-wrap: anywhere; }
+.factory-activities { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.factory-activity { display: inline-flex; padding: var(--space-1) var(--space-2); border-radius: var(--radius-sm); font-size: var(--fs-xs); font-weight: var(--fw-semibold); }
+.factory-activity-specifying, .factory-activity-auto_review { color: var(--accent); background: var(--accent-tint); }
+.factory-activity-implementing, .factory-activity-testing { color: var(--status-working); background: var(--status-working-tint); }
+.factory-activity-fixing { color: var(--status-blocked); background: var(--status-blocked-tint); }
+.factory-progress-counts { margin-block: var(--space-2); font-size: var(--fs-xs); }
+.factory-progress summary { cursor: pointer; min-height: var(--touch-target); display: list-item; align-content: center; }
+.factory-progress ul { padding-left: var(--space-4); }
+.factory-progress li { margin-block: var(--space-2); }
+.factory-progress li p { margin-top: var(--space-1); font-size: var(--fs-xs); }

@@ -114,22 +114,7 @@ export class FactoryWorkflow {
     return this.store.db.transaction(() => {
       const implementation = this.store.get<Implementation>("implementations", id);
       if (!implementation) throw new FactoryError("not_found", "Implementation not found", 404);
-      if (action === "order") {
-        const ordered = this.store.list<Implementation>("implementations").sort((a, b) => a.position - b.position);
-        const from = ordered.findIndex((item) => item.id === id);
-        if (typeof body.before_id === "string") {
-          if (body.before_id === id) return { ok: true };
-          const to = ordered.findIndex((item) => item.id === body.before_id);
-          if (to < 0) throw new FactoryError("invalid_order", "Select an existing destination card");
-          const [item] = ordered.splice(from, 1); ordered.splice(ordered.findIndex((entry) => entry.id === body.before_id), 0, item!);
-        } else {
-          if (body.direction !== -1 && body.direction !== 1) throw new FactoryError("invalid_order", "Move one position earlier or later");
-          const to = from + body.direction;
-          if (to >= 0 && to < ordered.length) [ordered[from], ordered[to]] = [ordered[to]!, ordered[from]!];
-        }
-        ordered.forEach((item, position) => this.store.put("implementations", { ...item, position }));
-        this.store.event(id, "board_reordered", { direction: body.direction }); return { ok: true };
-      }
+      if (action === "order") throw new FactoryError("automatic_order", "Work dispatches in oldest eligible request order; manual priority is unavailable", 409);
       if (action === "questions") {
         if (typeof body.question !== "string" || !body.question.trim() || body.question.length > 20_000) throw new FactoryError("invalid_question", "Enter a bounded owner question");
         if (body.answer_kind !== undefined && body.answer_kind !== "text" && body.answer_kind !== "confirmation") throw new FactoryError("invalid_question", "Choose a text answer or shared-understanding confirmation");

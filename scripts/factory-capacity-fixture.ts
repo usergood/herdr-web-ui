@@ -12,10 +12,10 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean } = {
   const checks = new Map<string, FactoryCheck>();
   const executedChecks: string[] = [];
   let loseIntegration = false; let failCheck = false; let conflict = false;
-  let checkGate: { entered: () => void; wait: Promise<void> } | null = null;
   const runs = new Map<string, FactoryRun>(); const workers = new Map<string, FactoryWorker>();
   let allocationGate: { worker: boolean; entered: (id: string) => void; wait: Promise<void> } | null = null;
   let admissionGate: { entered: () => void; wait: Promise<void> } | null = null;
+  let checkGate: { entered: () => void; wait: Promise<void> } | null = null;
   let rejectSend = false;
   let loseResume = false;
   let loseDelete = false;
@@ -45,7 +45,8 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean } = {
       capabilities ??= await api("/providers").then(r => r.json());
       return Response.json({ ...capabilities, providers: capabilities!.providers.map((p: object) => ({ ...p, factory_ready: true })) });
     }
-    if (path === "/inspect") return Response.json({ path: body.path, repository: `owned-repo:${body.path}`, head: "1".repeat(40), branch: "main", instructions: [] });
+    if (path === "/review") return Response.json({ repository: `owned-repo:${[...runs.values()].find(run => run.worktree === body.path)?.checkout ?? body.path}`, head: "1".repeat(40), files: [{ path: "progress.ts", status: "M", diff: "@@ -1 +1 @@\n-before\n+after\n", binary: false, oversized: false }] });
+    if (path === "/inspect") return Response.json({ path: body.path, repository: `owned-repo:${[...runs.values()].find(run => run.worktree === body.path)?.checkout ?? body.path}`, head: "1".repeat(40), branch: "main", instructions: [] });
     if (path === "/launch") {
       launches.push(body.run.id);
       const run = { ...body.run, condition: "working", worktree: join(state, body.run.id), branch: `owned-${body.run.id}`, workspace_id: null, pane_id: null } as FactoryRun;
