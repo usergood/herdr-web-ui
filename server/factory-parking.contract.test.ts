@@ -142,8 +142,11 @@ describe("waiting factory conversations through authenticated HTTP", () => {
       await f.api("/settings", { max_agents: 1, max_builds: 1 });
       const id = await f.assignment("Permission and observation wait");
       const run = await f.api(`/implementations/${id}/runs`, { action: "work", idempotency_key: "permission" }).then(r => r.json());
+      // Losing a reply alone is recoverable: keep the native result unobservable too.
+      f.unavailableCheckObservation(true);
       f.loseNextCheck();
-      expect((await f.api(`/runs/${run.id}/checks`, {}).then(r => r.json())).condition).toBe("interrupted");
+      const check = await f.api(`/runs/${run.id}/checks`, {}).then(r => r.json());
+      expect(check.condition).toBe("interrupted");
       const question = await f.api(`/implementations/${id}/questions`, { run_id: run.id, question: "Owned permission scope?" }).then(r => r.json());
       f.runs.get(run.id)!.condition = "ready";
       f.uncertain(true);
@@ -169,6 +172,11 @@ describe("waiting factory conversations through authenticated HTTP", () => {
       await eventually(() => f.api(`/implementations/${id}`).then(r => r.json()), d => d.runs[0].continuation?.condition === "resumed");
       expect(f.prompts).toHaveLength(1);
       expect((await f.api("").then(r => r.json())).capacity.builds.used).toBe(1);
+      f.unavailableCheckObservation(false);
+      const observed = await eventually(() => f.api(`/implementations/${id}`).then(r => r.json()), d => d.checks.some((entry: { id: string; condition: string }) => entry.id === check.id && entry.condition === "passed"));
+      expect(observed.checks.find((entry: { id: string }) => entry.id === check.id)).toMatchObject({ id: check.id, run_id: run.id, condition: "passed" });
+      expect((await f.api("").then(r => r.json())).capacity.builds.used).toBe(0);
+      expect(f.executedChecks).toEqual([check.id]);
     } finally { f.close(); }
   });
 

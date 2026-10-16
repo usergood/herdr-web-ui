@@ -6,7 +6,7 @@ import { createServer } from "../server/index.ts";
 import type { AccountTools } from "../server/account-tools.ts";
 import type { FactoryCheck, FactoryRun, FactoryWorker, NativeConversationSnapshot } from "../shared/factory.ts";
 
-export async function capacityFixture(scenario: { advancingHeads?: boolean; accountTools?: AccountTools; runTranscript?: (run: FactoryRun, before?: string) => Pick<NativeConversationSnapshot, "source_id" | "version" | "cursor" | "turns"> | null; workerTranscript?: (worker: FactoryWorker, before?: string) => Pick<NativeConversationSnapshot, "source_id" | "version" | "cursor" | "turns"> | null } = {}) {
+export async function capacityFixture(scenario: { advancingHeads?: boolean; workspaceHash?: string; accountTools?: AccountTools; runTranscript?: (run: FactoryRun, before?: string) => Pick<NativeConversationSnapshot, "source_id" | "version" | "cursor" | "turns"> | null; workerTranscript?: (worker: FactoryWorker, before?: string) => Pick<NativeConversationSnapshot, "source_id" | "version" | "cursor" | "turns"> | null } = {}) {
   const tips = new Map<string, string>(); let candidate = 1;
   const state = mkdtempSync(join(tmpdir(), "factory-capacity-"));
   const token = "owned-capacity-fixture";
@@ -20,7 +20,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
   let checkGate: { entered: () => void; wait: Promise<void>; release: () => void; scope?: "worker" | "integration" } | null = null;
   const activeChecks = new Map<string, () => void>();
   let rejectSend = false;
-  let loseResume = false; let unconfirmedCheckShutdown = false;
+  let loseResume = false; let unconfirmedCheckShutdown = false; let unavailableCheckObservation = false;
   let loseDelete = false;
   const resumptions: string[] = [];
   const resumeHistories: unknown[] = [];
@@ -125,7 +125,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
       if (action === "send") { if (rejectSend) { rejectSend = false; run.condition = "needs_you"; return Response.json({ error: { code: "agent_blocked", message: "Owned native permission arrived before delivery" } }, { status: 409 }); } prompts.push({ run_id: run.id, text: body.text }); run.condition = "working"; if (loseSend) { loseSend = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost continuation acknowledgment" } }, { status: 503 }); } return Response.json({ ok: true }); }
       if (action === "stop") { if (unavailableRunStop) return Response.json({ error: { code: "native_identity_uncertain", message: "Owned native shutdown is unconfirmed" } }, { status: 409 }); run.condition = "cancelled"; if (loseRunStop) { loseRunStop = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost parent shutdown acknowledgment" } }, { status: 503 }); } return Response.json(run); }
       if (action === "operations/check") {
-        const checked = { ...body.check, head: scenario.advancingHeads ? (body.worker_id ? workers.get(body.worker_id)?.head : tips.get(run.id)) ?? "1".repeat(40) : "1".repeat(40), workspace_hash: "owned-check", commands: [{ args: ["bun", "test"], exit_code: 0, output: "Owned checks passed" }], condition: "passed" } as FactoryCheck;
+        const checked = { ...body.check, head: scenario.advancingHeads ? (body.worker_id ? workers.get(body.worker_id)?.head : tips.get(run.id)) ?? "1".repeat(40) : "1".repeat(40), workspace_hash: scenario.workspaceHash ?? "owned-check", commands: [{ args: ["bun", "test"], exit_code: 0, output: "Owned checks passed" }], condition: "passed" } as FactoryCheck;
         if (failCheck) { failCheck = false; checked.condition = "failed"; checked.commands[0]!.exit_code = 1; checked.commands[0]!.output = "Owned check failure"; }
         checks.set(checked.id, checked); executedChecks.push(checked.id);
         if (checkGate && (!checkGate.scope || checkGate.scope === (body.worker_id ? "worker" : "integration"))) {
@@ -137,8 +137,11 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
         if (loseCheck) { loseCheck = false; return Response.json({ error: { code: "lost_ack", message: "Owned uncertain check" } }, { status: 503 }); }
         return Response.json(checks.get(checked.id));
       }
-      if (action === "operations/check-reconcile") return Response.json(checks.get(body.check_id));
-      if (action === "operations/head") return Response.json({ head: tips.get(run.id) ?? "1".repeat(40), workspace_hash: "owned-check" });
+      if (action === "operations/check-reconcile") {
+        if (unavailableCheckObservation) return Response.json({ error: { code: "disconnected", message: "Owned check observation is unavailable" } }, { status: 503 });
+        return Response.json(checks.get(body.check_id));
+      }
+      if (action === "operations/head") return Response.json({ head: tips.get(run.id) ?? "1".repeat(40), workspace_hash: scenario.workspaceHash ?? "owned-check" });
       if (action === "operations/review-evidence") {
         const worker = workers.get(body.worker_id)!;
         const outcome = reviewOutcomes.get(worker.id) ?? "passed";
@@ -249,6 +252,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
     loseNextLaunch: () => { loseLaunch = true; },
     loseNextWorker: () => { loseWorker = true; },
     loseNextCheck: () => { loseCheck = true; },
+    unavailableCheckObservation: (value: boolean) => { unavailableCheckObservation = value; },
     unconfirmedBuildShutdown: (value: boolean) => { unconfirmedCheckShutdown = value; },
     loseNextIntegration: () => { loseIntegration = true; },
     failNextCheck: () => { failCheck = true; },

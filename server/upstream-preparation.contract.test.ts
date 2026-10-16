@@ -69,7 +69,12 @@ test("a new upstream design decision retains Needs you and owned preparation des
     expect(detail.board.lane).toBe("needs_you");
     expect(detail.questions).toContainEqual(expect.objectContaining({ id: question.id, answer: null }));
     expect(detail.runs[0]).toMatchObject({ worktree: f.run.worktree, branch: f.run.branch, condition: "needs_you" });
-    expect((await f.request(`/projects/${f.project.id}/queue`).then(r => r.json())).capacity.project_implementations).toBe(1);
+    // Parked ownership preserves prepared work without reserving a logical Assignment slot.
+    const snapshot = await f.request(f.prefix + "/snapshots", { run_id: f.run.id, mode: "branch" }).then(r => r.json());
+    expect(snapshot.files.map((file: { path: string }) => file.path)).toContain("feature.md");
+    expect(detail.runs[0].manifest.specification.upstream_update).toMatchObject({ release_id: "101", revision: f.upstreamRevision });
+    expect(detail.checks.at(-1)).toMatchObject({ run_id: f.run.id, head: f.head, condition: "passed" });
+    expect(detail.review_evidence.map((entry: { axis: string; head: string }) => [entry.axis, entry.head])).toEqual([["standards", f.head], ["spec", f.head]]);
     expect(f.uploads).toHaveLength(0);
   } finally { await f.close(); }
 }, 60_000);
