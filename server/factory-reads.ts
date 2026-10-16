@@ -57,7 +57,7 @@ export class FactoryReads {
       question_context: { run_id: questionRunId ?? null, revision: hash(JSON.stringify(scoped)), questions: scoped },
       questions: scoped, specifications: spec ? [spec] : [], tickets,
       approvals: this.list<FactoryDetail["approvals"][number]>("approvals", id).map(a => ({ ...a, scope: "" })),
-      runs: runs.map(run => ({ ...run, manifest: { execution_preset: (run.manifest as { execution_preset?: unknown })?.execution_preset, issue_admission: (run.manifest as { issue_admission?: unknown })?.issue_admission, rework: (run.manifest as { rework?: unknown })?.rework } })),
+      runs: runs.map(run => ({ ...run, manifest: { execution_preset: (run.manifest as { execution_preset?: unknown })?.execution_preset, issue_admission: (run.manifest as { issue_admission?: unknown })?.issue_admission ?? undefined, rework: (run.manifest as { rework?: unknown })?.rework ?? undefined } })),
       checks: checks.filter(check => check.worker_id === null),
       review_evidence: [...runIds].flatMap(runId => this.list<Omit<FactoryReviewEvidence, "content">>("review_evidence", runId)), events: selectedEvents,
     };
