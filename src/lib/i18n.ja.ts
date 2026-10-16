@@ -1429,4 +1429,12 @@ export const JA: Record<string, string> = {
   "Review discussion": "レビューの相談",
   "Discuss this review": "このレビューについて相談",
   "Send discussion": "相談を送信",
+  "Select range end": "範囲の終端を選択",
+  "Stale anchor: the candidate changed. Original lines are retained.": "古い位置: 候補が変更されました。元の行は保持されます。",
+  "Original anchor": "元の位置",
+  "Edit draft": "下書きを編集",
+  "Remove draft": "下書きを削除",
+  "Draft comments": "コメントの下書き",
+  "Submitted comments": "送信済みコメント",
+  "Saved drafts do not start repairs or authorize a merge.": "保存した下書きは修正を開始せず、マージを承認しません。",
 };

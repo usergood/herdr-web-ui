@@ -1245,6 +1245,8 @@ export const DEFAULT_PORT = 7317;
  * GET /api/factory/tickets/:id -> FactoryTicket; stable app-native tracker identity.
  * POST /api/factory/implementations/:id/snapshots (snapshot) -> ReviewSnapshot, 201;
  * POST .../comments (comment) -> ReviewComment, 201; immutable line/hunk anchor.
+ * POST .../comments/:comment/edit (comment_edit) -> ReviewComment; unsent draft text only, retains anchors.
+ * POST .../comments/:comment/delete (empty) -> {id}; unsent drafts only, including stale drafts.
  * POST .../request-changes (request_changes) -> FactoryBatchReceipt; only selected drafts delivered.
  * POST .../comments/:comment/resolve (resolve) -> ReviewComment; current checks and both axes required.
  * POST /api/factory/projects/:id/retrospectives (retrospective) -> FactoryRetrospective, 201;
@@ -1346,6 +1348,7 @@ export interface FactoryRequests {
   accept: { head: string };
   snapshot: { mode: "branch" | "workspace"; run_id?: string };
   comment: { snapshot_id: string; path: string; change?: string; side: "old" | "new"; line_start: number; line_end: number; content: string };
+  comment_edit: { content: string };
   request_changes: { run_id: string; snapshot_id: string; comment_ids: string[]; idempotency_key: string };
   resolve: { head: string; summary: string };
   retrospective: { evidence_ids: string[]; proposal: string };

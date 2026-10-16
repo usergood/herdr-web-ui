@@ -1382,4 +1382,12 @@ export const TR: Record<string, string> = {
   "Review discussion": "İnceleme tartışması",
   "Discuss this review": "Bu incelemeyi tartışın",
   "Send discussion": "Tartışmayı gönder",
+  "Select range end": "Aralık sonunu seç",
+  "Stale anchor: the candidate changed. Original lines are retained.": "Eski konum: Aday değişti. Özgün satırlar korunur.",
+  "Original anchor": "Özgün konum",
+  "Edit draft": "Taslağı düzenle",
+  "Remove draft": "Taslağı kaldır",
+  "Draft comments": "Yorum taslakları",
+  "Submitted comments": "Gönderilen yorumlar",
+  "Saved drafts do not start repairs or authorize a merge.": "Kaydedilen taslaklar onarım başlatmaz veya birleştirme yetkisi vermez.",
 };
