@@ -4,44 +4,162 @@ import { capacityFixture } from "../scripts/factory-capacity-fixture.ts";
 import { published, until } from "../scripts/factory-human-review-fixture.ts";
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, renameSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, renameSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer } from "./index.ts";
 
+// The stand-in native boundary exercises real host leases; it does not certify a provider.
+async function humanHostFixture(holdCheck = false) {
+  const root = mkdtempSync(join(tmpdir(), "human-review-native-")); const repo = join(root, "repo"); mkdirSync(repo);
+  const git = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  git(["init", "-b", "main"]); git(["config", "user.name", "Fixture"]); git(["config", "user.email", "fixture@example.invalid"]);
+  writeFileSync(join(repo, "result.txt"), "before\n"); git(["add", "."]); git(["commit", "-m", "Owned base"]);
+  const source = join(root, "source"); git(["worktree", "add", "-b", "owned-candidate", source]);
+  writeFileSync(join(source, "result.txt"), "after\n"); execFileSync("git", ["-C", source, "commit", "-am", "Owned candidate"], { stdio: "ignore" });
+  const candidate = execFileSync("git", ["-C", source, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const checkStarted = join(root, "check-started"); const releaseCheck = join(root, "release-check");
+  const checks = holdCheck ? [[process.execPath, "-e", `const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(checkStarted)}, "working"); const deadline = Date.now() + 10000; while (!fs.existsSync(${JSON.stringify(releaseCheck)})) { if (Date.now() > deadline) process.exit(1); await Bun.sleep(20); }`]] : [];
+  const panes: any[] = []; const workspaces: any[] = [];
+  const app = createServer({ port: 0, token: "owned-native-review", stateDir: join(root, "state"), machines: false, factory: { accountDiscoveryHome: root, native: {
+    version: async () => "owned-native-review",
+    createWorkspace: async (options: any) => { const workspace = { workspace_id: `owned-review-${workspaces.length}`, label: options.label }; const pane = { pane_id: `${workspace.workspace_id}:p1`, workspace_id: workspace.workspace_id, terminal_id: `${workspace.workspace_id}:terminal`, cwd: options.cwd, agent: "codex", agent_status: "idle" }; workspaces.push(workspace); panes.push(pane); return { workspace, root_pane: pane } as any; },
+    startAgent: async () => ({}) as any,
+    snapshot: async () => ({ panes, workspaces }) as any,
+    closeWorkspace: async (workspaceId: string) => { for (let i = panes.length - 1; i >= 0; i--) if (panes[i].workspace_id === workspaceId) panes.splice(i, 1); const index = workspaces.findIndex(w => w.workspace_id === workspaceId); if (index >= 0) workspaces.splice(index, 1); return {} as any; },
+  } } });
+  const api = (path: string, body?: unknown) => fetch(`http://localhost:${app.port}/api/${path}`, { method: body === undefined ? "GET" : "POST", headers: { authorization: "Bearer owned-native-review", "x-herdr-factory": "1", "x-herdr-machine": "1", "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  const checkout = await api("factory-host/inspect", { path: repo }).then(r => r.json());
+  const capabilities = await api("factory/providers").then(r => r.json());
+  const now = new Date().toISOString(); const id = crypto.randomUUID(); const assignmentId = crypto.randomUUID();
+  const parentId = crypto.randomUUID();
+  const parent = { id: parentId, created_at: now, updated_at: now, implementation_id: assignmentId, action: "work", provider: "codex", machine_id: "local", condition: "accepted", waiting_reason: null, idempotency_key: "owned-parent", specification_id: null, graph_hash: null, base: checkout.head, checkout: repo, worktree: null, branch: null, workspace_id: null, pane_id: null, manifest: { skills: { hash: capabilities.skill_manifest.hash }, provider_version: "owned-native-review", checkout, project: { permission_mode: "approve_for_me", checks }, implementation: { title: "Owned review", description: "Discuss the captured result" } } };
+  const launchedParent = await api("factory-host/launch", { run: parent }).then(r => r.json());
+  if (launchedParent.condition !== "working") throw new Error("Owned parent launch failed");
+  execFileSync("git", ["-C", launchedParent.worktree, "merge", "--ff-only", candidate], { stdio: "ignore" });
+  await api(`factory-host/runs/${parentId}/reconcile`, {});
+  const snapshotId = crypto.randomUUID();
+  const run = { id, created_at: now, updated_at: now, implementation_id: assignmentId, action: "work", provider: "codex", machine_id: "local", conversation_kind: "human_review", condition: "accepted", waiting_reason: null, idempotency_key: "owned-human-native", specification_id: null, graph_hash: null, base: candidate, checkout: repo, worktree: null, branch: null, workspace_id: null, pane_id: null, manifest: { skills: { hash: capabilities.skill_manifest.hash }, provider_version: "owned-native-review", checkout, project: { permission_mode: "approve_for_me", checks }, implementation: { title: "Owned review", description: "Discuss the captured result" }, human_review: { review: { id: parentId, run_id: parentId, implementation_id: assignmentId, conversation_id: `${assignmentId}:human_review`, condition: "ready", head: candidate, snapshot_id: snapshotId }, snapshot: { id: snapshotId, run_id: parentId, implementation_id: assignmentId, machine_id: "local", repository: checkout.repository, mode: "branch", base: checkout.head, head: candidate } } } };
+  return { api, run, parent: launchedParent, source, repo, checkout, candidate, panes, workspaces, git, checkStarted, releaseCheck, close: () => { app.stop(); rmSync(root, { recursive: true, force: true }); } };
+}
+
 describe("Human Review through authenticated HTTP", () => {
-  it("launches the captured commit from the stable Project checkout and deletes its owned context after the source worktree is gone", async () => {
-    const root = mkdtempSync(join(tmpdir(), "human-review-native-")); const repo = join(root, "repo"); mkdirSync(repo);
-    const git = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
-    git(["init", "-b", "main"]); git(["config", "user.name", "Fixture"]); git(["config", "user.email", "fixture@example.invalid"]);
-    writeFileSync(join(repo, "result.txt"), "before\n"); git(["add", "."]); git(["commit", "-m", "Owned base"]);
-    const source = join(root, "source"); git(["worktree", "add", "-b", "owned-candidate", source]);
-    writeFileSync(join(source, "result.txt"), "after\n"); execFileSync("git", ["-C", source, "commit", "-am", "Owned candidate"], { stdio: "ignore" });
-    const candidate = execFileSync("git", ["-C", source, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-    const panes: any[] = []; const workspaces: any[] = [];
-    const app = createServer({ port: 0, token: "owned-native-review", stateDir: join(root, "state"), machines: false, factory: { accountDiscoveryHome: root, native: {
-      version: async () => "owned-native-review",
-      createWorkspace: async (options: any) => { const workspace = { workspace_id: "owned-review", label: options.label }; const pane = { pane_id: "owned-review:p1", workspace_id: workspace.workspace_id, terminal_id: "owned-terminal", cwd: options.cwd, agent: "codex", agent_status: "idle" }; workspaces.push(workspace); panes.push(pane); return { workspace, root_pane: pane } as any; },
-      startAgent: async () => ({}) as any,
-      snapshot: async () => ({ panes, workspaces }) as any,
-      closeWorkspace: async () => { panes.length = 0; workspaces.length = 0; return {} as any; },
-    } } });
-    const api = (path: string, body?: unknown) => fetch(`http://localhost:${app.port}/api/${path}`, { method: body === undefined ? "GET" : "POST", headers: { authorization: "Bearer owned-native-review", "x-herdr-factory": "1", "x-herdr-machine": "1", "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  it("hands the resting candidate owner to a read-only assistant without releasing the parent's ownership", async () => {
+    const f = await humanHostFixture();
     try {
-      const checkout = await api("factory-host/inspect", { path: repo }).then(r => r.json());
-      const capabilities = await api("factory/providers").then(r => r.json());
-      const now = new Date().toISOString(); const id = crypto.randomUUID(); const assignmentId = crypto.randomUUID();
-      const run = { id, created_at: now, updated_at: now, implementation_id: assignmentId, action: "work", provider: "codex", machine_id: "local", conversation_kind: "human_review", condition: "accepted", waiting_reason: null, idempotency_key: "owned-human-native", specification_id: null, graph_hash: null, base: candidate, checkout: repo, worktree: null, branch: null, workspace_id: null, pane_id: null, manifest: { skills: { hash: capabilities.skill_manifest.hash }, provider_version: "owned-native-review", checkout, project: { permission_mode: "approve_for_me" }, implementation: { title: "Owned review", description: "Discuss the captured result" }, human_review: { review: { head: candidate } } } };
-      const response = await api("factory-host/launch", { run });
+      const response = await f.api("factory-host/launch", { run: f.run });
       expect(response.status).toBe(202); const launched = await response.json();
       expect(launched.condition).toBe("working");
-      expect((await api("factory-host/inspect", { path: launched.worktree }).then(r => r.json())).head).toBe(candidate);
-      git(["worktree", "remove", source]);
-      const deleted = await api(`factory-host/runs/${id}/operations/delete`, { deletion_id: crypto.randomUUID(), implementation_id: assignmentId });
+      expect((await f.api("factory-host/inspect", { path: launched.worktree }).then(r => r.json())).head).toBe(f.candidate);
+      expect((await f.api(`factory-host/runs/${f.parent.id}/reconcile`, {}).then(r => r.json())).condition).toBe("ready");
+      const repeated = await f.api("factory-host/launch", { run: f.run });
+      expect(await repeated.json()).toMatchObject({ id: launched.id, workspace_id: launched.workspace_id });
+      expect(f.workspaces).toHaveLength(2);
+      f.git(["worktree", "remove", f.source]);
+      const deleted = await f.api(`factory-host/runs/${f.run.id}/operations/delete`, { deletion_id: crypto.randomUUID(), implementation_id: f.run.implementation_id });
+      expect(deleted.status).toBe(200); expect(await deleted.json()).toMatchObject({ condition: "deleted" });
+      expect((await f.api(`factory-host/runs/${f.parent.id}/reconcile`, {}).then(r => r.json())).condition).toBe("ready");
+      expect((await f.api("factory-host/inspect", { path: f.repo }).then(r => r.json())).head).toBe(f.checkout.head);
+    } finally { f.close(); }
+  }, 20000);
+  it("keeps ordinary second Runs and changed or unrelated review scopes excluded", async () => {
+    const f = await humanHostFixture();
+    try {
+      const ordinary = { ...f.run, conversation_kind: undefined };
+      const invalid = [ordinary, { ...f.run, action: "setup" },
+        { ...f.run, provider: "claude" }, { ...f.run, machine_id: "another-machine" },
+        { ...f.run, implementation_id: crypto.randomUUID() }, { ...f.run, capacity_pool: "planning" },
+        { ...f.run, base: f.checkout.head },
+        { ...f.run, manifest: { ...f.run.manifest, project: { permission_mode: "read_only" } } },
+        { ...f.run, manifest: { ...f.run.manifest, human_review: { ...f.run.manifest.human_review, review: { ...f.run.manifest.human_review.review, run_id: crypto.randomUUID() } } } },
+        { ...f.run, manifest: { ...f.run.manifest, human_review: { ...f.run.manifest.human_review, snapshot: { ...f.run.manifest.human_review.snapshot, id: crypto.randomUUID() } } } },
+      ];
+      for (const run of invalid) {
+        const response = await f.api("factory-host/launch", { run });
+        expect(response.status).toBe(409); expect(await response.json()).toMatchObject({ error: { code: "host_owned" } });
+      }
+      expect(f.workspaces).toHaveLength(1);
+      expect((await f.api("factory-host/launch", { run: f.run })).status).toBe(202);
+      const duplicate = await f.api("factory-host/launch", { run: { ...f.run, id: crypto.randomUUID() } });
+      expect(duplicate.status).toBe(409); expect(f.workspaces).toHaveLength(2);
+    } finally { f.close(); }
+  }, 20000);
+  it("requires current native rest rather than a cached ready condition", async () => {
+    const f = await humanHostFixture();
+    try {
+      const pane = f.panes[0];
+      for (const state of [{ agent_status: "running" }, { agent_status: "blocked" }, { agent_status: "idle", background_tasks: 1 }, { agent_status: "idle", agent: null }]) {
+        Object.assign(pane, { agent: "codex", agent_status: "idle", background_tasks: undefined }, state);
+        const response = await f.api("factory-host/launch", { run: f.run });
+        expect(response.status).toBe(409);
+      }
+      Object.assign(pane, { agent: "codex", agent_status: "idle", background_tasks: undefined });
+      const workspace = f.workspaces.pop();
+      expect((await f.api("factory-host/launch", { run: f.run })).status).toBe(409);
+      f.workspaces.push(workspace);
+      expect((await f.api("factory-host/launch", { run: f.run })).status).toBe(202);
+    } finally { f.close(); }
+  }, 20000);
+  it("retains resting assistant history while admitting a later candidate only after all contexts rest", async () => {
+    const f = await humanHostFixture();
+    try {
+      const first = await f.api("factory-host/launch", { run: f.run }).then(r => r.json());
+      writeFileSync(join(f.parent.worktree, "result.txt"), "repaired\n");
+      execFileSync("git", ["-C", f.parent.worktree, "commit", "-am", "Owned repair"], { stdio: "ignore" });
+      const head = execFileSync("git", ["-C", f.parent.worktree, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      const snapshotId = crypto.randomUUID();
+      const next = { ...f.run, id: crypto.randomUUID(), base: head, manifest: { ...f.run.manifest, human_review: { ...f.run.manifest.human_review, review: { ...f.run.manifest.human_review.review, head, snapshot_id: snapshotId }, snapshot: { ...f.run.manifest.human_review.snapshot, id: snapshotId, head } } } };
+      const pane = f.panes.find(p => p.pane_id === first.pane_id); pane.agent_status = "running";
+      expect((await f.api("factory-host/launch", { run: next })).status).toBe(409);
+      pane.agent_status = "idle";
+      expect((await f.api("factory-host/launch", { run: next })).status).toBe(202);
+      expect(f.workspaces).toHaveLength(3);
+      expect((await f.api(`factory-host/runs/${first.id}/reconcile`, {}).then(r => r.json())).condition).toBe("ready");
+    } finally { f.close(); }
+  }, 20000);
+  it("keeps live and uncertain child reservations until verified shutdown", async () => {
+    const f = await humanHostFixture();
+    try {
+      const now = new Date().toISOString();
+      const worker = { id: crypto.randomUUID(), created_at: now, updated_at: now, run_id: f.parent.id, ticket_id: null, role: "standards", condition: "accepted", waiting_reason: null, idempotency_key: "owned-reviewer", base: f.candidate, head: null, integration_tip: null, worktree: null, branch: null, workspace_id: null, pane_id: null, shared_paths: [] };
+      const child = await f.api(`factory-host/runs/${f.parent.id}/operations/worker`, { worker, context: {} }).then(r => r.json());
+      expect(child.condition).toBe("working");
+      expect((await f.api("factory-host/launch", { run: f.run })).status).toBe(409);
+      const index = f.workspaces.findIndex(w => w.workspace_id === child.workspace_id); const [workspace] = f.workspaces.splice(index, 1);
+      const uncertain = await f.api(`factory-host/runs/${f.parent.id}/operations/reconcile-worker`, { worker_id: child.id }).then(r => r.json());
+      expect(uncertain.condition).toBe("disconnected");
+      expect((await f.api("factory-host/launch", { run: f.run })).status).toBe(409);
+      f.workspaces.push(workspace);
+      expect((await f.api(`factory-host/runs/${f.parent.id}/operations/stop-worker`, { worker_id: child.id })).status).toBe(200);
+      expect((await f.api("factory-host/launch", { run: f.run })).status).toBe(202);
+    } finally { f.close(); }
+  }, 20000);
+  it("waits for a live validation command before admitting the captured discussion", async () => {
+    const f = await humanHostFixture(true);
+    let pending: Promise<Response> | undefined;
+    try {
+      const now = new Date().toISOString();
+      const check = { id: crypto.randomUUID(), created_at: now, updated_at: now, run_id: f.parent.id, worker_id: null, condition: "working", head: f.candidate, workspace_hash: null, commands: [] };
+      pending = f.api(`factory-host/runs/${f.parent.id}/operations/check`, { check });
+      const deadline = Date.now() + 5000;
+      while (!existsSync(f.checkStarted)) { if (Date.now() > deadline) throw new Error("Owned validation did not start"); await Bun.sleep(20); }
+      expect((await f.api("factory-host/launch", { run: f.run })).status).toBe(409);
+      writeFileSync(f.releaseCheck, "continue");
+      expect(await (await pending).json()).toMatchObject({ condition: "passed" });
+      expect((await f.api("factory-host/launch", { run: f.run })).status).toBe(202);
+    } finally { writeFileSync(f.releaseCheck, "continue"); await pending; f.close(); }
+  }, 20000);
+  it("does not hand a paused or deleting parent to a new assistant", async () => {
+    const f = await humanHostFixture();
+    try {
+      const paused = await f.api(`factory-host/runs/${f.parent.id}/operations/pause`, { pause_id: crypto.randomUUID() });
+      expect(paused.status).toBe(200);
+      expect((await f.api("factory-host/launch", { run: f.run })).status).toBe(409);
+      const deleted = await f.api(`factory-host/runs/${f.parent.id}/operations/delete`, { deletion_id: crypto.randomUUID(), implementation_id: f.run.implementation_id });
       expect(deleted.status).toBe(200);
-      expect(await deleted.json()).toMatchObject({ condition: "deleted" });
-      expect((await api("factory-host/inspect", { path: repo }).then(r => r.json())).head).toBe(checkout.head);
-    } finally { app.stop(); rmSync(root, { recursive: true, force: true }); }
+      expect((await f.api("factory-host/launch", { run: f.run })).status).toBe(409);
+      expect(f.workspaces).toHaveLength(0);
+    } finally { f.close(); }
   }, 20000);
   it("explains an older Machine bridge without launching the discussion as unrestricted direct work", async () => {
     const f = await capacityFixture({ advancingHeads: true });

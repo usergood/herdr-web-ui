@@ -294,16 +294,59 @@ export class FactoryExecutionHost {
     }));
     return { providers, skill_manifest: skills ? { commit: skills.commit, hash: skills.hash, file_count: skills.files.length } : null, factory_host_protocol: 1, human_review_protocol: 1, project_reference_protocol: 1, account_profile_protocol: 1 };
   }
+  private assertReviewQuiescent(id: string): void {
+    this.assertNotDeleting(id);
+    const lease = this.store.get<{ run: FactoryRun; closing?: boolean }>("host_leases", id);
+    if (!lease || lease.closing || lease.run.suspension || this.launches.has(id) || this.sends.has(id) || this.operations.get(id)?.size
+      || this.store.list<FactoryWorker>("host_workers", id).some(worker => !["completed", "cancelled", "failed"].includes(worker.condition))
+      || this.store.list<FactoryCheck>("host_checks", id).some(check => ["working", "interrupted"].includes(check.condition))) throw new FactoryError("host_owned", "Human Review cannot bypass active or uncertain candidate work", 409);
+  }
+  /** A captured discussion may coexist only with its verified resting candidate owner. */
+  private async reviewHandoff(record: FactoryRun): Promise<Map<string, string>> {
+    const reject = (): never => { throw new FactoryError("host_owned", "Human Review requires its exact resting candidate owner with no active or uncertain work", 409); };
+    const context = (record.manifest as { human_review?: { review?: import("../shared/factory.ts").FactoryHumanReview; snapshot?: import("../shared/factory.ts").ReviewSnapshot } }).human_review;
+    const review = context?.review; const snapshot = context?.snapshot;
+    const parent = review?.run_id ? this.store.get<{ run: FactoryRun }>("host_leases", review.run_id)?.run : undefined;
+    if (!parent || parent.conversation_kind || !["implement-spec", "work"].includes(parent.action) || record.action !== "work" || record.capacity_pool === "planning" || record.condition !== "accepted" || record.suspension || record.continuation || record.worktree !== null || record.branch !== null || record.workspace_id !== null || record.pane_id !== null
+      || record.implementation_id !== parent.implementation_id || record.machine_id !== parent.machine_id || record.provider !== parent.provider || record.checkout !== parent.checkout || record.specification_id !== parent.specification_id || record.graph_hash !== parent.graph_hash
+      || review!.id !== parent.id || review!.conversation_id !== `${parent.implementation_id}:human_review` || review!.implementation_id !== parent.implementation_id || review!.condition !== "ready" || review!.head !== record.base || !snapshot || review!.snapshot_id !== snapshot.id || snapshot.run_id !== parent.id || snapshot.implementation_id !== parent.implementation_id || snapshot.machine_id !== parent.machine_id || snapshot.mode !== "branch" || snapshot.head !== record.base || snapshot.base !== parent.base) return reject();
+    const scope = (run: FactoryRun) => {
+      const { planning_authority: _authority, human_review: _review, checkout: _checkout, context_message_ids: _messages, ...frozen } = run.manifest as Record<string, unknown>;
+      return hash(JSON.stringify(frozen));
+    };
+    if (scope(record) !== scope(parent) || !parent.worktree) return reject();
+    const retained = new Map<string, string>();
+    for (const lease of this.store.list<{ id: string; run: FactoryRun; closing?: boolean }>("host_leases").filter(entry => entry.run.implementation_id === record.implementation_id && !["completed", "cancelled", "failed"].includes(entry.run.condition))) {
+      const other = lease.run;
+      if (other.id !== parent.id) {
+        const previous = (other.manifest as { human_review?: { review?: import("../shared/factory.ts").FactoryHumanReview } }).human_review?.review;
+        // A new candidate gets a fresh context; the earlier resting history keeps its lease.
+        if (other.conversation_kind !== "human_review" || previous?.run_id !== parent.id || previous.implementation_id !== record.implementation_id || other.base === record.base || other.provider !== record.provider || other.machine_id !== record.machine_id || scope(other) !== scope(parent)) return reject();
+      }
+      this.assertReviewQuiescent(other.id);
+      if ((await this.reconcile(other.id)).condition !== "ready") return reject();
+      this.assertReviewQuiescent(other.id);
+      const current = this.store.get<typeof lease>("host_leases", other.id)!;
+      retained.set(other.id, JSON.stringify(current));
+    }
+    if (!retained.has(parent.id)) return reject();
+    const candidate = await inspectCheckout(parent.worktree);
+    if (candidate.head !== record.base || candidate.repository !== snapshot.repository || candidate.repository !== (parent.manifest as { checkout?: { repository?: string } }).checkout?.repository || candidate.branch !== parent.branch) return reject();
+    return retained;
+  }
   async launch(record: FactoryRun, access?: { token: string; url: string }, attachments: { id: string; name: string; hash: string; size: number; content_base64: string }[] = [], references?: ProjectReferencePayload): Promise<FactoryRun> {
     this.assertNotDeleting(record.id);
     if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Native execution is disabled on a restored copy", 409);
     if (!/^[a-f0-9-]{36}$/.test(record.id) || !/^[a-f0-9-]{36}$/.test(record.implementation_id) || !["codex", "claude", "opencode"].includes(record.provider) || !["work", "setup", "grill-me", "grill-with-docs", "to-spec", "to-tickets", "implement-spec", "retro", "apply-retro", "verify-provider"].includes(record.action)) throw new FactoryError("invalid_launch", "Invalid owned execution identity");
     const signature = hash(JSON.stringify(record));
+    const handoff = record.conversation_kind === "human_review" && !this.store.get("host_leases", record.id) ? await this.reviewHandoff(record) : null;
     const accepted = this.store.db.transaction(() => {
       const previous = this.store.get<{ id: string; signature: string; run: FactoryRun }>("host_leases", record.id);
       if (previous) { if (previous.signature !== signature) throw new FactoryError("launch_conflict", "This native lease already belongs to a different scope", 409); return { run: previous.run, fresh: false }; }
       if (this.stopped) throw new FactoryError("stopping", "The execution host is stopping", 409);
-      if (this.store.list<{ run: FactoryRun }>("host_leases").some((lease) => lease.run.implementation_id === record.implementation_id && !["completed", "cancelled", "failed"].includes(lease.run.condition))) throw new FactoryError("host_owned", "This host retains an active or uncertain lease for the Implementation", 409);
+      if (handoff) for (const id of handoff.keys()) this.assertReviewQuiescent(id);
+      if (handoff && [...handoff].some(([id, retained]) => JSON.stringify(this.store.get("host_leases", id)) !== retained)) throw new FactoryError("host_owned", "The candidate owner changed during Human Review admission", 409);
+      if (this.store.list<{ id: string; run: FactoryRun }>("host_leases").some((lease) => lease.run.implementation_id === record.implementation_id && !["completed", "cancelled", "failed"].includes(lease.run.condition) && !handoff?.has(lease.id))) throw new FactoryError("host_owned", "This host retains an active or uncertain lease for the Implementation", 409);
       this.store.put("host_leases", { id: record.id, signature, run: record }); return { run: record, fresh: true };
     }).immediate();
     const pending = this.launches.get(record.id); if (pending) return pending;
