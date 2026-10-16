@@ -148,7 +148,8 @@ export class FactoryService {
     return { selected: entry?.eligible === true, readiness_problem: entry?.lane === "needs_you" ? entry.reasons.map(reason => reason.code).join(", ") : null };
   }
   private compactIssueContext(id: string): Pick<FactoryDetail, "github_sources" | "github_sync"> {
-    const sources = this.store.list<import("../shared/github-project.ts").ProjectGitHubSource>("github_sources").filter(source => source.implementation_id === id).map(source => {
+    const projectIds = new Set(this.store.list<import("../shared/github-project.ts").ProjectGitHubSource>("github_sources").filter(source => source.implementation_id === id).map(source => source.project_id));
+    const sources = [...projectIds].flatMap(projectId => this.github.sources(projectId).filter(source => source.implementation_id === id)).map(source => {
       const view = this.store.get("github_readiness_policies", source.project_id) ? this.github.describeSource(source) : this.github.legacyOverview(source.project_id).sources.find(item => item.id === source.id) ?? source;
       const { history, delivery_history, readiness_approvals, ...current } = view;
       return { ...current, intake: this.github.intake(source) };

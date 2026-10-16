@@ -50,6 +50,13 @@ test("current loading preserves decisions and evidence while excluding retained 
     const next = (await read<FactoryCurrent>(prefix + "?view=current")).body;
     expect(next.revision).not.toBe(current.body.revision);
     expect(next.events.at(-1)?.data).toEqual({ run_id: current.body.runs.at(-1)!.id, message: "Retain this decision warning" });
+    for (const reworkRequested of [true, false, null, "true"]) {
+      const runId = current.body.runs.at(-1)!.id;
+      f.service.store.event(f.id, "run_stopped", { run_id: runId, message: "Retained stop", rework_requested: reworkRequested, evidence: "retained_event_body".repeat(1000) });
+      const stopped = await read<FactoryCurrent>(prefix + "?view=current");
+      expect(stopped.body.events.find(event => event.kind === "run_stopped")?.data).toEqual({ run_id: runId, message: "Retained stop", ...(typeof reworkRequested === "boolean" ? { rework_requested: reworkRequested } : {}) });
+      expect(stopped.text).not.toContain("retained_event_body");
+    }
     expect((await read<FactoryDetail>(prefix)).body.native_snapshots).toEqual(full.body.native_snapshots);
     console.log(JSON.stringify({ fixture: "8 assignments / 4 retained attempts each", overview_bytes: overview.bytes, full_overview_bytes: completeOverview.bytes, workflow_current_bytes: current.bytes, full_detail_bytes: full.bytes, review_index_bytes: review.bytes }));
   } finally { f.close(); }

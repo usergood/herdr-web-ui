@@ -132,7 +132,7 @@ try {
       });
       await page.reload();
       await retry.waitFor(); assert.equal(await retry.isDisabled(), true);
-      const advanced = page.locator("details").filter({ has: page.getByRole("heading", { name: "Run history", exact: true, includeHidden: true }) });
+      const advanced = page.locator("details").filter({ has: page.locator(":scope > summary").filter({ hasText: /^Advanced controls$/ }) });
       await advanced.locator(":scope > summary").click();
       const runHistory = advanced.locator("section").filter({ has: page.getByRole("heading", { name: "Run history", exact: true }) });
       const planningRun = runHistory.getByRole("article").filter({ has: page.locator("strong").filter({ hasText: /^to-spec$/ }) });

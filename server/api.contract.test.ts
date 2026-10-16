@@ -5048,9 +5048,11 @@ it("issue source responses expose authoritative coverage applicability without r
     const original = (await fixture.json(route + "/sync", {})).sources[0];
     const linked = (await fixture.json(route + "/issues/1/delivery", { source_revision: original.revision, expected_revision: null, target_branch: "main", intended_prs: [{ number: 27, head: "a".repeat(40) }], release_tag: null })).sources[0];
     expect(linked).toMatchObject({ delivery_scope_current: true });
+    const currentPath = `/implementations/${original.implementation_id}?view=current`;
+    expect((await fixture.json(currentPath)).github_sources[0]).toMatchObject({ delivery: linked.delivery, delivery_scope_current: true });
     fixture.issue.labels.push({ name: "documentation" }); fixture.save();
     await fixture.json(route + "/sync", {});
-    for (const view of [await fixture.json(route), await fixture.json(`/implementations/${original.implementation_id}`)]) {
+    for (const view of [await fixture.json(route), await fixture.json(`/implementations/${original.implementation_id}`), await fixture.json(currentPath)]) {
       const source = (view.sources ?? view.github_sources)[0];
       expect(source.revision).not.toBe(original.revision);
       expect(source.delivery_scope_current).toBe(true);
@@ -5060,6 +5062,9 @@ it("issue source responses expose authoritative coverage applicability without r
     const changed = (await fixture.json(route + "/sync", {})).sources[0];
     expect(changed).toMatchObject({ delivery_scope_current: false });
     expect(changed.delivery).toEqual(linked.delivery);
+    const currentSource = (await fixture.json(currentPath)).github_sources[0];
+    expect(currentSource).toMatchObject({ delivery: linked.delivery, delivery_scope_current: false });
+    for (const field of ["history", "delivery_history", "readiness_approvals"]) expect(field in currentSource).toBe(false);
   } finally { fixture.close(); }
 });
 // Report-only repair uses the same authenticated owner endpoint as inline findings.
