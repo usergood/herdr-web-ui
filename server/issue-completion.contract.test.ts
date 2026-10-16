@@ -437,7 +437,7 @@ test.each([
   try {
     const { run, path, route } = await fixture.prepare({ setup: [["bun", "install", "--frozen-lockfile"], ["bun", "run", "prepare"]], checks: [["bun", "run", "typecheck"]] });
     await fixture.integrate(run);
-    fixture.setCheckCommands(commands, exitCodes);
+    fixture.setCheckCommands(commands.map(args => [...args]), exitCodes ? [...exitCodes] : undefined);
     const check = await fixture.json(`/runs/${run.id}/checks`, {});
     expect(check.condition).toBe("passed");
     await fixture.review(run, "standards"); await fixture.review(run, "spec");
