@@ -1,0 +1,181 @@
+import { expect, test } from "bun:test";
+import { githubQueueFixture } from "../scripts/fixtures/github-queue.ts";
+
+async function deliveryFixture({ requires = "merge", closed = false, readyLabel = false }: { requires?: "merge" | "release"; closed?: boolean; readyLabel?: boolean } = {}) {
+  const fixture = githubQueueFixture(true);
+  try {
+    const { route, configuration } = await fixture.setup();
+    const prerequisite = { ...fixture.issue, number: 2, node_id: "fictional-prerequisite", title: "Prerequisite", labels: readyLabel ? [{ name: "ready-for-agent" }] : [] as { name: string }[], state: closed ? "closed" : "open", html_url: "https://github.com/fictional/project/issues/2" };
+    const issues = [fixture.issue, prerequisite];
+    const dependencies = { 1: [prerequisite] };
+    const pull = { number: 27, html_url: "https://github.com/fictional/project/pull/27", merged: false, merged_at: "2026-10-03T12:00:00Z", merge_commit_sha: "c".repeat(40), head: { sha: "a".repeat(40) }, base: { ref: "main", repo: { full_name: "fictional/project" } } };
+    function coverageResponses() {
+      fixture.setApiResponses({
+        "repos/fictional/project/pulls/27": pull,
+        "repos/fictional/project/releases/tags/v1": { tag_name: "v1", html_url: "https://github.com/fictional/project/releases/tag/v1", draft: false, published_at: "2026-10-04T12:00:00Z" },
+        "repos/fictional/project/git/ref/tags/v1": { ref: "refs/tags/v1", object: { type: "commit", sha: "d".repeat(40) } },
+        ["repos/fictional/project/compare/" + "c".repeat(40) + "..." + "d".repeat(40)]: { status: "ahead", base_commit: { sha: "c".repeat(40) }, merge_base_commit: { sha: "c".repeat(40) } },
+        "repos/fictional/project/branches/main": { name: "main", commit: { sha: "f".repeat(40) } },
+        ["repos/fictional/project/compare/" + "c".repeat(40) + "..." + "f".repeat(40)]: { status: "ahead", base_commit: { sha: "c".repeat(40) }, merge_base_commit: { sha: "c".repeat(40) } },
+      });
+    }
+    fixture.save(issues, false, dependencies); coverageResponses();
+    await fixture.json(route + "/configure", { ...configuration, expected_revision: (await fixture.json(route)).policy.revision, sync_enabled: true });
+    const view = await fixture.json(route + "/sync", {});
+    const dependent = view.sources.find((source: any) => source.number === 1);
+    const target = view.sources.find((source: any) => source.number === 2);
+    await fixture.json(route + "/issues/1/approve", { source_revision: dependent.revision, policy_revision: view.readiness_policy.revision });
+    await fixture.json(route + "/issues/1/prepare", { source_revision: dependent.revision });
+    const coverage = { source_revision: target.revision, expected_revision: null, target_branch: "main", intended_prs: [{ number: 27, head: "a".repeat(40) }], release_tag: requires === "release" ? "v1" : null };
+    await fixture.json(route + "/issues/2/delivery", coverage);
+    const preview = await fixture.json(route + "/preview", {});
+    expect(preview.entries.find((entry: any) => entry.number === 1)).toMatchObject({ eligible: false, reasons: [{ code: "dependency_delivery_unverified", detail: "fictional/project #2" }] });
+    return { fixture, route, prerequisite, issues, dependencies, pull, coverageResponses, target, dependent, coverage, preview };
+  } catch (error) { fixture.close(); throw error; }
+}
+
+test("a prerequisite body changed at the readiness fence cannot complete or automatically admit its dependent", async () => {
+  const f = await deliveryFixture();
+  try {
+    await f.fixture.json(f.route + "/queue", { expected_revision: null, automatic_implementation: true, preview_revision: f.preview.revision, paused: false, max_implementations: 1 });
+    f.pull.merged = true;
+    f.fixture.save(f.issues, false, f.dependencies, false, [f.issues[0]!, { ...f.prerequisite, body: "Changed intended behavior during collection" }]);
+    f.coverageResponses();
+    const view = await f.fixture.json(f.route + "/sync", {});
+    expect(view.sources.find((source: any) => source.number === 2).readiness_evidence).toMatchObject({ complete: false, problem: "The issue changed while collecting readiness; sync again" });
+    const detail = await f.fixture.json(`/implementations/${f.target.implementation_id}`);
+    expect(detail.implementation.stage).not.toBe("done");
+    expect(detail.implementation.outcome).toBe("none");
+    expect((await f.fixture.json(f.route + "/queue")).entries.find((entry: any) => entry.number === 1)).toMatchObject({ eligible: false, reasons: [{ code: "dependency_delivery_unverified", detail: "fictional/project #2" }] });
+    expect(f.fixture.launches).toEqual([]);
+  } finally { f.fixture.close(); }
+});
+
+test("a failed prerequisite approval fence invalidates previously satisfied dependencies across restart and outage", async () => {
+  const f = await deliveryFixture();
+  try {
+    f.pull.merged = true; f.coverageResponses();
+    await f.fixture.json(f.route + "/sync", {});
+    expect((await f.fixture.json(f.route + "/queue")).entries.find((entry: any) => entry.number === 1).eligible).toBe(true);
+    f.fixture.save(f.issues, false, f.dependencies, false, [f.issues[0]!, { ...f.prerequisite, title: "Changed prerequisite" }]);
+    f.coverageResponses();
+    const readiness = (await f.fixture.json(f.route)).readiness_policy;
+    const refused = await f.fixture.post(f.route + "/issues/2/approve", { source_revision: f.target.revision, policy_revision: readiness.revision });
+    expect(refused.status).toBe(409);
+    const queue = await f.fixture.json(f.route + "/queue");
+    expect(queue.entries.find((entry: any) => entry.number === 1).eligible).toBe(false);
+    expect((await f.fixture.json(f.route)).sources.find((source: any) => source.number === 1).dependencies.satisfied).toBe(false);
+    f.fixture.restart();
+    expect((await f.fixture.json(f.route + "/queue")).entries.find((entry: any) => entry.number === 1).eligible).toBe(false);
+    f.fixture.save(f.issues, true, f.dependencies); f.coverageResponses();
+    expect((await f.fixture.post(f.route + "/sync", {})).status).toBe(409);
+    expect((await f.fixture.json(f.route)).sources.find((source: any) => source.number === 2).readiness_evidence.complete).toBe(false);
+    expect((await f.fixture.json(f.route + "/queue")).entries.find((entry: any) => entry.number === 1).eligible).toBe(false);
+  } finally { f.fixture.close(); }
+});
+
+test.each(["REST body", "REST title", "native relationship", "GraphQL body", "GraphQL title", "GraphQL state", "inventory body before outage"] as const)("known %s drift retires current completion but preserves its prior delivery proof", async change => {
+  const f = await deliveryFixture();
+  try {
+    f.pull.merged = true; f.coverageResponses();
+    await f.fixture.json(f.route + "/sync", {});
+    const path = `/implementations/${f.target.implementation_id}`;
+    const completed = (await f.fixture.json(path)).implementation;
+    expect(completed).toMatchObject({ stage: "done", outcome: "merged", delivery_evidence: { source_revision: f.target.revision } });
+    const fresh = { ...f.prerequisite, body: change === "REST body" ? "Changed intended behavior" : f.prerequisite.body, title: change === "REST title" ? "Changed title" : f.prerequisite.title };
+    const proof = { id: f.prerequisite.node_id, title: change === "GraphQL title" ? "Changed title" : f.prerequisite.title, body: f.prerequisite.body + (change === "GraphQL body" ? "\nChanged scope" : ""), state: change === "GraphQL state" ? "CLOSED" : "OPEN", createdAt: "2026-09-30T12:00:00Z", updatedAt: f.prerequisite.updated_at, lastEditedAt: null };
+    const readiness = change === "native relationship" ? { dependencies: { 2: [f.fixture.issue] } } : change.startsWith("GraphQL") ? { proof } : undefined;
+    if (change === "inventory body before outage") f.prerequisite.body = "Changed inventory before PR outage";
+    f.fixture.save(f.issues, false, f.dependencies, false, [f.issues[0]!, fresh], readiness, change === "inventory body before outage" ? { pulls_fail: true } : undefined);
+    f.coverageResponses();
+    expect((await f.fixture.post(f.route + "/sync", {})).status).toBe(change === "inventory body before outage" ? 409 : 200);
+    const changed = await f.fixture.json(path);
+    expect(changed.implementation.stage).not.toBe("done");
+    expect(changed.implementation.outcome).toBe("none");
+    expect(changed.implementation.delivery_evidence).toBeUndefined();
+    expect(changed.events).toContainEqual(expect.objectContaining({ kind: "issue_delivery_invalidated", data: expect.objectContaining({ source_id: f.target.id, evidence: completed.delivery_evidence }) }));
+    expect((await f.fixture.json(f.route + "/queue")).entries.find((entry: any) => entry.number === 1).eligible).toBe(false);
+    f.fixture.restart();
+    expect((await f.fixture.json(path)).implementation.stage).not.toBe("done");
+    if (change !== "REST body") return;
+    f.fixture.save(f.issues, true, f.dependencies); f.coverageResponses();
+    expect((await f.fixture.post(f.route + "/sync", {})).status).toBe(409);
+    expect((await f.fixture.json(path)).implementation.stage).not.toBe("done");
+    // The next complete observation retains the edited scope, so old coverage
+    // still cannot certify it. The owner must link intended coverage anew.
+    f.prerequisite.body = "Changed intended behavior";
+    f.fixture.save(f.issues, false, f.dependencies); f.coverageResponses();
+    const observed = (await f.fixture.json(f.route + "/sync", {})).sources.find((source: any) => source.number === 2);
+    expect(observed.readiness_evidence.complete).toBe(true);
+    expect((await f.fixture.json(path)).implementation.stage).not.toBe("done");
+    await f.fixture.json(f.route + "/issues/2/delivery", { ...f.coverage, source_revision: observed.revision, expected_revision: observed.delivery.revision });
+    await f.fixture.json(f.route + "/sync", {});
+    expect((await f.fixture.json(path)).implementation).toMatchObject({ stage: "done", outcome: "merged", delivery_evidence: { source_revision: observed.revision } });
+    expect((await f.fixture.json(f.route + "/queue")).entries.find((entry: any) => entry.number === 1).eligible).toBe(true);
+  } finally { f.fixture.close(); }
+});
+
+test.each(["REST title", "REST state", "native relationship", "GraphQL body", "GraphQL title", "GraphQL state", "partial history", "missing GraphQL"] as const)("%s uncertainty blocks old prerequisite coverage for completion and dependent delivery", async change => {
+  const f = await deliveryFixture();
+  try {
+    f.pull.merged = true;
+    const fresh = { ...f.prerequisite, ...(change === "REST title" ? { title: "Changed title" } : {}), ...(change === "REST state" ? { state: "closed" } : {}) };
+    const proof = { id: f.prerequisite.node_id, title: change === "GraphQL title" ? "Changed title" : f.prerequisite.title, body: f.prerequisite.body + (change === "GraphQL body" ? "\nChanged scope" : ""), state: change === "GraphQL state" ? "CLOSED" : "OPEN", createdAt: "2026-09-30T12:00:00Z", updatedAt: f.prerequisite.updated_at, lastEditedAt: null };
+    const readiness = change === "native relationship" ? { dependencies: { 2: [f.fixture.issue] } }
+      : change === "partial history" ? { event_pages: [Array.from({ length: 100 }, (_, index) => ({ id: index + 1, event: "commented", created_at: "2026-10-02T12:00:00Z" })), null] }
+      : change === "missing GraphQL" ? { proof: null }
+      : change.startsWith("GraphQL") ? { proof } : undefined;
+    f.fixture.save(f.issues, false, f.dependencies, false, [f.issues[0]!, fresh], readiness);
+    f.coverageResponses();
+    const view = await f.fixture.json(f.route + "/sync", {});
+    expect(view.sources.find((source: any) => source.number === 2).readiness_evidence.complete).toBe(false);
+    expect((await f.fixture.json(`/implementations/${f.target.implementation_id}`)).implementation).toMatchObject({ stage: "inbox", outcome: "none" });
+    const dependent = view.sources.find((source: any) => source.number === 1);
+    expect(dependent.dependencies).toMatchObject({ satisfied: false, edges: [{ blocker: "delivery_unverified" }] });
+    expect(dependent.dependencies.edges[0].delivery).toBeUndefined();
+    expect((await f.fixture.json(f.route + "/queue")).entries.find((entry: any) => entry.number === 1).eligible).toBe(false);
+    expect(f.fixture.launches).toEqual([]);
+  } finally { f.fixture.close(); }
+});
+
+test.each(["merge", "release"] as const)("complete observations certify %s for a closed non-ready prerequisite without owner readiness approval", async requires => {
+  const f = await deliveryFixture({ requires, closed: true });
+  try {
+    f.pull.merged = true;
+    // Timestamp-only updates retain the exact coverage scope.
+    f.prerequisite.updated_at = "2026-10-04T12:00:00Z";
+    f.fixture.save(f.issues, false, f.dependencies); f.coverageResponses();
+    const view = await f.fixture.json(f.route + "/sync", {});
+    const target = view.sources.find((source: any) => source.number === 2);
+    expect(target.revision).toBe(f.target.revision);
+    expect(target.readiness_evidence.complete).toBe(true);
+    expect(target.readiness).toMatchObject({ eligible: false, approval: null, blockers: expect.arrayContaining(["closed", "role_not_ready"]) });
+    const completed = (await f.fixture.json(`/implementations/${target.implementation_id}`)).implementation;
+    expect(completed).toMatchObject({ stage: "done", outcome: requires === "release" ? "released" : "merged", delivery_evidence: { source_revision: target.revision, requires, merges: [{ number: 27, merge_commit: "c".repeat(40) }] } });
+    const dependent = view.sources.find((source: any) => source.number === 1);
+    expect(dependent.dependencies).toMatchObject({ satisfied: true, edges: [{ blocker: null, delivery: { merges: [{ number: 27 }] } }] });
+    expect((await f.fixture.json(f.route + "/queue")).entries.find((entry: any) => entry.number === 1).eligible).toBe(true);
+    // Label eligibility changes alone do not revoke current delivery.
+    f.prerequisite.labels.push({ name: "needs-triage" });
+    f.fixture.save(f.issues, false, f.dependencies); f.coverageResponses();
+    await f.fixture.json(f.route + "/sync", {});
+    const after = await f.fixture.json(`/implementations/${target.implementation_id}`);
+    expect(after.implementation).toEqual(completed);
+    expect(after.events.filter((event: any) => event.kind === "issue_delivery_invalidated")).toEqual([]);
+  } finally { f.fixture.close(); }
+});
+
+test("an inventory reopening retires delivery even when the ready label is unchanged", async () => {
+  const f = await deliveryFixture({ closed: true, readyLabel: true });
+  try {
+    f.pull.merged = true; f.coverageResponses();
+    await f.fixture.json(f.route + "/sync", {});
+    const path = `/implementations/${f.target.implementation_id}`;
+    expect((await f.fixture.json(path)).implementation.stage).toBe("done");
+    f.prerequisite.state = "open";
+    f.fixture.save(f.issues, false, f.dependencies); f.coverageResponses();
+    await f.fixture.json(f.route + "/sync", {});
+    expect((await f.fixture.json(path)).implementation).toMatchObject({ stage: "inbox", outcome: "none" });
+    expect((await f.fixture.json(f.route)).sources.find((source: any) => source.number === 1).dependencies.satisfied).toBe(false);
+  } finally { f.fixture.close(); }
+});

@@ -373,10 +373,24 @@ export class ProjectGitHub {
     const value = await this.accounts.github(scope, ["api", path, "-H", "X-GitHub-Api-Version: 2026-03-10", ...extra], () => this.current(policy));
     this.current(policy); this.accounts.assertPublic(JSON.stringify(value)); return value;
   }
+  /** Keep the superseded proof in history, without presenting current completion. */
+  private invalidateDelivery(source: ProjectGitHubSource): void {
+    this.store.db.transaction(() => {
+      const idea = this.store.get<Implementation>("implementations", source.implementation_id);
+      if (idea?.delivery_evidence?.source_id !== source.id) return;
+      const { delivery_evidence: evidence, ...retained } = idea;
+      this.store.event(idea.id, "issue_delivery_invalidated", { source_id: source.id, evidence });
+      this.store.put("implementations", { ...retained, stage: "inbox", activity: undefined, outcome: "none" });
+    })();
+  }
   /** A validated row can prove drift even when the remaining inventory is unavailable. */
   private observeIssue(policy: ProjectGitHubPolicy, issue: Issue): void {
     const source = this.store.list<ProjectGitHubSource>("github_sources", policy.id).find(source => source.kind === "issue" && source.external_id === issue.node_id && source.number === issue.number);
     if (!source?.current) return;
+    if (issue.state !== source.current.state || issue.title !== source.current.title || (issue.body ?? "") !== source.current.body) {
+      this.current(policy);
+      this.invalidateDelivery(source);
+    }
     const readiness = issueReadiness(this.store.get<ProjectReadinessPolicy>("github_readiness_policies", policy.id), { ...source, current: { ...source.current, labels: issue.labels.map(label => label.name) } });
     const reason = issue.state === "closed" ? "issue_closed"
       : issue.title !== source.current.title || (issue.body ?? "") !== source.current.body ? "scope_changed"
@@ -453,6 +467,10 @@ export class ProjectGitHub {
       // Fence changes while history is fetched. A label event cannot attest a later issue edit.
       const fresh = await this.api(policy, scope, `repos/${policy.repository}/issues/${source.number}`) as Issue;
       const validFresh = fresh?.node_id === source.external_id && fresh.number === source.number && typeof fresh.title === "string" && (fresh.body === null || typeof fresh.body === "string") && ["open", "closed"].includes(fresh.state) && typeof fresh.updated_at === "string" && Number.isFinite(Date.parse(fresh.updated_at)) && Array.isArray(fresh.labels) && fresh.labels.every(label => label && typeof label.name === "string");
+      if (validFresh && (fresh.state !== source.current.state || fresh.title !== source.current.title || (fresh.body ?? "") !== source.current.body)) {
+        this.current(policy);
+        this.invalidateDelivery(source);
+      }
       // Positive drift survives an incomplete evidence result; it must pause frozen
       // work now without replacing the admitted manifest or trusting another sync.
       if (validFresh && fresh.state === "closed") {
@@ -486,6 +504,7 @@ export class ProjectGitHub {
       const validProof = !result.errors && proof?.id === source.external_id && typeof proof.title === "string" && typeof proof.body === "string" && ["OPEN", "CLOSED"].includes(proof.state) && typeof proof.createdAt === "string" && Number.isFinite(Date.parse(proof.createdAt)) && typeof proof.updatedAt === "string" && Number.isFinite(Date.parse(proof.updatedAt)) && (proof.lastEditedAt === null || typeof proof.lastEditedAt === "string" && Number.isFinite(Date.parse(proof.lastEditedAt)));
       if (validProof && (proof.state.toLowerCase() !== source.current.state || proof.title !== source.current.title || proof.body !== source.current.body)) {
         this.current(policy);
+        this.invalidateDelivery(source);
         this.reconcileAdmissions(policy.id, { sourceId: source.id, reason: proof.state === "CLOSED" ? "issue_closed" : "scope_changed" });
       }
       if (!validProof || proof.title !== source.current.title || proof.body !== source.current.body || proof.state.toLowerCase() !== source.current.state || Date.parse(proof.updatedAt) !== Date.parse(source.current.source_updated_at)) throw new FactoryError("readiness_incomplete", "Issue edit evidence is incomplete or changed; sync again");
@@ -535,6 +554,7 @@ export class ProjectGitHub {
         // An added relationship proves drift on its own; absence needs every page.
         if (source?.current?.native_dependencies && !source.current.native_dependencies.some(edge => edge.external_id === item.node_id && edge.repository === repository && edge.number === item.number && edge.url === item.html_url)) {
           this.current(policy);
+          this.invalidateDelivery(source);
           this.reconcileAdmissions(policy.id, { sourceId: source.id, reason: "scope_changed" });
         }
       }
@@ -543,6 +563,7 @@ export class ProjectGitHub {
         const native = all.map(({ external_id, repository, number, url }) => ({ external_id, repository, number, url }));
         if (source?.current?.native_dependencies && JSON.stringify(native) !== JSON.stringify(source.current.native_dependencies)) {
           this.current(policy);
+          this.invalidateDelivery(source);
           this.reconcileAdmissions(policy.id, { sourceId: source.id, reason: "scope_changed" });
         }
         return all;

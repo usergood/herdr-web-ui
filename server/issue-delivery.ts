@@ -20,7 +20,9 @@ function containsMerge(comparison: unknown, mergeCommit: string): boolean {
 }
 
 export function coverageRevision(store: FactoryStore, projectId: string): string {
-  return hash(JSON.stringify(store.list<ProjectGitHubSource>("github_sources", projectId).filter(source => source.kind === "issue").map(source => [source.id, source.revision, dependencyPlan(store, source).revision, store.get<IssueDeliveryLink>("github_delivery_links", source.id)?.revision ?? null])));
+  // A failed fence outside sync (for example, owner readiness approval) also
+  // invalidates dependency proofs previously certified from the old inventory.
+  return hash(JSON.stringify(store.list<ProjectGitHubSource>("github_sources", projectId).filter(source => source.kind === "issue").map(source => [source.id, source.revision, dependencyPlan(store, source).revision, store.get<IssueDeliveryLink>("github_delivery_links", source.id)?.revision ?? null, source.readiness_evidence?.complete ?? null, source.readiness_evidence?.source_revision ?? null])));
 }
 
 export function linkIssueDelivery(store: FactoryStore, source: ProjectGitHubSource, body: Record<string, unknown>): void {
@@ -38,6 +40,11 @@ export function linkIssueDelivery(store: FactoryStore, source: ProjectGitHubSour
 
 /** GitHub is read-only here. Owner coverage records never substitute for merge evidence. */
 export async function verifyIssueDelivery(store: FactoryStore, edge: GitHubDependencyEdge, target: ProjectGitHubSource, branch: string | null, api: (path: string) => Promise<unknown>): Promise<GitHubDependencyEdge> {
+  // The collection fence can invalidate the retained inventory revision. Its
+  // incomplete scope observation blocks both own delivery and dependents, even
+  // when an old coverage link still matches. Label eligibility is not required.
+  const observation = target.readiness_evidence;
+  if (observation && (!observation.complete || observation.source_revision !== target.revision)) return edge;
   const link = store.get<IssueDeliveryLink>("github_delivery_links", target.id);
   if (!branch || !link || link.source_revision !== target.revision || !link.intended_prs.length) return edge;
   const branchProof = await api(`repos/${edge.repository}/branches/${encodeURIComponent(branch)}`);
