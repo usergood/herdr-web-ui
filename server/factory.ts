@@ -66,7 +66,7 @@ export class FactoryService {
     this.references = new FactoryReferences(this.store, this.artifacts);
     this.executionHost = new FactoryExecutionHost(this.store, () => this.settings().skills_path, native, this.accounts);
     this.runtime = new FactoryRuntime(this.store, this.workflow, () => this.settings(), this.executionHost, endpoint, (record) => this.artifacts.read(record), publicUrl, this.references, this.accounts); this.review = new FactoryReview(this.store, (machine, path, base, mode) => this.runtime.capture(machine, path, base, mode), (machine, path) => this.runtime.inspect(machine, path));
-    this.runtime.retainBeforePause = async (id, workerId) => { await this.retainNative(id, undefined, workerId); };
+    this.runtime.retainBeforePause = async (id, workerId) => { await this.retainNativeHistory(id, workerId); };
     this.pipeline = new FactoryPipeline(this.store, this.runtime, this.workflow, () => this.settings(), id => this.retainHandoff(id), (id, before, workerId) => this.retainNative(id, before, workerId));
     this.continuation = new FactoryContinuation(this.store, this.workflow, this.runtime, async (id, allowPartial) => {
       await this.retainHandoff(id);
@@ -236,22 +236,57 @@ export class FactoryService {
       this.store.put("native_snapshots", record, id); this.store.event(run.implementation_id, "native_snapshot_retained", { snapshot_id: record.id, source_id: record.source_id, sequence: record.sequence, version: record.version }); this.workflow.retainNativeAnswers(run, record, before === undefined); this.planningOrigin(run); return record;
     }).immediate();
   }
+  private async retainNativeHistory(id: string, workerId?: string): Promise<import("../shared/protocol.ts").NativeConversationSnapshot[]> {
+    const run = this.store.get<FactoryRun>("runs", id);
+    if (!run) throw new FactoryError("not_found", "Run not found", 404);
+    const target = () => workerId ? this.store.get<import("../shared/factory.ts").FactoryWorker>("workers", workerId) : this.store.get<FactoryRun>("runs", id);
+    const identity = () => { const context = target(); return JSON.stringify([context?.id, context?.worktree, context?.workspace_id, context?.pane_id]); };
+    const original = target();
+    const capturedIdentity = identity();
+    const provenance = { run_id: id, worker_id: workerId ?? null, workspace_id: original?.workspace_id ?? null, pane_id: original?.pane_id ?? null };
+    const snapshots: import("../shared/protocol.ts").NativeConversationSnapshot[] = [];
+    const cursors = new Set<string>();
+    const deadline = Date.now() + 30_000;
+    let before: string | undefined;
+    try {
+      for (let page = 0; page < 128 && Date.now() < deadline; page++) {
+        const snapshot = await this.retainNative(id, before, workerId);
+        if (!snapshot.source_id || !snapshot.version || !Array.isArray(snapshot.turns)) throw new FactoryError("native_history_incomplete", "Native history has no verified page", 409);
+        if (identity() !== capturedIdentity || snapshots.length && snapshot.source_id !== snapshots[0]!.source_id) throw new FactoryError("native_identity_changed", "Native history changed during retention", 409);
+        snapshots.push(snapshot);
+        if (!snapshot.cursor) {
+          if (!snapshots.some(entry => entry.turns.length)) throw new FactoryError("native_history_incomplete", "The native conversation has not recorded its history yet", 409);
+          const latest = await this.retainNative(id, undefined, workerId);
+          if (identity() !== capturedIdentity || latest.source_id !== snapshots[0]!.source_id || latest.version !== snapshots[0]!.version) throw new FactoryError("native_history_incomplete", "The native conversation changed during retention; capture its current context before continuing", 409);
+          this.store.event(run.implementation_id, "native_history_retained", { ...provenance, source_id: latest.source_id, snapshot_ids: snapshots.map(entry => entry.id) });
+          return snapshots;
+        }
+        if (cursors.has(snapshot.cursor)) break;
+        cursors.add(snapshot.cursor); before = snapshot.cursor;
+      }
+      throw new FactoryError("native_history_incomplete", "Native history could not be completely retained within its capture limits", 409);
+    } catch (error) {
+      this.store.event(run.implementation_id, "native_history_unavailable", { ...provenance, partial: true, native_store_retained: true, snapshot_ids: snapshots.map(entry => entry.id), code: error instanceof FactoryError ? error.code : "capture_failed" });
+      throw error;
+    }
+  }
   private async retainHandoff(id: string): Promise<void> {
     const run = this.store.get<FactoryRun>("runs", id);
     if (!run) throw new FactoryError("not_found", "Run not found", 404);
     if (["cancelled", "completed", "failed"].includes(run.condition)) return;
     try {
-      const snapshot = await this.retainNative(id);
+      const snapshots = await this.retainNativeHistory(id);
+      const snapshot = snapshots[0]!;
       const source = `native-handoff:${snapshot.id}`;
       const text = snapshot.turns.map(turn => `${turn.role}: ${turn.parts.flatMap(part => part.kind === "text" || part.kind === "compact" ? [part.text] : []).join("\n")}`).join("\n\n");
       const token = this.store.get<{ token: string }>("run_access", id)?.token;
       const safe = this.accounts.sanitize(token ? text.split(token).join("[scoped credential redacted]") : text);
-      const content = `Planning handoff from Run ${id}, native snapshot ${snapshot.id}, source ${snapshot.source_id}.\n${snapshot.cursor ? "This native history page has earlier pages; consult the retained native history for omitted context.\n" : ""}${safe.length > 48_000 ? "Earlier text omitted to keep this handoff within 50,000 characters.\n" : ""}\n${safe.slice(-48_000)}`;
+      const content = `Planning handoff from Run ${id}, native snapshot ${snapshot.id}, source ${snapshot.source_id}.\n${snapshot.cursor ? "All native history pages are retained; consult the retained native history for earlier context.\n" : ""}${safe.length > 48_000 ? "Earlier text omitted to keep this handoff within 50,000 characters.\n" : ""}\n${safe.slice(-48_000)}`;
       this.store.db.transaction(() => {
         if (this.store.list<FactoryMessage>("messages", run.implementation_id).some(message => message.source_id === source)) return;
         const chat = this.store.list<FactoryChat>("chats", run.implementation_id)[0]!;
         const message: FactoryMessage = { ...this.store.record(), implementation_id: run.implementation_id, chat_id: chat.id, role: "system", content, source_id: source, sequence: 0 };
-        this.store.put("messages", message, run.implementation_id); this.store.event(run.implementation_id, "planning_handoff_retained", { run_id: id, snapshot_id: snapshot.id, message_id: message.id, partial: !!snapshot.cursor || safe.length > 48_000 });
+        this.store.put("messages", message, run.implementation_id); this.store.event(run.implementation_id, "planning_handoff_retained", { run_id: id, snapshot_id: snapshot.id, snapshot_ids: snapshots.map(entry => entry.id), message_id: message.id, partial: safe.length > 48_000 });
       }).immediate();
     } catch { this.store.event(run.implementation_id, "native_snapshot_unavailable", { run_id: id, native_store_retained: true }); }
     if (["setup", "grill-me", "grill-with-docs", "to-spec", "to-tickets"].includes(run.action)) {

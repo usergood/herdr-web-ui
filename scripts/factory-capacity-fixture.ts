@@ -6,7 +6,7 @@ import { createServer } from "../server/index.ts";
 import type { AccountTools } from "../server/account-tools.ts";
 import type { FactoryCheck, FactoryRun, FactoryWorker, NativeConversationSnapshot } from "../shared/factory.ts";
 
-export async function capacityFixture(scenario: { advancingHeads?: boolean; accountTools?: AccountTools; workerTranscript?: (worker: FactoryWorker, before?: string) => Pick<NativeConversationSnapshot, "source_id" | "version" | "cursor" | "turns"> | null } = {}) {
+export async function capacityFixture(scenario: { advancingHeads?: boolean; accountTools?: AccountTools; runTranscript?: (run: FactoryRun, before?: string) => Pick<NativeConversationSnapshot, "source_id" | "version" | "cursor" | "turns"> | null; workerTranscript?: (worker: FactoryWorker, before?: string) => Pick<NativeConversationSnapshot, "source_id" | "version" | "cursor" | "turns"> | null } = {}) {
   const tips = new Map<string, string>(); let candidate = 1;
   const state = mkdtempSync(join(tmpdir(), "factory-capacity-"));
   const token = "owned-capacity-fixture";
@@ -103,7 +103,10 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; acco
       }
       if (action === "operations/resume-status") return Response.json(body.worker_id ? workers.get(body.worker_id)! : run);
       if (action === "operations/transcript") {
-        if (!body.worker_id) return Response.json(transcript);
+        if (!body.worker_id) {
+          const history = scenario.runTranscript ? scenario.runTranscript(run, body.before) : transcript;
+          return history ? Response.json(history) : Response.json({ error: { code: "native_evidence_required", message: "Owned coordinator history is unavailable" } }, { status: 409 });
+        }
         const worker = workers.get(body.worker_id);
         if (!worker || worker.run_id !== run.id || closedWorkers.has(worker.id)) return Response.json({ error: { code: "native_evidence_required", message: "Owned child history is unavailable after close" } }, { status: 409 });
         const history = scenario.workerTranscript ? scenario.workerTranscript(worker, body.before) : { source_id: `owned-worker:${worker.id}`, version: "v1", cursor: null, turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: `Owned ${worker.role} context for ${worker.ticket_id}` }] }] };

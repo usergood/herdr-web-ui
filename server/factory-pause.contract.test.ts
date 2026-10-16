@@ -228,6 +228,34 @@ describe("Assignment Pause and Resume through authenticated HTTP", () => {
       expect(f.resumptions).toEqual([run.id]);
     } finally { f.close(); }
   });
+  it("retains every coordinator and child history page through Pause, restart and Resume without manual imports", async () => {
+    const page = (source: string, before?: string) => ({ source_id: source, version: before ? "older-page-v2" : "latest-page-v7", cursor: before ? null : "owned-older", turns: [{ role: "assistant" as const, ts: "2026-10-16T00:00:00Z", parts: [{ kind: "text" as const, text: before ? "Earlier named conversation evidence" : "Latest named conversation evidence" }] }] });
+    const f = await capacityFixture({ runTranscript: (run, before) => run.suspension ? null : page(`coordinator:${run.id}`, before), workerTranscript: (worker, before) => worker.suspension ? null : page(`child:${worker.id}`, before) });
+    try {
+      const id = await f.assignment("Preserved named multi-page history");
+      const run = await f.api(`/implementations/${id}/runs`, { action: "grill-with-docs", idempotency_key: "history-root" }).then(r => r.json());
+      const child = await f.api(`/runs/${run.id}/workers`, { role: "standards", idempotency_key: "history-reviewer" }).then(r => r.json());
+      expect((await f.api(`/implementations/${id}/pause`, {})).ok).toBe(true);
+      const read = () => f.api(`/implementations/${id}`).then(r => r.json());
+      const paused = await read();
+      expect(paused.native_snapshots).toHaveLength(4);
+      for (const [workerId, source] of [[null, `coordinator:${run.id}`], [child.id, `child:${child.id}`]]) {
+        const snapshots = paused.native_snapshots.filter((snapshot: any) => (snapshot.worker_id ?? null) === workerId);
+        expect(snapshots.map((snapshot: any) => snapshot.source_id)).toEqual([source, source]);
+        expect(snapshots.map((snapshot: any) => snapshot.version)).toEqual(["latest-page-v7", "older-page-v2"]);
+        expect(snapshots.map((snapshot: any) => snapshot.run_id)).toEqual([run.id, run.id]);
+      }
+      const conversations = paused.conversations;
+      expect(conversations.find((entry: any) => entry.kind === "specifications").contexts[0]).toMatchObject({ run_id: run.id, worker_id: null, snapshot_ids: paused.native_snapshots.filter((entry: any) => !entry.worker_id).map((entry: any) => entry.id) });
+      const snapshots = paused.native_snapshots;
+      f.restart();
+      expect((await read()).native_snapshots).toEqual(snapshots);
+      expect((await f.api(`/implementations/${id}/resume`, {})).ok).toBe(true);
+      const resumed = await eventually(read, d => !d.runs[0].suspension && !d.workers[0].suspension);
+      expect(resumed.native_snapshots).toEqual(snapshots);
+      expect(resumed.conversations.map((entry: any) => [entry.id, entry.title, entry.parent_id])).toEqual(conversations.map((entry: any) => [entry.id, entry.title, entry.parent_id]));
+    } finally { f.close(); }
+  });
   it("automatically continues a Resume that the offline Machine confirms never started", async () => {
     const f = await capacityFixture();
     try {
