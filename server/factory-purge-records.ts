@@ -14,8 +14,8 @@ export function purgeAssignmentRecords(database: Database, assignmentId: string)
     for (const row of rows) {
       if (removed.has(row) || row.kind === "deleted_assignments") continue;
       const data = JSON.parse(row.data);
-      if (!ids.has(row.id) && !(row.parent && ids.has(row.parent)) && ![data.implementation_id, data.run_id, data.worker_id].some(value => ids.has(value))) continue;
-      if (["runs", "workers"].includes(row.kind)) contextIds.add(row.id);
+      if (!ids.has(row.id) && !(row.parent && ids.has(row.parent)) && ![data.implementation_id, data.run_id, data.worker_id, row.kind === "host_leases" ? data.run?.implementation_id : undefined].some(value => ids.has(value))) continue;
+      if (["runs", "workers", "host_leases", "host_workers"].includes(row.kind)) contextIds.add(row.id);
       removed.add(row); ids.add(row.id); changed = true;
     }
   }

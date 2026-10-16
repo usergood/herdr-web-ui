@@ -28,6 +28,8 @@ import { prepareFactoryPrompt } from "./factory-prompt.ts";
 import { FactoryMerge } from "./factory-merge.ts";
 import { FactoryPublication } from "./factory-publication.ts";
 import { deleteHostFiles } from "./factory-delete-host.ts";
+import { FactoryBackup } from "./factory-backup.ts";
+import { FactoryArtifacts } from "./factory-artifacts.ts";
 
 function providerProofId(provider: string, snapshot?: AccountBindingSnapshot | null): string {
   const profile = snapshot?.profiles.find((entry) => entry.service === provider);
@@ -109,9 +111,12 @@ export class FactoryExecutionHost {
   }
   private async deleteRun(id: string, body: Record<string, unknown>): Promise<import("../shared/factory.ts").FactoryDeleteAttemptResult> {
     if (typeof body.deletion_id !== "string" || !/^[a-f0-9-]{36}$/.test(body.deletion_id)) throw new FactoryError("invalid_delete", "Select a durable deletion identity");
-    const prior = this.store.get<import("../shared/factory.ts").FactoryDeleteAttemptResult>("host_deleted_runs", id);
+    const prior = this.store.get<import("../shared/factory.ts").FactoryDeleteAttemptResult & { implementation_id?: string }>("host_deleted_runs", id);
     if (prior) {
-      if (prior.deletion_id !== body.deletion_id) throw new FactoryError("delete_conflict", "Another deletion owns this attempt", 409);
+      if (prior.deletion_id !== body.deletion_id || prior.implementation_id && prior.implementation_id !== body.implementation_id) throw new FactoryError("delete_conflict", "Another deletion owns this attempt", 409);
+      if (typeof body.implementation_id !== "string") throw new FactoryError("invalid_delete", "Select the Assignment owned by this attempt");
+      new FactoryBackup(this.store, new FactoryArtifacts(this.store)).purge(body.implementation_id);
+      this.store.put("host_deleted_runs", { id, ...prior, implementation_id: body.implementation_id });
       return prior;
     }
     const lease = this.store.get<{ id: string; run: FactoryRun }>("host_leases", id);
@@ -122,8 +127,11 @@ export class FactoryExecutionHost {
     await this.pauseRun(id, body.deletion_id, true);
     const stopped = this.store.get<{ run: FactoryRun }>("host_leases", id)!.run;
     const result = await deleteHostFiles(this.store, this.native, stopped, body.deletion_id);
+    // This Machine owns its backups too. Keep the request and lease fenced until
+    // snapshots and recovery copies have verified, recoverable sanitized hashes.
+    new FactoryBackup(this.store, new FactoryArtifacts(this.store)).purge(stopped.implementation_id);
     this.store.db.transaction(() => {
-      this.store.put("host_deleted_runs", { id, ...result });
+      this.store.put("host_deleted_runs", { id, ...result, implementation_id: stopped.implementation_id });
       for (const kind of ["host_leases", "host_access", "host_pause_intents", "host_deletions", "host_delete_requests", "host_scaffolding", "host_native_identity"]) this.store.remove(kind, id);
       for (const kind of ["host_workers", "host_checks", "host_pause_results", "host_resumptions", "host_review_evidence", "host_publications", "host_merges"]) for (const entry of this.store.list<{ id: string }>(kind, id)) {
         this.store.remove(kind, entry.id); this.store.remove("host_scaffolding", entry.id); this.store.remove("host_native_identity", entry.id);

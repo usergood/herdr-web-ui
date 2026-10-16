@@ -132,7 +132,11 @@ export class FactoryBackup {
     unlinkSync(journal);
   }
   private deletedIds(): string[] {
-    return [...new Set([...this.store.list<{ id: string }>("deleted_assignments").map(row => row.id), ...this.store.list<{ id: string; deletion?: unknown }>("implementations").filter(row => row.deletion).map(row => row.id)])];
+    return [...new Set([
+      ...this.store.list<{ id: string }>("deleted_assignments").map(row => row.id),
+      ...this.store.list<{ id: string; deletion?: unknown }>("implementations").filter(row => row.deletion).map(row => row.id),
+      ...["host_delete_requests", "host_deleted_runs"].flatMap(kind => this.store.list<{ implementation_id?: string }>(kind).flatMap(row => row.implementation_id ? [row.implementation_id] : [])),
+    ])];
   }
   create(): BackupManifest {
     return this.reserve(() => {
