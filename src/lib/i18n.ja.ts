@@ -8,6 +8,18 @@
  * in English. Placeholders in braces keep their English names.
  */
 export const JA: Record<string, string> = {
+  "Automatic review and PR": "自動レビューとPR",
+  "Reviewing": "レビュー中",
+  "Fixing": "修正中",
+  "Publishing PR": "PRを公開中",
+  "PR published": "PRを公開しました",
+  "Waiting": "待機中",
+  "Blocked": "ブロック中",
+  "Open PR": "PRを開く",
+  "PR repository (owner/repository)": "PRリポジトリ (所有者/リポジトリ)",
+  "PR target branch": "PRの対象ブランチ",
+  "Publish a checked PR automatically after Specification approval.": "仕様の承認後、検証済みPRを自動で公開します。",
+  "Tickets, checks, reviews, repairs and PR publication continue automatically.": "チケット、チェック、レビュー、修正、PR公開は自動的に進みます。",
   "Assignment deletion": "Assignment の削除",
   "Delete pending": "削除待ち",
   "Local cleanup is complete. Required external cleanup is still pending.": "ローカルの削除は完了しました。必要な外部の削除はまだ保留中です。",
@@ -17,7 +29,6 @@ export const JA: Record<string, string> = {
   "Delete all owned work": "所有するすべての作業を削除",
   "Delete Assignment": "Assignment を削除",
   "Automatic execution": "自動実行",
-  "Tickets, checks and integration continue automatically.": "チケット、チェック、統合は自動的に進みます。",
 
   "Assignment execution": "Assignment の実行",
   "Pause pending": "一時停止を待機中",
@@ -1404,12 +1415,10 @@ export const JA: Record<string, string> = {
   "Implementing": "実装中",
   "Testing": "テスト中",
   "Auto-Review": "自動レビュー",
-  "Fixing": "修正中",
   "Resume pending": "再開待ち",
   "{waiting} waiting · {running} running · {completed} completed": "待機 {waiting} · 実行中 {running} · 完了 {completed}",
   "Active Tickets": "実行中のチケット",
   "All Tickets ({count})": "すべてのチケット ({count})",
   "Completed": "完了",
-  "Waiting": "待機中",
   "Queued": "実行待ち",
 };

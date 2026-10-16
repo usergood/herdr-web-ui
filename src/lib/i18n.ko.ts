@@ -6,6 +6,18 @@
  * braces keep their English names.
  */
 export const KO: Record<string, string> = {
+  "Automatic review and PR": "자동 검토 및 PR",
+  "Reviewing": "검토 중",
+  "Fixing": "수정 중",
+  "Publishing PR": "PR 게시 중",
+  "PR published": "PR 게시됨",
+  "Waiting": "대기 중",
+  "Blocked": "차단됨",
+  "Open PR": "PR 열기",
+  "PR repository (owner/repository)": "PR 저장소 (소유자/저장소)",
+  "PR target branch": "PR 대상 브랜치",
+  "Publish a checked PR automatically after Specification approval.": "명세 승인 후 검사된 PR을 자동으로 게시합니다.",
+  "Tickets, checks, reviews, repairs and PR publication continue automatically.": "티켓, 검사, 검토, 수정 및 PR 게시가 자동으로 계속됩니다.",
   "Assignment deletion": "Assignment 삭제",
   "Delete pending": "삭제 대기 중",
   "Local cleanup is complete. Required external cleanup is still pending.": "로컬 정리가 완료되었습니다. 필요한 외부 정리는 아직 대기 중입니다.",
@@ -15,7 +27,6 @@ export const KO: Record<string, string> = {
   "Delete all owned work": "소유한 모든 작업 삭제",
   "Delete Assignment": "Assignment 삭제",
   "Automatic execution": "자동 실행",
-  "Tickets, checks and integration continue automatically.": "티켓, 검사 및 통합이 자동으로 계속됩니다.",
 
   "Assignment execution": "Assignment 실행",
   "Pause pending": "일시 정지 대기 중",
@@ -1402,12 +1413,10 @@ export const KO: Record<string, string> = {
   "Implementing": "구현 중",
   "Testing": "테스트 중",
   "Auto-Review": "자동 검토",
-  "Fixing": "수정 중",
   "Resume pending": "재개 대기 중",
   "{waiting} waiting · {running} running · {completed} completed": "대기 {waiting} · 실행 {running} · 완료 {completed}",
   "Active Tickets": "진행 중인 티켓",
   "All Tickets ({count})": "전체 티켓 ({count})",
   "Completed": "완료됨",
-  "Waiting": "대기 중",
   "Queued": "실행 대기",
 };

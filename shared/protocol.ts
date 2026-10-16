@@ -1221,6 +1221,13 @@ export const DEFAULT_PORT = 7317;
  * Detail exposes automatic_planning waits and execution_plans with Specification-derived authority.
  * Accepted execution plans dispatch their frontier and reconcile/check/integrate candidates automatically.
  * Detail.automatic_execution retains plan-bound executing/waiting/blocked/checked progress across restart.
+ * Detail.automatic_review tracks independent review, up to three fresh repair rounds,
+ * publication waits and the published PR; pull_requests binds its exact head to checks/reports.
+ * Project configure accepts pull_request:{repository,base_branch}|null. Its destination and
+ * selected Machine GitHub account are frozen before Specification acceptance; missing policy
+ * never grants publication. PR publication leaves review/pr_open, never Done or merge authority.
+ * Machine-only POST /api/factory-host/runs/:id/operations/publish reconciles the owned branch/PR
+ * identity after lost acknowledgment; scoped agents cannot publish or resolve their own findings.
  * Historical Runs without automatic Specification authority retain explicit worker controls.
  * POST .../send-answers (send_answers) -> FactoryAnswerDelivery; queued continuations share admission with Start; uncertainty never replays.
  * POST .../workers (worker) -> FactoryWorker, or FactoryCapacityWait, 202 when queued;
@@ -1366,11 +1373,13 @@ export interface FactoryBackupManifest {
 export interface FactoryRestore { id: string; state_dir: string; execution_enabled: false }
 export interface FactoryCleanup { removed: string[]; branches_retained: true; notes_retained: true }
 export interface FactoryAgentContract {
+  automatic_review?: import("./factory.ts").FactoryAutomaticReview | null;
+  pull_requests?: import("./factory.ts").FactoryPullRequest[];
   automatic_execution?: import("./factory.ts").FactoryAutomaticExecution | null;
   execution_plan?: import("./factory.ts").FactoryExecutionPlan | null;
   tracker_guide: string;
   run: import("./factory.ts").FactoryRun; workers: import("./factory.ts").FactoryWorker[];
-  checks: import("./factory.ts").FactoryCheck[]; review_batches: FactoryBatchReceipt[];
+  checks: import("./factory.ts").FactoryCheck[]; review_batches: (FactoryBatchReceipt | import("./factory.ts").FactoryAutomaticReviewBatch)[];
   messages: import("./factory.ts").FactoryMessage[]; question_revision: string;
   questions: import("./factory.ts").FactoryQuestion[]; frontier: import("./factory.ts").FactoryTicket[];
   artifacts: import("./factory.ts").FactoryArtifact[];
@@ -1404,7 +1413,7 @@ export interface FactoryHostRequests {
   review: { path: string; base: string; mode: "branch" | "workspace" };
   launch: { run: import("./factory.ts").FactoryRun; access?: { token: string; url: string }; attachments?: (Pick<import("./factory.ts").FactoryArtifact, "id" | "name" | "hash" | "size"> & { content_base64: string })[]; references?: import("./factory.ts").ProjectReferencePayload };
   send: { text: string };
-  operation: { deletion_id?: string; implementation_id?: string; pause_id?: string; history?: string; text?: string; worker_id?: string | null; check_id?: string; tip?: string; before?: string; worker?: import("./factory.ts").FactoryWorker; check?: import("./factory.ts").FactoryCheck; context?: unknown };
+  operation: { deletion_id?: string; implementation_id?: string; pause_id?: string; history?: string; text?: string; worker_id?: string | null; check_id?: string; tip?: string; before?: string; worker?: import("./factory.ts").FactoryWorker; check?: import("./factory.ts").FactoryCheck; context?: unknown } | import("./factory.ts").FactoryPublicationRequest;
 }
 
 /** GET /api/factory/implementations/:id -> FactoryDetail, including stable workflow

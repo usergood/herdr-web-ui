@@ -25,6 +25,12 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean } = {
   const prompts: { run_id: string; text: string; worker_id?: string }[] = [];
   const launches: string[] = [];
   const workerLaunches: string[] = [];
+  const reviewOutcomes = new Map<string, "passed" | "failed">();
+  const workerContexts = new Map<string, any>();
+  const publications = new Map<string, any>();
+  let losePublication = false;
+  let loseStop = false;
+  let denyPublication = false;
   let capabilities: Record<string, any> | null = null;
   let transcript: Pick<NativeConversationSnapshot, "source_id" | "version" | "cursor" | "turns"> = { source_id: "owned-transcript", version: "v1", cursor: null, turns: [] };
   const access = new Map<string, { url: string; token: string }>();
@@ -93,8 +99,20 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean } = {
         return Response.json(checked);
       }
       if (action === "operations/check-reconcile") return Response.json(checks.get(body.check_id));
-      if (action === "operations/head") return Response.json({ head: tips.get(run.id) ?? "1".repeat(40) });
+      if (action === "operations/head") return Response.json({ head: tips.get(run.id) ?? "1".repeat(40), workspace_hash: "owned-check" });
+      if (action === "operations/review-evidence") {
+        const worker = workers.get(body.worker_id)!;
+        const outcome = reviewOutcomes.get(worker.id) ?? "passed";
+        return Response.json({ head: worker.base, source_id: `owned-report-${worker.id}`, content: outcome === "passed" ? "FACTORY_REVIEW: PASS\nOwned independent review passed" : "FACTORY_REVIEW: FAIL\nThe accepted result loses the owner's draft on reload", outcome });
+      }
+      if (action === "operations/publish") {
+        if (denyPublication) return Response.json({ error: { code: "publication_unconfigured", message: "Unsafe remote diagnostic must not be copied" } }, { status: 409 });
+        if (!publications.has(run.id)) publications.set(run.id, { run_id: run.id, head: body.head, repository: "fictional/project", base_branch: "main", branch: run.branch, number: 27, url: "https://github.com/fictional/project/pull/27" });
+        if (losePublication) { losePublication = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost publication acknowledgment" } }, { status: 503 }); }
+        return Response.json(publications.get(run.id));
+      }
       if (action === "operations/worker") {
+        workerContexts.set(body.worker.id, body.context);
         workerLaunches.push(body.worker.id);
         const worker = { ...body.worker, condition: "working", worktree: join(state, body.worker.id), branch: `owned-${body.worker.id}` } as FactoryWorker;
         workers.set(worker.id, worker);
@@ -111,7 +129,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean } = {
         return Response.json(worker); }
       if (action === "operations/integrate") { const worker = workers.get(body.worker_id)!; worker.condition = "completed"; if (scenario.advancingHeads) tips.set(run.id, worker.head!); if (loseIntegration) { loseIntegration = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost merger acknowledgment" } }, { status: 503 }); } return Response.json(worker); }
       if (action === "operations/reconcile-worker") return Response.json(workers.get(body.worker_id));
-      if (action === "operations/stop-worker") { const worker = workers.get(body.worker_id)!; if (worker.condition !== "completed") worker.condition = "cancelled"; return Response.json(worker); }
+      if (action === "operations/stop-worker") { const worker = workers.get(body.worker_id)!; if (worker.condition !== "completed") worker.condition = "cancelled"; if (loseStop) { loseStop = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost shutdown acknowledgment" } }, { status: 503 }); } return Response.json(worker); }
     }
     return Response.json({ error: { code: "not_found", message: `Unimplemented owned Machine fixture route: ${path}` } }, { status: 404 });
   } });
@@ -129,7 +147,11 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean } = {
     const credential = access.get(id)!;
     return fetch(`http://localhost:${app.port}${new URL(credential.url).pathname}/${path}`, { method: body === undefined ? "GET" : "POST", headers: { authorization: `Bearer ${credential.token}`, "content-type": "application/json", "x-herdr-factory": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   };
-  return { api, agent, assignment, runs, workers, launches, workerLaunches, executedChecks, resumptions, resumeHistories, prompts, state, token, get app() { return app; },
+  return { api, agent, assignment, runs, workers, launches, workerLaunches, workerContexts, reviewOutcomes, publications, executedChecks, resumptions, resumeHistories, prompts, state, token, get app() { return app; },
+    loseNextPublication: () => { losePublication = true; },
+    denyPublication: () => { denyPublication = true; },
+    changeHead: (runId: string, head: string) => { tips.set(runId, head); },
+    loseNextStop: () => { loseStop = true; },
     holdNextAdmission: () => {
       let entered!: () => void; let release!: () => void;
       const started = new Promise<void>(resolve => { entered = resolve; });

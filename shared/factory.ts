@@ -19,6 +19,8 @@ export interface Implementation extends FactoryRecord {
   archived_at?: string | null;
 }
 export interface FactoryProject extends FactoryRecord {
+  /** Explicit publication destination, frozen when the owner accepts the Specification. */
+  pull_request?: { repository: string; base_branch: string } | null;
   name: string; repository: string; provider: FactoryProvider; machine_id: string;
   tracker: "app" | "github" | "gitlab" | "local"; tracker_reference: string;
   checks?: string[][]; setup?: string[][]; environment?: Record<string, string>;
@@ -79,6 +81,27 @@ export interface FactoryAutomaticExecution extends FactoryRecord {
   run_id: string; plan_hash: string;
   condition: "executing" | "waiting" | "blocked" | "checked";
   reason: string | null; attempts: number; next_attempt_at: number;
+}
+export interface FactoryAutomaticReview extends FactoryRecord {
+  context_revision?: string; generation?: number;
+  run_id: string; head: string; round: number;
+  condition: "reviewing" | "repairing" | "publishing" | "published" | "waiting" | "blocked";
+  reason: string | null; attempts: number; next_attempt_at: number;
+  check_id: string; evidence_ids: string[]; batch_id: string | null;
+}
+/** Original reports are immutable; repaired-revision evidence is retained separately. */
+export interface FactoryAutomaticReviewBatch extends FactoryRecord {
+  implementation_id: string; run_id: string; origin: "automatic"; status: "sent";
+  head: string; round: number; reports: FactoryReviewEvidence[]; ticket_ids: string[];
+  resolution?: { head: string; check_id: string; evidence_ids: string[] };
+}
+export interface FactoryPullRequest extends FactoryRecord {
+  run_id: string; head: string; repository: string; base_branch: string; branch: string;
+  number: number; url: string; check_id: string; evidence_ids: string[];
+}
+export interface FactoryPublicationRequest {
+  head: string; workspace_hash: string; check_id: string; evidence_ids: string[];
+  reports: { worker_id: string; source_id: string }[];
 }
 export interface FactoryQuestion extends FactoryRecord { implementation_id: string; run_id: string | null; worker_id?: string | null; question: string; answer_kind?: "text" | "confirmation"; answer: string | null; revision: string }
 export interface FactoryArtifact extends FactoryRecord {
@@ -156,6 +179,9 @@ export interface FactoryCapacity {
 }
 export interface FactoryOverview { capacity: FactoryCapacity }
 export interface FactoryDetail {
+  automatic_review_batches?: FactoryAutomaticReviewBatch[];
+  pull_requests?: FactoryPullRequest[];
+  automatic_review?: FactoryAutomaticReview[];
   automatic_execution?: FactoryAutomaticExecution[];
   automatic_planning?: FactoryPlanningRequest[];
   execution_plans?: FactoryExecutionPlan[];

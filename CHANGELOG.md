@@ -9,6 +9,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 
 ### Fixed
 - Purge deleted Assignment records and exclusive blobs from app-managed backups and recovery copies while preserving shared Project evidence and unrelated recovery data.
+- Continue checked factory work through independent Standards/Spec reviews, bounded automatic repairs and repeat-safe PR publication, with retained reports and desktop/mobile progress.
 - Show named Ticket progress, concurrent workflow activities and blocking reasons across five Assignment board lanes; preserve paused progress and use automatic queue age instead of manual priority.
 - Add permanent Assignment Delete with owned-resource cleanup, durable pending reasons and automatic Machine reconciliation; linked issues and app-managed recovery copies remain pending until their cleanup is confirmed.
 - Execute accepted Ticket frontiers automatically with fresh workers, backend integration,

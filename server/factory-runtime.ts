@@ -240,6 +240,29 @@ export class FactoryRuntime {
       const deadline = AbortSignal.timeout(path.endsWith("/operations/check") ? 325_000 : path === "/launch" ? 75_000 : path === "/model-catalog" ? 30_000 : 15_000);
       const response = await fetch(`${endpoint.url}/api/factory-host${path}`, { method: body === undefined ? "GET" : "POST", headers: { authorization: `Bearer ${endpoint.token}`, "x-herdr-factory": "1", "x-herdr-machine": "1", "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), redirect: "error", signal: signal ? AbortSignal.any([signal, deadline]) : deadline });
       if (!response.ok) {
+        if (response.status === 409 && /\/operations\/(publish|review-evidence)$/.test(path)) {
+          const failure = await response.json().catch(() => null) as { error?: { code?: string } } | null;
+          const reasons: Record<string, string> = {
+            publication_unconfigured: "Publication requires the frozen Project destination and a verified GitHub account on the execution Machine",
+            publication_unready: "Verify the owned resting Run and its publication destination",
+            publication_target_changed: "The PR identity or destination differs from the authorized candidate",
+            publication_branch_changed: "The owned remote branch has another head; preserve it for reconciliation",
+            publication_uncertain: "PR creation is awaiting confirmation of its exact identity; do not replay it",
+            publication_busy: "Publication is already being reconciled on the execution Machine",
+            fresh_evidence_required: "Publication requires the Machine's passing configured checks and separate native reports at this head",
+            writers_active: "Owned workers remain active; quiesce them before publication",
+            dirty_integration: "Commit the checked integration changes before publication",
+            review_stale: "The checked candidate or independent review workspace changed; retain its evidence for inspection",
+            worker_busy: "The independent reviewer is still executing; wait for verified native rest",
+            native_evidence_required: "The independent native report is not yet readable on the execution Machine",
+            review_evidence_required: "Retain native code-review loading and a completed independent axis report",
+            account_host_changed: "The frozen GitHub account belongs to another Machine",
+            account_changed: "The frozen GitHub account changed; reconcile its accepted scope",
+          };
+          const code = failure?.error?.code;
+          if (code && reasons[code]) throw new FactoryError(code, reasons[code], 409);
+          throw new FactoryError("remote_factory_unavailable", "The execution Machine could not verify its review or publication operation", 409);
+        }
         if (response.status === 409 && /\/operations\/(refresh|integrate)$/.test(path)) {
           const failure = await response.json().catch(() => null) as { error?: { code?: string } } | null;
           const reasons: Record<string, string> = {
