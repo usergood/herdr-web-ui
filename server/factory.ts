@@ -9,6 +9,7 @@ import type { FactoryHostRequests, FactoryArtifact, FactoryChat, FactoryDetail, 
 import { badRequest, errorResponse, httpError, isJsonObject, jsonResponse } from "./http.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { FactoryDeletion } from "./factory-deletion.ts";
+import { GitHubDeletion } from "./github-deletion.ts";
 import { FactoryError, hash, inspectCheckout } from "./factory-host.ts";
 import { FactoryArtifacts } from "./factory-artifacts.ts";
 import { FactoryWorkflow } from "./factory-workflow.ts";
@@ -84,7 +85,7 @@ export class FactoryService {
     this.execution = new FactoryExecution(this.store, this.workflow, this.runtime, this.pipeline, run => this.humanReview.handoff(run));
     this.retrospectives = new FactoryRetrospectives(this.store);
     this.github = new ProjectGitHub(this.store, this.accounts, (machineId, path) => this.runtime.discover(machineId, path));
-    this.deletion = new FactoryDeletion(this.store, (run, deletionId) => this.runtime.deleteAttempt(run, deletionId));
+    this.deletion = new FactoryDeletion(this.store, (run, deletionId) => this.runtime.deleteAttempt(run, deletionId), id => this.backup.purge(id), new GitHubDeletion(this.store, this.accounts));
     this.runtime.reconcileDeletion = id => this.deletion.reconcile(id);
   }
   settings(): FactorySettings {

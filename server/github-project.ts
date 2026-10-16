@@ -8,6 +8,7 @@ import type { ProjectGitHubConfiguration, ProjectGitHubFiles, ProjectGitHubMutat
 import { FactoryStore } from "./factory-store.ts";
 import { FactoryError, hash } from "./factory-host.ts";
 import { MachineAccounts } from "./accounts.ts";
+import { githubSuppressed } from "./github-deletion.ts";
 
 const pullFields = `number id title body url state isDraft headRefOid baseRefOid headRefName baseRefName author { login } mergeStateStatus reviewDecision headRepository { nameWithOwner } viewerCanUpdate
 reviews(first:100) { nodes { id state body submittedAt author { login } commit { oid } } pageInfo { hasNextPage endCursor } }
@@ -118,9 +119,9 @@ export class ProjectGitHub {
     if (this.stopped || this.store.get<ProjectGitHubPolicy>("github_policies", policy.id)?.revision !== policy.revision) throw new FactoryError("github_policy_changed", "The GitHub operation scope changed", 409);
     if (this.projectScope(policy.id) !== policy.project_scope) throw new FactoryError("account_scope_changed", "The Project checkout or account scope changed; save GitHub settings again", 409);
   }
-  private async api(policy: ProjectGitHubPolicy, scope: AccountBindingSnapshot, path: string, extra: string[] = []): Promise<unknown> {
+  private async api(policy: ProjectGitHubPolicy, scope: AccountBindingSnapshot, path: string, extra: string[] = [], authorize: () => void = () => {}): Promise<unknown> {
     this.current(policy);
-    const value = await this.accounts.github(scope, ["api", path, "-H", "X-GitHub-Api-Version: 2026-03-10", ...extra], () => this.current(policy));
+    const value = await this.accounts.github(scope, ["api", path, "-H", "X-GitHub-Api-Version: 2026-03-10", ...extra], () => { this.current(policy); authorize(); });
     this.current(policy); this.accounts.assertPublic(JSON.stringify(value)); return value;
   }
   private async issues(policy: ProjectGitHubPolicy, scope: AccountBindingSnapshot): Promise<Issue[]> {
@@ -215,7 +216,7 @@ export class ProjectGitHub {
     if (result.errors || !pull || pull.number !== number || !/^[a-f0-9]{40}$/.test(pull.headRefOid) || !/^[a-f0-9]{40}$/.test(pull.baseRefOid) || !this.complete(pull)) throw new FactoryError("github_snapshot_incomplete", "Collect a complete current PR snapshot before changing GitHub", 409);
     return pull;
   }
-  private async mutate(policy: ProjectGitHubPolicy, scope: AccountBindingSnapshot, number: number, action: ProjectGitHubMutation["action"], proof: { head?: unknown; base?: unknown; policy_revision?: unknown }): Promise<void> {
+  private async mutate(policy: ProjectGitHubPolicy, scope: AccountBindingSnapshot, number: number, action: ProjectGitHubMutation["action"], proof: { head?: unknown; base?: unknown; policy_revision?: unknown }, automatic = false): Promise<void> {
     if (proof.policy_revision !== policy.revision) throw new FactoryError("github_policy_changed", "Refresh the Project policy before changing GitHub", 409);
     const prior = this.store.list<ProjectGitHubMutation>("github_mutations", policy.id).find((item) => item.repository === policy.repository && item.number === number && item.action === action && item.head === proof.head && (item.condition !== "confirmed" || action !== "update" || item.base === proof.base));
     if (prior) {
@@ -237,7 +238,9 @@ export class ProjectGitHub {
     this.store.put("github_mutations", receipt, policy.id);
     try {
       const path = `repos/${policy.repository}/pulls/${number}`;
-      const result = await this.api(policy, scope, path + (action === "merge" ? "/merge" : action === "update" ? "/update-branch" : "/requested_reviewers/rerequest"), action === "merge" ? ["--method", "PUT", "-f", "sha=" + pull.headRefOid, "-f", "merge_method=squash"] : action === "update" ? ["--method", "PUT", "-f", "expected_head_sha=" + pull.headRefOid] : ["--method", "POST", ...reviewers.flatMap((login) => ["-f", "reviewers[]=" + login])]) as { merged?: boolean; message?: string; url?: string; requested_reviewers?: unknown[] };
+      const result = await this.api(policy, scope, path + (action === "merge" ? "/merge" : action === "update" ? "/update-branch" : "/requested_reviewers/rerequest"), action === "merge" ? ["--method", "PUT", "-f", "sha=" + pull.headRefOid, "-f", "merge_method=squash"] : action === "update" ? ["--method", "PUT", "-f", "expected_head_sha=" + pull.headRefOid] : ["--method", "POST", ...reviewers.flatMap((login) => ["-f", "reviewers[]=" + login])], () => {
+        if (automatic && githubSuppressed(this.store, policy.repository, pull.id, pull.number, "fix")) throw new FactoryError("github_source_deleted", "Delete disabled automation for this retained PR", 409);
+      }) as { merged?: boolean; message?: string; url?: string; requested_reviewers?: unknown[] };
       if (action === "merge" && result.merged !== true || action === "update" && typeof result.message !== "string" || action === "rerequest" && !Array.isArray(result.requested_reviewers)) throw new FactoryError("github_mutation_unconfirmed", "GitHub did not confirm the mutation receipt", 409);
       receipt.condition = "confirmed"; this.store.event(null, "github_mutation_confirmed", { project_id: policy.id, number, action, head: pull.headRefOid });
     } catch (error) { receipt.condition = "uncertain"; receipt.problem = error instanceof FactoryError ? error.message : "Inspect GitHub before retrying this mutation"; throw error; }
@@ -290,18 +293,23 @@ export class ProjectGitHub {
         const pulls = await this.pulls(policy, scope); this.current(policy);
         for (const issue of issues) {
           if (!Number.isSafeInteger(issue.number) || typeof issue.node_id !== "string" || typeof issue.title !== "string" || typeof issue.html_url !== "string") throw new FactoryError("github_invalid_response", "GitHub returned an invalid issue", 409);
+          if (githubSuppressed(this.store, policy.repository, issue.node_id, issue.number, "issue")) continue;
           if (issue.state !== "open" && !this.store.list<ProjectGitHubSource>("github_sources", id).some((source) => source.external_id === issue.node_id && source.kind === "issue")) continue;
           this.import(id, issue.node_id, issue.number, hash(JSON.stringify(issue)), issue.title, `GitHub issue: ${issue.html_url}\n\n${issue.body ?? ""}\n\nProject review context:\n${policy.review_context}`, issue.html_url, issue.state, "issue");
         }
         for (const pull of pulls) {
           const previous = this.store.list<ProjectGitHubPull>("github_pulls", id).find((item) => item.pull.id === pull.id);
+          if (githubSuppressed(this.store, policy.repository, pull.id, pull.number, "fix")) {
+            this.store.put<ProjectGitHubPull>("github_pulls", { ...(previous ?? this.store.record()), project_id: id, pull, blockers: this.blockers(pull, policy), observed_at: new Date().toISOString(), fix_implementation_id: null }, id);
+            continue;
+          }
           const fix = this.fix(pull, policy, scope.profiles[0]!.identity.login);
           this.store.put<ProjectGitHubPull>("github_pulls", { ...(previous ?? this.store.record()), project_id: id, pull, blockers: this.blockers(pull, policy), observed_at: new Date().toISOString(), fix_implementation_id: fix?.implementation_id ?? previous?.fix_implementation_id ?? null }, id);
           const proof = { head: pull.headRefOid, base: pull.baseRefOid, policy_revision: policy.revision };
           const own = pull.author?.login.toLowerCase() === scope.profiles[0]!.identity.login?.toLowerCase();
-          if (policy.auto_update && own && pull.mergeStateStatus === "BEHIND") await this.mutate(policy, scope, pull.number, "update", proof);
-          else if (policy.auto_merge && !this.blockers(pull, policy).length) await this.mutate(policy, scope, pull.number, "merge", proof);
-          else if (own && previous?.fix_implementation_id && previous.pull.headRefOid !== pull.headRefOid && this.store.get<Implementation>("implementations", previous.fix_implementation_id)?.outcome === "implementation_complete" && this.opinions(pull).some((review) => review.state === "CHANGES_REQUESTED" && review.commit?.oid !== pull.headRefOid) && !pull.reviewRequests.nodes.length) await this.mutate(policy, scope, pull.number, "rerequest", proof);
+          if (policy.auto_update && own && pull.mergeStateStatus === "BEHIND") await this.mutate(policy, scope, pull.number, "update", proof, true);
+          else if (policy.auto_merge && !this.blockers(pull, policy).length) await this.mutate(policy, scope, pull.number, "merge", proof, true);
+          else if (own && previous?.fix_implementation_id && previous.pull.headRefOid !== pull.headRefOid && this.store.get<Implementation>("implementations", previous.fix_implementation_id)?.outcome === "implementation_complete" && this.opinions(pull).some((review) => review.state === "CHANGES_REQUESTED" && review.commit?.oid !== pull.headRefOid) && !pull.reviewRequests.nodes.length) await this.mutate(policy, scope, pull.number, "rerequest", proof, true);
         }
         for (const item of this.store.list<ProjectGitHubPull>("github_pulls", id)) if (!pulls.some((pull) => pull.id === item.pull.id)) this.store.remove("github_pulls", item.id);
         this.store.put<SyncState>("github_sync", { id, last_sync: new Date().toISOString(), next_sync: Date.now() + policy.poll_minutes * 60_000, problem: null });

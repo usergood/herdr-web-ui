@@ -3,6 +3,9 @@ import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
 import { capacityFixture } from "./factory-capacity-fixture.ts";
+import { checkGitHubDelete } from "./factory-github-delete-browser.ts";
+import { mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
@@ -17,6 +20,9 @@ try {
       await f.api(`/runs/${failed.id}/reconcile`, {});
       const holderId = await f.assignment("Unrelated capacity holder");
       const holder = await f.api(`/implementations/${holderId}/runs`, { action: "work", idempotency_key: "holder" }).then(r => r.json());
+      const backup = await f.api("/backups", {}).then(r => r.json());
+      const obstacle = join(f.state, "factory", "backups", backup.id, "manifest.json.tmp");
+      mkdirSync(obstacle);
       assert.equal((await f.api("").then(r => r.json())).capacity.normal.used, 1);
       const origin = `http://localhost:${f.app.port}`;
       assert.equal((await context.request.post(`${origin}/api/auth`, { data: { token: f.token } })).status(), 204);
@@ -34,9 +40,16 @@ try {
       await controls.getByText("Delete pending", { exact: true }).waitFor();
       assert.equal(await page.getByRole("button", { name: "Resume Assignment", exact: true }).count(), 0);
       f.offline(false);
+      await controls.getByText(/backup.*rewrite destination/).waitFor();
+      assert.equal((await f.api(`/implementations/${id}`)).status, 200);
+      await page.reload();
+      await controls.getByText("Delete pending", { exact: true }).waitFor();
+      await controls.getByText(/backup.*rewrite destination/).waitFor();
+      rmSync(obstacle, { recursive: true });
       await page.waitForURL(url => !url.hash.includes(id));
       await page.getByText("Failed unfinished work to delete", { exact: true }).waitFor({ state: "hidden" });
       assert.equal((await f.api(`/implementations/${id}`)).status, 404);
+      assert.equal((await f.api(`/backups/${backup.id}/restore`, {})).status, 201);
       await f.api(`/runs/${holder.id}/stop`, {});
       for (const condition of ["stopped", "paused", "finished", "unfinished"]) {
         const target = await f.assignment(`Delete ${condition} work`);
@@ -67,5 +80,6 @@ try {
       assert.deepEqual(errors, []);
     } finally { await context.close(); f.close(); }
   }
-  console.log("PASS desktop/mobile Delete control, confirmation, pending reason, reload and final removal");
+  console.log("PASS desktop/mobile Delete control, Machine/backup pending reasons, interrupted rewrite, reload, recovery and final removal");
+  await checkGitHubDelete(browser);
 } finally { await browser.close(); }

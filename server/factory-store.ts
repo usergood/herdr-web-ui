@@ -37,7 +37,7 @@ export class FactoryStore {
   put<T extends { id: string }>(kind: string, record: T, parent: string | null = null): T {
     // Late HTTP/native/check results cannot resurrect purged content. The content-free
     // context identities remain solely to reject results accepted before the fence.
-    if (!["deleted_assignments", "assignment_deletions", "host_deleted_runs"].includes(kind)) {
+    if (!["deleted_assignments", "assignment_deletions", "host_deleted_runs", "github_deletions"].includes(kind)) {
       const value = record as T & { implementation_id?: string; run_id?: string; worker_id?: string; deletion?: unknown };
       const identities = [record.id, parent, value.implementation_id, value.run_id, value.worker_id];
       const deleted = this.list<{ id: string; context_ids?: string[] }>("deleted_assignments").some(entry => identities.some(id => id && (id === entry.id || entry.context_ids?.includes(id))));
