@@ -53,6 +53,7 @@ export class FactoryReads {
     const executionPlans = this.list<NonNullable<FactoryDetail["execution_plans"]>[number]>("execution_plans", id);
     const nativeMetadata = runs.flatMap(run => this.list<Pick<FactoryDetail["native_snapshots"][number], "id" | "run_id" | "worker_id">>("native_snapshots", run.id));
     const events = this.list<FactoryEvent>("events", id);
+    const waiting = this.list<NonNullable<FactoryDetail["capacity_waiting"]>[number] & { ticket_id?: string }>("capacity_waits", id);
     const selectedEvents = [
       events.filter(e => e.kind === "run_stopped").at(-1),
       events.filter(e => e.kind === "continuation_waiting" && (e.data as { run_id?: string })?.run_id === (active?.id ?? runs.at(-1)?.id)).at(-1),
@@ -64,8 +65,8 @@ export class FactoryReads {
       automatic_planning: this.list("automatic_planning", id), automatic_execution: this.list("automatic_execution", id),
       automatic_review: this.list("automatic_review", id), automatic_review_batches: this.list("automatic_review_batches", id),
       human_reviews: this.list("human_reviews", id), pull_requests: this.list("pull_requests", id),
-      capacity_waiting: this.list<NonNullable<FactoryDetail["capacity_waiting"]>[number] & { ticket_id?: string }>("capacity_waits", id).map(({ ticket_id: _ticket, ...wait }) => wait),
-      board: projectFactoryBoard(implementation, { ...context, tickets, runs, workers, checks, questions: scoped }),
+      capacity_waiting: waiting.map(({ ticket_id: _ticket, ...wait }) => wait),
+      board: projectFactoryBoard(implementation, { ...context, tickets, runs, workers, checks, questions: scoped, capacity_waiting: waiting }),
       graph_hash: this.store.get<{ hash: string }>("graphs", id)?.hash ?? hash("[]"), question_revision: hash(JSON.stringify(questions)),
       question_context: { run_id: questionRunId ?? null, revision: hash(JSON.stringify(scoped)), questions: scoped },
       questions: scoped, specifications: spec ? [spec] : [], tickets,
@@ -127,7 +128,7 @@ export class FactoryReads {
     const nativeMetadata = navigation ? [] : this.list<Pick<FactoryDetail["native_snapshots"][number], "id" | "run_id" | "worker_id">>("native_snapshots");
     const projects = this.list<FactoryOverview["projects"][number]>("projects");
     const projectIds = new Set(projects.filter(project => !project.removed_at).map(project => project.id));
-    const board = ideas.map(idea => projectFactoryBoard(idea, { ...context(idea.id), runs: byIdea.get(idea.id), workers, checks, tickets: tickets.get(idea.id), questions: this.questions(idea.id, byIdea.get(idea.id)!) }));
+    const board = ideas.map(idea => projectFactoryBoard(idea, { ...context(idea.id), runs: byIdea.get(idea.id), workers, checks, tickets: tickets.get(idea.id), questions: this.questions(idea.id, byIdea.get(idea.id)!), capacity_waiting: waiting.filter(wait => wait.implementation_id === idea.id) }));
     // Navigation has no tree for unassigned, archived or finished Assignments.
     // Explicit run provenance can still put an older Assignment under a Project.
     const visibleIdeas = navigation ? ideas.filter(idea => !idea.archived_at && !board.find(item => item.implementation_id === idea.id)?.sidebar_hidden && (projectIds.has(idea.project_id ?? "") || byIdea.get(idea.id)!.some(run => projectIds.has((run.manifest as { project?: { id?: string } } | null)?.project?.id ?? "")))) : ideas;

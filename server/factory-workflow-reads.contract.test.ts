@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { createServer } from "./index.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { seedWorkflowConversations } from "../scripts/fixtures/workflow-conversations.ts";
+import { capacityFixture } from "../scripts/factory-capacity-fixture.ts";
 
 test("compact polls expose workflow metadata and selected conversations exclude unrelated retained bodies", async () => {
   const state = mkdtempSync(join(tmpdir(), "factory-workflow-reads-"));
@@ -72,5 +73,116 @@ test("compact polls expose workflow metadata and selected conversations exclude 
     expect(human.comments[0].context).toBe("+Original anchor");
     expect((await read("?view=workflow&conversation_id=another-assignment%3Aspecifications")).status).toBe(404);
     expect(Buffer.byteLength(selected.text)).toBeLessThan(Buffer.byteLength(human.native_snapshots[0].turns[0].parts[0].text) * 0.05);
+  } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+});
+
+
+test("capacity-queued Start appears in the same board lane across compact and full reads and dispatches by request age", async () => {
+  const f = await capacityFixture();
+  const read = (path = "") => f.api(path).then(response => response.json());
+  const start = (id: string, key: string) => f.api(`/implementations/${id}/runs`, { action: "work", idempotency_key: key });
+  const boardFor = (overview: any, id: string) => overview.board.find((item: any) => item.implementation_id === id);
+  try {
+    await f.api("/settings", { max_agents: 1 });
+    const createdFirst = await f.assignment("Created first but queued second");
+    const queuedFirst = await f.assignment("Created second but queued first");
+    const inbox = await f.assignment("Untouched Inbox");
+    const holder = await f.assignment("Owned slot holder");
+    const running = await (await start(holder, "holder")).json();
+    const first = await start(queuedFirst, "first-request");
+    expect(first.status).toBe(202);
+    expect(await first.json()).toMatchObject({ condition: "queued", implementation_id: queuedFirst });
+    expect((await start(createdFirst, "second-request")).status).toBe(202);
+    for (const path of ["", "?navigation=1"]) {
+      const overview = await read(path);
+      expect(boardFor(overview, queuedFirst)).toMatchObject({ lane: "queued", busy: false, activity: null });
+      expect(boardFor(overview, createdFirst)).toMatchObject({ lane: "queued", busy: false, activity: null });
+      expect(boardFor(overview, holder).lane).toBe("running");
+      expect(boardFor(overview, inbox).lane).toBe("inbox");
+      expect(overview.progress.find((item: any) => item.implementation_id === queuedFirst)).toMatchObject({ lane: "queued", activities: [] });
+      expect(overview.implementations.filter((idea: any) => [createdFirst, queuedFirst].includes(idea.id)).map((idea: any) => idea.id)).toEqual([queuedFirst, createdFirst]);
+    }
+    const full = await read(`/implementations/${queuedFirst}`);
+    const current = await read(`/implementations/${queuedFirst}?view=current`);
+    expect(full.board).toMatchObject({ lane: "queued", busy: false, activity: null });
+    expect(current.board).toEqual(full.board);
+    expect(current.board).toEqual(boardFor(await read(), queuedFirst));
+    f.restart();
+    expect(boardFor(await read("?navigation=1"), queuedFirst).lane).toBe("queued");
+    await f.api(`/runs/${running.id}/stop`, {});
+    const deadline = Date.now() + 6_000;
+    let resumed: any;
+    while (Date.now() < deadline) {
+      resumed = await read(`/implementations/${queuedFirst}?view=current`);
+      if (resumed.runs[0]?.condition === "working") break;
+      await Bun.sleep(30);
+    }
+    expect(resumed.runs[0]?.condition).toBe("working");
+    expect(resumed.board.lane).toBe("running");
+    const after = await read("?navigation=1");
+    expect(boardFor(after, queuedFirst).lane).toBe("running");
+    expect(boardFor(after, createdFirst).lane).toBe("queued");
+    expect(after.capacity.waiting.map((wait: any) => wait.implementation_id)).toEqual([createdFirst]);
+  } finally { f.close(); }
+});
+
+
+test("an exhausted current capacity request needs attention without overriding fresh running work", async () => {
+  const f = await capacityFixture();
+  const read = (path = "") => f.api(path).then(response => response.json());
+  const boardFor = (overview: any, id: string) => overview.board.find((item: any) => item.implementation_id === id);
+  try {
+    await f.api("/settings", { max_agents: 1 });
+    const holder = await f.assignment("Capacity holder");
+    await f.api(`/implementations/${holder}/runs`, { action: "work", idempotency_key: "holder" });
+    const id = await f.assignment("Changed pending scope");
+    expect((await f.api(`/implementations/${id}/runs`, { action: "work", idempotency_key: "old-work" })).status).toBe(202);
+    const projectId = (await read(`/implementations/${id}?view=current`)).implementation.project_id;
+    await f.api(`/projects/${projectId}/configure`, { permissions: "Changed Project scope requires a new Start request" });
+    const deadline = Date.now() + 6_000;
+    let blocked: any;
+    while (Date.now() < deadline) {
+      blocked = (await read()).capacity.waiting.find((wait: any) => wait.implementation_id === id);
+      if (blocked?.condition === "blocked") break;
+      await Bun.sleep(30);
+    }
+    expect(blocked).toMatchObject({ condition: "blocked", reason: expect.stringContaining("scope changed") });
+    for (const path of ["", "?navigation=1"]) expect(boardFor(await read(path), id)).toMatchObject({ lane: "needs_you", busy: false, waiting_reason: blocked.reason });
+    expect((await read(`/implementations/${id}?view=current`)).board).toEqual((await read(`/implementations/${id}`)).board);
+    expect((await read(`/implementations/${id}?view=current`)).board.lane).toBe("needs_you");
+    const planning = await f.api(`/implementations/${id}/runs`, { action: "grill-with-docs", idempotency_key: "fresh-planning" });
+    expect(planning.status).toBe(202);
+    expect((await planning.json()).condition).toBe("working");
+    expect((await read()).capacity.waiting).toEqual([expect.objectContaining({ id: blocked.id, condition: "blocked" })]);
+    for (const path of ["", "?navigation=1"]) expect(boardFor(await read(path), id)).toMatchObject({ lane: "running", busy: true });
+    expect((await read(`/implementations/${id}?view=current`)).board.lane).toBe("running");
+  } finally { f.close(); }
+});
+
+
+test("historical child waits and finished work retain their board lanes", async () => {
+  const state = mkdtempSync(join(tmpdir(), "factory-board-history-"));
+  const store = new FactoryStore(state);
+  for (const id of ["history", "finished"]) {
+    store.put("implementations", { ...store.record(), id, title: id, description: "Owned historic projection", project_id: null, provider: "codex", machine_id: "local", stage: id === "finished" ? "done" : "inbox", position: 0, outcome: id === "finished" ? "research_accepted" : "none" });
+    for (const suffix of ["old", "current"]) store.put("runs", { ...store.record(), id: `${id}-${suffix}`, implementation_id: id, action: "work", provider: "codex", machine_id: "local", condition: "completed", waiting_reason: null, idempotency_key: suffix, specification_id: null, graph_hash: null, base: null, checkout: null, worktree: null, branch: null, workspace_id: null, pane_id: null, manifest: {} }, id);
+    store.put("capacity_waits", { ...store.record(), id: `${id}-old-wait`, implementation_id: id, assignment_title: id, action: "work", provider: "codex", machine_id: "local", idempotency_key: "old-child", condition: "blocked", purpose: "execution", run_id: `${id}-old`, reason: "Historical worker admission failed" }, id);
+  }
+  store.close();
+  const app = createServer({ port: 0, stateDir: state, token: "owned-board-history", machines: false, factory: { accountDiscoveryHome: state, native: { version: async () => null } } });
+  const read = async (path: string) => (await fetch(`http://localhost:${app.port}/api/factory${path}`, { headers: { authorization: "Bearer owned-board-history" } })).json() as Promise<any>;
+  try {
+    for (const path of ["", "?navigation=1"]) {
+      const overview = await read(path);
+      expect(overview.board.find((item: any) => item.implementation_id === "history")).toMatchObject({ lane: "inbox", waiting_reason: null });
+      expect(overview.board.find((item: any) => item.implementation_id === "finished")).toMatchObject({ lane: "done", sidebar_hidden: true, waiting_reason: null });
+    }
+    for (const id of ["history", "finished"]) {
+      const full = await read(`/implementations/${id}`);
+      const current = await read(`/implementations/${id}?view=current`);
+      expect(current.board).toEqual(full.board);
+      expect(current.board.lane).toBe(id === "finished" ? "done" : "inbox");
+      expect(current.capacity_waiting[0].condition).toBe("blocked");
+    }
   } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
 });
