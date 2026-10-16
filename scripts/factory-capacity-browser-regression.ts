@@ -65,9 +65,13 @@ try {
       const sent = page.waitForResponse(r => r.url().endsWith(`/runs/${run.id}/send-answers`));
       await page.getByRole("button", { name: "Save answer", exact: true }).click();
       assert.equal((await (await sent).json()).condition, "blocked");
-      await conversations.getByRole("alert").filter({ hasText: "Owned native input contains a draft" }).waitFor();
+      const overview = await blockedFixture.api("").then(r => r.json());
+      const blocked = overview.capacity.continuations.find((entry: { run_id: string }) => entry.run_id === run.id);
+      assert.equal(blocked.condition, "blocked");
+      assert.match(blocked.reason, /draft/);
+      await conversations.getByRole("alert").filter({ hasText: blocked.reason }).waitFor();
       await page.reload();
-      await conversations.getByRole("alert").filter({ hasText: "Owned native input contains a draft" }).waitFor();
+      await conversations.getByRole("alert").filter({ hasText: blocked.reason }).waitFor();
       assert.equal(blockedFixture.prompts.length, 0);
       assert.equal(blockedFixture.launches.length, 1);
     } finally { await blockedContext.close(); blockedFixture.close(); }
