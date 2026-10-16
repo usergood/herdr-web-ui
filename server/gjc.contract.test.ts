@@ -8,6 +8,10 @@ import { isGjcProcess } from "./gjc-runtime.ts";
 import { startShellAgent } from "./shell-agent.ts";
 
 const home = realpathSync(mkdtempSync(join(tmpdir(), "herdr-gjc-binding-")));
+// The owned SDK rows share this real Git anchor, including checkout-local CI TMPDIR.
+const gitRoot = Bun.spawnSync(["git", "-C", home, "rev-parse", "--show-toplevel"], { stdout: "pipe", stderr: "pipe" });
+expect([0, 128]).toContain(gitRoot.exitCode);
+const worktreeRoot = gitRoot.exitCode === 0 ? gitRoot.stdout.toString().trim() : null;
 const agentDir = join(home, ".gjc", "agent");
 const dir = join(agentDir, "sessions", "v2-shared");
 mkdirSync(dir, { recursive: true });
@@ -48,8 +52,10 @@ let savedSessionOmission;
 if (input && input.scope) {
   const scope = input.scope;
   if (scope.version !== 1 || scope.requested !== "pwd" || !scope.requestAnchor
-    || typeof scope.requestAnchor.cwd !== "string" || scope.requestAnchor.worktreeRoot !== null) process.exit(64);
-  sessions = sessions.filter((row) => row.locator.cwd === scope.requestAnchor.cwd);
+    || typeof scope.requestAnchor.cwd !== "string"
+    || !(scope.requestAnchor.worktreeRoot === null || typeof scope.requestAnchor.worktreeRoot === "string")) process.exit(64);
+  sessions = sessions.filter((row) => row.locator.cwd === scope.requestAnchor.cwd
+    && row.locator.worktreeRoot === scope.requestAnchor.worktreeRoot);
 }
 if (input && typeof input.resolveSessionId === "string") {
   sessions = sessions.filter((row) => row.sessionId === input.resolveSessionId && row.locator.cwd === input.cwd);
@@ -128,7 +134,7 @@ async function setAgent(id: string, agent: string): Promise<void> {
 function sdkRow(pid: number, cwd: string, sessionId: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     sessionId,
-    locator: { cwd, worktreeRoot: null, stateRoot: join(cwd, ".gjc", "state") },
+    locator: { cwd, worktreeRoot, stateRoot: join(cwd, ".gjc", "state") },
     endpointGeneration: 1,
     pid,
     live: true,
