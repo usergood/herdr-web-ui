@@ -11,7 +11,7 @@ import { FactoryError, git, hash, inspectCheckout, withinRoot } from "./factory-
 import { provisionFactoryAgent, provisionSkills, verifySkills } from "./factory-skills.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { factoryTrackerClient, factoryTrackerGuide } from "./factory-tracker-client.ts";
-import { runFactoryCommand } from "./factory-command.ts";
+import { assertFactoryBuildPlatform, runFactoryCommand } from "./factory-command.ts";
 import { recordScaffolding } from "./factory-cleanup.ts";
 import { factoryEnvironment } from "./factory-environment.ts";
 import type { AccountBindingSnapshot } from "../shared/accounts.ts";
@@ -181,6 +181,9 @@ export class FactoryWorktrees {
   async check(id: string, workerId: string | null, check: FactoryCheck): Promise<FactoryCheck> {
     const previous = this.store.get<FactoryCheck>("host_checks", check.id);
     if (previous) return this.builds.get(check.id)?.promise ?? previous;
+    // Reject before saving a build intent: a Windows leader handle cannot prove
+    // its descendants stopped, including when this host is reached remotely.
+    assertFactoryBuildPlatform();
     this.store.put("host_checks", check, id);
     const controller = new AbortController();
     const promise = this.performCheck(id, workerId, check, controller.signal);

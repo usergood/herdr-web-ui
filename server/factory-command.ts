@@ -1,14 +1,20 @@
 import { spawn } from "node:child_process";
+import { FactoryError } from "./factory-host.ts";
+
+/** Windows needs verified process-tree ownership before factory builds can run. */
+export function assertFactoryBuildPlatform(): void {
+  if (process.platform === "win32") throw new FactoryError("build_contract_unverified", "This platform's owned build process contract is not verified", 409);
+}
 
 /** Bounded non-PTY commands. A live handle owns cancellation; user-supplied PIDs never do. */
 export function runFactoryCommand(args: string[], cwd: string, env: Record<string, string | undefined>, signal: AbortSignal, timeout: number): Promise<{ exit_code: number; output: string; cancelled: boolean }> {
+  assertFactoryBuildPlatform();
   return new Promise((resolve, reject) => {
-    const child = spawn(args[0]!, args.slice(1), { cwd, env, shell: false, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(args[0]!, args.slice(1), { cwd, env, shell: false, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     let bytes = 0; const chunks: Buffer[] = []; let stopped = false; let cancelled = false;
-    let forced: ReturnType<typeof setTimeout> | undefined;
     let shutdown: Promise<boolean> | undefined;
     const kill = (signal: "SIGTERM" | "SIGKILL"): void => {
-      try { if (process.platform !== "win32" && child.pid) process.kill(-child.pid, signal); else child.kill(signal); }
+      try { if (child.pid) process.kill(-child.pid, signal); }
       catch { /* Only the subsequent empty-group observation proves shutdown. */ }
     };
     const groupLeft = (): boolean => {
@@ -31,8 +37,7 @@ export function runFactoryCommand(args: string[], cwd: string, env: Record<strin
     const stop = (aborted = false): void => {
       if (stopped || child.exitCode !== null || child.signalCode !== null) return;
       stopped = true; cancelled = aborted;
-      if (process.platform !== "win32" && child.pid) shutdown = endGroup();
-      else { kill("SIGTERM"); forced = setTimeout(() => kill("SIGKILL"), 2000); }
+      if (child.pid) shutdown = endGroup();
     };
     const timer = setTimeout(() => stop(), Math.max(1, timeout));
     const data = (chunk: Buffer): void => { bytes += chunk.length; if (bytes <= 2 * 1024 * 1024) chunks.push(chunk); else stop(); };
@@ -45,9 +50,8 @@ export function runFactoryCommand(args: string[], cwd: string, env: Record<strin
       clearTimeout(timer); signal.removeEventListener("abort", abort);
       // The leader's close does not prove its descendants stopped. Keep owning
       // the group through the bounded forced shutdown, even with closed pipes.
-      if (process.platform !== "win32" && child.pid) shutdown ??= endGroup();
+      if (child.pid) shutdown ??= endGroup();
       const confirmed = !shutdown || await shutdown;
-      clearTimeout(forced);
       if (!confirmed) { reject(new Error("Owned build process group shutdown remains unconfirmed")); return; }
       resolve({ exit_code: stopped ? 1 : code, cancelled, output: Buffer.concat(chunks).toString("utf8") });
     };

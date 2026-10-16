@@ -1,3 +1,4 @@
+import { assertFactoryBuildPlatform } from "./factory-command.ts";
 import { agentCapacityPool, factoryCapacity } from "./factory-capacity.ts";
 import type { FactoryCheck, FactoryProject, FactoryReviewEvidence, FactoryRun, FactorySettings, FactoryTicket, FactoryWorker, Implementation } from "../shared/protocol.ts";
 import type { FactoryAutomaticReview, FactoryHumanFeedbackBatch, ReviewComment } from "../shared/factory.ts";
@@ -124,7 +125,7 @@ export class FactoryPipeline {
   }
   async check(id: string, workerId: string | null = null): Promise<FactoryCheck> {
     const run = this.run(id, false);
-    if (process.platform === "win32" && run.machine_id === "local") throw new FactoryError("build_contract_unverified", "This platform's owned build process contract is not verified", 409);
+    if (run.machine_id === "local") assertFactoryBuildPlatform();
     const check = this.store.db.transaction(() => {
       const capacity = factoryCapacity(this.store, this.settings());
       if (capacity.builds.used >= capacity.builds.limit) throw new FactoryError("build_capacity_exhausted", `Waiting for build capacity: ${capacity.builds.used}/${capacity.builds.limit}. ${capacity.build_reservations.map(build => `${build.assignment_title} [${build.machine_id}, ${build.condition}${build.uncertain ? ", uncertain" : ""}]`).join("; ")}`, 409);
