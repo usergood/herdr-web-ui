@@ -75,6 +75,19 @@ it("rejects an older Human Review admission observation when Stop or Pause close
   }
 }, 20000);
 
+it("does not treat a completed step with a still-live native chat as confirmed parent shutdown", async () => {
+  const f = await humanHostFixture();
+  try {
+    expect((await f.api(`factory-host/runs/${f.parent.id}/finish`, {})).status).toBe(200);
+    expect(f.workspaces).toHaveLength(1);
+    f.panes[0].agent_status = "running";
+    const response = await f.api("factory-host/launch", { run: f.run });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: "host_owned" } });
+    expect(f.workspaces).toHaveLength(1);
+  } finally { f.close(); }
+}, 20000);
+
 describe("Human Review through authenticated HTTP", () => {
   it("hands the resting candidate owner to a read-only assistant without releasing the parent's ownership", async () => {
     const f = await humanHostFixture();
