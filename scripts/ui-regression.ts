@@ -1,3 +1,4 @@
+import { isTerminalProtocolReply } from "./terminal-protocol-replies.ts";
 /** Real-browser regressions against owned herdr panes. Run after `bun run build`. */
 import "./test-herdr.ts"; // a herdr session of its own: nothing shows in the user's
 import assert from "node:assert/strict";
@@ -168,7 +169,9 @@ try {
     socket.on("framesent", ({ payload }) => {
       const message = JSON.parse(String(payload));
       // composer messages go out as "submit" on servers that list it (#15), keystrokes as "input"
-      if (message.type === "input" || message.type === "submit") inputs.push(message);
+      // Exact VT negotiation replies are protocol traffic, including on a newly
+      // selected pane. Retain every other byte from every pane for key assertions.
+      if ((message.type === "input" || message.type === "submit") && !isTerminalProtocolReply(message)) inputs.push(message);
       if (message.type === "pending-action") pendingActions.push(message);
       if (message.type === "attach" || message.type === "detach") inputStates.set(message.pane_id, { ready: false, at: Date.now(), socket });
     });
@@ -2135,7 +2138,7 @@ try {
   const touchSent: Array<Record<string, unknown>> = [];
   touchPage.on("websocket", (socket) => socket.on("framesent", ({ payload }) => {
     const message = JSON.parse(String(payload)) as Record<string, unknown>;
-    if (message.type === "input" || message.type === "submit") touchSent.push(message);
+    if ((message.type === "input" || message.type === "submit") && !isTerminalProtocolReply(message)) touchSent.push(message);
   }));
   await touchPage.goto(`${origin}/?pane=${encodeURIComponent(paneB)}`);
   await touchPage.locator(".conn-live").waitFor();

@@ -1,3 +1,4 @@
+import { isTerminalProtocolReply } from "./terminal-protocol-replies.ts";
 /** Replay the native Safari 26.6.2 trace from #432, not a claim to automate the OS IME. */
 import assert from "node:assert/strict";
 import type { Browser } from "playwright-core";
@@ -25,7 +26,7 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
     });
     socket.onMessage((raw) => {
       const frame = JSON.parse(String(raw));
-      if (frame.type === "input") sent.push(frame);
+      if (frame.type === "input" && !isTerminalProtocolReply(frame)) sent.push(frame);
       else server.send(raw);
     });
   });

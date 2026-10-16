@@ -405,7 +405,7 @@ try {
     async function reopenGitHubSettings() {
       // Reload closes Settings; its history entry may keep the old address.
       await page.getByRole("heading", { name: project.name, exact: true }).waitFor();
-      const drawer = page.getByRole("button", { name: "Open workspace list", exact: true });
+      const drawer = page.getByRole("button", { name: "Close workspace list", exact: true });
       if (await drawer.isVisible()) await drawer.click();
       await page.getByRole("button", { name: `Project settings for ${project.name}`, exact: true }).click();
       await page.getByRole("tab", { name: "GitHub", exact: true }).click();
@@ -542,7 +542,7 @@ try {
       assert.equal((await reviewed.json(path)).implementation.stage, "review");
       await page.goto(reviewed.origin + `/#projects/${project.id}`);
       await page.getByRole("heading", { name: project.name, exact: true }).waitFor();
-      const drawer = page.getByRole("button", { name: "Open workspace list", exact: true });
+      const drawer = page.getByRole("button", { name: "Close workspace list", exact: true });
       if (await drawer.isVisible()) await drawer.click();
       await page.getByRole("button", { name: `Project settings for ${project.name}`, exact: true }).click();
       await page.getByRole("tab", { name: "GitHub", exact: true }).click();

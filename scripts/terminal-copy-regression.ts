@@ -1,3 +1,4 @@
+import { isTerminalProtocolReply } from "./terminal-protocol-replies.ts";
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -74,7 +75,7 @@ setInterval(() => {}, 1000);
     const inputs: string[] = [];
     page.on("websocket", (socket) => socket.on("framesent", ({ payload }) => {
       const message = JSON.parse(String(payload));
-      if (message.type === "input") inputs.push(message.text);
+      if (message.type === "input" && !isTerminalProtocolReply(message)) inputs.push(message.text);
     }));
     await page.goto(`${origin}/?pane=${encodeURIComponent(pane)}`);
     await page.locator(".pane-terminal .xterm-rows").waitFor();
@@ -237,7 +238,7 @@ setInterval(() => {}, 1000);
       const sent: string[] = [];
       plain.on("websocket", (socket) => socket.on("framesent", ({ payload }) => {
         const message = JSON.parse(String(payload));
-        if (message.type === "input") sent.push(message.text);
+        if (message.type === "input" && !isTerminalProtocolReply(message)) sent.push(message.text);
       }));
       await plain.goto(`${origin}/?pane=${encodeURIComponent(pane)}`);
       const row = plain.locator(".pane-terminal .xterm-rows > div", { hasText: "DRAGCOPY-first-line" });
