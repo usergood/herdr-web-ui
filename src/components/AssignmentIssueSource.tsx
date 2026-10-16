@@ -72,7 +72,7 @@ function DependencyDelivery({ source, busy, perform }: { source: ProjectGitHubSo
       <label className="field">{t("Release tag")}<input className="input assignment-delivery-input" value={release} onChange={event => setRelease(event.target.value)} /></label>
       <button className="btn" disabled={busy}>{t("Save intended coverage")}</button>
     </form>
-    {source.delivery && <p role="status">{source.delivery.source_revision === source.revision ? t("Coverage linked. Sync GitHub to verify delivery.") : t("Issue changed. Review and relink intended coverage.")}</p>}
+    {source.delivery && <p role="status">{(source.delivery_scope_current ?? source.delivery.source_revision === source.revision) ? t("Coverage linked. Sync GitHub to verify delivery.") : t("Issue changed. Review and relink intended coverage.")}</p>}
   </section>;
 }
 

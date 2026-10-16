@@ -1352,6 +1352,9 @@ export type FactoryRequestBody = FactoryRequests[keyof FactoryRequests];
  * owner links the complete intended PR numbers/heads, target branch and optional release tag
  * for the displayed source revision. expected_revision guards replacement; delivery_history
  * exposes immutable prior links. Linking never asserts delivery, accepts implementation or starts work.
+ * Issue source responses include delivery_scope_current: authoritative applicability of the original
+ * coverage to uninterrupted semantic scope, independent of labels/readiness and fresh delivery proof.
+ * Link source_revision and history retain their original provenance; applicability is not verification.
  * POST .../github/configure -> ProjectGitHubPolicy, uses ProjectGitHubConfiguration.
  * POST .../github/sync -> ProjectGitHubOverview; imports issue/fix records and applies opted-in PR policies.
  * Sources retain current issue scope, revision history and fetch evidence; incomplete inventories

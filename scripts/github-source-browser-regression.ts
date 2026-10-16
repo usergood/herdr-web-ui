@@ -95,6 +95,31 @@ try {
     await dependencies.getByRole("link", { name: "PR #27", exact: true }).waitFor();
     assert.equal(await dependencies.getByText("Delivery has not been verified.", { exact: true }).count(), 0);
     if (evidence) { await dependencies.scrollIntoViewIfNeeded(); await page.screenshot({ path: join(evidence, `verified-dependency-${viewport.width}.png`) }); }
+    const linked = (await fetch(origin + "/api/factory" + route).then(response => response.json())).sources.find((entry: { number: number }) => entry.number === 24).delivery;
+    const originalLabels = prerequisite.labels;
+    for (const labels of [[...originalLabels, { name: "documentation" }], originalLabels]) {
+      prerequisite.labels = labels; prerequisite.updated_at = labels.length > originalLabels.length ? "2026-10-04T12:00:00Z" : "2026-10-05T12:00:00Z";
+      saveIssues();
+      const current = (await post(route + "/sync", {})).sources.find((entry: { number: number }) => entry.number === 24);
+      assert.deepEqual(current.delivery, linked, "metadata must preserve original link provenance");
+      assert.equal(current.delivery_scope_current, true);
+      if (labels.length > originalLabels.length) assert.notEqual(current.revision, linked.source_revision);
+      await page.goto(origin + `/#factory/${targetId}`);
+      await coverage.getByText("Coverage linked. Sync GitHub to verify delivery.", { exact: true }).waitFor();
+      assert.equal(await coverage.getByText("Issue changed. Review and relink intended coverage.", { exact: true }).count(), 0);
+      assert(await coverage.evaluate(element => element.scrollWidth <= element.clientWidth));
+      await page.goto(origin + `/#factory/${id}`);
+      await dependencies.getByText("Dependencies are satisfied.", { exact: true }).waitFor();
+    }
+    const originalTitle = prerequisite.title;
+    prerequisite.title = "Changed prerequisite scope"; saveIssues(); await post(route + "/sync", {});
+    await page.goto(origin + `/#factory/${targetId}`);
+    await coverage.getByText("Issue changed. Review and relink intended coverage.", { exact: true }).waitFor();
+    prerequisite.title = originalTitle; saveIssues(); await post(route + "/sync", {});
+    await page.reload();
+    await coverage.getByText("Issue changed. Review and relink intended coverage.", { exact: true }).waitFor();
+    await page.goto(origin + `/#factory/${id}`);
+    await dependencies.getByText("Dependencies are blocked.", { exact: true }).waitFor();
     saveIssues({ 12: [prerequisite], 24: [issue] }); await post(route + "/sync", {});
     await page.reload();
     await dependencies.getByText("Dependency cycle. Correct the declared relationships.", { exact: true }).waitFor();

@@ -3935,3 +3935,26 @@ it("retired implementation Retry requires Machine support for copying produced w
     expect((await fixture.json(path)).runs).toHaveLength(1);
   } finally { fixture.close(); }
 }, 15_000);
+
+it("issue source responses expose authoritative coverage applicability without rewriting link provenance", async () => {
+  const { githubQueueFixture } = await import("../scripts/fixtures/github-queue.ts");
+  const fixture = githubQueueFixture();
+  try {
+    const { route } = await fixture.setup();
+    const original = (await fixture.json(route + "/sync", {})).sources[0];
+    const linked = (await fixture.json(route + "/issues/1/delivery", { source_revision: original.revision, expected_revision: null, target_branch: "main", intended_prs: [{ number: 27, head: "a".repeat(40) }], release_tag: null })).sources[0];
+    expect(linked).toMatchObject({ delivery_scope_current: true });
+    fixture.issue.labels.push({ name: "documentation" }); fixture.save();
+    await fixture.json(route + "/sync", {});
+    for (const view of [await fixture.json(route), await fixture.json(`/implementations/${original.implementation_id}`)]) {
+      const source = (view.sources ?? view.github_sources)[0];
+      expect(source.revision).not.toBe(original.revision);
+      expect(source.delivery_scope_current).toBe(true);
+      expect(source.delivery).toEqual(linked.delivery);
+    }
+    fixture.issue.body += "\nChanged intended behavior"; fixture.save();
+    const changed = (await fixture.json(route + "/sync", {})).sources[0];
+    expect(changed).toMatchObject({ delivery_scope_current: false });
+    expect(changed.delivery).toEqual(linked.delivery);
+  } finally { fixture.close(); }
+});

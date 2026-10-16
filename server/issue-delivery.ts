@@ -14,10 +14,12 @@ export function hasIssueSource(store: FactoryStore, implementationId: string): b
 }
 
 /** Both branch and release evidence must prove ancestry of the exact merge commit. */
-function containsMerge(comparison: unknown, mergeCommit: string): boolean {
-  return isJsonObject(comparison) && ["ahead", "identical"].includes(String(comparison.status))
-    && isJsonObject(comparison.base_commit) && comparison.base_commit.sha === mergeCommit
-    && isJsonObject(comparison.merge_base_commit) && comparison.merge_base_commit.sha === mergeCommit;
+function containsMerge(comparison: unknown, mergeCommit: string): boolean | null {
+  if (!isJsonObject(comparison) || !isJsonObject(comparison.base_commit) || comparison.base_commit.sha !== mergeCommit
+    || !isJsonObject(comparison.merge_base_commit) || !sha(comparison.merge_base_commit.sha)) return null;
+  if (["ahead", "identical"].includes(String(comparison.status)) && comparison.merge_base_commit.sha === mergeCommit) return true;
+  if (["behind", "diverged"].includes(String(comparison.status)) && comparison.merge_base_commit.sha !== mergeCommit) return false;
+  return null;
 }
 
 export function coverageRevision(store: FactoryStore, projectId: string): string {
@@ -26,9 +28,28 @@ export function coverageRevision(store: FactoryStore, projectId: string): string
   return hash(JSON.stringify(store.list<ProjectGitHubSource>("github_sources", projectId).filter(source => source.kind === "issue").map(source => [source.id, source.revision, dependencyPlan(store, source).revision, store.get<IssueDeliveryLink>("github_delivery_links", source.id)?.revision ?? null, source.readiness_evidence?.complete ?? null, source.readiness_evidence?.source_revision ?? null])));
 }
 
+/** Coverage survives metadata edits only along a proven, uninterrupted semantic history. */
+export function deliveryScopeCurrent(store: FactoryStore, source: ProjectGitHubSource, link: IssueDeliveryLink): boolean {
+  const current = source.current;
+  const history = source.history ?? [];
+  if (link.source_id !== source.id || !current?.native_dependencies || current.revision !== source.revision || store.get("github_delivery_scope_invalidations", link.revision)) return false;
+  let anchor = -1;
+  for (const [index, observed] of history.entries()) {
+    if (observed.revision === link.source_revision && Date.parse(observed.fetched_at) <= Date.parse(link.created_at)) anchor = index;
+  }
+  // No inferred equivalence for legacy records without the linked observation.
+  if (anchor < 0) return false;
+  return [...history.slice(anchor), current].every(observed => !!observed.native_dependencies
+    && (["title", "body", "state", "repository", "url", "native_dependencies"] as const).every(key => JSON.stringify(observed[key]) === JSON.stringify(current[key])));
+}
+
 /** Retain superseded proof as history, never as current Assignment completion. */
 export function invalidateIssueDelivery(store: FactoryStore, source: ProjectGitHubSource, reason: "scope_changed" | "coverage_changed" = "scope_changed"): void {
   store.db.transaction(() => {
+    const link = store.get<IssueDeliveryLink>("github_delivery_links", source.id);
+    // Positive drift at a fallible collection fence may never be imported into
+    // source history. Retire this link even if the next observation reverts it.
+    if (reason === "scope_changed" && link) store.put("github_delivery_scope_invalidations", { id: link.revision, source_id: source.id }, source.implementation_id);
     const idea = store.get<Implementation>("implementations", source.implementation_id);
     if (idea?.delivery_evidence?.source_id !== source.id) return;
     const { delivery_evidence: evidence, ...retained } = idea;
@@ -54,14 +75,14 @@ export function linkIssueDelivery(store: FactoryStore, source: ProjectGitHubSour
 }
 
 /** GitHub is read-only here. Owner coverage records never substitute for merge evidence. */
-export async function verifyIssueDelivery(store: FactoryStore, edge: GitHubDependencyEdge, target: ProjectGitHubSource, branch: string | null, api: (path: string) => Promise<unknown>): Promise<GitHubDependencyEdge> {
+export async function verifyIssueDelivery(store: FactoryStore, edge: GitHubDependencyEdge, target: ProjectGitHubSource, branch: string | null, api: (path: string) => Promise<unknown>): Promise<GitHubDependencyEdge & { contradicted?: "merge" | "release" }> {
   // The collection fence can invalidate the retained inventory revision. Its
   // incomplete scope observation blocks both own delivery and dependents, even
   // when an old coverage link still matches. Label eligibility is not required.
   const observation = target.readiness_evidence;
   if (observation && (!observation.complete || observation.source_revision !== target.revision)) return edge;
   const link = store.get<IssueDeliveryLink>("github_delivery_links", target.id);
-  if (!branch || !link || link.source_revision !== target.revision || !link.intended_prs.length) return edge;
+  if (!branch || !link || !deliveryScopeCurrent(store, target, link) || !link.intended_prs.length) return edge;
   const branchProof = await api(`repos/${edge.repository}/branches/${encodeURIComponent(branch)}`);
   if (!isJsonObject(branchProof) || branchProof.name !== branch || !isJsonObject(branchProof.commit) || !sha(branchProof.commit.sha)) return edge;
   const merges: NonNullable<GitHubDependencyEdge["delivery"]>["merges"] = [];
@@ -70,7 +91,8 @@ export async function verifyIssueDelivery(store: FactoryStore, edge: GitHubDepen
     if (!isJsonObject(pull) || pull.number !== intended.number || pull.html_url !== `https://github.com/${edge.repository}/pull/${intended.number}` || pull.merged !== true || typeof pull.merged_at !== "string" || !Number.isFinite(Date.parse(pull.merged_at)) || !sha(pull.merge_commit_sha) || !isJsonObject(pull.head) || pull.head.sha !== intended.head || !isJsonObject(pull.base) || !isJsonObject(pull.base.repo) || typeof pull.base.repo.full_name !== "string" || pull.base.repo.full_name.toLowerCase() !== edge.repository.toLowerCase()) return edge;
     if (pull.base.ref !== branch || link.target_branch !== branch) return { ...edge, blocker: "wrong_target" };
     const comparison = await api(`repos/${edge.repository}/compare/${pull.merge_commit_sha}...${branchProof.commit.sha}`);
-    if (!containsMerge(comparison, pull.merge_commit_sha)) return edge;
+    const contained = containsMerge(comparison, pull.merge_commit_sha);
+    if (contained !== true) return { ...edge, ...(contained === false ? { contradicted: "merge" as const } : {}) };
     merges.push({ number: intended.number, url: pull.html_url, head: intended.head, merge_commit: pull.merge_commit_sha, target_branch: branch });
   }
   const delivered = { coverage_revision: link.revision, merges };
@@ -92,7 +114,8 @@ export async function verifyIssueDelivery(store: FactoryStore, edge: GitHubDepen
     const releaseCommit = object.sha;
     for (const merge of merges) {
       const comparison = await api(`repos/${edge.repository}/compare/${merge.merge_commit}...${releaseCommit}`);
-      if (!containsMerge(comparison, merge.merge_commit)) return blocked;
+      const contained = containsMerge(comparison, merge.merge_commit);
+      if (contained !== true) return { ...blocked, ...(contained === false ? { contradicted: "release" as const } : {}) };
     }
     return { ...edge, blocker: null, delivery: { ...delivered, release: { tag: link.release_tag, commit: releaseCommit, url: release.html_url, published_at: release.published_at } } };
   }

@@ -16,13 +16,14 @@ export function githubQueueFixture(execution = false, publicUrl: string | null =
   const syncGate = join(root, "sync-gate"); const syncEntered = join(root, "sync-entered");
   const issue = { repository_url: "https://api.github.com/repos/fictional/project", number: 1, node_id: "fictional-contract-issue", title: "Fictional scope", body: "## Scope\nShow a greeting.\n## Acceptance criteria\nShow hello.\n## Dependencies\nNone.\n## Testing seams\nPublic HTTP and real browser journeys.", labels: [{ name: "ready-for-agent" }], state: "open", updated_at: "2026-10-01T12:00:00Z", html_url: "https://github.com/fictional/project/issues/1" };
   const labelEvents: Record<number, { id: number; event: string; label: { name: string }; actor: { login: string; id: number }; created_at: string }[]> = {};
-  const save = (issues = [issue], fail = false, dependencies: Record<string, typeof issue[] | null> = {}, trusted = false, freshIssues = issues, readiness?: { events?: unknown; event_pages?: unknown[]; dependencies?: Record<string, typeof issue[] | null>; proof?: Record<string, unknown> | null }, sync?: { issue_pages?: (typeof issue[] | null)[]; dependency_pages?: Record<string, (typeof issue[] | null)[]>; pulls_fail?: boolean }) => {
+  const save = (issues = [issue], fail = false, dependencies: Record<string, typeof issue[] | null> = {}, trusted = false, freshIssues = issues, readiness?: { events?: unknown; event_pages?: unknown[]; dependencies?: Record<string, typeof issue[] | null>; proof?: Record<string, unknown> | null }, sync?: { issue_pages?: (typeof issue[] | null)[]; dependency_pages?: Record<string, (typeof issue[] | null)[]>; pulls_fail?: boolean; api_fail?: string }) => {
     rmSync(dependencyReads, { force: true });
     writeFileSync(responses, JSON.stringify({ issues, fail, dependencies, trusted, labelEvents, freshIssues, readiness, sync }));
   };
   save();
   writeFileSync(cli, `import { existsSync, readFileSync, writeFileSync } from "node:fs";
 const data = JSON.parse(readFileSync(${JSON.stringify(responses)}, "utf8")); const endpoint = process.argv[3];
+if (data.sync?.api_fail === endpoint) throw new Error("Fictional GitHub transport failure");
 if (Object.hasOwn(data.apiResponses ?? {}, endpoint)) { console.log(JSON.stringify(data.apiResponses[endpoint])); process.exit(0); }
 const gate = existsSync(${JSON.stringify(syncGate)}) ? readFileSync(${JSON.stringify(syncGate)}, "utf8") : null;
 if (gate && (gate.startsWith("=") ? endpoint === gate.slice(1) : endpoint.includes(gate))) {

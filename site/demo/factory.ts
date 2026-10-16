@@ -23,7 +23,8 @@ const queuePolicies = new Map<string, ProjectQueuePolicy>();
 const queuePreviews = new Map<string, NonNullable<IssueQueue["preview"]>>();
 const githubViews = new Map<string, ProjectGitHubOverview>();
 function readinessView(view: ProjectGitHubOverview): ProjectGitHubOverview {
-  return { ...view, readiness_policy: view.readiness_policy ?? null, sources: view.sources.map(source => source.kind === "issue" ? { ...source, readiness: issueReadiness(view.readiness_policy ?? null, source) } : source) };
+  // The demo cannot establish real coverage provenance; linking remains unavailable.
+  return { ...view, readiness_policy: view.readiness_policy ?? null, sources: view.sources.map(source => source.kind === "issue" ? { ...source, delivery_scope_current: false, readiness: issueReadiness(view.readiness_policy ?? null, source) } : source) };
 }
 function record(): FactoryRecord { const now = new Date().toISOString(); return { id: crypto.randomUUID(), created_at: now, updated_at: now }; }
 function json(body: unknown, status = 200): Response { return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } }); }
