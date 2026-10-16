@@ -3,7 +3,7 @@ import type { FactoryBoardItem } from "../../shared/protocol.ts";
 import { useT } from "../lib/i18n.ts";
 import "./FactoryBoardStatus.css";
 
-export function FactoryBoardStatus({ state }: { state: FactoryBoardItem }) {
+export function FactoryBoardStatus({ state, showActivity = true, showTicketProgress = true }: { state: FactoryBoardItem; showActivity?: boolean; showTicketProgress?: boolean }) {
   const t = useT();
   let label: string | null = null; let Icon: LucideIcon = ClipboardList;
   switch (state.activity) {
@@ -20,9 +20,9 @@ export function FactoryBoardStatus({ state }: { state: FactoryBoardItem }) {
     case "reflecting": label = t("Reflecting"); Icon = History; break;
   }
   return <div className="factory-board-status">
-    {label && <p className="factory-activity" role="status" aria-label={label}><Icon aria-hidden="true" /><span>{label}</span></p>}
+    {showActivity && label && <p className="factory-activity" role="status" aria-label={label}><Icon aria-hidden="true" /><span>{label}</span></p>}
     {state.lane === "needs_you" && <p className="factory-attention"><CircleAlert aria-hidden="true" />{state.condition === "failed" ? t("Failed") : t("Needs you")}</p>}
-    {state.ticket_progress && <p>{t("Tickets: {completed}/{total}", state.ticket_progress)}</p>}
+    {showTicketProgress && state.ticket_progress && <p>{t("Tickets: {completed}/{total}", state.ticket_progress)}</p>}
     {state.waiting_reason && <p role="status">{state.waiting_reason}</p>}
   </div>;
 }
