@@ -33,7 +33,8 @@ import { browserEvidencePage, browserEvidenceTracing, startBrowserEvidence } fro
 import type { BrowserEvidenceSession } from "./browser-evidence.ts";
 import { chromePath } from "./chrome-path.ts";
 
-const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-web-ui-browser-")));
+// Plain workspace fixtures must stay outside CI's checkout-local TMPDIR Git ancestry.
+const root = realpathSync(mkdtempSync(join(existsSync("/tmp") ? "/tmp" : tmpdir(), "herdr-web-ui-browser-")));
 const workspaces: string[] = [];
 const worktreeWorkspaces: string[] = [];
 // the repository the worktree step makes, for the cleanup to find what the step made
