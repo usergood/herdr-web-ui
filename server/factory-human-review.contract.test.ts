@@ -10,6 +10,27 @@ import { tmpdir } from "node:os";
 import { createServer } from "./index.ts";
 
 describe("Human Review through authenticated HTTP", () => {
+  it("parks an assistant's owner question and resumes through normal capacity with the exact answered revision", async () => {
+    const f = await capacityFixture({ advancingHeads: true });
+    try {
+      const { prefix, detail } = await published(f);
+      const d = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
+      await f.api(`${prefix}/human-review/messages`, { review_id: d.human_reviews[0].id, content: "Discuss the result", idempotency_key: "question-discussion" });
+      const started = await until(detail, d => d.runs.some((r: any) => r.conversation_kind === "human_review"));
+      const assistant = started.runs.find((r: any) => r.conversation_kind === "human_review");
+      const question = await f.agent(assistant.id, "question", { question: "Which changed file should we discuss?" }).then(r => r.json());
+      f.runs.get(assistant.id)!.condition = "ready";
+      const parked = await until(detail, d => d.runs.find((r: any) => r.id === assistant.id)?.continuation?.condition === "parked");
+      expect(parked.runs.find((r: any) => r.id === assistant.id).continuation.kind).toBe("owner");
+      expect((await f.api("").then(r => r.json())).capacity.normal.used).toBe(0);
+      expect((await f.api(`${prefix}/questions/${question.id}/answer`, { revision: question.revision, answer: "The progress file" })).status).toBe(200);
+      const resumed = await until(detail, d => d.runs.find((r: any) => r.id === assistant.id)?.continuation?.condition === "resumed");
+      expect(resumed.runs.find((r: any) => r.id === assistant.id).continuation.question_revision).toBe(resumed.question_revision);
+      const receipt = await f.agent(assistant.id, "consume", { revision: resumed.question_revision }).then(r => r.json());
+      expect(receipt.receipt.revision).toBe(resumed.question_revision);
+      expect(resumed.runs).toHaveLength(2);
+    } finally { f.close(); }
+  }, 20000);
   it("rejects direct-work completion of the Human Review assistant without stopping its discussion", async () => {
     const f = await capacityFixture({ advancingHeads: true });
     try {

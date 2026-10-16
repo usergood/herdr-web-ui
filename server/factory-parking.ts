@@ -14,7 +14,7 @@ export class FactoryParking {
     queue.resume = (id, body) => this.resume(id, body);
   }
   observe(run: FactoryRun, resting: boolean): FactoryRun {
-    if (run.conversation_kind === "human_review" || this.store.get("human_reviews", run.id)) {
+    if ((run.conversation_kind === "human_review" || this.store.get("human_reviews", run.id)) && run.continuation?.kind !== "owner") {
       return { ...run, continuation: { ...(run.continuation ?? this.store.record()), kind: "children", condition: resting ? "parked" : "parking", question_revision: null, reason: resting ? "Human Review owns the captured result; Orchestrator capacity released" : "Waiting for verified native rest before Human Review" } };
     }
     const workers = this.store.list<FactoryWorker & { key: string }>("workers", run.id);
