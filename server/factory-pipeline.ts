@@ -24,8 +24,19 @@ export class FactoryPipeline {
     const batch = typeof body.review_batch_id === "string" ? this.store.get<ReworkBatch>("review_batches", body.review_batch_id) ?? this.store.get<ReworkBatch>("automatic_review_batches", body.review_batch_id) : null;
     const ticket = batch?.run_id === run.id && batch.status === "sent" && !batch.resolution && (!batch.ticket_ids || batch.ticket_ids.includes(String(body.ticket_id))) ? this.workflow.executionTickets(run).find(entry => entry.id === body.ticket_id) : null;
     if (!batch || !ticket) throw new FactoryError("rework_batch_unavailable", "Select an unresolved delivered rework batch for this Run and Ticket", 409);
-    if (batch.reports && this.store.list<FactoryWorker>("workers", run.id).some(worker => worker.rework_batch_id === batch.id || worker.role === "implementer" && owns(worker.condition))) throw new FactoryError("rework_batch_unavailable", "Use the current delivered batch without a prior repair writer", 409);
+    if (batch.reports && this.store.list<FactoryWorker>("workers", run.id).some(worker => worker.rework_batch_id === batch.id && (batch.origin !== "automatic" || worker.ticket_id === ticket.id) || worker.role === "implementer" && owns(worker.condition))) throw new FactoryError("rework_batch_unavailable", "Use the current delivered batch without a prior repair writer", 409);
     return { batch, ticket };
+  }
+  private automaticRepairHead(run: FactoryRun, batch: ReworkBatch): string {
+    let head = batch.head;
+    if (!head) throw new FactoryError("review_stale", "The automatic review batch has no retained candidate", 409);
+    const integrated = this.store.list<FactoryWorker>("workers", run.id).filter(worker => worker.rework_batch_id === batch.id && worker.condition === "completed");
+    const receipts = this.store.list<{ kind: string; data: { worker_id?: string; ticket_id?: string; head?: string } }>("events", run.implementation_id).filter(event => event.kind === "ticket_integrated");
+    for (const worker of integrated) {
+      if (!worker.head || worker.base !== head || worker.integration_tip !== head || !receipts.some(receipt => receipt.data.worker_id === worker.id && receipt.data.ticket_id === worker.ticket_id && receipt.data.head === worker.head)) throw new FactoryError("review_stale", "The automatic repair integration lineage is unverified", 409);
+      head = worker.head;
+    }
+    return head;
   }
   async requestWorker(id: string, body: Record<string, unknown>): Promise<FactoryWorker | import("../shared/factory.ts").FactoryCapacityWait> {
     const run = this.run(id, body.role === "implementer");
@@ -70,7 +81,10 @@ export class FactoryPipeline {
       const selected = this.selectedRework(run, body);
       const batch = selected?.batch;
       const rework = selected?.ticket;
-      if (role === "implementer" && batch?.reports && batch.head !== tip.head) throw new FactoryError("rework_batch_unavailable", "Use the current delivered batch without a prior repair writer", 409);
+      if (role === "implementer" && batch?.reports) {
+        if (batch.origin === "automatic" && this.automaticRepairHead(run, batch) !== tip.head) throw new FactoryError("review_stale", "The candidate changed outside the automatic review repair lineage", 409);
+        if (batch.origin !== "automatic" && batch.head !== tip.head) throw new FactoryError("rework_batch_unavailable", "Use the current delivered batch without a prior repair writer", 409);
+      }
       if (role === "implementer" && !ticket && !rework) throw new FactoryError("ticket_not_ready", "Select a ready Ticket or an explicitly delivered rework batch", 409);
       if (rework && batch?.origin === "human") {
         const integrated = this.store.list<FactoryWorker>("workers", id).filter(w => w.rework_batch_id === batch.id && w.condition === "completed").at(-1);
@@ -225,6 +239,13 @@ export class FactoryPipeline {
     if (!check || check.condition !== "passed" || check.head !== worker.head) throw new FactoryError("checks_required", "Run fresh checks on the reconciled worker head", 409);
     if (worker.condition !== "completed") await this.retainChild(run, worker);
     this.run(id);
+    const batch = worker.rework_batch_id ? this.store.get<ReworkBatch>("automatic_review_batches", worker.rework_batch_id) : null;
+    if (batch && worker.condition !== "completed") {
+      const expected = this.automaticRepairHead(run, batch);
+      const current = await this.runtime.operation<{ head: string }>(run, "head");
+      if (worker.integration_tip !== expected || current.head !== expected && !(worker.integration_pending && current.head === worker.head)) throw new FactoryError("review_stale", "The candidate changed outside the automatic review repair lineage", 409);
+      this.run(id);
+    }
     const next = await this.runtime.operation<FactoryWorker>(run, "integrate", { worker_id: workerId, tip: worker.integration_tip });
     if (next.id !== workerId || next.run_id !== id || next.head !== worker.head || next.condition !== "completed") throw new FactoryError("integration_uncertain", "Integration identity is uncertain; reconcile before further work", 409);
     await this.runtime.operation(run, "stop-worker", { worker_id: workerId });

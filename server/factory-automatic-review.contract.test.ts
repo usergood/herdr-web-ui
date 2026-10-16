@@ -11,7 +11,7 @@ async function until(read: () => Promise<any>, ready: (value: any) => boolean, t
   }
 }
 
-async function candidate(f: Awaited<ReturnType<typeof capacityFixture>>, publish = false) {
+async function candidate(f: Awaited<ReturnType<typeof capacityFixture>>, publish = false, twoTickets = false) {
   await f.api("/settings", { max_agents: 1 });
   const id = await f.assignment("Automatic review result");
   const detail = () => f.api(`/implementations/${id}`).then(r => r.json());
@@ -21,10 +21,13 @@ async function candidate(f: Awaited<ReturnType<typeof capacityFixture>>, publish
   const run = (await until(detail, d => d.runs.length === 1)).runs[0];
   await f.agent(run.id, "tickets", { specification_id: specification.id, testing_plan: "Public HTTP and desktop/mobile browser journeys", tickets: [
     { key: "one", title: "Accepted behavior", acceptance: "Return the accepted result", dependencies: [] },
+    ...(twoTickets ? [{ key: "two", title: "Dependent accepted behavior", acceptance: "Preserve the dependent result", dependencies: ["one"] }] : []),
   ] });
   f.runs.get(run.id)!.condition = "ready";
-  const started = await until(detail, d => d.workers.some((w: any) => w.role === "implementer" && w.condition === "working"));
-  f.workers.get(started.workers[0].id)!.condition = "ready";
+  for (let index = 0; index < (twoTickets ? 2 : 1); index++) {
+    const started = await until(detail, d => d.workers.filter((w: any) => w.role === "implementer").length > index && d.workers.some((w: any) => w.role === "implementer" && w.condition === "working"));
+    f.workers.get(started.workers.find((w: any) => w.role === "implementer" && w.condition === "working").id)!.condition = "ready";
+  }
   return { id, detail, run };
 }
 
@@ -258,3 +261,81 @@ describe("Automatic independent review through authenticated HTTP", () => {
     } finally { f.close(); }
   });
 });
+
+
+it("repairs every Ticket in one automatic report batch sequentially and publishes only fresh checked reviews", async () => {
+  const f = await capacityFixture({ advancingHeads: true });
+  try {
+    const { detail, run } = await candidate(f, true, true);
+    const initial = await until(detail, d => d.workers.some((w: any) => w.role === "standards" && w.condition === "working"));
+    const standards = initial.workers.find((w: any) => w.role === "standards");
+    f.reviewOutcomes.set(standards.id, "failed"); f.workers.get(standards.id)!.condition = "ready";
+    const spec = await until(detail, d => d.workers.some((w: any) => w.role === "spec" && w.condition === "working"));
+    f.workers.get(spec.workers.find((w: any) => w.role === "spec").id)!.condition = "ready";
+    const fixing = await until(detail, d => d.workers.some((w: any) => w.rework_batch_id && w.condition === "working"));
+    const first = fixing.workers.find((w: any) => w.rework_batch_id);
+    const original = (await f.agent(run.id, "contract").then(r => r.json())).review_batches.find((batch: any) => batch.id === first.rework_batch_id);
+    expect(original.ticket_ids).toHaveLength(2);
+    const parallel = await f.api(`/runs/${run.id}/workers`, { role: "implementer", ticket_id: original.ticket_ids[1], review_batch_id: original.id, idempotency_key: "parallel-automatic-repair" });
+    expect(parallel.status).toBe(409);
+    expect((await parallel.json()).error.code).toBe("rework_batch_unavailable");
+    expect((await detail()).workers.filter((w: any) => w.rework_batch_id === original.id)).toHaveLength(1);
+    f.loseNextIntegration(); f.workers.get(first.id)!.condition = "ready";
+    const next = await until(detail, d => d.workers.filter((w: any) => w.rework_batch_id === original.id).length === 2 && d.workers.some((w: any) => w.rework_batch_id === original.id && w.condition === "working"));
+    const repairs = next.workers.filter((w: any) => w.rework_batch_id === original.id);
+    const second = repairs.find((w: any) => w.id !== first.id);
+    expect(repairs[0].condition).toBe("completed");
+    expect(second.base).toBe(repairs[0].head);
+    expect(repairs.map((w: any) => w.ticket_id)).toEqual(original.ticket_ids);
+    expect(new Set(repairs.map((w: any) => w.id)).size).toBe(2);
+    f.restart(); f.workers.get(second.id)!.condition = "ready";
+    for (const axis of ["standards", "spec"]) {
+      const reviewed = await until(detail, d => d.workers.filter((w: any) => w.role === axis).length === 2 && d.workers.some((w: any) => w.role === axis && w.condition === "working"));
+      if (axis === "standards") {
+        const duplicate = await f.api(`/runs/${run.id}/workers`, { role: "implementer", ticket_id: original.ticket_ids[0], review_batch_id: original.id, idempotency_key: "duplicate-automatic-ticket-repair" });
+        expect(duplicate.status).toBe(409);
+        expect((await duplicate.json()).error.code).toBe("rework_batch_unavailable");
+      }
+      f.workers.get(reviewed.workers.find((w: any) => w.role === axis && w.condition === "working").id)!.condition = "ready";
+    }
+    const done = await until(detail, d => d.automatic_review[0].condition === "published" && d.human_reviews[0]?.condition === "ready");
+    const pr = done.pull_requests[0];
+    expect(done.workers.filter((w: any) => w.rework_batch_id === original.id).map((w: any) => w.condition)).toEqual(["completed", "completed"]);
+    expect(done.review_evidence.filter((report: any) => pr.evidence_ids.includes(report.id)).map((report: any) => [report.axis, report.outcome, report.head])).toEqual([["standards", "passed", pr.head], ["spec", "passed", pr.head]]);
+    expect(done.checks.find((check: any) => check.id === pr.check_id)).toMatchObject({ head: pr.head, condition: "passed", worker_id: null });
+    const retained = (await f.agent(run.id, "contract").then(r => r.json())).review_batches.find((batch: any) => batch.id === original.id);
+    expect(retained.reports).toEqual(original.reports);
+    expect(retained.resolution.head).toBe(pr.head);
+    expect(done.approvals.map((approval: any) => approval.kind)).toEqual(["specification"]);
+    expect(f.publications.size).toBe(1);
+    expect(f.workerLaunches).toHaveLength(8);
+    expect(done.implementation).toMatchObject({ stage: "review", outcome: "pr_open" });
+  } finally { f.close(); }
+}, 30_000);
+
+
+for (const phase of ["between_repairs", "while_repairing"] as const) it(`blocks outside-head drift ${phase} without extending automatic repair authority`, async () => {
+  const f = await capacityFixture({ advancingHeads: true });
+  try {
+    const { detail, run } = await candidate(f, true, true);
+    const initial = await until(detail, d => d.workers.some((w: any) => w.role === "standards" && w.condition === "working"));
+    const standards = initial.workers.find((w: any) => w.role === "standards");
+    f.reviewOutcomes.set(standards.id, "failed"); f.workers.get(standards.id)!.condition = "ready";
+    const spec = await until(detail, d => d.workers.some((w: any) => w.role === "spec" && w.condition === "working"));
+    f.workers.get(spec.workers.find((w: any) => w.role === "spec").id)!.condition = "ready";
+    const fixing = await until(detail, d => d.workers.some((w: any) => w.rework_batch_id && w.condition === "working"));
+    const first = fixing.workers.find((w: any) => w.rework_batch_id);
+    const original = (await f.agent(run.id, "contract").then(r => r.json())).review_batches.find((batch: any) => batch.id === first.rework_batch_id);
+    if (phase === "between_repairs") f.changeAfterNextIntegration("e".repeat(40));
+    else f.changeHead(run.id, "e".repeat(40));
+    f.workers.get(first.id)!.condition = "ready";
+    const stopped = await until(detail, d => d.automatic_review[0].condition === "blocked");
+    expect(stopped.workers.filter((w: any) => w.rework_batch_id === original.id)).toHaveLength(1);
+    expect(stopped.workers.find((w: any) => w.id === first.id).condition).toBe(phase === "between_repairs" ? "completed" : "ready");
+    expect(stopped.events.filter((event: any) => event.kind === "ticket_integrated" && event.data.worker_id === first.id)).toHaveLength(phase === "between_repairs" ? 1 : 0);
+    expect(stopped.automatic_review[0].reason).toContain("automatic");
+    expect(stopped.pull_requests).toHaveLength(0); expect(f.publications.size).toBe(0);
+    const retained = (await f.agent(run.id, "contract").then(r => r.json())).review_batches.find((batch: any) => batch.id === original.id);
+    expect(retained.reports).toEqual(original.reports); expect(retained.resolution).toBeUndefined();
+  } finally { f.close(); }
+}, 30_000);
