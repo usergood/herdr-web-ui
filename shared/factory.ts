@@ -242,9 +242,9 @@ export interface FactoryMergeResult {
   merge_sha: string | null; release_tag: string | null; reason: string | null;
 }
 export interface FactoryHumanApproval extends FactoryRecord {
-  /** Exact owner-question context; absent on legacy authority that needs reconciliation. */
+  /** Exact owner-question context; legacy authority without it requires a fresh owner decision. */
   context_revision?: string;
-  /** Machine confirmed protection blocked before sending a merge mutation. */
+  /** No merge mutation sent, or the Machine positively confirmed protection blocked before send. */
   merge_not_sent?: boolean;
   /** Retained history, revoked only by an explicit owner feedback submission. */
   superseded_by_batch_id?: string;
