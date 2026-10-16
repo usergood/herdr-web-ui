@@ -158,6 +158,7 @@ export class FactoryPipeline {
   }
   async accept(id: string, body: Record<string, unknown>): Promise<FactoryRun> {
     const run = this.run(id, false);
+    if ((run.manifest as { planning_authority?: { automatic_execution?: boolean } }).planning_authority?.automatic_execution) throw new FactoryError("human_review_required", "Approve the checked candidate in Human Review; Done requires verified delivery", 409);
     await this.retainBeforeStop(id);
     this.run(id, false); // Capture may overlap an owner action; validate the live scope afterwards.
     const current = await this.runtime.operation<{ head: string; workspace_hash: string }>(run, "head");

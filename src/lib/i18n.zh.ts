@@ -1431,4 +1431,13 @@ export const ZH: Record<string, string> = {
   "Review discussion": "审查讨论",
   "Discuss this review": "讨论此审查",
   "Send discussion": "发送讨论",
+  "Approval merges this checked and independently reviewed candidate into its authorized target.": "批准后，会将已通过检查和独立审查的此候选版本合并到授权目标。",
+  "Release verified": "已验证发布",
+  "Merge verified": "已验证合并",
+  "Merge approval retained": "已保留合并批准",
+  "Finish your draft comments before approving without comments.": "在无评论批准前，请先完成评论草稿。",
+  "Approve and merge": "批准并合并",
+  "Delivery milestone": "交付里程碑",
+  "Verified merge": "已验证的合并",
+  "Containing release": "包含更改的发布",
 };

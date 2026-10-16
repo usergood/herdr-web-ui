@@ -1429,4 +1429,13 @@ export const JA: Record<string, string> = {
   "Review discussion": "レビューの相談",
   "Discuss this review": "このレビューについて相談",
   "Send discussion": "相談を送信",
+  "Approval merges this checked and independently reviewed candidate into its authorized target.": "承認すると、チェックと独立レビューを通過したこの候補を許可された対象にマージします。",
+  "Release verified": "リリース確認済み",
+  "Merge verified": "マージ確認済み",
+  "Merge approval retained": "マージ承認を保存しました",
+  "Finish your draft comments before approving without comments.": "コメントなしで承認する前に、下書きのコメントを完了してください。",
+  "Approve and merge": "承認してマージ",
+  "Delivery milestone": "完了の条件",
+  "Verified merge": "確認済みマージ",
+  "Containing release": "変更を含むリリース",
 };

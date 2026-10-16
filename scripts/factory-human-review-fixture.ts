@@ -8,11 +8,11 @@ export async function until(read: () => Promise<any>, ready: (d: any) => boolean
     await Bun.sleep(20);
   }
 }
-export async function published(f: Awaited<ReturnType<typeof capacityFixture>>) {
+export async function published(f: Awaited<ReturnType<typeof capacityFixture>>, milestone: "merge" | "release" = "merge") {
   await f.api("/settings", { max_agents: 1 });
   const id = await f.assignment("Human Review result"); const prefix = `/implementations/${id}`;
   const detail = () => f.api(prefix).then(r => r.json());
-  await f.api(`/projects/${(await detail()).implementation.project_id}/configure`, { checks: [["bun", "test"]], permissions: "Owned fixtures only", pull_request: { repository: "fictional/project", base_branch: "main" } });
+  await f.api(`/projects/${(await detail()).implementation.project_id}/configure`, { delivery_policy: milestone, checks: [["bun", "test"]], permissions: "Owned fixtures only", pull_request: { repository: "fictional/project", base_branch: "main" } });
   const spec = await f.api(`${prefix}/specifications`, { content: "Retain the reviewed result" }).then(r => r.json());
   await f.api(`${prefix}/specification-acceptance`, { source: "button", specification_id: spec.id, hash: spec.hash });
   const run = (await until(detail, d => d.runs.length === 1)).runs[0];

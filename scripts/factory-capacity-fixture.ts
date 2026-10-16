@@ -35,6 +35,8 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean } = {
   let losePublication = false;
   let loseStop = false;
   let denyPublication = false;
+  let mergeFailure: string | null = null; let loseMerge = false;
+  const mergeEffects: string[] = []; const mergeResults = new Map<string, any>();
   let capabilities: Record<string, any> | null = null;
   let transcript: Pick<NativeConversationSnapshot, "source_id" | "version" | "cursor" | "turns"> = { source_id: "owned-transcript", version: "v1", cursor: null, turns: [] };
   const access = new Map<string, { url: string; token: string }>();
@@ -110,6 +112,16 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean } = {
         const outcome = reviewOutcomes.get(worker.id) ?? "passed";
         return Response.json({ head: worker.base, source_id: `owned-report-${worker.id}`, content: outcome === "passed" ? "FACTORY_REVIEW: PASS\nOwned independent review passed" : "FACTORY_REVIEW: FAIL\nThe accepted result loses the owner's draft on reload", outcome });
       }
+      if (action === "operations/merge") {
+        if (mergeFailure) return Response.json({ error: { code: mergeFailure, message: "Unsafe remote diagnostic must not be copied" } }, { status: 409 });
+        if (!mergeResults.has(run.id)) {
+          mergeEffects.push(run.id);
+          const release = (run.manifest as any).project.delivery_policy === "release";
+          mergeResults.set(run.id, { run_id: run.id, head: body.head, repository: "fictional/project", base_branch: "main", number: 27, condition: release ? "awaiting_release" : "merged", merge_sha: "a".repeat(40), release_tag: null, reason: release ? "Merge verified; waiting for a published release containing it" : null });
+        }
+        if (loseMerge) { loseMerge = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost merge acknowledgment" } }, { status: 503 }); }
+        return Response.json(mergeResults.get(run.id));
+      }
       if (action === "operations/publish") {
         if (denyPublication) return Response.json({ error: { code: "publication_unconfigured", message: "Unsafe remote diagnostic must not be copied" } }, { status: 409 });
         if (!publications.has(run.id)) publications.set(run.id, { run_id: run.id, head: body.head, repository: "fictional/project", base_branch: "main", branch: run.branch, number: 27, url: "https://github.com/fictional/project/pull/27" });
@@ -153,6 +165,10 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean } = {
     return fetch(`http://localhost:${app.port}${new URL(credential.url).pathname}/${path}`, { method: body === undefined ? "GET" : "POST", headers: { authorization: `Bearer ${credential.token}`, "content-type": "application/json", "x-herdr-factory": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   };
   return { api, agent, assignment, runs, workers, launches, workerLaunches, workerContexts, reviewOutcomes, publications, executedChecks, resumptions, resumeHistories, prompts, state, token, get app() { return app; },
+    mergeEffects,
+    mergeFailure: (code: string | null) => { mergeFailure = code; },
+    loseNextMerge: () => { loseMerge = true; },
+    releaseMerged: () => { for (const result of mergeResults.values()) Object.assign(result, { condition: "released", release_tag: "fixture-release", reason: null }); },
     legacyHumanReview: () => { legacyHumanReview = true; },
     reviewUnavailable: (value: boolean) => { reviewUnavailable = value; },
     reviewHead: (head: string | null) => { reviewHead = head; },

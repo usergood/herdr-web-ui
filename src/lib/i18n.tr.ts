@@ -1382,4 +1382,13 @@ export const TR: Record<string, string> = {
   "Review discussion": "İnceleme tartışması",
   "Discuss this review": "Bu incelemeyi tartışın",
   "Send discussion": "Tartışmayı gönder",
+  "Approval merges this checked and independently reviewed candidate into its authorized target.": "Onay, denetlenmiş ve bağımsız incelemeden geçmiş bu adayı yetkili hedefe birleştirir.",
+  "Release verified": "Sürüm doğrulandı",
+  "Merge verified": "Birleştirme doğrulandı",
+  "Merge approval retained": "Birleştirme onayı saklandı",
+  "Finish your draft comments before approving without comments.": "Yorumsuz onaylamadan önce taslak yorumlarınızı tamamlayın.",
+  "Approve and merge": "Onayla ve birleştir",
+  "Delivery milestone": "Teslim aşaması",
+  "Verified merge": "Doğrulanmış birleştirme",
+  "Containing release": "Değişiklikleri içeren sürüm",
 };

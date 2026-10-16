@@ -25,6 +25,7 @@ import type { MachineAccounts } from "./accounts.ts";
 import { withAccountEnvironment } from "./account-execution.ts";
 import { stagePlanningDocuments } from "./factory-planning-docs.ts";
 import { prepareFactoryPrompt } from "./factory-prompt.ts";
+import { FactoryMerge } from "./factory-merge.ts";
 import { FactoryPublication } from "./factory-publication.ts";
 import { deleteHostFiles } from "./factory-delete-host.ts";
 
@@ -45,11 +46,13 @@ export class FactoryExecutionHost {
   private preparedPath: string | null;
   private readonly genuineNative: boolean;
   readonly worktrees: FactoryWorktrees;
+  private readonly merger: FactoryMerge;
   private readonly publication: FactoryPublication;
   constructor(private readonly store: FactoryStore, private readonly sourcePath: () => string | null, native: Partial<FactoryNative> = {}, private readonly accounts?: MachineAccounts) {
     this.native = { ...factoryNative, ...native };
     this.genuineNative = Object.keys(native).every((key) => key === "paneState") && accounts?.native.genuine !== false;
     this.worktrees = new FactoryWorktrees(store, this.native, () => this.skillPath(), accounts);
+    this.merger = new FactoryMerge(store, accounts, id => this.worktrees.head(id), id => this.reconcile(id));
     this.publication = new FactoryPublication(store, accounts, id => this.reconcile(id), id => this.worktrees.head(id));
     const prepared = this.store.get<{ id: string; path: string }>("host_skills", "default"); this.preparedPath = prepared?.path ?? null;
   }
@@ -118,7 +121,7 @@ export class FactoryExecutionHost {
     this.store.db.transaction(() => {
       this.store.put("host_deleted_runs", { id, ...result });
       for (const kind of ["host_leases", "host_access", "host_pause_intents", "host_deletions", "host_delete_requests", "host_scaffolding", "host_native_identity"]) this.store.remove(kind, id);
-      for (const kind of ["host_workers", "host_checks", "host_pause_results", "host_resumptions", "host_review_evidence", "host_publications"]) for (const entry of this.store.list<{ id: string }>(kind, id)) {
+      for (const kind of ["host_workers", "host_checks", "host_pause_results", "host_resumptions", "host_review_evidence", "host_publications", "host_merges"]) for (const entry of this.store.list<{ id: string }>(kind, id)) {
         this.store.remove(kind, entry.id); this.store.remove("host_scaffolding", entry.id); this.store.remove("host_native_identity", entry.id);
       }
     }).immediate();
@@ -167,6 +170,7 @@ export class FactoryExecutionHost {
   }
   private async performOperation(id: string, action: string, body: Record<string, unknown>): Promise<unknown> {
     this.assertNotDeleting(id);
+    if (action === "merge") return this.merger.merge(id, body);
     if (action === "publish") return this.publication.publish(id, body);
     if (action === "resume-status") {
       const prior = this.store.get<{ context: FactoryRun | FactoryWorker }>("host_resumptions", `${body.pause_id}:${body.worker_id ?? id}`);
@@ -584,5 +588,5 @@ export class FactoryExecutionHost {
     if (hash(bytes) !== expectedHash) throw new FactoryError("output_changed", "The output changed after inspection; capture it again", 409);
     return { content_base64: bytes.toString("base64") };
   }
-  stop(): void { this.stopped = true; this.worktrees.shutdown(); }
+  stop(): void { this.stopped = true; this.merger.stop(); this.worktrees.shutdown(); }
 }

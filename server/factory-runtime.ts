@@ -240,9 +240,17 @@ export class FactoryRuntime {
       const deadline = AbortSignal.timeout(path.endsWith("/operations/check") ? 325_000 : path === "/launch" ? 75_000 : path === "/model-catalog" ? 30_000 : 15_000);
       const response = await fetch(`${endpoint.url}/api/factory-host${path}`, { method: body === undefined ? "GET" : "POST", headers: { authorization: `Bearer ${endpoint.token}`, "x-herdr-factory": "1", "x-herdr-machine": "1", "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), redirect: "error", signal: signal ? AbortSignal.any([signal, deadline]) : deadline });
       if (!response.ok) {
-        if (response.status === 409 && /\/operations\/(publish|review-evidence)$/.test(path)) {
+        if (response.status === 409 && /\/operations\/(publish|review-evidence|merge)$/.test(path)) {
           const failure = await response.json().catch(() => null) as { error?: { code?: string } } | null;
           const reasons: Record<string, string> = {
+            merge_blocked: "GitHub protection, pending reviews, required checks or conflicts block this target",
+            merge_denied: "GitHub refused this merge under its repository permissions, protection or conflict rules; inspect the PR before further action",
+            merge_unconfigured: "Merge requires a resting owned Run, frozen destination and verified GitHub account",
+            merge_authority_changed: "The merge authority differs from the exact published candidate",
+            merge_target_changed: "The PR candidate or target differs from the frozen merge destination",
+            merge_coverage_unverified: "The authorized target or containing release could not be verified",
+            merge_busy: "This candidate's merge is already being reconciled",
+            run_stopping: "Pause or Delete stopped this merge operation",
             publication_unconfigured: "Publication requires the frozen Project destination and a verified GitHub account on the execution Machine",
             publication_unready: "Verify the owned resting Run and its publication destination",
             publication_target_changed: "The PR identity or destination differs from the authorized candidate",
@@ -450,7 +458,7 @@ export class FactoryRuntime {
       const planning = ["grill-me", "grill-with-docs"].includes(action) || action === "to-spec" && (!specification || !this.workflow.approved(id, "specification", specification.id));
       const capacityPool = agentCapacityPool(this.store, this.settings(), planning);
       const record: FactoryRun = { ...this.store.record(), implementation_id: id, action, provider, machine_id: machineId, capacity_pool: capacityPool, condition: "accepted", waiting_reason: null, idempotency_key: body.idempotency_key as string, specification_id: specification?.id ?? null, graph_hash: graphHash, base: inspected?.head ?? null, checkout: inspected?.path ?? null, worktree: null, branch: null, workspace_id: null, pane_id: null, manifest: { skills, artifacts, context_message_ids: messages.map(message => message.id), retrospective, retrospective_evidence: retrospective ? this.store.get("retro_evidence", retrospective.id) : null, implementation, project, checkout: inspected, specification, tickets: this.workflow.tickets(id), approvals: this.store.list<FactoryApproval>("approvals", id), effective_settings: this.settings(), provider_version: capability.version, permissions: "Retain native controls; publication, merge, deployment and destructive cleanup are separate owner actions", contract_hash: contractHash } };
-      record.manifest = { ...(record.manifest as object), ...(planningAuthority ? { planning_authority: planningAuthority } : {}), execution_preset: executionPreset, project_references: projectReferences, account_snapshot: accountSnapshot };
+      record.manifest = { ...(record.manifest as object), ...(planningAuthority ? { planning_authority: planningAuthority } : {}), github_policy: project ? this.store.get("github_policies", project.id) : null, execution_preset: executionPreset, project_references: projectReferences, account_snapshot: accountSnapshot };
       if (projectReferences) this.references.freeze(projectReferences.project_id);
       this.store.remove("capacity_waits", `${id}:${body.idempotency_key}`);
       this.store.put("runs", record, id); this.store.event(id, "dispatch_accepted", { run_id: record.id, action }); return { run: record, accepted: true };

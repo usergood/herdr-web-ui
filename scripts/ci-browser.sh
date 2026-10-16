@@ -68,6 +68,7 @@ run_script scripts/factory-automatic-planning-browser-regression.ts
 run_script scripts/factory-automatic-execution-browser-regression.ts
 run_script scripts/factory-automatic-review-browser-regression.ts
 run_script scripts/factory-human-review-browser-regression.ts
+run_script scripts/factory-human-merge-browser-regression.ts
 run_script scripts/project-setup-browser-regression.ts
 run_script scripts/inbox-start-browser-regression.ts
 run_script scripts/account-profiles-browser-regression.ts

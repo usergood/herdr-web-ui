@@ -16,6 +16,8 @@ export function HumanReviewConversation({ detail, busy, perform, history }: { de
   const t = useT(); const review = detail.human_reviews?.at(-1);
   const [fileIndex, setFileIndex] = useState(0);
   const [text, setText] = useState(""); const [key, setKey] = useState(() => crypto.randomUUID());
+  const approval = detail.human_review_approvals?.find(a => a.review_id === review?.id);
+  const retainedComments = detail.comments.some(c => c.status !== "resolved");
   const snapshot = detail.snapshots.find(s => s.id === review?.snapshot_id);
   const file = snapshot?.files[fileIndex];
   const chatIds = new Set(detail.chats.filter(c => c.title === "Human Review").map(c => c.id));
@@ -24,6 +26,13 @@ export function HumanReviewConversation({ detail, busy, perform, history }: { de
   return <div className="human-review-conversation">
     {!review ? <p role="status">{t("Human Review opens automatically after checks, independent reviews and PR publication.")}</p> : <>
       <p role="status">{review.reason ?? t("Review the captured result and discuss it with the assistant.")}</p>
+      <p className="field-hint">{t("Approval merges this checked and independently reviewed candidate into its authorized target.")}</p>
+      {approval && <p role="status">{approval.reason ?? (approval.condition === "released" ? t("Release verified") : approval.condition === "merged" ? t("Merge verified") : t("Merge approval retained"))}</p>}
+      {(retainedComments || text.trim()) && <p role="status">{t("Finish your draft comments before approving without comments.")}</p>}
+      <button className="btn factory-button" disabled={busy || review.condition !== "ready" || !review.snapshot_id || retainedComments || !!text.trim() || !!approval && approval.condition !== "blocked"} onClick={() => void perform(async () => {
+        if (!review.snapshot_id) return;
+        await factoryRequest(`/implementations/${detail.implementation.id}/human-review/approve`, { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, idempotency_key: `approve-${review.id}` });
+      })}>{t("Approve and merge")}</button>
       {assistant?.waiting_reason && <p role="status">{assistant.waiting_reason}</p>}
       {detail.human_review_deliveries?.filter(d => d.reason).map(d => <p role="status" key={d.id}>{d.reason}</p>)}
       {waiting?.map(w => <p role="status" key={w.id}>{w.reason}</p>)}

@@ -1233,6 +1233,14 @@ export const DEFAULT_PORT = 7317;
  * never grants publication. PR publication leaves review/pr_open, never Done or merge authority.
  * Machine-only POST /api/factory-host/runs/:id/operations/publish reconciles the owned branch/PR
  * identity after lost acknowledgment; scoped agents cannot publish or resolve their own findings.
+ * POST /api/factory/implementations/:id/human-review/approve (human_review_approval) ->
+ * FactoryHumanApproval. Same-origin authenticated owner control; no Agent context needed.
+ * Exact snapshot/head plus fresh checks and both independent reports are required; retained
+ * comments cannot be omitted. Detail.human_review_approvals retains the decision and result.
+ * Machine-only operations/merge requires x-herdr-machine: 1 and the exact retained owner
+ * approval/publication identity. A sent merge is observed, never replayed. Done requires
+ * verified target coverage and a containing published release if frozen delivery_policy=release.
+ * This operation grants no release creation or deployment authority.
  * Historical Runs without automatic Specification authority retain explicit worker controls.
  * POST .../send-answers (send_answers) -> FactoryAnswerDelivery; queued continuations share admission with Start; uncertainty never replays.
  * POST .../workers (worker) -> FactoryWorker, or FactoryCapacityWait, 202 when queued;
@@ -1318,7 +1326,8 @@ export interface FactoryRequests {
   configure: { project_id?: string | null; provider?: import("./factory.ts").FactoryProvider | null; machine_id?: string | null };
   complete_work: { run_id: string };
   project: { name: string; path: string; machine_id: string; provider: import("./factory.ts").FactoryProvider; tracker: import("./factory.ts").FactoryProject["tracker"]; tracker_reference?: string; guided_setup?: boolean; permission_mode?: import("./agent-permissions.ts").AgentPermissionMode; check_ids?: string[]; context_target_tokens?: number; guidance_task?: boolean; github_account_id?: string };
-  project_settings: Partial<Pick<import("./factory.ts").FactoryProject, "name" | "checks" | "setup" | "environment" | "permissions" | "permission_mode" | "execution_preset" | "shared_paths" | "provider" | "machine_id" | "account_bindings" | "workflow_instructions" | "context_target_tokens">>;
+  human_review_approval: { review_id: string; snapshot_id: string; head: string; idempotency_key: string };
+  project_settings: Partial<Pick<import("./factory.ts").FactoryProject, "pull_request" | "delivery_policy" | "name" | "checks" | "setup" | "environment" | "permissions" | "permission_mode" | "execution_preset" | "shared_paths" | "provider" | "machine_id" | "account_bindings" | "workflow_instructions" | "context_target_tokens">>;
   project_discovery: { machine_id: string; path: string };
   account_import: { source_id: string; path?: string };
   checkout: { machine_id: string; path: string };
@@ -1419,7 +1428,7 @@ export interface FactoryHostRequests {
   review: { path: string; base: string; mode: "branch" | "workspace" };
   launch: { run: import("./factory.ts").FactoryRun; access?: { token: string; url: string }; attachments?: (Pick<import("./factory.ts").FactoryArtifact, "id" | "name" | "hash" | "size"> & { content_base64: string })[]; references?: import("./factory.ts").ProjectReferencePayload };
   send: { text: string };
-  operation: { deletion_id?: string; implementation_id?: string; pause_id?: string; history?: string; text?: string; worker_id?: string | null; check_id?: string; tip?: string; before?: string; worker?: import("./factory.ts").FactoryWorker; check?: import("./factory.ts").FactoryCheck; context?: unknown } | import("./factory.ts").FactoryPublicationRequest;
+  operation: { deletion_id?: string; implementation_id?: string; pause_id?: string; history?: string; text?: string; worker_id?: string | null; check_id?: string; tip?: string; before?: string; worker?: import("./factory.ts").FactoryWorker; check?: import("./factory.ts").FactoryCheck; context?: unknown } | import("./factory.ts").FactoryPublicationRequest | import("./factory.ts").FactoryMergeRequest;
 }
 
 /** GET /api/factory/implementations/:id -> FactoryDetail, including stable workflow

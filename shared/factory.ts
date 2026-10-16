@@ -19,6 +19,7 @@ export interface Implementation extends FactoryRecord {
   archived_at?: string | null;
 }
 export interface FactoryProject extends FactoryRecord {
+  delivery_policy?: "merge" | "release";
   /** Explicit publication destination, frozen when the owner accepts the Specification. */
   pull_request?: { repository: string; base_branch: string } | null;
   name: string; repository: string; provider: FactoryProvider; machine_id: string;
@@ -103,6 +104,7 @@ export interface FactoryPublicationRequest {
   head: string; workspace_hash: string; check_id: string; evidence_ids: string[];
   reports: { worker_id: string; source_id: string }[];
 }
+export interface FactoryMergeRequest extends FactoryPublicationRequest { approval: FactoryHumanApproval; pull_request: FactoryPullRequest }
 export interface FactoryQuestion extends FactoryRecord { implementation_id: string; run_id: string | null; worker_id?: string | null; question: string; answer_kind?: "text" | "confirmation"; answer: string | null; revision: string }
 export interface FactoryArtifact extends FactoryRecord {
   implementation_id: string; chat_id: string; name: string; media_type: string;
@@ -178,6 +180,18 @@ export interface FactoryCapacity {
   waiting: FactoryCapacityWait[];
 }
 export interface FactoryOverview { capacity: FactoryCapacity }
+export interface FactoryMergeResult {
+  run_id: string; head: string; repository: string; base_branch: string; number: number;
+  condition: "merged" | "awaiting_release" | "released" | "uncertain";
+  merge_sha: string | null; release_tag: string | null; reason: string | null;
+}
+export interface FactoryHumanApproval extends FactoryRecord {
+  observations?: number; next_observation_at?: number;
+  implementation_id: string; review_id: string; run_id: string; snapshot_id: string; head: string;
+  idempotency_key: string; provenance: { kind: "owner_button"; origin: string };
+  condition: "pending" | "blocked" | FactoryMergeResult["condition"];
+  reason: string | null; merge_sha: string | null; release_tag: string | null;
+}
 export interface FactoryHumanReviewDelivery {
   id: string; review_id: string;
   condition: "queued" | "sending" | "sent" | "uncertain"; reason: string | null;
@@ -188,6 +202,7 @@ export interface FactoryHumanReview extends FactoryRecord {
   condition: "capturing" | "ready" | "waiting" | "blocked"; reason: string | null;
 }
 export interface FactoryDetail {
+  human_review_approvals?: FactoryHumanApproval[];
   human_reviews?: FactoryHumanReview[];
   human_review_deliveries?: FactoryHumanReviewDelivery[];
   automatic_review_batches?: FactoryAutomaticReviewBatch[];

@@ -1427,4 +1427,13 @@ export const KO: Record<string, string> = {
   "Review discussion": "검토 논의",
   "Discuss this review": "이 검토에 대해 논의하기",
   "Send discussion": "논의 보내기",
+  "Approval merges this checked and independently reviewed candidate into its authorized target.": "승인하면 검사와 독립 검토를 마친 이 변경 사항을 허용된 대상에 병합합니다.",
+  "Release verified": "릴리스 확인됨",
+  "Merge verified": "병합 확인됨",
+  "Merge approval retained": "병합 승인 보관됨",
+  "Finish your draft comments before approving without comments.": "의견 없이 승인하기 전에 작성 중인 의견을 마무리하세요.",
+  "Approve and merge": "승인 및 병합",
+  "Delivery milestone": "완료 기준",
+  "Verified merge": "확인된 병합",
+  "Containing release": "변경 사항을 포함하는 릴리스",
 };
