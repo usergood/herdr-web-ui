@@ -1,3 +1,4 @@
+import { assignmentProgress } from "../shared/factory-board.ts";
 import { factoryCapacity } from "./factory-capacity.ts";
 import { mkdirSync } from "node:fs";
 import { permissionDescription, validPermissionMode } from "../shared/agent-permissions.ts";
@@ -88,6 +89,20 @@ export class FactoryService {
     const settings = { ...initialSettings, skills_path: this.skillsPath, ...value };
     if (removed !== undefined) this.store.put("settings", { id: "default", value: settings });
     return settings;
+  }
+  private boardAssignments(): Implementation[] {
+    const ages = new Map<string, string>();
+    for (const wait of this.store.list<import("../shared/factory.ts").FactoryCapacityWait>("capacity_waits")) {
+      if (!ages.has(wait.implementation_id) || wait.created_at < ages.get(wait.implementation_id)!) ages.set(wait.implementation_id, wait.created_at);
+    }
+    return this.store.list<Implementation>("implementations").sort((a, b) => (ages.get(a.id) ?? a.created_at).localeCompare(ages.get(b.id) ?? b.created_at));
+  }
+  private boardProgress(idea: Implementation): import("../shared/factory.ts").FactoryAssignmentProgress {
+    const runs = this.store.list<FactoryRun>("runs", idea.id);
+    const executing = runs.filter(run => run.action === "implement-spec" && !["completed", "cancelled", "failed"].includes(run.condition)).at(-1);
+    const tickets = executing ? this.workflow.executionTickets(executing) : this.workflow.tickets(idea.id);
+    const waiting = this.store.list<import("../shared/factory.ts").FactoryCapacityWait & { request?: { ticket_id?: string } }>("capacity_waits").map(wait => ({ ...wait, ticket_id: wait.request?.ticket_id }));
+    return assignmentProgress(idea, tickets, runs, this.store.list("workers"), this.store.list("checks"), waiting);
   }
   private activeWork(id: string): boolean {
     const runs = this.store.list<FactoryRun>("runs", id); const ids = new Set(runs.map((run) => run.id));
@@ -399,7 +414,7 @@ export class FactoryService {
       if (hostOutputs && request.method === "GET") return jsonResponse(hostOutputs[2] ? this.executionHost.output(hostOutputs[1]!, url.searchParams.get("name") ?? "", url.searchParams.get("hash") ?? "") : await this.executionHost.outputs(hostOutputs[1]!));
       const prepareRoute = /^\/api\/factory\/machines\/([a-zA-Z0-9_-]+)\/prepare$/.exec(url.pathname);
       if (prepareRoute && request.method === "POST") return jsonResponse(await this.runtime.prepare(prepareRoute[1]!));
-      if (url.pathname === "/api/factory" && request.method === "GET") return jsonResponse({ implementations: this.store.list<Implementation>("implementations").sort((a, b) => a.position - b.position), pane_links: this.paneLinks(), conversations: this.store.list<Implementation>("implementations").flatMap(idea => this.conversations(idea)), pane_archives: this.store.list("pane_archives"), projects: this.store.list("projects"), checkouts: this.store.list<ProjectCheckout>("checkouts").map((entry) => { if (url.searchParams.get("navigation") !== "1") return entry; const { instructions: _instructions, ...metadata } = entry; return metadata; }), settings: this.settings(), capacity: factoryCapacity(this.store, this.settings()), activity: this.store.list<Implementation>("implementations").flatMap((idea) => { const run = this.store.list<FactoryRun>("runs", idea.id).at(-1); return run ? [{ implementation_id: idea.id, run_id: run.id, condition: run.condition, action: run.action, waiting_reason: run.waiting_reason, completed_tickets: this.workflow.tickets(idea.id).filter((ticket) => ticket.status === "done").length, total_tickets: this.workflow.tickets(idea.id).length }] : []; }) });
+      if (url.pathname === "/api/factory" && request.method === "GET") return jsonResponse({ implementations: this.boardAssignments(), pane_links: this.paneLinks(), conversations: this.store.list<Implementation>("implementations").flatMap(idea => this.conversations(idea)), pane_archives: this.store.list("pane_archives"), projects: this.store.list("projects"), checkouts: this.store.list<ProjectCheckout>("checkouts").map((entry) => { if (url.searchParams.get("navigation") !== "1") return entry; const { instructions: _instructions, ...metadata } = entry; return metadata; }), settings: this.settings(), capacity: factoryCapacity(this.store, this.settings()), progress: this.store.list<Implementation>("implementations").map(idea => this.boardProgress(idea)), activity: this.store.list<Implementation>("implementations").flatMap((idea) => { const run = this.store.list<FactoryRun>("runs", idea.id).at(-1); return run ? [{ implementation_id: idea.id, run_id: run.id, condition: run.condition, action: run.action, waiting_reason: run.waiting_reason, completed_tickets: this.workflow.tickets(idea.id).filter((ticket) => ticket.status === "done").length, total_tickets: this.workflow.tickets(idea.id).length }] : []; }) });
       if (url.pathname === "/api/factory/settings" && request.method === "POST") {
         const body = await this.body(request); const settings = { ...this.settings() };
         const known = new Set(Object.keys(settings));

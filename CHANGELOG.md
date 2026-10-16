@@ -9,6 +9,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 
 ### Fixed
 - Permanently delete linked GitHub issues with safe pending recovery, and prevent deleted Assignments from returning through stale issue sync or retained PR automation.
+- Show named Ticket progress, concurrent workflow activities and blocking reasons across five Assignment board lanes; preserve paused progress and use automatic queue age instead of manual priority.
 - Add permanent Assignment Delete with owned-resource cleanup, durable pending reasons and automatic Machine reconciliation; linked issues and app-managed recovery copies remain pending until their cleanup is confirmed.
 - Execute accepted Ticket frontiers automatically with fresh workers, backend integration,
   reserved checks and restart recovery. Show named workers, gates and check results in the Assignment.

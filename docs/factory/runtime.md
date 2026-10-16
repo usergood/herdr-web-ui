@@ -42,7 +42,7 @@ The integration branch and worktree belong to the Run. Implementers receive sepa
 
 Only the dependency frontier can start ordinary Ticket work. Shared document claims exclude competing writers. Workers reconcile the current integration tip, run the configured checks and submit a committed candidate. The serialized backend merger rejects stale tips, changed cwd/branch/repository, dirty tracked changes, unclaimed shared documents and committed application scaffolding. It retains the branch and never updates the default branch.
 
-The native adapter includes an exact request guide and `bun .saurons-eye-tracker.mjs help`. For historical Runs, a blocked worker remains an owner-answer gate and a ready worker awaits explicit checks/integration. New Specification-authorized plans are driven automatically as described below. Integrating all accepted Tickets moves the card to Review; acceptance still requires current evidence and does not infer publication.
+The native adapter includes an exact request guide and `bun .saurons-eye-tracker.mjs help`. For historical Runs, a blocked worker remains an owner-answer gate and a ready worker awaits explicit checks/integration. New Specification-authorized plans are driven automatically as described below. Integrating all accepted Tickets moves the stored lifecycle stage to review; the board presents its lane and current activities separately; acceptance still requires current evidence and does not infer publication.
 
 Agent-context reservations cover active and uncertain app-managed execution globally across Projects, providers and Machines. The default normal limit is six Agent contexts, with one additional shared interview/pre-approval Specification context; implementation and review cannot use that allowance. Builds have a separate default limit of two. Inbox exposes Factory settings and recovery. Ready chats consume no execution slot but retain their worktree ownership. Ordinary terminals and independently launched agents are excluded.
 
@@ -69,6 +69,16 @@ Offline or uncertain execution and changed resource identities remain Delete pen
 Linked GitHub issues are permanently deleted through the selected repository's verified GitHub identity; closing an issue is not sufficient. Before asynchronous cleanup, Delete retains a repository/source fence that blocks automatic issue import, PR repair intake and retained-PR mutations, including stale synchronization already in flight. Suppression applies across Projects for that repository. PRs and pushed branches remain; a fresh explicit owner PR import creates distinct work.
 
 The Delete panel shows pending GitHub permission, account, transport and receipt problems after local cleanup. Repository-admin permission and organization deletion policy still apply. Reconciliation verifies a bounded, paginated issue inventory before sending a deletion; an already-missing issue completes safely. Lost or ambiguous replies remain pending until confirmed by a later observation, and confirmed cleanup is not repeated while another obligation remains. Restart resumes the same authorized identity and journal. After final cleanup, source fences contain only repository/source identifiers, without Assignment content/history.
+
+## Board progress
+
+Assignments use five board lanes: Inbox, Queued, Running, Needs you and Done. Cards with Tickets show named active work and an expandable complete Ticket list with waiting/running/completed counts and dependency, capacity or failure reasons. The disclosure supports keyboard activation and stays open when changing progress moves a card between lanes.
+
+Activity tags reflect retained Run, worker and check evidence: Specifying, Implementing, Testing, Auto-Review and Fixing can overlap. A failed repair remains unfinished even after earlier integration. Automatic reconnects remain Running without claiming current execution; blocked requests requiring owner correction use Needs you. Paused is independent of the lane, including parked owner conversations. Verified suspension clears execution tags, while pending lifecycle operations show their reasons on the card. A newer Specification draft does not hide an executing Run's frozen Ticket scope.
+
+Cards use the oldest retained waiting-request age, falling back to capture time. Priority arrows and drag controls are removed. The legacy order endpoint returns 409 automatic_order; dispatch continues to select the oldest eligible request globally.
+
+GET /api/factory exposes these projections in progress, alongside existing capacity and activity metadata. The browser demo uses the same projection policy. Public HTTP regressions and the factory-board-browser-regression desktop/mobile journey use disposable state and owned Machine responses without launching paid agents.
 
 ## Automatic Ticket execution
 

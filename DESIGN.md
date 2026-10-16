@@ -1206,6 +1206,11 @@ One set for both themes: the card is island black wherever it shows.
   when none is left). Below 640px the sheet is one fixed height, the chips and footer staying put.
 
 ### Assignment workflow
+- The Assignment board has five lanes: Inbox, Queued, Running, Needs you and Done.
+  Cards show concurrent text activity tags and a separate Paused/pending lifecycle status.
+  Active Ticket names remain visible; a keyboard-accessible disclosure reveals all Tickets,
+  progress counts and wait reasons. Queue age replaces priority arrows and drag ordering.
+  Activity colors use existing accent and status tokens; text carries the meaning.
 - A linked native chat exposes **Workflow** in its header. A focus-trapped modal/sheet
   keeps questions, proposals and approvals over that chat. Closing restores focus;
   mobile actions stack at full width with touch-target heights.
