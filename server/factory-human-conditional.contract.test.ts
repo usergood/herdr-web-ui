@@ -65,6 +65,10 @@ it("does not let an unrelated checked head inherit approval from the submitted r
     expect(stopped.human_review_approvals[0]).toMatchObject({ condition: "blocked" });
     expect(f.mergeEffects).toHaveLength(0);
     expect(stopped.implementation.stage).toBe("review");
+    expect((await f.api(`${prefix}/pause`, {}).then(r => r.json())).pause.condition).toBe("paused");
+    expect((await f.api(`${prefix}/resume`, {})).status).toBe(200);
+    expect((await detail()).human_review_approvals[0]).toEqual(stopped.human_review_approvals[0]);
+    expect(f.mergeEffects).toHaveLength(0);
   } finally { f.close(); }
 }, 30000);
 
@@ -163,6 +167,10 @@ it("retains failed repair checks as a visible stop without spending conditional 
     expect(f.mergeEffects).toHaveLength(0);
     f.restart();
     expect((await detail()).human_review_approvals[0].condition).toBe("blocked");
+    expect((await f.api(`${prefix}/pause`, {}).then(r => r.json())).pause.condition).toBe("paused");
+    expect((await f.api(`${prefix}/resume`, {})).status).toBe(200);
+    expect((await detail()).human_review_approvals[0]).toEqual(stopped.human_review_approvals[0]);
+    expect(f.mergeEffects).toHaveLength(0);
   } finally { f.close(); }
 }, 20000);
 
@@ -192,3 +200,71 @@ it("preserves uncertain conditional merge authority across owner Pause and resum
     expect(f.mergeEffects).toHaveLength(1);
   } finally { f.close(); }
 }, 20000);
+
+
+for (const changedScope of [false, true]) it(changedScope ? "keeps exhausted conditional authority blocked when answered owner context changes before Resume" : "resumes exhausted conditional repair recovery and merges with the original approval only", async () => {
+  let historyAvailable = true;
+  const f = await capacityFixture({ advancingHeads: true, workerTranscript: worker => !historyAvailable && worker.role === "implementer" ? null : {
+    source_id: `owned-conditional-resume:${worker.id}`, version: "v1", cursor: null,
+    turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: "Owned retained conditional repair history" }] }],
+  } });
+  try {
+    const { prefix, detail, run } = await published(f);
+    const initial = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
+    const review = initial.human_reviews[0];
+    const comment = await f.api(`${prefix}/comments`, { snapshot_id: review.snapshot_id, path: "progress.ts", side: "new", line_start: 1, line_end: 1, content: "Resume only these approved repairs" }).then(r => r.json());
+    const body = { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, disposition: "approve", comment_ids: [comment.id], idempotency_key: "conditional-recovery-resume" };
+    const response = await f.api(`${prefix}/human-review/submit`, body);
+    expect(response.status).toBe(202); const batch = await response.json();
+    const fixing = await until(detail, d => d.workers.some((w: any) => w.rework_batch_id === batch.id && w.condition === "working"));
+    const repair = fixing.workers.find((w: any) => w.rework_batch_id === batch.id);
+    historyAvailable = false; f.workers.get(repair.id)!.condition = "ready";
+    const blocked = await until(detail, d => d.human_review_approvals[0].condition === "blocked", 45000);
+    expect(blocked.automatic_review[0]).toMatchObject({ condition: "blocked", attempts: 6, human_batch_id: batch.id });
+    expect(blocked.human_review_approvals[0].reason).toBe(blocked.automatic_review[0].reason);
+    expect(f.mergeEffects).toHaveLength(0);
+    // Resume without a confirmed Pause cannot renew either recovery budget.
+    expect((await f.api(`${prefix}/resume`, {})).status).toBe(200);
+    expect((await detail()).human_review_approvals[0]).toEqual(blocked.human_review_approvals[0]);
+    if (changedScope) {
+      const question = await f.api(`${prefix}/questions`, { question: "Should the approved repair also export progress?" }).then(r => r.json());
+      expect((await f.api(`${prefix}/questions/${question.id}/answer`, { revision: question.revision, answer: "Yes; add export behavior" })).status).toBe(200);
+    }
+    historyAvailable = true;
+    expect((await f.api(`${prefix}/pause`, {}).then(r => r.json())).pause.condition).toBe("paused");
+    f.restart();
+    expect((await f.api(`${prefix}/resume`, {})).status).toBe(200);
+    const resumed = await detail();
+    if (changedScope) {
+      expect(resumed.automatic_review[0].condition).not.toBe("blocked");
+      expect(resumed.human_review_approvals[0]).toEqual(blocked.human_review_approvals[0]);
+      expect(resumed.events.filter((e: any) => e.kind === "human_review_repair_recovery_resumed")).toHaveLength(0);
+      expect(f.mergeEffects).toHaveLength(0);
+      return;
+    }
+    expect(resumed.human_review_approvals[0]).toMatchObject({ id: blocked.human_review_approvals[0].id, condition: "repairing", repair_batch_id: batch.id, original_candidate: { head: review.head, snapshot_id: review.snapshot_id } });
+    expect(resumed.human_review_approvals[0].repair_scope).toBe(blocked.human_review_approvals[0].repair_scope);
+    await until(detail, d => !d.workers.find((w: any) => w.id === repair.id).suspension);
+    f.workers.get(repair.id)!.condition = "ready";
+    await until(detail, d => !d.runs.find((r: any) => r.id === run.id).suspension);
+    f.runs.get(run.id)!.condition = "ready";
+    for (const axis of ["standards", "spec"]) {
+      const next = await until(detail, d => d.workers.some((w: any) => w.role === axis && w.condition === "working"));
+      f.workers.get(next.workers.find((w: any) => w.role === axis && w.condition === "working").id)!.condition = "ready";
+    }
+    const merged = await until(detail, d => d.human_review_approvals[0].condition === "merged");
+    expect(merged.human_review_approvals).toHaveLength(1);
+    expect(merged.human_review_approvals[0]).toMatchObject({ id: blocked.human_review_approvals[0].id, repair_batch_id: batch.id, repair_signature: batch.signature, original_candidate: { head: review.head, snapshot_id: review.snapshot_id }, head: merged.human_feedback_batches[0].resolution.head });
+    expect(merged.human_review_approvals[0].head).not.toBe(review.head);
+    expect(merged.review_evidence).toEqual(expect.arrayContaining(blocked.review_evidence));
+    expect(merged.checks).toEqual(expect.arrayContaining(blocked.checks));
+    expect(merged.tickets.filter((t: any) => t.status === "done")).toHaveLength(blocked.tickets.length);
+    expect(merged.workers.filter((w: any) => w.rework_batch_id === batch.id)).toHaveLength(1);
+    expect(f.mergeEffects).toHaveLength(1);
+    f.restart();
+    expect((await f.api(`${prefix}/human-review/submit`, body).then(r => r.json())).id).toBe(batch.id);
+    expect((await f.api(`${prefix}/resume`, {})).status).toBe(200);
+    expect((await detail()).human_review_approvals[0].condition).toBe("merged");
+    expect(f.mergeEffects).toHaveLength(1);
+  } finally { f.close(); }
+}, 60000);

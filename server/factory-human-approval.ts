@@ -76,6 +76,26 @@ export class FactoryHumanApprovalService {
     if (this.stopped) throw new FactoryError("stopping", "Approval is retained for reconciliation after restart", 409);
     return this.store.get<FactoryHumanApproval>("human_review_approvals", receipt.id)!;
   }
+  /** Called only within the validated, confirmed-Pause recovery transaction. */
+  resumeRepairRecovery(run: FactoryRun, progress: import("../shared/factory.ts").FactoryAutomaticReview): void {
+    if (progress.condition !== "blocked" || progress.attempts < 6 || progress.next_attempt_at <= 0 || !progress.human_batch_id) return;
+    const batch = this.store.get<FactoryHumanFeedbackBatch>("review_batches", progress.human_batch_id);
+    if (!batch || batch.run_id !== run.id || batch.resolution || batch.disposition !== "approve" || !batch.merge_authorized) return;
+    const review = this.store.get<FactoryHumanReview>("human_reviews", batch.review_id);
+    if (!review || review.condition !== "repairing" || review.run_id !== run.id || review.head !== batch.head || review.snapshot_id !== batch.snapshot_id) return;
+    for (const receipt of this.store.list<FactoryHumanApproval>("human_review_approvals", run.implementation_id)) {
+      // Matching the exhausted workflow reason and its unresolved original batch
+      // distinguishes repair observation failure from a later merge/policy stop.
+      if (receipt.condition !== "blocked" || receipt.superseded_by_batch_id || this.busy.has(receipt.id)
+        || receipt.run_id !== run.id || receipt.review_id !== review.id || receipt.repair_batch_id !== batch.id
+        || receipt.repair_signature !== batch.signature || receipt.reason !== progress.reason
+        || receipt.merge_sha || receipt.release_tag || receipt.head !== batch.head || receipt.snapshot_id !== batch.snapshot_id
+        || receipt.original_candidate?.head !== batch.head || receipt.original_candidate.snapshot_id !== batch.snapshot_id
+        || receipt.repair_scope !== this.repairScope(run.implementation_id, run.id)) continue;
+      this.store.put("human_review_approvals", { ...receipt, condition: "repairing", reason: null, observations: 0, next_observation_at: 0 }, run.implementation_id);
+      this.store.event(run.implementation_id, "human_review_repair_recovery_resumed", { approval_id: receipt.id, run_id: run.id, batch_id: batch.id, reason: progress.reason, attempts: progress.attempts });
+    }
+  }
   async maintain(): Promise<void> {
     if (this.stopped) return;
     for (const receipt of this.store.list<FactoryHumanApproval>("human_review_approvals")) if (!this.store.get<Implementation>("implementations", receipt.implementation_id)?.pause && ["repairing", "pending", "uncertain", "awaiting_release"].includes(receipt.condition) && (receipt.next_observation_at ?? 0) <= Date.now()) await this.reconcile(receipt);

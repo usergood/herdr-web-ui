@@ -8,11 +8,15 @@ import { published, until } from "./factory-human-review-fixture.ts";
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
-    for (const scenario of ["pending-ci", "failed-repair"] as const) {
-    const f = await capacityFixture({ advancingHeads: true });
+    for (const scenario of ["pending-ci", "failed-repair", "resumed-repair"] as const) {
+    let historyAvailable = true;
+    const f = await capacityFixture({ advancingHeads: true, workerTranscript: worker => !historyAvailable && worker.role === "implementer" ? null : {
+      source_id: `owned-browser-conditional-resume:${worker.id}`, version: "v1", cursor: null,
+      turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: "Owned retained conditional repair history" }] }],
+    } });
     const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
     try {
-      const { id, detail } = await published(f);
+      const { id, detail, run } = await published(f);
       await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
       const origin = `http://localhost:${f.app.port}`;
       assert.equal((await context.request.post(`${origin}/api/auth`, { data: { token: f.token } })).status(), 204);
@@ -39,7 +43,8 @@ try {
       await review.getByText("Approved fixes are running. Merge follows passing checks and independent reviews.", { exact: true }).waitFor();
       const fixing = await until(detail, d => d.workers.some((w: any) => w.review_origin === "human" && w.condition === "working"));
       if (scenario === "failed-repair") f.failNextCheck();
-      else f.mergeFailure("merge_waiting");
+      else if (scenario === "pending-ci") f.mergeFailure("merge_waiting");
+      else historyAvailable = false;
       f.workers.get(fixing.workers.find((w: any) => w.review_origin === "human" && w.condition === "working").id)!.condition = "ready";
       if (scenario === "failed-repair") {
         await review.getByRole("alert").filter({ hasText: "failed: bun test" }).first().waitFor();
@@ -48,14 +53,34 @@ try {
         assert.deepEqual(errors, []);
         continue;
       }
+      if (scenario === "resumed-repair") {
+        const blocked = await until(detail, d => d.human_review_approvals[0].condition === "blocked", 45000);
+        await review.getByRole("alert").filter({ hasText: "automatic recovery exhausted after six observations" }).first().waitFor();
+        assert.equal(f.mergeEffects.length, 0);
+        historyAvailable = true;
+        await page.getByRole("region", { name: "Assignment execution", exact: true }).getByRole("button", { name: "Pause Assignment", exact: true }).click();
+        await until(detail, d => d.implementation.pause?.condition === "paused");
+        await page.reload();
+        await page.getByRole("region", { name: "Assignment execution", exact: true }).getByRole("button", { name: "Resume Assignment", exact: true }).click();
+        const repair = fixing.workers.find((w: any) => w.review_origin === "human" && w.condition === "working");
+        await until(detail, d => !d.workers.find((w: any) => w.id === repair.id).suspension);
+        f.workers.get(repair.id)!.condition = "ready";
+        await until(detail, d => !d.runs.find((r: any) => r.id === run.id).suspension);
+        f.runs.get(run.id)!.condition = "ready";
+        const resumed = await detail();
+        assert.equal(resumed.human_review_approvals[0].id, blocked.human_review_approvals[0].id);
+        assert.equal(resumed.human_review_approvals[0].condition, "repairing");
+      }
       for (const axis of ["standards", "spec"]) {
         const d = await until(detail, d => d.workers.some((w: any) => w.role === axis && w.condition === "working"));
         assert.equal(f.mergeEffects.length, 0);
         f.workers.get(d.workers.find((w: any) => w.role === axis && w.condition === "working").id)!.condition = "ready";
       }
-      await review.getByRole("status").filter({ hasText: "Waiting for required GitHub checks or reviews; retained approval will be observed automatically" }).waitFor();
-      assert.equal(f.mergeEffects.length, 0);
-      f.mergeFailure(null);
+      if (scenario === "pending-ci") {
+        await review.getByRole("status").filter({ hasText: "Waiting for required GitHub checks or reviews; retained approval will be observed automatically" }).waitFor();
+        assert.equal(f.mergeEffects.length, 0);
+        f.mergeFailure(null);
+      }
       await review.getByText("Merge verified", { exact: true }).waitFor();
       await page.reload();
       await review.getByText("Merge verified", { exact: true }).waitFor();
@@ -68,5 +93,5 @@ try {
     } finally { await context.close(); f.close(); }
     }
   }
-  console.log("PASS Approve with comments repairs, reviews and merges without reapproval on desktop/mobile");
+  console.log("PASS Approve with comments repairs, reviews and merges without reapproval, including exhausted recovery and confirmed Resume, on desktop/mobile");
 } finally { await browser.close(); }

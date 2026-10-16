@@ -25,6 +25,7 @@ const activeConditions = new Set(["accepted", "working", "ready", "needs_you", "
 const actions: FactoryAction[] = ["work", "setup", "grill-me", "grill-with-docs", "to-spec", "to-tickets", "implement-spec", "retro", "apply-retro", "verify-provider"];
 export class FactoryRuntime {
   reconcileDeletion: ((id: string) => Promise<unknown>) | null = null;
+  resumeReviewRecovery: ((run: FactoryRun, review: FactoryAutomaticReview) => void) | null = null;
   retainBeforePause: ((id: string, workerId?: string) => Promise<void>) | null = null;
   private readonly pausing = new Map<string, Promise<void>>();
   readonly queue: FactoryDispatch;
@@ -92,6 +93,7 @@ export class FactoryRuntime {
             }
             const review = this.store.get<FactoryAutomaticReview>("automatic_review", run.id);
             if (progress?.condition === "checked" && progress.plan_hash === plan.hash && review?.condition === "blocked" && review.attempts >= 6 && review.next_attempt_at > 0) {
+              this.resumeReviewRecovery?.(run, review);
               this.store.put("automatic_review", { ...review, condition: "waiting", reason: "Owner Resume renewed bounded recovery of retained unfinished review", attempts: 0, next_attempt_at: 0, updated_at: new Date().toISOString() }, id);
               this.store.event(id, "automatic_review_recovery_resumed", { run_id: run.id, pause_id: idea.pause.id, reason: review.reason, attempts: review.attempts });
             }
