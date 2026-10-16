@@ -3,6 +3,7 @@ import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
 import { capacityFixture } from "./factory-capacity-fixture.ts";
+import type { FactoryDetail } from "../shared/factory.ts";
 
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
@@ -66,10 +67,19 @@ try {
           f.setTranscript({ source_id: "original-orchestrator-decisions", version: "v1", cursor: null, turns: [{ role: "assistant", ts: "2026-01-01T00:00:00Z", parts: [{ kind: "text", text: "Retained decisions for the original accepted plan" }] }] });
           assert.equal((await f.api(`/runs/${run.id}/import-conversation`, {})).status, 200);
           f.runs.get(run.id)!.condition = "ready";
-          await page.waitForFunction(async prefix => { const d = await fetch(`/api/factory${prefix}`).then(r => r.json()); return d.workers.some((w: { role: string; condition: string }) => w.role === "implementer" && w.condition === "working"); }, prefix);
-          const worker = (await detail()).workers.find((w: { role: string }) => w.role === "implementer");
+          const waitForDetail = async (ready: (value: FactoryDetail) => boolean) => {
+            const deadline = Date.now() + 10_000;
+            for (;;) {
+              const value: FactoryDetail = await detail();
+              if (ready(value)) return value;
+              if (Date.now() > deadline) throw new Error(`Retained Ticket history did not progress: ${JSON.stringify({ workers: value.workers, execution: value.automatic_execution })}`);
+              await Bun.sleep(20);
+            }
+          };
+          const running = await waitForDetail(d => d.workers.some(w => w.role === "implementer" && w.condition === "working" && f.workers.has(w.id)));
+          const worker = running.workers.find(w => w.role === "implementer")!;
           f.workers.get(worker.id)!.condition = "ready";
-          await page.waitForFunction(async ({ prefix, workerId }) => { const d = await fetch(`/api/factory${prefix}`).then(r => r.json()); return d.workers.find((w: { id: string }) => w.id === workerId)?.condition === "completed"; }, { prefix, workerId: worker.id });
+          await waitForDetail(d => d.workers.find(w => w.id === worker.id)?.condition === "completed");
           assert.equal((await f.api(`${prefix}/pause`, {})).status, 200);
           const before = (await detail()).conversations.find((c: { kind: string }) => c.kind === "implementation");
           const revision = await f.api(`${prefix}/specifications`, { content: "A later Specification must preserve the earlier execution history." }).then(r => r.json());
