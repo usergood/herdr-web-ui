@@ -21,7 +21,8 @@ test("Continue retires only the exact ready planning step and freezes guarded is
 test("prepared issue Continue retains its intent through required verification and restart, then admits one guarded successor", async () => {
   const fixture = issueContinuationFixture();
   try {
-    const { path, planning, body } = await fixture.preparedPlanning();
+    const { path, planning, body } = await fixture.preparedPlanning("to-spec");
+    expect((await fixture.json(path)).approvals).toEqual([]);
     fixture.setFactoryReady(false);
     const response = await fixture.post(path + "/continue", body);
     expect(response.status).toBe(202);
@@ -45,7 +46,8 @@ test("prepared issue Continue retains its intent through required verification a
       if (detail.runs.some((run: any) => run.action === "implement-spec" && run.condition === "working")) break;
       await Bun.sleep(25);
     } while (Date.now() < deadline);
-    expect(detail.runs.map((run: any) => [run.action, run.condition])).toEqual([["to-tickets", "completed"], ["verify-provider", "completed"], ["implement-spec", "working"]]);
+    expect(detail.runs.map((run: any) => [run.action, run.condition])).toEqual([["to-spec", "completed"], ["verify-provider", "completed"], ["implement-spec", "working"]]);
+    expect(detail.approvals).toEqual([]);
     const successor = detail.runs.at(-1);
     expect(successor.manifest.issue_admission.source).toMatchObject({ id: body.issue_scope.source_id, revision: body.issue_scope.source_revision });
     expect(successor.graph_hash).toBe(body.issue_scope.graph_hash);
@@ -59,7 +61,7 @@ test("prepared issue Continue retains its intent through required verification a
 test("an explicit Continue from the ready verification prerequisite reuses displayed issue scope and still requires native proof", async () => {
   const fixture = issueContinuationFixture();
   try {
-    const { path, body } = await fixture.preparedPlanning();
+    const { path, body } = await fixture.preparedPlanning("to-spec");
     fixture.setFactoryReady(false);
     const probe = await fixture.json(path + "/continue", body);
     fixture.setRunCondition(probe.id, "ready");
@@ -81,20 +83,24 @@ test("an explicit Continue from the ready verification prerequisite reuses displ
     expect(successor.manifest.issue_admission.source.revision).toBe(body.issue_scope.source_revision);
     expect((await fixture.json(path + "/continue", continued)).id).toBe(successor.id);
     fixture.restart();
-    expect((await fixture.json(path)).runs.map((run: any) => [run.action, run.condition])).toEqual([["to-tickets", "completed"], ["verify-provider", "completed"], ["implement-spec", "working"]]);
+    expect((await fixture.json(path)).runs.map((run: any) => [run.action, run.condition])).toEqual([["to-spec", "completed"], ["verify-provider", "completed"], ["implement-spec", "working"]]);
   } finally { fixture.close(); }
 }, 15_000);
 
-test.each(["scope", "readiness", "pause", "outage", "dependencies", "project_limit", "global_limit"])("%s changed while verifying blocks the retained issue intent before implementation admission", async blocker => {
+test.each(["scope", "readiness", "policy", "pause", "outage", "dependencies", "project_limit", "global_limit"])("%s changed while verifying blocks the retained issue intent before implementation admission", async blocker => {
   const fixture = issueContinuationFixture();
   try {
-    const { path, body, route, readiness, project } = await fixture.preparedPlanning();
+    const { path, body, route, readiness, project } = await fixture.preparedPlanning("to-spec");
     fixture.setFactoryReady(false);
     const probe = await fixture.json(path + "/continue", body);
     const question = await fixture.agent(probe.id, "question", { question: "Confirm the fictional verification round?" }).then(response => response.json());
     await fixture.json(path + `/questions/${question.id}/answer`, { revision: question.revision, answer: "Owned fixture answer" });
     if (blocker === "pause") await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true, max_implementations: 1 });
     else if (blocker === "readiness") await fixture.json(route + "/readiness", { expected_revision: readiness.revision, account_profile_id: readiness.account_profile_id, triage_labels: {}, blocked_label: "on-hold" });
+    else if (blocker === "policy") {
+      const policy = (await fixture.json(route)).policy;
+      await fixture.json(route + "/configure", { ...policy, expected_revision: policy.revision, review_context: "New owner Project guidance during verification" });
+    }
     else if (blocker === "scope" || blocker === "outage" || blocker === "dependencies") {
       if (blocker === "scope") fixture.issue.body += "\nA new greeting requirement.";
       fixture.save([fixture.issue], blocker === "outage", blocker === "dependencies" ? { 1: [{ ...fixture.issue, number: 42, node_id: "undelivered-verification-dependency", html_url: "https://github.com/fictional/project/issues/42" }] } : {});
@@ -124,7 +130,7 @@ test.each(["scope", "readiness", "pause", "outage", "dependencies", "project_lim
       await Bun.sleep(25);
     } while (Date.now() < deadline);
     expect(detail.events.some((event: any) => event.kind === "continuation_waiting" && event.data.run_id === probe.id)).toBe(true);
-    expect(detail.runs.map((run: any) => [run.action, run.condition])).toEqual([["to-tickets", "completed"], ["verify-provider", blocker === "global_limit" ? "completed" : "ready"]]);
+    expect(detail.runs.map((run: any) => [run.action, run.condition])).toEqual([["to-spec", "completed"], ["verify-provider", blocker === "global_limit" ? "completed" : "ready"]]);
     fixture.restart();
     expect((await fixture.json(path)).runs).toHaveLength(2);
     const replay = await fixture.json(path + "/continue", body);

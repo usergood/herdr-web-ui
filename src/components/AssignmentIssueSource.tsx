@@ -1,5 +1,5 @@
 import type { ProjectGitHubIssueRevision, ProjectGitHubSource } from "../../shared/github-project.ts";
-import type { FactoryRun, FactoryTicket } from "../../shared/factory.ts";
+import type { FactoryEvent, FactoryRun, FactoryTicket } from "../../shared/factory.ts";
 import { useT } from "../lib/i18n.ts";
 import { dependencyReason } from "../lib/dependencyReason.ts";
 import { IssueQueueStatus } from "./IssueQueueStatus.tsx";
@@ -65,20 +65,21 @@ function DependencyDelivery({ source, busy, perform }: { source: ProjectGitHubSo
       }) : [];
       await accountRequest(`/projects/${source.project_id}/github/issues/${source.number}/delivery`, { source_revision: source.revision, expected_revision: source.delivery?.revision ?? null, target_branch: branch.trim(), intended_prs: intended, release_tag: release.trim() || null });
     }); }}>
-      <label className="field">{t("Target branch")}<input className="input" required value={branch} onChange={event => setBranch(event.target.value)} /></label>
-      <label className="field">{t("Intended PRs")}<textarea className="input" rows={3} value={pulls} onChange={event => setPulls(event.target.value)} /></label>
+      <label className="field">{t("Target branch")}<input className="input assignment-delivery-input" required value={branch} onChange={event => setBranch(event.target.value)} /></label>
+      <label className="field">{t("Intended PRs")}<textarea className="input assignment-delivery-input" rows={3} value={pulls} onChange={event => setPulls(event.target.value)} /></label>
       <p>{t("Enter one PR number and exact head per line.")}</p>
-      <label className="field">{t("Release tag")}<input className="input" value={release} onChange={event => setRelease(event.target.value)} /></label>
+      <label className="field">{t("Release tag")}<input className="input assignment-delivery-input" value={release} onChange={event => setRelease(event.target.value)} /></label>
       <button className="btn" disabled={busy}>{t("Save intended coverage")}</button>
     </form>
     {source.delivery && <p role="status">{source.delivery.source_revision === source.revision ? t("Coverage linked. Sync GitHub to verify delivery.") : t("Issue changed. Review and relink intended coverage.")}</p>}
   </section>;
 }
 
-export function AssignmentIssueSource({ sources, problem, busy, perform, tickets, questionRevision, preset, runs }: { sources: ProjectGitHubSource[]; problem: string | null; busy: boolean; perform: (action: () => Promise<void>) => Promise<void>; tickets: FactoryTicket[]; questionRevision: string; preset: import("../../shared/agent-models.ts").AgentModelSelection; runs: FactoryRun[] }) {
+export function AssignmentIssueSource({ sources, problem, busy, perform, tickets, questionRevision, preset, runs, events }: { sources: ProjectGitHubSource[]; problem: string | null; busy: boolean; perform: (action: () => Promise<void>) => Promise<void>; tickets: FactoryTicket[]; questionRevision: string; preset: import("../../shared/agent-models.ts").AgentModelSelection; runs: FactoryRun[]; events: FactoryEvent[] }) {
   const t = useT(); const issues = sources.filter(source => source.kind === "issue");
   if (!issues.length) return null;
   const latest = runs.at(-1);
+  const retiredStopped = !!latest && events.some(event => event.kind === "run_stopped" && (event.data as { run_id?: string; rework_requested?: boolean } | null)?.run_id === latest.id && (event.data as { rework_requested?: boolean }).rework_requested);
   return <section className="factory-section assignment-issue-source" aria-label={t("GitHub issue source")}>
     <h3>{t("GitHub issue source")}</h3>
     {problem && <p role="alert">{problem}</p>}
@@ -101,7 +102,7 @@ export function AssignmentIssueSource({ sources, problem, busy, perform, tickets
           <p>{source.planning.origin === "app_plan" ? t("Reused approved app plan") : t("Reused trusted issue plan")}</p>
           <p>{t("Approved by {login}", { login: source.planning.authorization.approval.actor.login })} · {source.planning.authorization.approval.provenance === "app_owner" ? t("Owner approval in app") : t("Trusted GitHub label")}</p>
           <p>{t("Required checks and independent Standards and Spec reviews still apply.")}</p>
-          {(latest?.condition === "failed" || latest?.condition === "cancelled" && latest.issue_pause) && (latest.manifest as { issue_admission?: { source: { id: string } } }).issue_admission?.source.id === source.id && source.planning.condition === "prepared" && <button className="btn" disabled={busy || !source.intake || source.intake.reasons.some(reason => reason.code !== "attempt_exists")} onClick={() => void perform(async () => { await accountRequest(`/runs/${latest.id}/retry`, { idempotency_key: crypto.randomUUID(), execution_preset: preset, issue_scope: { source_id: source.id, source_revision: source.revision, graph_hash: source.planning!.graph_hash } }); })}>{t("Retry")}</button>}
+          {(latest?.condition === "failed" || latest?.condition === "cancelled" && (latest.issue_pause || retiredStopped)) && (latest.manifest as { issue_admission?: { source: { id: string } } }).issue_admission?.source.id === source.id && source.planning.condition === "prepared" && <button className="btn" disabled={busy || !source.intake || source.intake.reasons.some(reason => reason.code !== "attempt_exists")} onClick={() => void perform(async () => { await accountRequest(`/runs/${latest.id}/retry`, { idempotency_key: crypto.randomUUID(), execution_preset: preset, issue_scope: { source_id: source.id, source_revision: source.revision, graph_hash: source.planning!.graph_hash } }); })}>{t("Retry")}</button>}
           {source.planning.condition === "prepared" && <button className="btn" disabled={busy || !source.intake?.eligible} onClick={() => void perform(async () => { await accountRequest(`/implementations/${source.implementation_id}/runs`, { action: "implement-spec", idempotency_key: crypto.randomUUID(), execution_preset: preset, issue_scope: { source_id: source.id, source_revision: source.revision, graph_hash: source.planning!.graph_hash } }); })}>{t("Start prepared issue")}</button>}
           <details><summary>{t("Reused planning")}</summary><Markdown>{source.planning.content}</Markdown>
             <p>{source.planning.source_revision}</p><p>{source.planning.graph_hash}</p>

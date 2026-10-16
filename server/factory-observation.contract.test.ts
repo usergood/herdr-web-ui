@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "./index.ts";
@@ -9,7 +9,7 @@ import type { FactoryNative } from "./factory-native.ts";
 import type { FactoryRun } from "../shared/protocol.ts";
 
 /** Real execution host and Git leases, with only the native process transport replaced. */
-async function observationFixture() {
+async function observationFixture(provider: FactoryRun["provider"] = "codex") {
   const root = mkdtempSync(join(tmpdir(), "owned-observation-"));
   const repo = join(root, "repo");
   const git = (path: string, args: string[]) => execFileSync("git", ["-C", path, ...args], { stdio: "pipe" }).toString().trim();
@@ -22,7 +22,7 @@ async function observationFixture() {
     version: async () => "owned-native-version",
     createWorkspace: async options => {
       const workspace = { workspace_id: "owned-workspace", label: options?.label };
-      const pane = { pane_id: "owned-workspace:p1", workspace_id: workspace.workspace_id, cwd: options?.cwd, agent: "codex", agent_status: "idle" };
+      const pane = { pane_id: "owned-workspace:p1", workspace_id: workspace.workspace_id, cwd: options?.cwd, agent: provider, agent_status: "idle" };
       snapshot = { ...snapshot, workspaces: [workspace], panes: [pane] } as typeof snapshot;
       return { workspace, root_pane: pane } as Awaited<ReturnType<FactoryNative["createWorkspace"]>>;
     },
@@ -36,7 +36,7 @@ async function observationFixture() {
   const checkout = await request("/inspect", { path: repo }).then(r => r.json());
   const capabilities = await request("/capabilities").then(r => r.json());
   const id = randomUUID();
-  const run: FactoryRun = await request("/launch", { run: { id, implementation_id: randomUUID(), action: "work", provider: "codex", machine_id: "local", condition: "accepted", base: checkout.head, checkout: repo, manifest: { skills: capabilities.skill_manifest, checkout, provider_version: "owned-native-version", implementation: { title: "Owned work", description: "Fictional scope" }, project: { checks: [[process.execPath, "--version"]] } } } }).then(r => r.json());
+  const run: FactoryRun = await request("/launch", { run: { id, implementation_id: randomUUID(), action: "work", provider, machine_id: "local", condition: "accepted", base: checkout.head, checkout: repo, manifest: { skills: capabilities.skill_manifest, checkout, provider_version: "owned-native-version", implementation: { title: "Owned work", description: "Fictional scope" }, project: { checks: [[process.execPath, "--version"]] } } } }).then(r => r.json());
   expect(run.condition).toBe("working");
   return { request, run, git, setOffline(value: boolean) { offline = value; }, get nativeStarts() { return nativeStarts; }, restart() { app.stop(); app = createServer(options); }, close() { app.stop(); rmSync(root, { recursive: true, force: true }); } };
 }
@@ -124,5 +124,94 @@ test("a verified removed host checkout cannot be observed as a live checkout", a
     await request(`/runs/${run.id}/stop`, {});
     expect(await request(`/runs/${run.id}/operations/cleanup`, {}).then(r => r.json())).toMatchObject({ removed: [run.worktree], branches_retained: true, notes_retained: true });
     expect((await request(`/runs/${run.id}/operations/head`, {})).ok).toBe(false);
+  } finally { fixture.close(); }
+}, 15_000);
+
+
+test.each(["tracked", "untracked"])("native checks cannot attest a committed review revision with dirty %s inputs", async kind => {
+  const fixture = await observationFixture();
+  try {
+    const { run, request } = fixture;
+    const file = join(run.worktree!, kind === "tracked" ? "README.md" : "relevant-input.ts");
+    writeFileSync(file, "Uncommitted behavior excluded from a HEAD review\n");
+    const response = await request(`/runs/${run.id}/operations/check`, { worker_id: null, check: { id: randomUUID(), run_id: run.id, worker_id: null } });
+    expect(response.status).toBe(200);
+    const check = await response.json();
+    expect(check.commands).toMatchObject([{ exit_code: 0 }]);
+    expect(check.condition).toBe("failed");
+    fixture.git(run.worktree!, ["add", kind === "tracked" ? "README.md" : "relevant-input.ts"]);
+    fixture.git(run.worktree!, ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "Save checked behavior"]);
+    const clean = await request(`/runs/${run.id}/operations/check`, { worker_id: null, check: { id: randomUUID(), run_id: run.id, worker_id: null } }).then(r => r.json());
+    expect(clean.condition).toBe("passed");
+    expect(clean.head).not.toBe(check.head);
+    expect(clean.workspace_hash).not.toBe(check.workspace_hash);
+  } finally { fixture.close(); }
+}, 15_000);
+
+test.each(["direct", "failed_retry"])("an explicit %s rework successor copies the retired produced commit while the original native lease stays closed", async mode => {
+  const fixture = await observationFixture();
+  try {
+    const { run, request, git } = fixture;
+    writeFileSync(join(run.worktree!, "README.md"), "Produced implementation preserved for rework\n");
+    git(run.worktree!, ["add", "README.md"]);
+    git(run.worktree!, ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "Produced implementation"]);
+    const produced = await request(`/runs/${run.id}/operations/head`, {}).then(r => r.json());
+    await request(`/runs/${run.id}/stop`, {}); fixture.restart();
+    const successor = { ...run, id: randomUUID(), condition: "accepted", retry_of: run.id, worktree: null, branch: null, workspace_id: null, pane_id: null, manifest: { ...(run.manifest as object), rework: { run_id: run.id, ...produced } } };
+    if (mode === "failed_retry") {
+      const failedIntent = { ...successor, id: randomUUID(), manifest: { ...(run.manifest as object), rework: { run_id: run.id, ...produced, head: run.base } } };
+      const failed = await request("/launch", { run: failedIntent }).then(r => r.json());
+      expect(failed.condition).toBe("failed"); expect(failed.worktree).toBeNull();
+      successor.retry_of = failed.id;
+    }
+    const response = await request("/launch", { run: successor });
+    expect(response.status).toBe(202);
+    const working = await response.json();
+    expect(working.condition).toBe("working");
+    expect(working.worktree).not.toBe(run.worktree);
+    expect(git(working.worktree, ["rev-parse", "HEAD"])).toBe(produced.head);
+    expect(git(run.worktree!, ["rev-parse", "HEAD"])).toBe(produced.head);
+    expect((await request(`/runs/${run.id}/operations/check`, { check: { id: randomUUID(), run_id: run.id } })).status).toBe(409);
+    expect((await request("/launch", { run: successor }).then(r => r.json())).id).toBe(working.id);
+    fixture.restart();
+    expect((await request(`/runs/${run.id}/reconcile`, {}).then(r => r.json())).condition).toBe("cancelled");
+    expect((await request(`/runs/${working.id}/operations/head`, {}).then(r => r.json())).head).toBe(produced.head);
+    expect(fixture.nativeStarts).toBe(2);
+  } finally { fixture.close(); }
+}, 15_000);
+
+
+test("native committed checks recognize unchanged OpenCode scaffolding and detect owner edits to it", async () => {
+  const fixture = await observationFixture("opencode");
+  try {
+    const { run, request } = fixture;
+    const check = () => request(`/runs/${run.id}/operations/check`, { worker_id: null, check: { id: randomUUID(), run_id: run.id, worker_id: null } }).then(r => r.json());
+    expect((await check()).condition).toBe("passed");
+    const policy = join(run.worktree!, ".opencode/agents/saurons-eye.md");
+    writeFileSync(policy, readFileSync(policy, "utf8") + "\nOwner edits must be preserved.\n");
+    expect((await check()).condition).toBe("failed");
+  } finally { fixture.close(); }
+}, 15_000);
+
+
+test.each(["working", "uncertain", "dirty", "changed", "foreign"])("a rework successor cannot copy %s retained execution", async kind => {
+  const fixture = await observationFixture();
+  try {
+    const { run, request, git } = fixture;
+    const produced = await request(`/runs/${run.id}/operations/head`, {}).then(r => r.json());
+    if (kind === "uncertain") {
+      fixture.setOffline(true); expect((await request(`/runs/${run.id}/stop`, {})).status).toBe(500); fixture.setOffline(false);
+    } else if (kind !== "working") await request(`/runs/${run.id}/stop`, {});
+    if (kind === "dirty" || kind === "changed") {
+      writeFileSync(join(run.worktree!, "README.md"), "Later produced work must remain here\n");
+      if (kind === "changed") { git(run.worktree!, ["add", "README.md"]); git(run.worktree!, ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "Later work"]); }
+    }
+    const successor = { ...run, id: randomUUID(), implementation_id: kind === "foreign" ? randomUUID() : run.implementation_id, condition: "accepted", retry_of: run.id, worktree: null, branch: null, workspace_id: null, pane_id: null, manifest: { ...(run.manifest as object), rework: { run_id: run.id, ...produced } } };
+    const result = await request("/launch", { run: successor }).then(r => r.json());
+    expect(result.condition).not.toBe("working");
+    fixture.restart();
+    expect((await request("/launch", { run: successor }).then(r => r.json())).condition).not.toBe("working");
+    expect(fixture.nativeStarts).toBe(1);
+    expect(git(run.worktree!, ["branch", "--show-current"])).toBe(run.branch!);
   } finally { fixture.close(); }
 }, 15_000);

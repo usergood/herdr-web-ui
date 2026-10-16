@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { createServer } from "../server/index.ts";
+import { factoryBrowserHeaders, factoryBrowserPost, issueBrowserCli } from "./fixtures/issue-browser-transport.ts";
 
 const root = mkdtempSync(join(tmpdir(), "saurons-source-browser-"));
 const repo = join(root, "repo");
@@ -20,21 +21,10 @@ let merged = false;
 let mergeBranch = "main";
 function saveIssues(dependencies: Record<string, unknown[]> = { 12: [prerequisite] }) { writeFileSync(responses, JSON.stringify({ issues: [issue, prerequisite], dependencies, delivery_pull: { number: 27, html_url: "https://github.com/fictional/project/pull/27", merged, merged_at: "2026-10-03T12:00:00Z", merge_commit_sha: "c".repeat(40), head: { sha: "a".repeat(40) }, base: { ref: mergeBranch, repo: { full_name: "fictional/project" } } } })); }
 saveIssues();
-const cli = join(root, "gh.mjs");
-writeFileSync(cli, `import { readFileSync } from "node:fs";
-const endpoint = process.argv[3];
-const data = JSON.parse(readFileSync(${JSON.stringify(responses)}, "utf8"));
-const issueNumber = Number(process.argv.find(arg => arg.startsWith("query="))?.match(/issue[(]number:([0-9]+)/)?.[1]);
-const issue = data.issues?.find(issue => issue.number === issueNumber || endpoint?.endsWith("/" + issue.number)) ?? data.issues?.[0];
-const result = endpoint === "user" ? { login: "fictional-owner", id: 1042 } : endpoint?.includes("/branches/") ? { name: "main", commit: { sha: "f".repeat(40) } } : endpoint?.includes("/compare/") ? { status: "ahead", base_commit: { sha: "c".repeat(40) }, merge_base_commit: { sha: "c".repeat(40) } } : endpoint?.includes("/pulls/") ? data.delivery_pull : endpoint?.includes("/events?") ? [] : endpoint?.includes("/dependencies/blocked_by") ? data.dependencies?.[endpoint.split("/issues/")[1].split("/")[0]] ?? [] : endpoint?.match(/issues[/][0-9]+$/) ? issue : endpoint?.includes("/issues?") ? data.issues ?? { error: "Incomplete inventory" } : endpoint === "graphql" ? { data: { repository: { issue: issue ? { id: issue.node_id, title: issue.title, body: issue.body, state: issue.state.toUpperCase(), updatedAt: issue.updated_at, createdAt: "2026-09-30T12:00:00Z", lastEditedAt: null } : null, pullRequests: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } : {};
-console.log(JSON.stringify(result));\n`);
+const cli = issueBrowserCli(root, responses);
 const app = createServer({ port: 0, stateDir: root, machines: false, factory: { accountDiscoveryHome: root, accountTools: { github: { executable: process.execPath, args: [cli] } } } });
 const origin = `http://localhost:${app.port}`;
-const headers = { "content-type": "application/json", "x-herdr-factory": "1", "x-herdr-machine": "1" };
-async function post(path: string, body: unknown) {
-  const response = await fetch(origin + "/api/factory" + path, { method: "POST", headers, body: JSON.stringify(body) });
-  assert(response.ok, await response.clone().text()); return response.json();
-}
+const post = factoryBrowserPost(origin);
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
   const profile = await post("/machines/local/accounts", { name: "Fictional", service: "github", expected_login: "fictional-owner" });
@@ -118,7 +108,7 @@ try {
     await page.reload(); await source.getByText("Issue is closed", { exact: true }).first().waitFor();
     await page.getByRole("heading", { name: "Fictional source title", exact: true }).waitFor();
     writeFileSync(responses, JSON.stringify({ error: "Incomplete inventory" }));
-    const failed = await fetch(origin + "/api/factory" + route + "/sync", { method: "POST", headers, body: "{}" }); assert.equal(failed.status, 409);
+    const failed = await fetch(origin + "/api/factory" + route + "/sync", { method: "POST", headers: factoryBrowserHeaders, body: "{}" }); assert.equal(failed.status, 409);
     await page.reload(); await source.getByRole("alert").waitFor();
     await source.getByText("Revised source acceptance", { exact: true }).first().waitFor();
     await dependencies.getByText("Dependency evidence is stale or incomplete. Sync GitHub before starting work.", { exact: true }).waitFor();

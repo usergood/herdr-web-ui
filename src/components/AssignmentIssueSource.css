@@ -22,7 +22,7 @@
   gap: var(--space-3);
 }
 
-.assignment-dependency-delivery .input {
+.assignment-delivery-input {
   min-width: 0;
   width: 100%;
 }

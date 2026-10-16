@@ -1,7 +1,7 @@
 import { factoryCapacity } from "./factory-capacity.ts";
 import { hasIssueSource } from "./issue-delivery.ts";
 import type { FactoryApproval, FactoryCheck, FactoryProject, FactoryReviewEvidence, FactoryRun, FactorySettings, FactoryTicket, FactoryWorker, Implementation } from "../shared/protocol.ts";
-import { FactoryError } from "./factory-host.ts";
+import { CLEAN_WORKSPACE_HASH, FactoryError } from "./factory-host.ts";
 import { FactoryRuntime } from "./factory-runtime.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { FactoryWorkflow } from "./factory-workflow.ts";
@@ -14,6 +14,7 @@ export class FactoryPipeline {
   private run(id: string, factoryRequired = true, completedAllowed = false): FactoryRun {
     const run = this.store.get<FactoryRun>("runs", id);
     if (run?.implementation_completion_pending) throw new FactoryError("execution_finishing", "Reconcile the retained implementation retirement before allocating more work", 409);
+    if (!completedAllowed && (run?.implementation_completion || this.store.get("implementation_retirement", id))) throw new FactoryError("execution_retired", "This native lease is retired. Stop the invalidated attempt, then use explicit Retry to repair its retained work", 409);
     if (run?.issue_pause) throw new FactoryError("issue_pause_required", "Controlled pause requested; preserve work and reconcile owned workers before a new attempt", 409);
     if (!run || factoryRequired && run.action !== "implement-spec" || !run.checkout || !["working", "ready", "needs_you", "blocked"].includes(run.condition) && !(completedAllowed && run.condition === "completed" && run.implementation_completion)) throw new FactoryError("factory_run_required", "Reconcile an admitted repository Run first", 409);
     return run;
@@ -137,6 +138,15 @@ export class FactoryPipeline {
     }
     this.store.event(run.implementation_id, "ticket_integrated", { worker_id: workerId, ticket_id: worker.ticket_id, head: next.head }); return next;
   }
+  private findingRuns(run: FactoryRun): Set<string> {
+    const ids = new Set<string>();
+    let current: FactoryRun | null = run;
+    while (current && current.implementation_id === run.implementation_id && !ids.has(current.id)) {
+      ids.add(current.id);
+      current = current.retry_of ? this.store.get<FactoryRun>("runs", current.retry_of) : null;
+    }
+    return ids;
+  }
   private completionEvidence(run: FactoryRun, current: { head: string; workspace_hash: string }): FactoryRun["implementation_completion"] | null {
     if (this.store.get<FactoryRun>("runs", run.id)?.issue_pause) return null;
     const check = this.store.list<FactoryCheck>("checks", run.id).filter(entry => entry.worker_id === null).at(-1);
@@ -148,13 +158,13 @@ export class FactoryPipeline {
     const project = (run.manifest as { project: FactoryProject }).project;
     const commands = [...project.setup ?? [], ...project.checks ?? []];
     if (!check || check.condition !== "passed" || check.head !== current.head || check.workspace_hash !== current.workspace_hash
-      || !/^[a-f0-9]{40}$/.test(current.head) || !current.workspace_hash || !project.checks?.length
+      || !/^[a-f0-9]{40}$/.test(current.head) || current.workspace_hash !== CLEAN_WORKSPACE_HASH || !project.checks?.length
       || JSON.stringify(check.commands.map(command => command.args)) !== JSON.stringify(commands) || check.commands.some(command => command.exit_code !== 0)
       || !standards || !spec || [standards, spec].some(review => review.outcome !== "passed" || review.head !== current.head)
       || standards.worker_id === spec.worker_id || [standards, spec].some(review => !workers.some(worker => worker.id === review.worker_id && worker.role === review.axis && worker.base === current.head && worker.condition === "completed"))
       || workers.some(worker => owns(worker.condition))
       || this.workflow.questions(run.implementation_id).some(question => question.answer === null)
-      || this.store.list<{ run_id: string | null; status: string }>("comments", run.implementation_id).some(comment => comment.run_id === run.id && comment.status !== "resolved")
+      || this.store.list<{ run_id: string | null; status: string }>("comments", run.implementation_id).some(comment => comment.run_id !== null && this.findingRuns(run).has(comment.run_id) && comment.status !== "resolved")
       || this.store.list<FactoryCheck>("checks", run.id).some(check => ["working", "interrupted"].includes(check.condition))
       || tickets.some(ticket => !workers.some(worker => worker.role === "implementer" && worker.ticket_id === ticket.id && worker.condition === "completed"))) return null;
     return { head: current.head, workspace_hash: current.workspace_hash, check_id: check.id, standards_id: standards.id, spec_id: spec.id };
@@ -176,7 +186,7 @@ export class FactoryPipeline {
       if (!run.implementation_completion && !run.implementation_completion_pending && !retired) return run;
       // Native retirement is durable even when its logical completion proof expires.
       // Keep that distinction after removing the stale proof from the public Run.
-      if (run.implementation_completion) this.store.put("implementation_retirement", { id }, run.implementation_id);
+      if (run.implementation_completion) this.store.put("implementation_retirement", { id, completion: run.implementation_completion }, run.implementation_id);
       const next: FactoryRun = { ...run, implementation_completion: undefined, implementation_completion_pending: retired || run.implementation_completion ? undefined : run.implementation_completion_pending, condition: "needs_you", waiting_reason: "Implementation evidence changed or is unavailable. Reconcile current checks and independent reviews." };
       this.store.put("runs", next, run.implementation_id);
       const implementation = this.store.get<Implementation>("implementations", run.implementation_id)!;
@@ -194,6 +204,11 @@ export class FactoryPipeline {
   async cleanup(id: string): Promise<unknown> {
     let run = this.store.get<FactoryRun>("runs", id);
     if (!run || run.implementation_completion_pending || !["completed", "cancelled", "failed"].includes(run.condition)) throw new FactoryError("run_owned", "Stop and observe this Run before cleanup", 409);
+    if (this.store.get<{ rework_requested?: boolean }>("implementation_retirement", id)?.rework_requested) {
+      const latest = this.store.list<FactoryRun>("runs", run.implementation_id).filter(candidate => candidate.id !== id && this.findingRuns(candidate).has(id)).at(-1);
+      const successor = latest ? await this.runtime.reconcile(latest.id) : null;
+      if (!successor?.implementation_completion || !this.store.list<FactoryApproval>("approvals", run.implementation_id).some(approval => approval.kind === "review" && approval.revision === successor.implementation_completion!.head && approval.scope.startsWith(`Run ${successor.id};`))) throw new FactoryError("review_acceptance_required", "Accept the repaired implementation before removing its retained predecessor checkout", 409);
+    }
     // Verify the proof while the checkout still exists; cleanup cannot bless stale evidence.
     if (run.implementation_completion) run = await this.reconcileCompletion(id);
     if (!["completed", "cancelled", "failed"].includes(run.condition)) throw new FactoryError("run_owned", "Reconcile this Run's current evidence before cleanup", 409);
@@ -215,7 +230,7 @@ export class FactoryPipeline {
     const retired = this.store.get("implementation_retirement", run.id);
     if (!live.implementation_completion_pending && !retired && !["ready", "completed"].includes(live.condition)) throw new FactoryError("execution_changed", "The implementation changed before retirement; reconcile its current ownership", 409);
     if (live.issue_pause || this.workflow.questions(run.implementation_id).some(question => question.answer === null)) throw new FactoryError("answers_unready", "Resolve current owner decisions before finishing implementation", 409);
-    if (this.store.list<{ run_id: string | null; status: string }>("comments", run.implementation_id).some(comment => comment.run_id === run.id && comment.status !== "resolved")) throw new FactoryError("findings_open", "Resolve retained findings before finishing implementation", 409);
+    if (this.store.list<{ run_id: string | null; status: string }>("comments", run.implementation_id).some(comment => comment.run_id !== null && this.findingRuns(run).has(comment.run_id) && comment.status !== "resolved")) throw new FactoryError("findings_open", "Resolve retained findings before finishing implementation", 409);
     if (JSON.stringify(this.completionEvidence(run, expected)) !== JSON.stringify(expected)) throw new FactoryError("fresh_evidence_required", "Implementation ownership or evidence changed before retirement", 409);
     this.store.put("runs", { ...live, implementation_completion_pending: true }, run.implementation_id);
     const alreadyRetired = retired || run.implementation_completion || run.implementation_completion_pending && ["completed", "cancelled"].includes(run.condition);
@@ -242,7 +257,7 @@ export class FactoryPipeline {
     if (body.head !== current.head) throw new FactoryError("review_stale", "Accept the exact current integration head", 409);
     const check = this.store.list<FactoryCheck>("checks", id).filter((entry) => entry.worker_id === null).at(-1);
     const reviews = this.store.list<FactoryReviewEvidence>("review_evidence", id);
-    if (!check || check.condition !== "passed" || check.head !== current.head || check.workspace_hash !== current.workspace_hash || !["standards", "spec"].every((axis) => reviews.filter((entry) => entry.axis === axis).at(-1)?.outcome === "passed" && reviews.filter((entry) => entry.axis === axis).at(-1)?.head === current.head)) throw new FactoryError("fresh_evidence_required", "Retain fresh checks and separate passing Standards and Spec reports at this head", 409);
+    if (!check || check.condition !== "passed" || check.head !== current.head || check.workspace_hash !== current.workspace_hash || current.workspace_hash !== CLEAN_WORKSPACE_HASH || !["standards", "spec"].every((axis) => reviews.filter((entry) => entry.axis === axis).at(-1)?.outcome === "passed" && reviews.filter((entry) => entry.axis === axis).at(-1)?.head === current.head)) throw new FactoryError("fresh_evidence_required", "Retain fresh checks and separate passing Standards and Spec reports at this head", 409);
     if (run.action === "implement-spec" && !this.completionEvidence(run, current)) throw new FactoryError("fresh_evidence_required", "Retain all frozen Project checks and independent reviews, and reconcile every owned worker and build", 409);
     if (run.action === "implement-spec") {
       run = await this.runtime.reconcile(id);
@@ -251,7 +266,7 @@ export class FactoryPipeline {
     const tickets = (run.manifest as { tickets: FactoryTicket[] }).tickets;
     const done = this.store.list<FactoryWorker>("workers", id).filter((entry) => entry.role === "implementer" && entry.condition === "completed");
     if (run.action === "implement-spec" && tickets.some((ticket) => !done.some((entry) => entry.ticket_id === ticket.id))) throw new FactoryError("tickets_incomplete", "Integrate every accepted Ticket before completion", 409);
-    if (this.store.list<{ run_id: string | null; status: string }>("comments", run.implementation_id).some((entry) => entry.run_id === id && entry.status !== "resolved")) throw new FactoryError("findings_open", "Resolve this Run's retained findings with fresh evidence before acceptance", 409);
+    if (this.store.list<{ run_id: string | null; status: string }>("comments", run.implementation_id).some((entry) => entry.run_id !== null && this.findingRuns(run).has(entry.run_id) && entry.status !== "resolved")) throw new FactoryError("findings_open", "Resolve this Run's retained findings with fresh evidence before acceptance", 409);
     const approval = { ...this.store.record(), implementation_id: run.implementation_id, kind: "review", revision: current.head, scope: `Run ${id}; checks ${check.id}; independent Standards and Spec reports` };
     // Release native ownership explicitly, while retaining Git and all evidence.
     const stopped = run.action === "implement-spec" ? await this.retireImplementation(run, this.completionEvidence(run, current)!) : await this.runtime.stopRun(id, { summary: `Owner accepted implementation at ${current.head}` });
@@ -274,11 +289,12 @@ export class FactoryPipeline {
   async resolveFinding(id: string, commentId: string, body: Record<string, unknown>): Promise<unknown> {
     const comment = this.store.get<import("../shared/protocol.ts").ReviewComment>("comments", commentId);
     if (!comment || comment.implementation_id !== id || !comment.run_id) throw new FactoryError("invalid_finding", "Select a finding attached to this Implementation's Run");
-    const run = this.run(comment.run_id, false);
+    const candidate = this.store.list<FactoryRun>("runs", id).filter(run => this.findingRuns(run).has(comment.run_id!)).at(-1);
+    const run = this.run(candidate?.id ?? comment.run_id, false);
     const head = await this.runtime.operation<{ head: string; workspace_hash: string }>(run, "head");
     const check = this.store.list<FactoryCheck>("checks", run.id).filter((entry) => entry.worker_id === null).at(-1);
     const evidence = this.store.list<FactoryReviewEvidence>("review_evidence", run.id);
-    if (body.head !== head.head || typeof body.summary !== "string" || !body.summary.trim() || body.summary.length > 20000 || check?.condition !== "passed" || check.head !== head.head || check.workspace_hash !== head.workspace_hash || !["standards", "spec"].every((axis) => evidence.filter((entry) => entry.axis === axis).at(-1)?.head === head.head && evidence.filter((entry) => entry.axis === axis).at(-1)?.outcome === "passed")) throw new FactoryError("fresh_evidence_required", "Resolve findings with an explicit summary, fresh checks and separate passing reviews at this head", 409);
+    if (body.head !== head.head || typeof body.summary !== "string" || !body.summary.trim() || body.summary.length > 20000 || check?.condition !== "passed" || check.head !== head.head || check.workspace_hash !== head.workspace_hash || head.workspace_hash !== CLEAN_WORKSPACE_HASH || !["standards", "spec"].every((axis) => evidence.filter((entry) => entry.axis === axis).at(-1)?.head === head.head && evidence.filter((entry) => entry.axis === axis).at(-1)?.outcome === "passed")) throw new FactoryError("fresh_evidence_required", "Resolve findings with an explicit summary, fresh checks and separate passing reviews at this head", 409);
     const next = { ...comment, status: "resolved", updated_at: new Date().toISOString(), resolution: { head: head.head, check_id: check.id, summary: body.summary } };
     this.store.put("comments", next, id); this.store.event(id, "finding_resolved", { comment_id: commentId, resolution: next.resolution }); return next;
   }

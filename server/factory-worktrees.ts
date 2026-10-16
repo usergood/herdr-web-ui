@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import type { FactoryCheck, FactoryProject, FactoryRun, FactoryWorker } from "../shared/protocol.ts";
 import { factoryPaneResting, factoryAgentArguments, type FactoryNative } from "./factory-native.ts";
 import { prepareFactoryPrompt } from "./factory-prompt.ts";
-import { FactoryError, git, hash, inspectCheckout } from "./factory-host.ts";
+import { CLEAN_WORKSPACE_HASH, FactoryError, git, hash, inspectCheckout } from "./factory-host.ts";
 import { provisionFactoryAgent, provisionSkills, verifySkills } from "./factory-skills.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { factoryTrackerClient, factoryTrackerGuide } from "./factory-tracker-client.ts";
@@ -50,6 +50,7 @@ export class FactoryWorktrees {
   private async workspaceHash(path: string): Promise<string> {
     const diff = await git(path, ["diff", "--binary", "--no-ext-diff", "--no-textconv", "HEAD", "--"]);
     const untracked = (await git(path, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0").filter((name) => name && !name.startsWith(".saurons-eye-") && !/^(\.agents|\.claude|\.opencode)\/skills\//.test(name));
+    const scaffolding = this.store.list<{ path: string; files: { path: string; hash: string }[] }>("host_scaffolding").find(record => record.path === path);
     let budget = 0; const files = [];
     for (const name of untracked) {
       const file = join(path, name); const info = lstatSync(file);
@@ -57,7 +58,11 @@ export class FactoryWorktrees {
       budget += info.size;
       if (!info.isFile() || info.nlink > 1 || budget > 16 * 1024 * 1024) throw new FactoryError("workspace_too_large", "Untracked check inputs exceed the safe evidence budget", 413);
       const descriptor = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
-      try { files.push({ path: name, hash: hash(readFileSync(descriptor)) }); } finally { closeSync(descriptor); }
+      try {
+        const contentHash = hash(readFileSync(descriptor));
+        if (name === ".opencode/agents/saurons-eye.md" && scaffolding?.files.some(file => file.path === name && file.hash === contentHash)) continue;
+        files.push({ path: name, hash: contentHash });
+      } finally { closeSync(descriptor); }
     }
     return hash(JSON.stringify({ diff, files }));
   }
@@ -177,7 +182,7 @@ export class FactoryWorktrees {
       results.push(this.accounts?.sanitize({ args, ...result }) ?? { args, ...result }); if (result.exit_code || signal.aborted) break;
     }
     const unchanged = head === (await git(path, ["rev-parse", "HEAD"])).trim() && before === await this.workspaceHash(path);
-    return { ...check, head, workspace_hash: before, commands: results, condition: unchanged && results.length > 0 && results.every((entry) => entry.exit_code === 0) ? "passed" : "failed", updated_at: new Date().toISOString() };
+    return { ...check, head, workspace_hash: before, commands: results, condition: unchanged && before === CLEAN_WORKSPACE_HASH && results.length > 0 && results.every((entry) => entry.exit_code === 0) ? "passed" : "failed", updated_at: new Date().toISOString() };
   }
   reconcileCheck(id: string, checkId: string): FactoryCheck {
     const check = this.store.get<FactoryCheck>("host_checks", checkId);

@@ -1196,10 +1196,16 @@ export const DEFAULT_PORT = 7317;
  * owned/uncertain children or builds can finish execution. implementation_completion records that
  * revision; owner review acceptance remains separate. Implementation.activity may be awaiting_merge,
  * with Board stage review until intended merge coverage (and any required release) is verified.
- * POST .../retry (issue_retry) -> FactoryRun, 202; owner-only successor of a failed issue attempt
- * or controlled-pause attempt with confirmed owner Stop. Revalidates current issue_scope,
- * answers, queue and ownership; retry_of retains the original Run identity. Never auto-retries.
+ * POST .../retry (issue_retry) -> FactoryRun, 202; owner-only successor of a failed issue attempt,
+ * or a retired implementation or controlled-pause attempt with confirmed owner Stop.
+ * Revalidates current issue_scope,
+ * answers, queue and ownership; retry_of retains the original Run identity. Retired rework copies
+ * its clean produced commit into a new lease on a Machine with implementation_rework_protocol: 1;
+ * issue_scope is required for issue attempts only.
+ * manifest.rework is FactoryRework. Original findings still require owner resolution against
+ * successor evidence. Never auto-retries.
  * POST .../stop (stop) -> FactoryRun; verified ownership released, history/work retained.
+ * Explicit Stop of invalidated retired work enables Retry; ordinary reconcile never reopens its lease or releases invalidated capacity.
  * POST .../cleanup (empty) -> FactoryCleanup; only stopped clean owned checkouts removed.
  * POST .../verify-provider (empty) -> FactoryCapabilities; genuine loading/owner-round evidence required.
  * POST .../import-artifacts (empty) -> FactoryArtifact[], 201; verified outputs retained centrally.
@@ -1254,7 +1260,7 @@ export const DEFAULT_PORT = 7317;
  * POST .../worker/:id/:action (empty) has the corresponding owner worker response above.
  */
 export type { FactoryOverview, FactoryDetail, Implementation, FactoryProject, ProjectCheckout, FactoryChat, FactoryMessage, FactoryEvent, SpecificationVersion, FactoryTicket, FactoryApproval, FactoryQuestion, FactoryArtifact, FactoryRun, ReviewSnapshot, ReviewComment, FactorySettings, FactoryProvider, FactoryStage, FactoryAction, RunCondition, FactoryCapabilities, FactoryProviderCapability, FactoryOutput } from "./factory.ts";
-export type { FactoryWorker, FactoryCheck, FactoryReviewEvidence, FactoryRetrospective } from "./factory.ts";
+export type { FactoryWorker, FactoryCheck, FactoryReviewEvidence, FactoryRetrospective, FactoryRework } from "./factory.ts";
 export type { NativeConversationSnapshot } from "./factory.ts";
 export type { FactoryPaneLink, FactoryPaneArchive } from "./factory.ts";
 export type { ProjectReference, ProjectReferenceLibrary, CodexReferenceContext, ProjectReferencePayload } from "./factory.ts";
@@ -1299,7 +1305,7 @@ export interface FactoryRequests {
   question: { question: string; run_id?: string; answer_kind?: "text" | "confirmation" };
   answer: { revision: string; answer: string };
   order: { direction: -1 | 1 } | { before_id: string };
-  issue_retry: { idempotency_key: string; issue_scope: import("./issue-admission.ts").IssueStartScope; execution_preset?: import("./agent-models.ts").AgentModelSelection };
+  issue_retry: { idempotency_key: string; issue_scope?: import("./issue-admission.ts").IssueStartScope; execution_preset?: import("./agent-models.ts").AgentModelSelection };
   start: { action: import("./factory.ts").FactoryAction; idempotency_key: string; issue_scope?: import("./issue-admission.ts").IssueStartScope; execution_preset?: import("./agent-models.ts").AgentModelSelection; retrospective_id?: string; expected?: { provider: import("./factory.ts").FactoryProvider; machine_id: string; project_id: string | null; specification_id: string | null; graph_hash: string } };
   continue_workflow: FactoryRequests["start"] & { run_id: string | null; allow_partial_handoff?: boolean };
   stop: { summary?: string };

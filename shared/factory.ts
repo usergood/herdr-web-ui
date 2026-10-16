@@ -71,6 +71,8 @@ export interface FactoryRun extends FactoryRecord {
   retry_of?: string;
   issue_pause?: import("./issue-admission.ts").IssuePause;
 }
+/** Frozen manifest.rework source for an explicit Retry; the retired lease stays closed. */
+export interface FactoryRework { run_id: string; head: string; workspace_hash: string }
 export interface ReviewSnapshot extends FactoryRecord {
   implementation_id: string; run_id: string | null; machine_id: string; repository: string;
   mode: "branch" | "workspace"; base: string; head: string; hash: string;
@@ -114,7 +116,7 @@ export interface FactoryPaneLink {
 export interface FactoryPaneArchive extends FactoryRecord { machine_id: string; pane_id: string; terminal_id?: string; session_ref?: string | null; title?: string; archived_at: string | null }
 export interface FactoryOverview { pane_links?: FactoryPaneLink[]; pane_archives?: FactoryPaneArchive[] }
 export interface FactoryProviderCapability { provider: FactoryProvider; version: string | null; installed: boolean; skills_verified: boolean; factory_ready: boolean; reasons: string[] }
-export interface FactoryCapabilities { providers: FactoryProviderCapability[]; skill_manifest: { commit: string; hash: string; file_count: number } | null; factory_host_protocol: 1; project_reference_protocol?: 1; account_profile_protocol?: 1 }
+export interface FactoryCapabilities { providers: FactoryProviderCapability[]; skill_manifest: { commit: string; hash: string; file_count: number } | null; factory_host_protocol: 1; implementation_rework_protocol?: 1; project_reference_protocol?: 1; account_profile_protocol?: 1 }
 export interface FactoryOutput { name: string; media_type: string; hash: string; size: number }
 export interface FactoryWorker extends FactoryRecord {
   run_id: string; ticket_id: string; role: "implementer" | "standards" | "spec";

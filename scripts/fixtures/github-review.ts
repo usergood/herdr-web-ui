@@ -5,12 +5,13 @@ import { githubQueueFixture } from "./github-queue.ts";
 export function githubReviewFixture() {
   const fixture = githubQueueFixture(true);
   const runs = new Map<string, FactoryRun>(); const workers = new Map<string, FactoryWorker>();
-  let head = "a".repeat(40); let workspaceHash = "owned-clean-workspace";
+  let head = "a".repeat(40); let workspaceHash = "5dbdd367ae6759b5c09a4545071da13a38c21bf1a1353657d9917e5f8d503807";
   let coordinator: FactoryRun["condition"] = "ready";
   let checkCondition: FactoryCheck["condition"] = "passed";
   let checkCommands: string[][] | null = null;
   let checkExitCodes: number[] = [];
   let reviewOutcome: "passed" | "failed" = "passed";
+  let launchFailure = false;
   let uncertainStop = false;
   let stopCondition: FactoryRun["condition"] = "cancelled";
   let stopHead: string | null = null;
@@ -23,9 +24,10 @@ export function githubReviewFixture() {
     const path = new URL(request.url).pathname;
     const body = request.method === "POST" ? await request.json() as Record<string, any> : {};
     if (path.endsWith("/launch")) {
-      const run = { ...body.run, condition: "working", worktree: fixture.root, branch: "fictional-run", ...(nativeIdentity ? { workspace_id: `fictional-${body.run.id}`, pane_id: `fictional-${body.run.id}:p1` } : {}) } as FactoryRun;
+      const run = { ...body.run, condition: launchFailure ? "failed" : "working", worktree: launchFailure ? null : fixture.root, branch: launchFailure ? null : "fictional-run", ...(nativeIdentity ? { workspace_id: `fictional-${body.run.id}`, pane_id: `fictional-${body.run.id}:p1` } : {}) } as FactoryRun;
       runs.set(run.id, run); return Response.json(run);
     }
+    if (path.endsWith("/review")) return Response.json({ repository: (runs.values().next().value!.manifest as { checkout: { repository: string } }).checkout.repository, head, files: [{ path: "README.md", status: "branch:M", diff: "--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-Old greeting\n+Produced greeting\n", binary: false, oversized: false }] });
     const id = path.match(/runs\/([^/]+)/)?.[1]; const run = id ? runs.get(id) : undefined;
     if (!run) return null;
     const action = path.split("/").at(-1);
@@ -95,5 +97,5 @@ export function githubReviewFixture() {
     stopGate = async () => { entered(); await gate; };
     return { waiting, release };
   }
-  return { ...fixture, prepare, integrate, review, second, holdStop, setCleanupOutcome(value: typeof cleanupOutcome) { cleanupOutcome = value; }, setHeadUnavailable(value = true) { headUnavailable = value; if (!value) cleanedRuns.clear(); }, setHead(value: string) { head = value; }, setWorkspaceHash(value: string) { workspaceHash = value; }, setCoordinator(value: typeof coordinator) { coordinator = value; }, setCheck(value: typeof checkCondition) { checkCondition = value; }, setCheckCommands(value: string[][] | null, exitCodes: number[] = []) { checkCommands = value; checkExitCodes = exitCodes; }, setReview(value: typeof reviewOutcome) { reviewOutcome = value; }, setUncertainStop(value: boolean) { uncertainStop = value; }, setStopCondition(value: typeof stopCondition) { stopCondition = value; }, setStopHead(value: string) { stopHead = value; }, setNativeIdentity() { nativeIdentity = true; } };
+  return { ...fixture, prepare, integrate, review, setLaunchFailure(value: boolean) { launchFailure = value; }, second, holdStop, setCleanupOutcome(value: typeof cleanupOutcome) { cleanupOutcome = value; }, setHeadUnavailable(value = true) { headUnavailable = value; if (!value) cleanedRuns.clear(); }, setHead(value: string) { head = value; }, setWorkspaceHash(value: string) { workspaceHash = value; }, setCoordinator(value: typeof coordinator) { coordinator = value; }, setCheck(value: typeof checkCondition) { checkCondition = value; }, setCheckCommands(value: string[][] | null, exitCodes: number[] = []) { checkCommands = value; checkExitCodes = exitCodes; }, setReview(value: typeof reviewOutcome) { reviewOutcome = value; }, setUncertainStop(value: boolean) { uncertainStop = value; }, setStopCondition(value: typeof stopCondition) { stopCondition = value; }, setStopHead(value: string) { stopHead = value; }, setNativeIdentity() { nativeIdentity = true; } };
 }

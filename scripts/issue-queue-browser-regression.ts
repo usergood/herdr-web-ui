@@ -122,26 +122,51 @@ try {
     const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });
     page.setDefaultTimeout(10_000); page.on("pageerror", recordPageError);
     try {
-      const { run, route } = await stale.prepare();
+      const { run, route, path } = await stale.prepare();
       await stale.integrate(run); await stale.json(`/runs/${run.id}/checks`, {});
       await stale.review(run, "standards"); await stale.review(run, "spec");
-      await stale.json(`/runs/${run.id}/reconcile`, {});
-      stale.setWorkspaceHash("changed-after-native-retirement");
+      const retired = await stale.json(`/runs/${run.id}/reconcile`, {});
+      const snapshot = await stale.json(path + "/snapshots", { run_id: run.id, mode: "branch" });
+      await stale.json(path + "/comments", { snapshot_id: snapshot.id, path: "README.md", side: "new", line_start: 1, line_end: 1, content: "Correct the produced greeting" });
       assert.equal((await stale.json(`/runs/${run.id}/reconcile`, {})).condition, "needs_you");
+      stale.restart();
       await page.goto(stale.origin + `/#factory/${run.implementation_id}`);
       await page.getByText("Advanced controls", { exact: true }).last().click();
       const history = page.getByRole("heading", { name: "Run history", exact: true }).locator("..");
-      for (const action of ["Reconcile Run", "Stop Run", "Reconcile Run"]) {
-        const response = page.waitForResponse(response => response.url().endsWith(`/runs/${run.id}/${action === "Stop Run" ? "stop" : "reconcile"}`) && response.request().method() === "POST");
-        await history.getByRole("button", { name: action, exact: true }).click();
-        assert.equal((await (await response).json()).condition, "needs_you");
-        await history.getByRole("status").filter({ hasText: "Implementation evidence changed or is unavailable" }).waitFor();
-        assert(await history.getByRole("button", { name: "Remove clean checkout", exact: true }).isDisabled());
-        assert.equal((await stale.json(route + "/queue")).implementing_count, 1);
-      }
+      const reconciled = page.waitForResponse(response => response.url().endsWith(`/runs/${run.id}/reconcile`) && response.request().method() === "POST");
+      await history.getByRole("button", { name: "Reconcile Run", exact: true }).click();
+      assert.equal((await (await reconciled).json()).condition, "needs_you");
+      await history.getByRole("status").filter({ hasText: "Implementation evidence changed or is unavailable" }).waitFor();
+      assert(await history.getByRole("button", { name: "Remove clean checkout", exact: true }).isDisabled());
+      assert.equal((await stale.json(route + "/queue")).implementing_count, 1);
+      const stopped = page.waitForResponse(response => response.url().endsWith(`/runs/${run.id}/stop`) && response.request().method() === "POST");
+      await history.getByRole("button", { name: "Stop Run", exact: true }).click();
+      assert.equal((await (await stopped).json()).condition, "cancelled");
+      const retry = page.waitForResponse(response => response.url().endsWith(`/runs/${run.id}/retry`) && response.request().method() === "POST");
+      await page.getByRole("region", { name: "GitHub issue source", exact: true }).getByRole("button", { name: "Retry", exact: true }).click();
+      const retried = await (await retry).json();
+      assert.equal(retried.condition, "working"); assert.equal(retried.retry_of, run.id);
+      assert.deepEqual(retried.manifest.rework, { run_id: run.id, head: retired.implementation_completion.head, workspace_hash: retired.implementation_completion.workspace_hash });
+      const detail = await stale.json(path);
+      assert.deepEqual(detail.runs.map((run: any) => [run.action, run.condition]), [["implement-spec", "cancelled"], ["implement-spec", "working"]]);
+      assert.deepEqual(detail.approvals, []); assert.equal(detail.comments[0].status, "draft");
+      stale.setHead("b".repeat(40));
+      await stale.integrate(retried); const checked = await stale.json(`/runs/${retried.id}/checks`, {});
+      await stale.review(retried, "standards"); await stale.review(retried, "spec");
+      assert.equal((await stale.json(`/runs/${retried.id}/reconcile`, {})).condition, "ready");
+      await page.reload(); await page.getByText("Advanced controls", { exact: true }).last().click();
+      const resolved = page.waitForResponse(response => response.url().endsWith(`/comments/${detail.comments[0].id}/resolve`) && response.request().method() === "POST");
+      await page.getByRole("button", { name: "Resolve with fresh evidence", exact: true }).click();
+      const resolution = await resolved;
+      assert.equal(resolution.status(), 200); assert.equal(resolution.request().postDataJSON().head, checked.head);
+      assert.equal((await resolution.json()).run_id, run.id);
+      assert.equal((await stale.json(`/runs/${retried.id}/reconcile`, {})).condition, "completed");
+      await page.reload();
+      await page.getByRole("region", { name: "Next step", exact: true }).getByRole("button", { name: "Accept reviewed head", exact: true }).click();
+      assert.equal((await stale.json(path)).approvals.some((approval: any) => approval.kind === "review" && approval.scope.startsWith(`Run ${retried.id};`)), true);
     } finally { await page.close(); stale.close(); }
   }
-  console.log("PASS: desktop/mobile stale retired implementation keeps Needs you, capacity and recovery controls");
+  console.log("PASS: desktop/mobile retired implementation retains invalidated capacity until explicit Stop and Retry preserves its produced commit");
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
     for (const control of ["Start implementation", "Start factory"]) {
       const guarded = githubReviewFixture();
@@ -235,7 +260,8 @@ try {
     const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });
     page.setDefaultTimeout(10_000); page.on("pageerror", recordPageError);
     try {
-      const { path, planning, body } = await continuation.preparedPlanning();
+      const { path, planning, body } = await continuation.preparedPlanning("to-spec");
+      assert.deepEqual((await continuation.json(path)).approvals, []);
       continuation.setFactoryReady(false);
       await page.goto(continuation.origin + `/#factory/${planning.implementation_id}`);
       const started = page.waitForResponse(response => response.url().endsWith(path + "/continue") && response.request().method() === "POST");
@@ -255,8 +281,10 @@ try {
         if (detail.runs.at(-1)?.action === "implement-spec" && detail.runs.at(-1)?.condition === "working") break;
         await new Promise(resolve => setTimeout(resolve, 25));
       } while (Date.now() < deadline);
-      assert.deepEqual(detail.runs.map((run: any) => [run.action, run.condition]), [["to-tickets", "completed"], ["verify-provider", "completed"], ["implement-spec", "working"]]);
+      assert.deepEqual(detail.runs.map((run: any) => [run.action, run.condition]), [["to-spec", "completed"], ["verify-provider", "completed"], ["implement-spec", "working"]]);
       assert.equal(detail.runs.at(-1).manifest.issue_admission.source.revision, body.issue_scope.source_revision);
+      assert.deepEqual(detail.approvals, []);
+      assert.equal(detail.runs.length, 3);
       await page.goto(continuation.origin + `/#factory/${planning.implementation_id}`);
       await page.getByRole("region", { name: "Next step", exact: true }).waitFor();
       assert.equal(await page.getByRole("region", { name: "Next step", exact: true }).getByRole("button", { name: "Continue workflow", exact: true }).count(), 0);

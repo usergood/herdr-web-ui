@@ -68,14 +68,16 @@ export class FactoryContinuation {
       if (!expected || typeof expected !== "object" || expected.provider !== (idea.provider ?? project?.provider) || expected.machine_id !== (idea.machine_id ?? project?.machine_id) || expected.project_id !== idea.project_id || expected.specification_id !== (spec?.id ?? null) || expected.graph_hash !== this.workflow.graphHash(id)) throw new FactoryError("scope_changed", "The approved workflow scope changed; refresh before continuing", 409);
     }
     if (body.action !== "verify-provider" && this.workflow.questions(id).some(q => q.answer === null)) throw new FactoryError("answers_unready", "Answer the pending product questions before continuing", 409);
-    if (body.action === "to-tickets" || body.action === "implement-spec") {
+    const issueImplementation = body.action === "implement-spec" && body.issue_scope !== undefined;
+    if (!issueImplementation && (body.action === "to-tickets" || body.action === "implement-spec")) {
       if (!spec || !this.workflow.approved(id, "specification", spec.id) || !this.workflow.approved(id, "testing_seams", spec.id)) throw new FactoryError("scope_unaccepted", "Accept the current specification and testing seams before continuing", 409);
     }
-    if (body.action === "implement-spec" && (!this.workflow.tickets(id).length || !this.workflow.approved(id, "ticket_graph", this.workflow.graphHash(id)))) throw new FactoryError("scope_unaccepted", "Approve the current Ticket graph before continuing", 409);
+    if (!issueImplementation && body.action === "implement-spec" && (!this.workflow.tickets(id).length || !this.workflow.approved(id, "ticket_graph", this.workflow.graphHash(id)))) throw new FactoryError("scope_unaccepted", "Approve the current Ticket graph before continuing", 409);
   }
-  private validateScope(id: string, expected: string, body: Record<string, unknown>): void {
+  private validateScope(id: string, expected: string, body: Record<string, unknown>, planningRunId = typeof body.run_id === "string" ? body.run_id : undefined): void {
     if (expected !== this.scopeHash(id)) throw new FactoryError("scope_changed", "Project settings or the approved scope changed; inspect them before continuing", 409);
     this.validate(id, body);
+    if (body.action === "implement-spec" && body.issue_scope !== undefined) this.runtime.validateIssueScope(id, body.issue_scope, planningRunId);
   }
   private async advance(id: string, body: Record<string, unknown>, origin: string): Promise<FactoryRun> {
     const signature = hash(JSON.stringify(body));
@@ -143,12 +145,12 @@ export class FactoryContinuation {
       if (["working", "needs_you", "blocked"].includes(run.condition)) { this.retry(runId); return; }
       if (run.condition !== "ready") return;
       this.validate(record.implementation_id, record.body);
-      this.validateScope(record.implementation_id, record.scope_hash, record.body);
+      this.validateScope(record.implementation_id, record.scope_hash, record.body, runId);
       await this.runtime.verifyProvider(run);
       if (this.stopped) return;
-      this.validateScope(record.implementation_id, record.scope_hash, record.body);
+      this.validateScope(record.implementation_id, record.scope_hash, record.body, runId);
       // All evidence and approvals are still checked by normal factory admission.
-      const next = await this.runtime.start(record.implementation_id, { ...record.body, idempotency_key: `${record.key.slice(0, 110)}-verified` }, record.origin, { runId, validateScope: () => this.validateScope(record.implementation_id, record.scope_hash, record.body), finish: async () => {
+      const next = await this.runtime.start(record.implementation_id, { ...record.body, idempotency_key: `${record.key.slice(0, 110)}-verified` }, record.origin, { runId, validateScope: () => this.validateScope(record.implementation_id, record.scope_hash, record.body, runId), finish: async () => {
         await this.retain(runId, false);
         await this.runtime.finishStep(runId);
       } });

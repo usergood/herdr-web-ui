@@ -28,6 +28,8 @@ export function AssignmentActions({ preset, onPresetChange, detail, project, mac
   const verification = [...detail.runs].reverse().find(run => run.action === "verify-provider");
   const latest = detail.runs.at(-1);
   const reviewed = latest?.implementation_completion;
+  const retiredStopped = !!latest && detail.events.some(event => event.kind === "run_stopped" && (event.data as { run_id?: string; rework_requested?: boolean } | null)?.run_id === latest.id && (event.data as { rework_requested?: boolean }).rework_requested);
+  const manualReworkRetry = latest?.action === "implement-spec" && !issueStart.scope && (latest.condition === "cancelled" && retiredStopped || latest.condition === "failed" && !!(latest.manifest as { rework?: unknown }).rework);
   const acceptedReview = !!reviewed && detail.approvals.some(approval => approval.kind === "review" && approval.revision === reviewed.head && approval.scope.startsWith(`Run ${latest!.id};`));
   const waitingEvent = detail.events.filter(event => event.kind === "continuation_waiting" && (event.data as { run_id?: string } | null)?.run_id === (active?.id ?? latest?.id)).at(-1);
   const continuationProblem = (waitingEvent?.data as { message?: string } | undefined)?.message;
@@ -36,7 +38,8 @@ export function AssignmentActions({ preset, onPresetChange, detail, project, mac
   const [acknowledgedHandoff, setAcknowledgedHandoff] = useState<string | null>(null);
   const incompleteHandoff = handoffProblem && acknowledgedHandoff !== latest?.id;
   const check = active ? detail.checks.filter(c=>c.run_id===active.id&&c.worker_id===null).at(-1) : undefined;
-  const suggestedAction: FactoryAction | null = detail.tickets.length && approved("ticket_graph", detail.graph_hash) ? "implement-spec" : specReady ? "to-tickets" : !specification && discussed && understood ? "to-spec" : null;
+  const graphReady = detail.tickets.length > 0 && (approved("ticket_graph", detail.graph_hash) || !!issuePlan && !!issueStart.scope);
+  const suggestedAction: FactoryAction | null = graphReady ? "implement-spec" : specReady ? "to-tickets" : !specification && discussed && understood ? "to-spec" : null;
   const nextAction = suggestedAction === active?.action ? null : suggestedAction;
   async function launch(action: FactoryAction) {
       if (!capability?.skills_verified) await factoryRequest(`/machines/${encodeURIComponent(machineId)}/prepare`, {});
@@ -82,15 +85,16 @@ export function AssignmentActions({ preset, onPresetChange, detail, project, mac
       {active.action==="implement-spec" && detail.review_evidence.filter(r=>r.run_id===active.id).map(r=><details key={r.id}><summary>{r.axis} · {r.outcome}</summary><pre>{r.content}</pre></details>)}
       <p className="field-hint">{unconfirmedWork?t("Stopping keeps the worktree. You can start a new attempt afterwards."):t("Review and continue from this chat. Finished steps keep their history.")}</p>
     </div> : <div className="factory-actions">
+      {latest && manualReworkRetry && <button className="btn" disabled={disabled} onClick={() => void perform(async () => { await factoryRequest(`/runs/${latest.id}/retry`, { idempotency_key: crypto.randomUUID(), execution_preset: preset }); })}>{t("Retry")}</button>}
       <button className="btn btn-primary" disabled={disabled} onClick={() => void start("work")}><Play />{t("Start work")}</button>
       {!specification && <button className="btn" disabled={disabled} onClick={() => void start("grill-with-docs")}><ListChecks />{t("Plan implementation")}</button>}
       {!specification && discussed && understood && <button className="btn" disabled={disabled || incompleteHandoff} onClick={() => void start("to-spec")}>{t("Create specification")}</button>}
       {specReady && !detail.tickets.length && <button className="btn" disabled={disabled || incompleteHandoff} onClick={() => void start("to-tickets")}>{t("Plan tickets")}</button>}
-      {detail.tickets.length > 0 && approved("ticket_graph", detail.graph_hash) && <button className="btn" disabled={disabled || incompleteHandoff || issueStart.blocked} onClick={() => void start("implement-spec")}>{t("Start implementation")}</button>}
+      {graphReady && <button className="btn" disabled={disabled || incompleteHandoff || issueStart.blocked} onClick={() => void start("implement-spec")}>{t("Start implementation")}</button>}
     </div>}
     {!active && !specification && <p className="field-hint">{t("Plan implementation starts Grill with docs: discuss the idea, approve a specification, then plan Tickets.")}</p>}
     <p className="field-hint">{t("New workspaces use the latest commit. Local changes stay in the original folder.")}</p>
-    {detail.tickets.length > 0 && approved("ticket_graph",detail.graph_hash) && !capability?.factory_ready && <div className="assignment-proposal"><p>{t("Native verification will run before implementation.")}</p><ul>{capability?.reasons.map(reason => <li key={reason}>{reason}</li>)}</ul><details><summary>{t("Advanced controls")}</summary><p>{t("Automated implementation needs a verified agent skill setup. Direct work and planning are available before verification.")}</p>
+    {graphReady && !capability?.factory_ready && <div className="assignment-proposal"><p>{t("Native verification will run before implementation.")}</p><ul>{capability?.reasons.map(reason => <li key={reason}>{reason}</li>)}</ul><details><summary>{t("Advanced controls")}</summary><p>{t("Automated implementation needs a verified agent skill setup. Direct work and planning are available before verification.")}</p>
       {!active && <button className="btn" disabled={disabled} onClick={()=>void start("verify-provider")}>{t("Start native verification")}</button>}
       {verification && <button className="btn" disabled={busy} onClick={()=>void perform(async()=>{const result=await factoryRequest<FactoryCapabilities>(`/runs/${verification.id}/verify-provider`,{});if(live.current)onCapabilities(result);})}>{t("Verify native evidence")}</button>}
     </details></div>}

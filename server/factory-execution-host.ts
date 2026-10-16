@@ -4,11 +4,11 @@ import { projectWorkflowPrompt } from "./factory-project-policy.ts";
 import { writePrivateFile } from "./factory-files.ts";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
-import type { FactoryCapabilities, FactoryOutput, FactoryRun } from "../shared/protocol.ts";
+import type { FactoryCapabilities, FactoryOutput, FactoryRework, FactoryRun } from "../shared/protocol.ts";
 import { HerdrError } from "./herdr/client.ts";
 import { paneRead, paneScrollInfo } from "./herdr/client.ts";
 import { claudeInputDraft, noteSubmitted, viewportShowsLive } from "./prompt.ts";
-import { FactoryError, git, hash, inspectCheckout, withinRoot } from "./factory-host.ts";
+import { CLEAN_WORKSPACE_HASH, FactoryError, git, hash, inspectCheckout, withinRoot } from "./factory-host.ts";
 import { factoryPaneResting, factoryAgentArguments, factoryNative, type FactoryNative } from "./factory-native.ts";
 import { materializeSkills, provisionFactoryAgent, provisionSkills, verifySkills, type SkillManifest } from "./factory-skills.ts";
 import { FactoryStore } from "./factory-store.ts";
@@ -141,7 +141,7 @@ export class FactoryExecutionHost {
       const reasons = [...(!version ? ["The native provider or its version is unavailable on this Machine"] : []), ...(problem ? [problem] : []), ...(!ready ? ["Verify pinned native skill loading on this provider version before factory admission"] : [])];
       return { provider, version, installed: version !== null, skills_verified: skills !== null, factory_ready: reasons.length === 0, reasons };
     }));
-    return { providers, skill_manifest: skills ? { commit: skills.commit, hash: skills.hash, file_count: skills.files.length } : null, factory_host_protocol: 1, project_reference_protocol: 1, account_profile_protocol: 1 };
+    return { providers, skill_manifest: skills ? { commit: skills.commit, hash: skills.hash, file_count: skills.files.length } : null, factory_host_protocol: 1, implementation_rework_protocol: 1, project_reference_protocol: 1, account_profile_protocol: 1 };
   }
   async launch(record: FactoryRun, access?: { token: string; url: string }, attachments: { id: string; name: string; hash: string; size: number; content_base64: string }[] = [], references?: ProjectReferencePayload): Promise<FactoryRun> {
     if (existsSync(join(this.store.root, "recovery-copy.json"))) throw new FactoryError("recovery_copy", "Native execution is disabled on a restored copy", 409);
@@ -185,12 +185,22 @@ export class FactoryExecutionHost {
         const checkout = await inspectCheckout(run.checkout);
         if (checkout.repository !== expected.checkout?.repository || checkout.head !== run.base || run.action === "implement-spec" && (await git(checkout.path, ["status", "--porcelain", "--untracked-files=all"])).trim()) throw new FactoryError("checkout_changed", "The verified checkout changed or has unpublished work; preserve it", 409);
       }
+      const rework = (run.manifest as { rework?: FactoryRework }).rework;
+      if (rework) {
+        const retired = this.store.get<{ run: FactoryRun }>("host_leases", rework.run_id)?.run;
+        const predecessor = run.retry_of ? this.store.get<{ run: FactoryRun }>("host_leases", run.retry_of)?.run : null;
+        const inherited = predecessor?.condition === "failed" && !predecessor.worktree && predecessor.implementation_id === run.implementation_id && predecessor.provider === run.provider && predecessor.action === run.action && (predecessor.manifest as { rework?: FactoryRework }).rework?.run_id === retired?.id;
+        if (!retired || run.retry_of !== retired.id && !inherited || retired.implementation_id !== run.implementation_id || retired.provider !== run.provider || retired.action !== run.action || !["completed", "cancelled", "failed"].includes(retired.condition)
+          || (retired.manifest as { checkout?: { repository?: string } }).checkout?.repository !== expected.checkout?.repository) throw new FactoryError("rework_owned", "Recover only this Assignment's confirmed retired native lease", 409);
+        const current = await this.worktrees.head(retired.id);
+        if (current.head !== rework.head || current.workspace_hash !== rework.workspace_hash || current.workspace_hash !== CLEAN_WORKSPACE_HASH) throw new FactoryError("rework_changed", "The retained implementation changed before rework; preserve it and inspect the new attempt", 409);
+      }
       const root = run.checkout ? join(this.store.root, "worktrees", run.id) : join(this.store.root, "inbox", run.implementation_id, run.id);
       const worktree = join(root, run.checkout ? "integration" : "workspace");
       mkdirSync(root, { recursive: true, mode: 0o700 });
       if (existsSync(worktree)) throw new FactoryError("worktree_owned", "Unexpected work exists at the proposed working directory; preserve it", 409);
       const branch = run.checkout ? `saurons-eye/${run.implementation_id}/${run.id}` : null;
-      if (run.checkout) await git(run.checkout, ["worktree", "add", "-b", branch!, worktree, run.base!]); else mkdirSync(worktree, { mode: 0o700 });
+      if (run.checkout) await git(run.checkout, ["worktree", "add", "-b", branch!, worktree, rework?.head ?? run.base!]); else mkdirSync(worktree, { mode: 0o700 });
       if (realpathSync(worktree) !== worktree) throw new FactoryError("wrong_worktree", "The owned working directory changed", 409);
       run = { ...run, worktree, branch, updated_at: new Date().toISOString() }; save();
       const project = (run.manifest as { project?: { environment?: Record<string, string> } }).project;

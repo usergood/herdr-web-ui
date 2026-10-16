@@ -148,7 +148,7 @@ export function FactoryPanel({ machines, onOpenPane, selectedId, projectId = nul
         </div><p className="factory-context">{effectiveProvider} · {machines.find((machine) => machine.id === effectiveMachine)?.name ?? effectiveMachine} · {checkout?.path ?? t("No verified checkout")}</p>
       </section>
       {detail.runs.map(run => <IssueRunContract key={run.id} run={run} busy={busy} perform={perform} />)}
-      <AssignmentIssueSource runs={detail.runs} busy={busy} perform={perform} sources={detail.github_sources ?? []} problem={detail.github_sync?.problem ?? null} tickets={detail.tickets} questionRevision={detail.question_revision} preset={preset} />
+      <AssignmentIssueSource runs={detail.runs} events={detail.events} busy={busy} perform={perform} sources={detail.github_sources ?? []} problem={detail.github_sync?.problem ?? null} tickets={detail.tickets} questionRevision={detail.question_revision} preset={preset} />
       <AssignmentActions preset={preset} onPresetChange={setPreset} key={detail.implementation.id} detail={detail} project={selectedProject} machineId={effectiveMachine} machineName={machines.find(m=>m.id===effectiveMachine)?.name??effectiveMachine} provider={effectiveProvider??"codex"} busy={busy} perform={perform} onOpenPane={onOpenPane} capabilities={execution.capabilities} problem={execution.problem} onCapabilities={execution.apply} />
       <details className="factory-section"><summary>{t("Advanced controls")}</summary>
         <div className="factory-filters">

@@ -13,7 +13,7 @@ export function issueExecutionAttempts(store: FactoryStore, id: string): Factory
 /** A paused contract never resumes: only an owner's confirmed Stop permits a new attempt. */
 export function issueRetryAvailable(store: FactoryStore, run: FactoryRun | undefined): boolean {
   if (!run || run.implementation_completion_pending || run.implementation_completion) return false;
-  return run.condition === "failed" || run.condition === "cancelled" && !!run.issue_pause && store.list<FactoryEvent>("events", run.implementation_id).some(event => event.kind === "run_stopped" && (event.data as { run_id?: string } | null)?.run_id === run.id);
+  return run.condition === "failed" || run.condition === "cancelled" && (!!run.issue_pause || store.get<{ rework_requested?: boolean }>("implementation_retirement", run.id)?.rework_requested === true) && store.list<FactoryEvent>("events", run.implementation_id).some(event => event.kind === "run_stopped" && (event.data as { run_id?: string } | null)?.run_id === run.id);
 }
 
 /** One eligibility result is shared by previews, source detail and the board. */

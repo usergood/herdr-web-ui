@@ -43,14 +43,16 @@ export function issueContinuationFixture() {
     }
     return null;
   });
-  async function preparedPlanning(action: "to-tickets" | "work" = "to-tickets") {
+  async function preparedPlanning(action: "to-tickets" | "to-spec" | "work" = "to-tickets") {
     const setup = await fixture.setup();
     const source = (await fixture.json(setup.route + "/sync", {})).sources[0];
     const path = `/implementations/${source.implementation_id}`;
-    const specification = await fixture.json(path + "/specifications", { content: fixture.issue.body });
-    for (const kind of ["specification", "testing_seams"]) await fixture.json(path + "/approvals", { kind, revision: specification.id, scope: "Public HTTP and real browser journeys." });
-    const graph = await fixture.json(path + "/tickets", { specification_id: specification.id, tickets: [{ key: "greeting", title: "Greeting", acceptance: "Show hello", dependencies: [] }] });
-    await fixture.json(path + "/approvals", { kind: "ticket_graph", revision: graph.hash, scope: "Approved greeting graph" });
+    if (action !== "to-spec") {
+      const specification = await fixture.json(path + "/specifications", { content: fixture.issue.body });
+      for (const kind of ["specification", "testing_seams"]) await fixture.json(path + "/approvals", { kind, revision: specification.id, scope: "Public HTTP and real browser journeys." });
+      const graph = await fixture.json(path + "/tickets", { specification_id: specification.id, tickets: [{ key: "greeting", title: "Greeting", acceptance: "Show hello", dependencies: [] }] });
+      await fixture.json(path + "/approvals", { kind: "ticket_graph", revision: graph.hash, scope: "Approved greeting graph" });
+    }
     await fixture.json(setup.route + "/issues/1/approve", { source_revision: source.revision, policy_revision: setup.readiness.revision });
     await fixture.json(setup.route + "/issues/1/prepare", { source_revision: source.revision });
     await fixture.json(setup.route + "/sync", {});

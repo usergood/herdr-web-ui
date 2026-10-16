@@ -3882,15 +3882,16 @@ it("issue Start scope uses the existing guarded Run endpoint and standard error 
 });
 
 
-it("failed issue Retry uses the guarded factory mutation and structured error contract", async () => {
+it.each(["issue", "retired"])("%s Retry uses the guarded factory mutation and structured error contract", async kind => {
   const state = mkdtempSync(join(tmpdir(), "issue-retry-route-"));
   const app = createServer({ port: 0, stateDir: state, machines: false });
   try {
     const url = `http://localhost:${app.port}/api/factory/runs/unknown-attempt/retry`;
-    const unguarded = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ idempotency_key: "owner-retry", issue_scope: {} }) });
+    const body: import("../shared/protocol.ts").FactoryRequests["issue_retry"] = { idempotency_key: "owner-retry", ...(kind === "issue" ? { issue_scope: { source_id: "unknown", source_revision: "unknown", graph_hash: "unknown" } } : {}) };
+    const unguarded = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     expect(unguarded.status).toBe(403);
     expect((await unguarded.json()).error.code).toBe("invalid_origin");
-    const missing = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify({ idempotency_key: "owner-retry", issue_scope: {} }) });
+    const missing = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
     expect(missing.status).toBe(404);
     expect(await missing.json()).toEqual({ error: { code: "not_found", message: "Run not found" } });
   } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
@@ -3913,3 +3914,24 @@ it("automatic issue policy requires an exact preview and retains a separate paus
     expect((await fixture.json("")).activity).toEqual([]);
   } finally { fixture.close(); }
 });
+
+
+it("retired implementation Retry requires Machine support for copying produced work", async () => {
+  const { githubReviewFixture } = await import("../scripts/fixtures/github-review.ts");
+  const fixture = githubReviewFixture();
+  try {
+    const { run, path, route } = await fixture.prepare();
+    await fixture.integrate(run); await fixture.json(`/runs/${run.id}/checks`, {});
+    await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    await fixture.json(`/runs/${run.id}/reconcile`, {});
+    fixture.setHead("b".repeat(40)); await fixture.json(`/runs/${run.id}/reconcile`, {});
+    await fixture.json(`/runs/${run.id}/stop`, {});
+    fixture.setReworkSupported(false);
+    const source = (await fixture.json(route)).sources[0];
+    const response = await fixture.post(`/runs/${run.id}/retry`, { idempotency_key: "unsupported-rework", issue_scope: { source_id: source.id, source_revision: source.revision, graph_hash: run.graph_hash } });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: { code: "rework_host_required", message: "Update the execution Machine before recovering retained implementation work" } });
+    expect((await fixture.json(path)).runs).toMatchObject([{ id: run.id, condition: "cancelled" }]);
+    expect((await fixture.json(path)).runs).toHaveLength(1);
+  } finally { fixture.close(); }
+}, 15_000);
