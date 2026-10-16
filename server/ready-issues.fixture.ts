@@ -70,7 +70,7 @@ export async function readyIssuesFixture(behavior: { reviewOutcome?: "passed" | 
       const action = nativeOperation[2];
       const worker = workers.get(body.worker_id);
       if (action === "head") return Response.json(head(run.worktree!));
-      if (action === "transcript") return Response.json({ source_id: `owned:${run.id}`, version: "1", cursor: null, turns: [] });
+      if (action === "transcript") return Response.json({ ...(worker ? { worker_id: worker.id } : {}), source_id: `owned:${run.id}:${worker?.id ?? "parent"}`, version: body.before ? "earlier-v1" : "latest-v1", cursor: body.before ? null : "owned-earlier-page", turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: `${body.before ? "Earlier" : "Final"} owned ready-issue context retained before closure` }] }] });
       if (action === "worker") {
         if (new TextEncoder().encode(JSON.stringify(body)).length > 512 * 1024) return Response.json({ error: { code: "body_too_large", message: "Owned remote context limit" } }, { status: 413 });
         workerContexts.push(body.context);
@@ -142,7 +142,7 @@ export async function readyIssuesFixture(behavior: { reviewOutcome?: "passed" | 
       if (!response.ok) throw new Error(`Owned contract read failed: ${response.status}`);
       return response.json();
     }, setReviewOutcome: (value: "passed" | "failed") => { reviewOutcome = value; }, deliveries, workerContexts, uncertainDelivery: (value: boolean) => { uncertainDelivery = value; }, hostAccountId: base.policy.account_profile_id,
-    rest: (id: string) => { runs.set(id, { ...runs.get(id)!, condition: "ready" }); },
+    rest: (id: string) => { const run = runs.get(id)!; if (!["cancelled", "completed", "failed"].includes(run.condition)) runs.set(id, { ...run, condition: "ready" }); },
     restWorker: (id: string) => { const worker = workers.get(id)!; workers.set(id, { ...worker, ...head(worker.worktree!), condition: "ready" }); },
     tick: () => poll(), restart: () => { app.stop(); app = createServer(options); },
     failLaunch: (value: boolean) => { failLaunch = value; }, offline: (value: boolean) => { offline = value; },
