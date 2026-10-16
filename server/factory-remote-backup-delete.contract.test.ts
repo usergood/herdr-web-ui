@@ -50,7 +50,8 @@ it("Machine Delete purges its snapshots and existing recovery copies before ackn
     const nested = await f.request(existing.app, "factory/backups", {}).then(r => r.json());
     const response = await f.remove();
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ run_id: f.runId, deletion_id: expect.any(String), condition: "deleted" });
+    const receipt = await response.json();
+    expect(receipt).toEqual({ run_id: f.runId, deletion_id: expect.any(String), condition: "deleted" });
     for (const path of [join(f.state, "factory", "backups", backup.id, "records.sqlite"), join(existing.state, "factory", "records.sqlite")]) {
       const bytes = Buffer.from(await (await f.file(path)).arrayBuffer());
       expect(bytes.includes(Buffer.from("Private frozen remote scope"))).toBe(false);
@@ -66,7 +67,7 @@ it("Machine Delete purges its snapshots and existing recovery copies before ackn
     const recent = await f.api("/backups", {}).then(r => r.json());
     const recentCopy = await f.recover(f.app, recent.id);
     expect((await f.request(recentCopy.app, `factory/implementations/${f.erased.id}`)).status).toBe(404);
-    expect((await f.remove()).status).toBe(200);
+    expect(await f.remove().then(r => r.json())).toEqual(receipt);
   } finally { f.close(); }
 });
 

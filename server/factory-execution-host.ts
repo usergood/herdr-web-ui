@@ -117,7 +117,7 @@ export class FactoryExecutionHost {
       if (typeof body.implementation_id !== "string") throw new FactoryError("invalid_delete", "Select the Assignment owned by this attempt");
       new FactoryBackup(this.store, new FactoryArtifacts(this.store)).purge(body.implementation_id);
       this.store.put("host_deleted_runs", { id, ...prior, implementation_id: body.implementation_id });
-      return prior;
+      return { run_id: prior.run_id, deletion_id: prior.deletion_id, condition: prior.condition };
     }
     const lease = this.store.get<{ id: string; run: FactoryRun }>("host_leases", id);
     if (!lease || lease.run.implementation_id !== body.implementation_id) throw new FactoryError("delete_identity_changed", "No matching owned attempt is available for Delete", 409);
