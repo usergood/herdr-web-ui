@@ -97,7 +97,7 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
     const id = queueRoute[1]!;
     if (!projects.some(project => project.id === id)) return failure("not_found", "Fictional Project not found", 404);
     let policy = projectQueuePolicies.get(id);
-    const maximum = Math.min(settings.max_agents, settings.max_builds);
+    const maximum = settings.max_agents;
     if (method === "POST" && queueRoute[2] === "configure") {
       if (body.expected_revision !== (policy?.revision ?? null)) return failure("queue_changed", "Refresh the fictional queue");
       if (!Number.isSafeInteger(body.max_implementations) || Number(body.max_implementations) < 1 || Number(body.max_implementations) > maximum && body.max_implementations !== (policy?.max_implementations ?? 1) || typeof body.paused !== "boolean") return failure("invalid_queue", "Select a Project limit within the global limits", 400);
@@ -157,7 +157,7 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
       // Demo planning/verification operations are deliberately unavailable: never invent eligibility.
       const entries: IssueQueue["entries"] = readinessView(view).sources.filter(source => source.kind === "issue").map(source => ({ source_id: source.id, implementation_id: source.implementation_id, number: source.number, title: source.current?.title ?? "", position: details.get(source.implementation_id)?.implementation.position ?? 0, eligible: false, lane: "inbox" as const, reasons: [...(source.readiness?.blockers ?? []).map(code => ({ code: "readiness_" + code, detail: "" })), { code: "planning_required", detail: "" }, { code: "dependencies_stale", detail: "" }] })).sort((a,b) => a.position-b.position);
       async function queueRevision(policy: ProjectQueuePolicy): Promise<string> {
-        const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([policy, settings.max_implementations, view, entries])));
+        const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([policy, settings.max_agents, view, entries])));
         return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2,"0")).join("");
       }
       if (method === "POST" && githubRoute[2] === "queue") {
@@ -168,14 +168,14 @@ export async function factoryDemo(url: URL, method: string, body: Record<string,
           if (!preview || preview.revision !== revision || body.preview_revision !== revision) return failure("queue_preview_required", "Review the current eligible backlog before enabling automatic implementation");
           return failure("demo_unavailable", "Automatic execution requires an owned Machine; the demo keeps fictional records only");
         }
-        if (body.automatic_implementation !== false || typeof body.paused !== "boolean" || !Number.isInteger(body.max_implementations) || Number(body.max_implementations) < 1 || Number(body.max_implementations) > settings.max_implementations) return failure("invalid_queue_policy", "Select pause and a limit within global capacity", 400);
+        if (body.automatic_implementation !== false || typeof body.paused !== "boolean" || !Number.isInteger(body.max_implementations) || Number(body.max_implementations) < 1 || Number(body.max_implementations) > settings.max_agents) return failure("invalid_queue_policy", "Select pause and a limit within global capacity", 400);
         queuePolicies.set(id, { ...policy, revision: crypto.randomUUID(), automatic_implementation: false, paused: body.paused, max_implementations: Number(body.max_implementations) }); save();
       }
       const currentPolicy = queuePolicies.get(id) ?? policy;
       const revision = await queueRevision(currentPolicy);
       if (method === "POST" && githubRoute[2] === "preview") { queuePreviews.set(id, { revision, created_at: new Date().toISOString(), eligible_count: 0 }); save(); }
       const preview = queuePreviews.get(id) ?? null;
-      return json({ policy: currentPolicy, dispatch_problem: null, global_limit: settings.max_implementations, effective_limit: Math.min(currentPolicy.max_implementations, settings.max_implementations), implementing_count: 0, available_slots: Math.min(currentPolicy.max_implementations, settings.max_implementations), revision, eligible_count: 0, entries, preview, preview_current: preview?.revision === revision } satisfies IssueQueue);
+      return json({ policy: currentPolicy, dispatch_problem: null, global_limit: settings.max_agents, effective_limit: Math.min(currentPolicy.max_implementations, settings.max_agents), implementing_count: 0, available_slots: Math.min(currentPolicy.max_implementations, settings.max_agents), revision, eligible_count: 0, entries, preview, preview_current: preview?.revision === revision } satisfies IssueQueue);
     }
     if (method === "GET" && githubRoute[4] === "files") return json({ head: fictionalGitHubPull.headRefOid, base: fictionalGitHubPull.baseRefOid, files: [{ filename: "README.md", status: "modified", additions: 1, deletions: 0, patch: "@@ -1 +1,2 @@\n # Fictional Project\n+An example improvement." }] });
     if (method === "GET") return json(readinessView(view));

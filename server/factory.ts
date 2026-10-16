@@ -582,7 +582,7 @@ export class FactoryService {
         return jsonResponse(await readDeliveryGitHub(this.accounts, await this.body(request) as unknown as import("../shared/factory-delivery.ts").DeliveryReadRequest));
       }
       if (url.pathname === "/api/factory-host/publication" && request.method === "POST") {
-        if (request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Use publication controls from this app");
+        if (!sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1") return httpError(403, "invalid_origin", "Use publication controls from this app");
         return jsonResponse(await this.executionHost.publication(await this.body(request) as unknown as import("../shared/factory-publication.ts").PublicationHostRequest));
       }
       if (url.pathname === "/api/factory/reference-template" && request.method === "GET") return jsonResponse(projectReferenceTemplate);

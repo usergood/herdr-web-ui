@@ -126,9 +126,10 @@ try {
   assert.equal(detail.runs.length, 4); assert.equal(detail.workers.length, 5);
   assert.equal(launches, 0); assert.deepEqual(errors, []);
   // An unreadable imported message must not take down the Assignment's history.
-  await page.route(`**/api/factory/implementations/${f.assignment.id}`, async route => {
+  await page.route(`**/api/factory/implementations/${f.assignment.id}?view=workflow&*`, async route => {
     const response = await route.fetch(); const body = await response.json();
-    body.native_snapshots.find((snapshot: { id: string }) => snapshot.id === "interview-context-history").turns[0].parts = [{ kind: "tool", name: "owned-unreadable-tool", summary: { unreadable: "fixture" }, input: "", output: "" }];
+    const snapshot = body.native_snapshots.find((entry: { id: string }) => entry.id === "interview-context-history");
+    if (snapshot) snapshot.turns[0].parts = [{ kind: "tool", name: "owned-unreadable-tool", summary: { unreadable: "fixture" }, input: "", output: "" }];
     await route.fulfill({ response, json: body });
   });
   await page.goto(`http://localhost:${app.port}/#factory/${f.assignment.id}`);

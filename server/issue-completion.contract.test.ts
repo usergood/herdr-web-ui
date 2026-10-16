@@ -541,7 +541,7 @@ test("verified owner cleanup preserves exact completion and released capacity ac
       expect(reconciled.implementation_completion).toEqual(completion);
       expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 0, available_slots: 1 });
     }
-    await fixture.json("/settings", { max_implementations: 1 });
+    await fixture.json("/settings", { max_agents: 1 });
     expect((await fixture.post(second.path + "/runs", second.start)).status).toBe(202);
     expect((await fixture.json(path)).implementation).toMatchObject({ stage: "review", activity: "awaiting_merge" });
   } finally { fixture.close(); }
@@ -800,7 +800,7 @@ test("historically accepted implementations with cleaned workspaces retain relea
       } finally { db.close(); }
     });
     expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 0, available_slots: 1 });
-    await fixture.json("/settings", { max_implementations: 1 });
+    await fixture.json("/settings", { max_agents: 1 });
     expect((await fixture.post(second.path + "/runs", second.start)).status).toBe(202);
     expect((await fixture.json(path)).implementation).toMatchObject({ stage: "done", outcome: "implementation_complete" });
     expect((await fixture.json(path)).runs[0]).toMatchObject({ condition: "completed" });

@@ -402,3 +402,14 @@ test("a separate automatic publication opt-in publishes only after acceptance wi
     expect((await f.request(f.prefix).then(r => r.json())).implementation.outcome).toBe("pr_open");
   } finally { await f.close(); }
 }, 60_000);
+
+
+test("Machine PR publication rejects a foreign owner origin before dispatch", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "publication-origin-"));
+  const app = createServer({ port: 0, stateDir, token: "", machines: false, factory: { accountDiscoveryHome: stateDir, native: { version: async () => null } } });
+  try {
+    const response = await fetch(`http://localhost:${app.port}/api/factory-host/publication`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1", "x-herdr-machine": "1", origin: "https://foreign.example.invalid" }, body: "{}" });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error: { code: "invalid_origin" } });
+  } finally { app.stop(); rmSync(stateDir, { recursive: true, force: true }); }
+});
