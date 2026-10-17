@@ -8,7 +8,7 @@ import type { FactoryCapabilities, FactoryOutput, FactoryRework, FactoryRun, Pro
 import { HerdrError } from "./herdr/client.ts";
 import { paneRead, paneScrollInfo } from "./herdr/client.ts";
 import { claudeInputDraft, noteSubmitted, viewportShowsLive } from "./prompt.ts";
-import { CLEAN_WORKSPACE_HASH, FactoryError, git, hash, inspectCheckout, withinRoot } from "./factory-host.ts";
+import { assertPublicationRouting, CLEAN_WORKSPACE_HASH, FactoryError, git, hash, inspectCheckout, withinRoot } from "./factory-host.ts";
 import { factoryPaneResting, factoryWorkspaceGone, factoryAgentArguments, factoryNative, type FactoryNative } from "./factory-native.ts";
 import { captureReview } from "./factory-review.ts";
 import { materializeSkills, provisionFactoryAgent, provisionSkills, verifySkills, type SkillManifest } from "./factory-skills.ts";
@@ -90,11 +90,8 @@ export class FactoryExecutionHost {
       const checkout = await inspectCheckout(run.worktree!);
       const discovered = await this.discover(run.worktree!);
       if (checkout.repository !== (run.manifest as { checkout: ProjectCheckout }).checkout.repository || discovered.github.repository?.toLowerCase() !== p.repository.toLowerCase() || checkout.branch !== p.branch || checkout.head !== p.head || (await captureReview(run.worktree!, p.base, "workspace")).files.length) throw new FactoryError("publication_scope_changed", "The reviewed repository, branch or diff changed", 409);
-      // Git URL rewrites could send an explicit GitHub URL to an unrelated remote.
-      const config = await git(run.worktree!, ["config", "--list"]);
-      if (/^url\..*\.(?:insteadof|pushinsteadof)=/im.test(config)) throw new FactoryError("publication_routing_changed", "Remove Git URL rewrite routing before scoped publication", 409);
       const environment = await this.accounts!.environment(p.account_snapshot, true, run.worktree!);
-      await withAccountEnvironment(environment, () => { authorize(); return this.native.pushBranch({ cwd: run.worktree!, repository: p.repository, branch: p.branch, head: p.head }); });
+      await withAccountEnvironment(environment, async () => { await assertPublicationRouting(run.worktree!); authorize(); return this.native.pushBranch({ cwd: run.worktree!, repository: p.repository, branch: p.branch, head: p.head }); });
     }, authorize);
   }
   async modelCatalog(provider: import("../shared/factory.ts").FactoryProvider, path: string, repository: string, snapshot?: AccountBindingSnapshot | null) {

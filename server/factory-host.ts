@@ -26,6 +26,12 @@ export async function git(cwd: string, args: string[]): Promise<string> {
   } catch { throw new FactoryError("git_failed", "The repository operation failed; verify the checkout and preserve unexpected work"); }
 }
 
+/** Explicit publication URLs must not inherit routing to another repository. */
+export async function assertPublicationRouting(cwd: string): Promise<void> {
+  const config = await git(cwd, ["config", "--list"]);
+  if (/^url\..*\.(?:insteadof|pushinsteadof)=/im.test(config)) throw new FactoryError("publication_routing_changed", "Remove Git URL rewrite routing before scoped publication", 409);
+}
+
 export async function inspectCheckout(path: string): Promise<Omit<ProjectCheckout, "id" | "created_at" | "updated_at" | "project_id" | "machine_id">> {
   if (!isAbsolute(path) || /[\0\r\n]/.test(path)) throw new FactoryError("invalid_checkout", "The checkout path must be absolute");
   let root: string;

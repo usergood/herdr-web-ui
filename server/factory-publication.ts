@@ -9,7 +9,7 @@ import { FactoryRuntime } from "./factory-runtime.ts";
 import { FactoryWorkflow } from "./factory-workflow.ts";
 import { FactoryDelivery } from "./factory-delivery.ts";
 import { FactoryMergeDelivery } from "./factory-merge-delivery.ts";
-import { FactoryError, git, hash } from "./factory-host.ts";
+import { assertPublicationRouting, FactoryError, git, hash } from "./factory-host.ts";
 
 interface PublicationIntent {
   id: string; run_id: string; head: string; repository: string; base_branch: string; branch: string;
@@ -75,10 +75,11 @@ export class FactoryHostPublication {
     if (!pull) {
       if (intent.condition !== "prepared") throw new FactoryError("publication_uncertain", "GitHub has not confirmed the retained PR creation; do not replay it", 409);
       const destination = `https://github.com/${policy.repository}.git`;
+      await assertPublicationRouting(run.worktree); assertOwned();
       const remote = (await git(run.worktree, ["ls-remote", "--heads", destination, `refs/heads/${run.branch}`])).trim();
       if (remote && remote.split(/\s+/)[0] !== body.head) throw new FactoryError("publication_branch_changed", "The owned remote branch has another head; preserve it", 409);
       await assertCurrent();
-      assertOwned();
+      await assertPublicationRouting(run.worktree); assertOwned();
       await git(run.worktree, ["-c", "push.followTags=false", "push", "--", destination, `${body.head}:refs/heads/${run.branch}`]);
       await assertCurrent();
       const title = (frozen.implementation?.title ?? frozen.project.name).replace(/[\r\n]/g, " ").slice(0, 180);
@@ -94,12 +95,13 @@ export class FactoryHostPublication {
       if (!previous || previous.condition !== "published" || previous.number !== pull.number || previous.branch !== run.branch || previous.repository !== policy.repository || previous.base_branch !== policy.base_branch || pull.state !== "open" || !pull.body?.includes(previousMarker) || ![body.previous_head, body.head].includes(pull.head?.sha) || pull.head.ref !== run.branch || pull.head.repo?.full_name !== policy.repository || pull.base?.ref !== policy.base_branch || pull.base.repo?.full_name !== policy.repository || pull.html_url !== previous.url) throw new FactoryError("publication_target_changed", "The repaired candidate must update the exact previously published PR", 409);
       if (intent.condition !== "prepared") throw new FactoryError("publication_uncertain", "PR update was sent; reconcile its retained identity before any further action", 409);
       const destination = `https://github.com/${policy.repository}.git`;
+      await assertPublicationRouting(run.worktree); assertOwned();
       const remote = (await git(run.worktree, ["ls-remote", "--heads", destination, `refs/heads/${run.branch}`])).trim().split(/\s+/)[0];
       if (remote !== body.previous_head && remote !== body.head) throw new FactoryError("publication_branch_changed", "The owned remote branch changed outside this repair", 409);
       try { await git(run.worktree, ["merge-base", "--is-ancestor", body.previous_head, String(body.head)]); }
       catch { throw new FactoryError("publication_branch_changed", "The repaired head must preserve the published history", 409); }
       await assertCurrent();
-      assertOwned();
+      await assertPublicationRouting(run.worktree); assertOwned();
       if (remote !== body.head) await git(run.worktree, ["-c", "push.followTags=false", "push", "--", destination, `${body.head}:refs/heads/${run.branch}`]);
       await assertCurrent();
       const description = pull.body.replace(previousMarker, marker) + `\n\nRepaired candidate: ${body.head}\nCheck: ${String(body.check_id)}\nIndependent reports: ${(body.evidence_ids as string[]).join(", ")}\nMerge still requires Human Review authorization.\n`;
