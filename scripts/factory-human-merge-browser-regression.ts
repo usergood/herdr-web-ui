@@ -249,6 +249,75 @@ export async function postmergeQuestionReleaseJourney(browser: Browser, viewport
   } finally { await context.close(); await f.close(); }
 }
 
+export async function releasePagesJourney(browser: Browser, viewport: { width: number; height: number }) {
+  const f = await releaseBrowserFixture();
+  const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
+  try {
+    const origin = () => `http://localhost:${f.app.port}`;
+    assert.equal((await context.request.post(`${origin()}/api/auth`, { data: { token: f.token } })).status(), 204);
+    assert.equal((await f.detail()).human_review_approvals.length, 0);
+    let page = await context.newPage(); page.setDefaultTimeout(10000);
+    const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
+    const openReview = async () => {
+      await page.goto(`${origin()}/#factory/${f.id}`);
+      await page.getByRole("navigation", { name: "Workflow history", exact: true }).getByRole("button", { name: "Human Review", exact: true }).click();
+    };
+    await openReview();
+    let review = page.getByRole("region", { name: "Human Review", exact: true });
+    const response = page.waitForResponse(response => response.url().endsWith(`${f.prefix}/human-review/approve`) && response.request().method() === "POST");
+    await review.getByRole("button", { name: "Approve and merge", exact: true }).click();
+    const approved = await response; assert.equal(approved.status(), 200);
+    const receipt = await approved.json();
+    const waiting = await until(f.detail, d => d.human_review_approvals[0]?.condition === "awaiting_release");
+    const authority = waiting.human_review_approvals[0]; const merge = authority.merge_sha;
+    assert.equal(authority.id, receipt.id); assert.equal(authority.idempotency_key, approved.request().postDataJSON().idempotency_key);
+    assert.notEqual(authority.id, f.core.body.approval.id, "Only the actual UI creates merge authority");
+    assert.equal(authority.head, f.core.head); assert.equal(authority.snapshot_id, f.snapshot.id);
+    assert.equal(f.core.git(["rev-parse", "main"]), merge);
+    const effects = () => f.core.calls().filter(args => args[1]?.endsWith("/merge") && args.includes("PUT")).length;
+    assert.equal(effects(), 1); assert.equal(waiting.implementation.stage, "review");
+    await review.getByRole("status").filter({ hasText: "Merge verified; waiting for a published release containing it" }).waitFor();
+    assert.equal(await review.getByRole("alert").count(), 0);
+    f.core.git(["tag", "second-page-containing-release", merge]);
+    const firstPage = Array.from({ length: 100 }, (_, index) => ({ id: index + 1, draft: true, prerelease: false, tag_name: `owned-draft-${index}` }));
+    const secondPage = [{ id: 101, draft: false, prerelease: false, tag_name: "second-page-containing-release" }];
+    f.core.change({ release_pages: { 1: firstPage, 2: secondPage }, release_page_error: 2 });
+    const observed = await f.core.post(f.core.route + "merge", f.mergeRequests[0]!);
+    const inventory = await observed.json();
+    console.log(JSON.stringify({ viewport: viewport.width, incomplete_release_inventory: { status: observed.status, response: inventory, merge_effects: effects(), release_calls: f.core.calls().filter(args => args[1]?.includes("/releases")) } }));
+    assert.equal(observed.status, 409, "An unread second release page must report incomplete inventory rather than claim no containing release exists");
+    assert.equal(inventory.error.code, "release_inventory_unavailable"); assert.equal(effects(), 1);
+    await page.close(); await f.restart();
+    assert.equal((await context.request.post(`${origin()}/api/auth`, { data: { token: f.token } })).status(), 204);
+    page = await context.newPage(); page.setDefaultTimeout(10000); page.on("pageerror", error => errors.push(error.message));
+    await openReview(); review = page.getByRole("region", { name: "Human Review", exact: true });
+    const failed = await until(f.detail, d => d.human_review_approvals[0]?.reason_is_error === true, 45000);
+    const fault = failed.human_review_approvals[0]; assert.equal(fault.condition, "awaiting_release"); assert.equal(fault.merge_sha, merge);
+    assert.equal(fault.id, authority.id); assert.equal(failed.human_review_approvals.length, 1); assert.equal(failed.implementation.stage, "review");
+    assert.equal(typeof fault.reason, "string"); assert(fault.reason);
+    await review.getByRole("alert").filter({ hasText: fault.reason }).waitFor();
+    assert.equal(await review.getByRole("status").filter({ hasText: fault.reason }).count(), 0);
+    await page.reload(); await review.getByRole("alert").filter({ hasText: fault.reason }).waitFor();
+    assert.equal(effects(), 1);
+    f.core.change({ release_page_error: null });
+    const done = await until(f.detail, d => d.runs.find((run: { id: string }) => run.id === f.core.id)?.condition === "completed", 45000);
+    const delivered = done.human_review_approvals[0];
+    assert.equal(done.implementation.stage, "done"); assert.equal(done.implementation.outcome, "released"); assert.equal(done.human_review_approvals.length, 1);
+    assert.equal(delivered.condition, "released"); assert.equal(delivered.release_tag, "second-page-containing-release");
+    assert.equal(delivered.id, authority.id); assert.equal(delivered.idempotency_key, authority.idempotency_key); assert.equal(delivered.context_revision, authority.context_revision);
+    assert.equal(delivered.snapshot_id, authority.snapshot_id); assert.equal(delivered.head, authority.head); assert.equal(delivered.merge_sha, merge);
+    assert.equal(delivered.reason_is_error, false); assert.equal(delivered.reason, null); assert.equal(effects(), 1);
+    for (const request of f.mergeRequests) { assert.equal(request.approval.id, authority.id); assert.equal(request.approval.idempotency_key, authority.idempotency_key); assert.equal(request.approval.context_revision, authority.context_revision); assert.equal(request.head, authority.head); }
+    assert(f.core.calls().some(args => args[1]?.includes("/releases?per_page=100&page=2")));
+    await review.getByRole("status").filter({ hasText: "Release verified" }).waitFor();
+    assert.equal(await review.getByRole("alert").count(), 0);
+    await page.reload(); await review.getByRole("status").filter({ hasText: "Release verified" }).waitFor();
+    assert.equal(await review.getByRole("alert").count(), 0); assert.deepEqual(errors, []);
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    console.log(`PASS second-page real containing release recovers from incomplete inventory under original UI approval without another approval or GitHub merge (${viewport.width})`);
+  } finally { await context.close(); await f.close(); }
+}
+
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
@@ -575,5 +644,6 @@ try {
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) await containingReleaseJourney(browser, viewport);
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) await contextSendJourney(browser, viewport);
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) { await postmergeHistoryJourney(browser, viewport); await postmergeQuestionReleaseJourney(browser, viewport); }
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) await releasePagesJourney(browser, viewport);
   console.log("PASS Human Review merge authority, stale/protected/denied targets, lost replies, retained CI waits, frozen release authority despite newer Project/old Machine policy, release completion, delivery archive and postdelivery discussion on desktop/mobile");
 } finally { await browser.close(); }
