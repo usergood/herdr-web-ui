@@ -266,7 +266,7 @@ try {
           assert.notEqual((await detail()).implementation.stage, "done");
           assert.equal(f.mergeEffects.length, 0);
         } else if (scenario === "pending") {
-          const waiting = await until(detail, d => d.human_review_approvals?.[0]?.condition === "pending");
+          const waiting = await until(detail, d => d.human_review_approvals?.[0]?.condition === "pending" && !!d.human_review_approvals[0].reason);
           assert.equal(waiting.human_review_approvals.length, 1);
           assert.equal(f.mergeEffects.length, 0);
           assert(waiting.human_review_approvals[0].reason);
