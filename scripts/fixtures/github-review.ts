@@ -31,7 +31,8 @@ export function githubReviewFixture() {
     const id = path.match(/runs\/([^/]+)/)?.[1]; const run = id ? runs.get(id) : undefined;
     if (!run) return null;
     const action = path.split("/").at(-1);
-    if (["completed", "cancelled", "failed"].includes(run.condition) && ["worker", "check", "refresh", "integrate"].includes(action!)) return Response.json({ error: { code: "factory_run_required", message: "The fictional host retains a stopped native lease" } }, { status: 409 });
+    if (["completed", "cancelled", "failed"].includes(run.condition) && ["worker", "check", "refresh", "integrate", "send"].includes(action!)) return Response.json({ error: { code: "factory_run_required", message: "The fictional host retains a stopped native lease" } }, { status: 409 });
+    if (action === "send") { runs.set(run.id, { ...run, condition: "working" }); return Response.json({ ok: true }); }
     if (action === "head") return headUnavailable || cleanedRuns.has(run.id) ? Response.json({ error: { code: "workspace_gone", message: "Owned historical workspace was cleaned" } }, { status: 409 }) : Response.json({ head, workspace_hash: workspaceHash });
     if (action === "cleanup") {
       cleanedRuns.add(run.id);
@@ -56,7 +57,11 @@ export function githubReviewFixture() {
     const worker = workers.get(body.worker_id);
     if (["refresh", "reconcile-worker"].includes(action!)) return worker ? Response.json(worker) : null;
     if (action === "integrate" && worker) { const next = { ...worker, condition: "completed" } as FactoryWorker; workers.set(worker.id, next); return Response.json(next); }
-    if (action === "stop-worker") return Response.json({ ok: true });
+    if (action === "transcript") return Response.json({ ...(worker ? { worker_id: worker.id } : {}), source_id: `owned-review-history:${run.id}:${worker?.id ?? "parent"}`, version: body.before ? "earlier-v1" : "latest-v1", cursor: body.before ? null : "owned-earlier-page", turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: `${body.before ? "Earlier" : "Final"} owned review context retained before closure` }] }] });
+    if (action === "stop-worker") {
+      if (worker) workers.set(worker.id, { ...worker, condition: worker.condition === "completed" ? "completed" : "cancelled" });
+      return Response.json({ ok: true });
+    }
     if (action === "check") {
       const project = (run.manifest as { project: FactoryProject }).project;
       return Response.json({ ...body.check, head, workspace_hash: workspaceHash, condition: checkCondition, commands: (checkCommands ?? [...project.setup ?? [], ...project.checks ?? []]).map((args, index) => ({ args, exit_code: checkExitCodes[index] ?? 0, output: "Owned fixture command receipt" })) });
@@ -81,13 +86,26 @@ export function githubReviewFixture() {
     const run = await fixture.json(path + "/runs", { action: "implement-spec", idempotency_key: "owned-reviewed-issue", issue_scope: { source_id: source.id, source_revision: source.revision, graph_hash: detail.graph_hash } });
     return { ...setup, source, path, run: run as FactoryRun };
   }
+  async function settleChildSummary(run: FactoryRun) {
+    if (coordinator !== "ready") return;
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const current = await fixture.json(`/runs/${run.id}/reconcile`, {});
+      if (!current.continuation || current.continuation.condition === "resumed") return;
+      if (current.continuation.kind !== "children" || ["uncertain", "blocked"].includes(current.continuation.condition)) throw new Error(`Owned child summary cannot continue: ${JSON.stringify(current.continuation)}`);
+      await Bun.sleep(25);
+    }
+    throw new Error("Owned child summary did not finish before the next public worker action");
+  }
   async function integrate(run: FactoryRun) {
     const worker = await fixture.json(`/runs/${run.id}/workers`, { role: "implementer", ticket_id: (run.manifest as { tickets: { id: string }[] }).tickets[0]!.id, idempotency_key: "owned-writer" });
     await fixture.json(`/runs/${run.id}/workers/${worker.id}/check`, {});
+    await settleChildSummary(run);
     await fixture.json(`/runs/${run.id}/workers/${worker.id}/integrate`, {});
   }
   async function review(run: FactoryRun, axis: "standards" | "spec", key: string = axis) {
     const worker = await fixture.json(`/runs/${run.id}/workers`, { role: axis, idempotency_key: `owned-${key}` });
+    await settleChildSummary(run);
     return fixture.json(`/runs/${run.id}/workers/${worker.id}/review-evidence`, {});
   }
   async function second(route: string, readiness: { revision: string }) {

@@ -9,7 +9,8 @@ import { paneRename } from "../server/herdr/client.ts";
 const f = await factoryDeliveryFixture();
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
-  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  const page = await context.newPage();
   page.setDefaultTimeout(10_000);
   const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
   const origin = `http://localhost:${f.app.port}`;
@@ -17,6 +18,7 @@ try {
   const dialog = page.getByRole("dialog", { name: "Project settings", exact: true });
   await dialog.getByRole("tab", { name: "Workflow", exact: true }).click();
   const milestone = dialog.getByRole("combobox", { name: "Delivery milestone", exact: true });
+  assert.equal(await milestone.count(), 1, "One Delivery milestone selector on desktop");
   assert.equal(await milestone.inputValue(), "merge");
   assert.equal(await dialog.getByRole("textbox", { name: "Delivery branch", exact: true }).inputValue(), "main");
   await milestone.selectOption("release");
@@ -25,8 +27,27 @@ try {
   await dialog.getByRole("button", { name: "Save Project settings", exact: true }).click();
   assert.equal((await save).status(), 200);
   await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await milestone.count(), 1, "One Delivery milestone selector on mobile");
   assert.equal(await milestone.inputValue(), "release");
   assert(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth), "Delivery settings fit a phone");
+  const discoveryPage = await page.context().newPage();
+  try {
+    discoveryPage.setDefaultTimeout(10_000);
+    discoveryPage.on("pageerror", error => errors.push(error.message));
+    await discoveryPage.setViewportSize({ width: 1440, height: 1000 });
+    await discoveryPage.route("**/api/factory/project-discovery", route => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "owned_discovery_failed", message: "Owned Project discovery failed" } }) }));
+    await discoveryPage.goto(`${origin}/#projects/${f.project.id}`);
+    await discoveryPage.getByRole("button", { name: `Project settings for ${f.project.name}`, exact: true }).click();
+    const discoveryDialog = discoveryPage.getByRole("dialog", { name: "Project settings", exact: true });
+    await discoveryDialog.getByRole("tab", { name: "Workflow", exact: true }).click();
+    for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+      await discoveryPage.setViewportSize(viewport);
+      await discoveryDialog.getByRole("alert").filter({ hasText: "Owned Project discovery failed" }).waitFor();
+      assert.equal(await discoveryDialog.getByRole("combobox", { name: "Delivery milestone", exact: true }).count(), 1);
+      assert.equal(await discoveryDialog.getByRole("status").filter({ hasText: "Owned Project discovery failed" }).count(), 0);
+    }
+  } finally { await discoveryPage.close(); }
+
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "hidden" });
   const run = await f.start();
@@ -40,6 +61,7 @@ try {
   assert.equal(await accept.isEnabled(), false, "Research requires a fresh evidence check");
   await page.getByRole("button", { name: "Check completion evidence", exact: true }).click();
   await accept.waitFor();
+  await page.getByRole("status").filter({ hasText: "No repository changes; owned work is quiescent." }).waitFor();
   const completion = page.waitForResponse(r => r.url().endsWith(`${f.prefix}/complete-work`) && r.request().method() === "POST");
   await accept.click();
   assert.equal((await completion).status(), 200);
@@ -75,14 +97,15 @@ try {
   await page.getByRole("button", { name: "Accept research", exact: true }).click();
   assert.equal((await rejected).status(), 409, "A previous browser check cannot accept new repository changes");
   const nextStep = page.getByRole("region", { name: "Next step", exact: true });
-  await nextStep.getByText("Repository changes require verified PR delivery. Link the delivery evidence before completing this Assignment.", { exact: true }).waitFor();
+  await nextStep.getByRole("status").filter({ hasText: "Repository changes require verified PR delivery. Link the delivery evidence before completing this Assignment." }).waitFor();
   assert.equal(await nextStep.getByRole("button", { name: "Accept research", exact: true }).isEnabled(), false);
   assert.equal((await f.request(changingPrefix).then(r => r.json())).board.lane, "needs_you");
   assert(await nextStep.evaluate(el => el.scrollWidth <= el.clientWidth), "Completion blockers fit a phone");
   await navigation.getByText(changing.title, { exact: true }).waitFor();
-  const discarded = page.waitForResponse(r => r.url().endsWith(`${changingPrefix}/discard`) && r.request().method() === "POST");
-  await page.getByRole("button", { name: "Discard Assignment", exact: true }).click();
-  assert.equal((await discarded).status(), 200);
+  // Retained legacy outcomes are arranged through HTTP; current owner controls are Pause/Delete.
+  assert.equal(await page.getByRole("button", { name: "Discard Assignment", exact: true }).count(), 0);
+  assert.equal((await f.request(`${changingPrefix}/discard`, {})).status, 200);
+  await page.reload();
   await page.getByRole("region", { name: "Next step", exact: true }).getByText("Discarded", { exact: true }).waitFor();
   await navigation.getByText(changing.title, { exact: true }).waitFor({ state: "detached" });
   await page.goto(`${origin}/#projects/${f.project.id}`);
@@ -97,15 +120,20 @@ try {
   const remote = await factoryDeliveryFixture(true);
   try {
     const remoteRun = await remote.start(); remote.disconnect();
-    await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto(`http://localhost:${remote.app.port}/#factory/${remoteRun.implementation_id}`);
-    await page.getByRole("button", { name: "Check completion evidence", exact: true }).click();
-    await page.getByRole("region", { name: "Next step", exact: true }).getByText("Repository change evidence is unavailable. Reconnect the Machine and inspect the retained work before accepting research.", { exact: true }).waitFor();
+    for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+      await page.setViewportSize(viewport);
+      await page.goto(`http://localhost:${remote.app.port}/#factory/${remoteRun.implementation_id}`);
+      await page.getByRole("button", { name: "Check completion evidence", exact: true }).click();
+      const evidenceError = "Repository change evidence is unavailable. Reconnect the Machine and inspect the retained work before accepting research.";
+      const remoteNextStep = page.getByRole("region", { name: "Next step", exact: true });
+      await remoteNextStep.getByText(evidenceError, { exact: true }).waitFor();
+      await remoteNextStep.getByRole("alert").filter({ hasText: evidenceError }).waitFor();
+    }
     assert.equal(await page.getByRole("button", { name: "Accept research", exact: true }).count(), 0);
     assert.equal((await remote.request(remote.prefix).then(r => r.json())).board.lane, "needs_you");
-    const pendingResponse = page.waitForResponse(r => r.url().endsWith(`${remote.prefix}/discard`) && r.request().method() === "POST");
-    await page.getByRole("button", { name: "Discard Assignment", exact: true }).click();
-    assert.equal((await pendingResponse).status(), 200);
+    assert.equal(await page.getByRole("button", { name: "Discard Assignment", exact: true }).count(), 0);
+    assert.equal((await remote.request(`${remote.prefix}/discard`, {})).status, 200);
+    await page.reload();
     await page.getByRole("status", { name: "Discard pending", exact: true }).waitFor();
     assert.equal((await remote.request(remote.prefix).then(r => r.json())).board.sidebar_hidden, false);
     await page.reload();

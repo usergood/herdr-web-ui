@@ -7,14 +7,33 @@ Start with [runtime.md](runtime.md) for configuration, execution, review, remote
 Use [account setup](account-setup.md) to create Machine profiles, authorize native subscription/OAuth logins, generate and register GitHub keys, and bind accounts to a Project. The [account specification](account-profiles.md) describes the implementation; [the research](project-account-profiles-research.md) records its primary sources and initial design.
 
 Inbox and Project Inbox expose **Factory settings and recovery** directly. The same global
-controls remain under **Projects → Factory**. Set **Concurrent Implementations** and **Native
-context limit** to 6 to admit six tasks; Projects inherit these limits. The default task limit
-is 6, and both limits support up to 32. Existing saved limits are preserved until you save them.
+controls remain under **Projects → Factory**. The **Agent context limit** controls app-managed
+execution across Projects, providers and Machines. Exactly one extra planning context is shared
+by interviews and pre-approval Specification drafting. The independent **Build limit** controls
+builds. Saved agent/build limits are preserved; the retired Assignment limit is ignored.
 
 A native turn at rest is `ready`: its chat stays open and its worktree remains owned, but it
 no longer consumes an execution slot. Continuing the chat counts it again. Pending owner
 questions, background work and uncertain/disconnected execution retain capacity. Ready does
 not accept an implementation or integrate a Ticket; those still require the owner and checks.
+
+## Accepted automatic workflow design
+
+New explicit Specification acceptances now retain a durable automatic planning request.
+Once the presenting conversation is safely ready, Orchestrator starts through normal
+capacity, including a cap of one. It uses the accepted Specification to produce a bounded
+Ticket graph and testing plan without separate Ticket/testing/Continue approvals. The
+Assignment exposes the request's waiting or blocked reason and the generated plan,
+dependencies and Specification-derived authority. Native readiness, Project checks and
+permissions remain required. A new scope decision stops dependent work for an actual
+owner question and exact answer consumption. Existing Runs keep their frozen contracts;
+historical planning is not retroactively approved. Accepted execution plans now dispatch
+their dependency frontier, check and integrate candidates automatically through the backend.
+Named workers and check output appear in the normal Assignment view, with retained
+progress across restart. Final automatic review and publication remain the next slice.
+See [Automatic Ticket execution](runtime.md#automatic-ticket-execution).
+
+The [Q1–Q20 automatic workflow design](automatic-dispatch-pause-delete-design.md) records the accepted Specification for global Agent-context scheduling, one-operation Specification approval, automatic execution, Pause/Delete, named conversations and integrated Human Review with conditional merge authority. It supersedes conflicting earlier proposals, including repeated planning approvals and retained-history Discard. These are implementation targets; the operational descriptions in this guide and runtime.md remain current until the corresponding behavior ships.
 
 ## Interface cleanup design
 
@@ -32,7 +51,7 @@ The complete Matt Pocock `v1.3.1` source is retained in `vendor/matt-skills`, pi
 
 Codex is the installed primary provider. Native readiness requires genuine pinned loading and a recorded owner-question round; a fixture adapter cannot certify it. Claude Code and OpenCode remain disabled for factory admission until their installed versions pass the same native contract on their selected Machine. Focused API, browser and genuine native validation are described in [runtime.md](runtime.md).
 
-Manual starts are the first-version scope. Reordering, reconnecting and changing defaults do not dispatch or migrate work. The app retains uncertain ownership and requires explicit observation/control of accepted identities. Global limits cover root agents, Ticket workers, independent review contexts and builds.
+Start and child-worker requests queue durably at capacity and dispatch automatically, oldest eligible first, after reconciling existing ownership. Queue age survives restart, dependency waits are skipped, and routine Machine reconnects recover with bounded retries. The capacity panel shows waiting reasons and exhausted recovery. Unknown execution retains its reservation; it is never launched again merely because an acknowledgment was lost. Reordering does not change queue age. Separate workflow approval, lifecycle and delivery behavior remains as documented until its corresponding Ticket ships.
 
 The [local dictation and queue research](local-transcription-and-queue-research.md) records a
 working CPU Whisper benchmark and proposes managed transcription setup plus an automatic queue

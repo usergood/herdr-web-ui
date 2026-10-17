@@ -101,7 +101,7 @@ test.each([false, true])("generic app-plan approvals stay unbound after an incom
       const policy = (await fixture.json(route)).policy;
       await fixture.json(route + "/configure", { ...policy, expected_revision: policy.revision, sync_enabled: true });
       const preview = await fixture.json(route + "/preview", {});
-      await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: true, preview_revision: preview.revision, paused: false, max_implementations: 1 });
+      await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: true, preview_revision: preview.revision, paused: false });
       await fixture.json(route + "/sync", {}); fixture.restart(); await fixture.json(route + "/sync", {});
       expect((await fixture.json(route + "/queue")).eligible_count).toBe(0);
       expect(fixture.launches).toEqual([]);
@@ -412,12 +412,12 @@ test.each(["outage", "readiness"] as const)("retained natural issue planning sur
       await fixture.json(route + "/issues/1/approve", { source_revision: current.revision, policy_revision: readiness.revision });
       expect((await fixture.json(path)).github_sources[0].planning.condition).toBe("stale");
       const stillBlocked = await fixture.post(path + "/runs", { ...start, issue_scope: { ...start.issue_scope, source_revision: current.revision } });
-      expect(stillBlocked.status).toBe(409); expect((await stillBlocked.json()).error.code).toBe("issue_not_eligible");
+      expect(stillBlocked.status).toBe(202); expect(await stillBlocked.json()).toMatchObject({ condition: "blocked", reason: expect.stringContaining("prepared issue scope") });
       expect((await fixture.json(path)).runs).toEqual([]); expect(fixture.launches).toEqual([]);
     }
     await fixture.json(route + "/issues/1/prepare", { source_revision: current.revision });
     current = (await fixture.json(route + "/sync", {})).sources[0];
-    const admitted = await fixture.json(path + "/runs", { ...start, issue_scope: { source_id: current.id, source_revision: current.revision, graph_hash: current.planning.graph_hash } });
+    const admitted = await fixture.json(path + "/runs", { ...start, idempotency_key: `fresh-natural-${loss}`, issue_scope: { source_id: current.id, source_revision: current.revision, graph_hash: current.planning.graph_hash } });
     expect(admitted).toMatchObject({ condition: "working", manifest: { issue_admission: { source: { id: current.id, revision: current.revision }, planning: { graph_hash: current.planning.graph_hash } } } });
     expect((await fixture.json(path)).approvals).toEqual([]);
   } finally { fixture.close(); }
@@ -427,7 +427,7 @@ test("Pause queue refuses a new explicit issue Start while keeping its prepared 
   const fixture = githubQueueFixture(true);
   try {
     const { path, start, route } = await prepared(fixture);
-    await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true, max_implementations: 1 });
+    await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true });
     const response = await fixture.post(path + "/runs", start);
     expect(response.status).toBe(409);
     expect((await response.json()).error.code).toBe("queue_paused");
@@ -445,7 +445,7 @@ test.each(["paused", "outage", "changed_scope", "unresolved_dependencies", "need
     for (const kind of ["specification", "testing_seams"]) await fixture.json(path + "/approvals", { kind, revision: source.planning.specification_id, scope: "Public HTTP and real browser journeys.", issue_scope: issueScope });
     await fixture.json(path + "/approvals", { kind: "ticket_graph", revision: source.planning.graph_hash, scope: "Approved bounded greeting", issue_scope: issueScope });
     expect((await fixture.json(path)).questions).toEqual([]);
-    if (blocker === "paused") await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true, max_implementations: 1 });
+    if (blocker === "paused") await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true });
     if (blocker === "outage") { fixture.save([fixture.issue], true); expect((await fixture.post(route + "/sync", {})).status).toBe(409); }
     if (blocker === "changed_scope" || blocker === "needs_you") {
       fixture.issue.body += "\nChange the greeting after preparation.";
@@ -494,7 +494,7 @@ test("issue preparation during an ordinary Start cannot bypass final guarded adm
     const prepared = await fixture.json(route + "/issues/1/prepare", { source_revision: source.revision });
     expect(prepared.sources[0].planning.condition).toBe("prepared");
     expect((await fixture.json(path)).questions).toEqual([]);
-    await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true, max_implementations: 1 });
+    await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true });
     gate.release();
     const refused = await starting;
     expect(refused.status).toBe(409);
@@ -511,23 +511,24 @@ test("explicit issue Start follows current board priority", async () => {
     const second = await prepareSecond(fixture, route, readiness);
     const refused = await fixture.post(second.path + "/runs", second.start);
     expect(refused.status).toBe(409); expect((await refused.json()).error.code).toBe("queue_priority_changed");
-    await fixture.json(second.path + "/order", { before_id: path.split("/").at(-1) });
+    expect((await fixture.post(second.path + "/order", { before_id: path.split("/").at(-1) })).status).toBe(409);
+    const first = await fixture.json(route);
+    const source = first.sources.find((source: any) => source.implementation_id === path.split("/").at(-1));
+    expect((await fixture.post(path + "/runs", { action: "implement-spec", idempotency_key: "oldest-first", issue_scope: { source_id: source.id, source_revision: source.revision, graph_hash: source.planning.graph_hash } })).status).toBe(202);
     expect((await fixture.post(second.path + "/runs", second.start)).status).toBe(202);
   } finally { fixture.close(); }
 }, 20_000);
 
-test("Project implementing capacity remains reserved by an admitted issue Run", async () => {
+test("independent issues in one Project start without an Assignment quota while Agent slots permit", async () => {
   const fixture = githubQueueFixture(true);
   try {
     fixture.save([fixture.issue, { ...fixture.issue, number: 2, node_id: "fictional-2", title: "Later issue" }]);
     const { path, start, route, readiness } = await prepared(fixture);
     const second = await prepareSecond(fixture, route, readiness);
     expect((await fixture.post(path + "/runs", start)).status).toBe(202);
-    const refused = await fixture.post(second.path + "/runs", second.start);
-    expect(refused.status).toBe(409); expect((await refused.json()).error.code).toBe("project_capacity_exhausted");
-    expect((await fixture.json(second.path)).runs).toEqual([]);
-    await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: false, max_implementations: 2 });
     expect((await fixture.post(second.path + "/runs", second.start)).status).toBe(202);
+    expect((await fixture.json(second.path)).runs).toMatchObject([{ action: "implement-spec", condition: "working" }]);
+    expect((await fixture.json("")).capacity.normal).toMatchObject({ used: 2, limit: 6 });
   } finally { fixture.close(); }
 }, 20_000);
 
@@ -575,7 +576,7 @@ test("local graph changes pause once, retain uncertain workers and survive resta
     let detail = await fixture.json(path);
     const paused = detail.runs[0];
     expect(paused).toMatchObject({ id: run.id, condition: "needs_you", issue_pause: { reason: "scope_changed" }, manifest: run.manifest, worktree: run.worktree, graph_hash: run.graph_hash });
-    expect(detail.workers).toEqual([worker]);
+    expect(detail.workers).toEqual([{ ...worker, waiting_reason: expect.stringContaining("uncertain") }]);
     expect(detail.questions.filter((question: any) => question.question.startsWith("Controlled pause requested:"))).toHaveLength(1);
     const unrelated = await fixture.json("/implementations", { title: "Unrelated manual Assignment", description: "Keep manual decisions independent", project_id: source.project_id });
     await fixture.json(`/implementations/${unrelated.id}/specifications`, { content: "An unrelated approved manual change" });
@@ -585,7 +586,7 @@ test("local graph changes pause once, retain uncertain workers and survive resta
     detail = await fixture.json(path);
     expect(detail.runs[0].issue_pause).toEqual(paused.issue_pause);
     expect(detail.runs[0].manifest).toEqual(run.manifest);
-    expect(detail.workers).toEqual([worker]);
+    expect(detail.workers).toEqual([{ ...worker, waiting_reason: expect.stringContaining("uncertain") }]);
     expect(detail.questions.filter((question: any) => question.question.startsWith("Controlled pause requested:"))).toHaveLength(1);
     const refused = await fixture.post(`/runs/${run.id}/workers`, { role: "spec", idempotency_key: "after-local-graph-restart" });
     expect(refused.status).toBe(409); expect((await refused.json()).error.code).toBe("issue_pause_required");
@@ -749,7 +750,7 @@ test.each(["body", "closure", "readiness"])("positive %s drift on an issue page 
       const detail = await fixture.json(path);
       expect(detail.runs[0].issue_pause?.reason).toBe(reason);
       expect(detail.runs[0].manifest).toEqual(run.manifest);
-      expect(detail.workers).toEqual([worker]);
+      expect(detail.workers).toEqual([{ ...worker, waiting_reason: expect.stringContaining("uncertain") }]);
     } finally { release(); await pending; }
     expect((await pending).status).toBe(409);
     await fixture.post(route + "/sync", {});
@@ -757,7 +758,7 @@ test.each(["body", "closure", "readiness"])("positive %s drift on an issue page 
     const detail = await fixture.json(path);
     expect(detail.runs[0].issue_pause?.reason).toBe(reason);
     expect(detail.runs[0].worktree).toBe(run.worktree);
-    expect(detail.workers).toEqual([worker]);
+    expect(detail.workers).toEqual([{ ...worker, waiting_reason: expect.stringContaining("uncertain") }]);
     expect(detail.questions.filter((question: any) => question.run_id === run.id && question.answer === null)).toHaveLength(1);
     expect(detail.github_sources[0].current.revision).toBe(start.issue_scope.source_revision);
   } finally { release(); fixture.close(); }
@@ -855,8 +856,8 @@ test("an unrelated label added at the readiness fence leaves frozen execution an
     const detail = await fixture.json(path);
     expect(detail.github_sources[0].readiness_evidence.complete).toBe(false);
     expect(detail.github_sources[0].readiness.blockers).toContain("evidence_incomplete");
-    expect(detail.runs[0]).toEqual(run);
-    expect(detail.workers).toEqual([worker]);
+    expect(detail.runs[0]).toEqual({ ...run, continuation: expect.objectContaining({ kind: "children", worker_keys: [worker.key] }) });
+    expect(detail.workers).toEqual([{ ...worker, waiting_reason: expect.stringContaining("uncertain") }]);
     expect(detail.questions).toEqual([]);
     fixture.issue.labels = fresh.labels; fixture.issue.updated_at = fresh.updated_at; fixture.save();
     await fixture.json(route + "/sync", {});
@@ -864,8 +865,8 @@ test("an unrelated label added at the readiness fence leaves frozen execution an
     const recovered = await fixture.json(path);
     expect(recovered.github_sources[0].readiness_evidence.complete).toBe(true);
     expect(recovered.github_sources[0].readiness.eligible).toBe(false);
-    expect(recovered.runs[0]).toEqual(run);
-    expect(recovered.workers).toEqual([worker]);
+    expect(recovered.runs[0]).toEqual({ ...run, continuation: expect.objectContaining({ kind: "children", worker_keys: [worker.key] }) });
+    expect(recovered.workers).toEqual([{ ...worker, waiting_reason: expect.stringContaining("uncertain") }]);
     expect(recovered.questions).toEqual([]);
   } finally { fixture.close(); }
 }, 20_000);
@@ -910,15 +911,15 @@ test.each(["addition", "removal", "reorder", "case"])("custom readiness labels t
     await fixture.json(route + "/sync", {});
     const detail = await fixture.json(path);
     expect(detail.github_sources[0].readiness_evidence.complete).toBe(change === "reorder");
-    expect(detail.runs[0]).toEqual(run);
-    expect(detail.workers).toEqual([worker]); expect(detail.questions).toEqual([]);
+    expect(detail.runs[0]).toEqual({ ...run, continuation: expect.objectContaining({ kind: "children", worker_keys: [worker.key] }) });
+    expect(detail.workers).toEqual([{ ...worker, waiting_reason: expect.stringContaining("uncertain") }]); expect(detail.questions).toEqual([]);
     fixture.issue.labels = labels; fixture.save();
     await fixture.json(route + "/sync", {}); fixture.restart();
     const recovered = await fixture.json(path);
     expect(recovered.github_sources[0].readiness_evidence.complete).toBe(true);
     expect(recovered.github_sources[0].readiness.eligible).toBe(change === "reorder");
-    expect(recovered.runs[0]).toEqual(run);
-    expect(recovered.workers).toEqual([worker]); expect(recovered.questions).toEqual([]);
+    expect(recovered.runs[0]).toEqual({ ...run, continuation: expect.objectContaining({ kind: "children", worker_keys: [worker.key] }) });
+    expect(recovered.workers).toEqual([{ ...worker, waiting_reason: expect.stringContaining("uncertain") }]); expect(recovered.questions).toEqual([]);
   } finally { fixture.close(); }
 }, 20_000);
 
@@ -1037,7 +1038,7 @@ test.each(["scope", "closure", "readiness", "outage", "pause", "policy"])("Start
     const held = fixture.holdCapabilities(); release = held.release;
     const pending = fixture.post(path + "/runs", start);
     await Promise.race([held.waiting, new Promise((_, reject) => setTimeout(() => reject(new Error("Native fixture did not reach admission gate")), 5000))]);
-    if (change === "pause") await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true, max_implementations: 1 });
+    if (change === "pause") await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true });
     else if (change === "policy") await fixture.json(route + "/readiness", { expected_revision: readiness.revision, account_profile_id: readiness.account_profile_id, triage_labels: {}, blocked_label: "on-hold" });
     else {
       if (change === "scope") fixture.issue.body += "\nChanged testing requirement.";
@@ -1082,9 +1083,27 @@ test("concurrent and overlapping Start requests retain one admitted attempt", as
     const other = fixture.post(path + "/runs", { ...start, idempotency_key: "overlapping-request" });
     release();
     const responses = await Promise.all([first, replay, other]);
-    expect(responses.map(response => response.status)).toEqual([202, 202, 409]);
-    expect((await responses[0]!.json()).id).toBe((await responses[1]!.json()).id);
-    expect((await fixture.json(path)).runs).toHaveLength(1);
+    const bodies = await Promise.all(responses.map(response => response.json()));
+    const detail = await fixture.json(path);
+    console.log("Concurrent issue Start responses", JSON.stringify({ requests: responses.map((response, index) => ({ status: response.status, body: bodies[index].error ? bodies[index] : { id: bodies[index].id, condition: bodies[index].condition, idempotency_key: bodies[index].idempotency_key, run_id: bodies[index].run_id, reason: bodies[index].reason } })), runs: detail.runs.map((run: { id: string; condition: string }) => ({ id: run.id, condition: run.condition })), launches: fixture.launches }));
+    expect(responses.slice(0, 2).map(response => response.status)).toEqual([202, 202]);
+    const admitted = bodies[0];
+    expect(admitted.id).toBe(bodies[1].id);
+    expect(detail.implementation.id).toBe(path.split("/").at(-1));
+    expect(detail.implementation.deletion).toBeUndefined();
+    expect(detail.runs).toMatchObject([{ id: admitted.id, condition: "working" }]);
+    expect(detail.runs).toHaveLength(1);
+    expect(fixture.launches).toEqual([admitted.id]);
+    const overlapping = bodies[2];
+    if (responses[2]!.status === 409) expect(overlapping.error.code).toBe("issue_not_eligible");
+    else expect({ status: responses[2]!.status, body: overlapping }).toMatchObject({ status: 202, body: { condition: "blocked", idempotency_key: "overlapping-request", run_id: null, reason: expect.stringContaining("issue eligibility") } });
+    const originalReplay = await fixture.json(path + "/runs", start);
+    expect(originalReplay.id).toBe(admitted.id);
+    const otherReplay = await fixture.post(path + "/runs", { ...start, idempotency_key: "overlapping-request" });
+    expect(otherReplay.status).toBe(202);
+    expect(await otherReplay.json()).toMatchObject({ condition: "blocked", idempotency_key: "overlapping-request", run_id: null, reason: expect.stringContaining("issue eligibility") });
+    expect((await fixture.json(path)).runs.map((run: { id: string }) => run.id)).toEqual([admitted.id]);
+    expect(fixture.launches).toEqual([admitted.id]);
   } finally { release(); fixture.close(); }
 }, 20_000);
 
@@ -1097,7 +1116,7 @@ test("scope pause retains unreachable worker ownership and owner answers cannot 
     expect(worker.condition).toBe("disconnected");
     fixture.issue.body += "\nChanged scope."; fixture.save(); await fixture.json(route + "/sync", {});
     let detail = await fixture.json(path);
-    expect(detail.workers[0]).toEqual(worker);
+    expect(detail.workers).toEqual([{ ...worker, waiting_reason: expect.stringContaining("uncertain") }]);
     for (const question of detail.questions.filter((question: any) => question.answer === null)) await fixture.json(path + `/questions/${question.id}/answer`, { revision: question.revision, answer: "Preserve the work for a separately authorized attempt." });
     await fixture.json(`/runs/${run.id}/reconcile`, {});
     detail = await fixture.json(path);
@@ -1105,7 +1124,7 @@ test("scope pause retains unreachable worker ownership and owner answers cannot 
     expect(detail.runs[0].issue_pause.reason).toBe("scope_changed");
     const send = await fixture.post(`/runs/${run.id}/send-answers`, { revision: detail.question_revision, idempotency_key: "do-not-resume" });
     expect(send.status).toBe(409); expect((await send.json()).error.code).toBe("issue_pause_required");
-    expect((await fixture.json(path)).workers[0]).toEqual(worker);
+    expect((await fixture.json(path)).workers).toEqual([{ ...worker, waiting_reason: expect.stringContaining("uncertain") }]);
   } finally { fixture.close(); }
 }, 20_000);
 
@@ -1137,18 +1156,19 @@ test.each(["readiness", "closure"])("known active %s changes request a durable o
   } finally { fixture.close(); }
 }, 20_000);
 
-test("global agent capacity remains effective even when the Project allows another implementation", async () => {
+test("global Agent capacity queues otherwise eligible issue execution", async () => {
   const fixture = githubQueueFixture(true);
   try {
     fixture.save([fixture.issue, { ...fixture.issue, number: 2, node_id: "fictional-2", title: "Later issue" }]);
     const { path, route, readiness, start } = await prepared(fixture);
     const second = await prepareSecond(fixture, route, readiness);
-    await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: false, max_implementations: 2 });
+    await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: false });
     await fixture.json("/settings", { max_agents: 1 });
     expect((await fixture.post(path + "/runs", start)).status).toBe(202);
     const response = await fixture.post(second.path + "/runs", second.start);
-    expect(response.status).toBe(409); expect((await response.json()).error.code).toBe("capacity_exhausted");
+    expect(response.status).toBe(202); expect(await response.json()).toMatchObject({ condition: "queued", reason: expect.stringContaining("1/1") });
     expect((await fixture.json(second.path)).runs).toEqual([]);
+    expect((await fixture.json("")).capacity.normal).toMatchObject({ used: 1, limit: 1 });
   } finally { fixture.close(); }
 }, 20_000);
 
@@ -1188,7 +1208,7 @@ test.each(["free", "worker", "build"])("a confirmed owner Stop permits one expli
     if (ownership !== "free") {
       const response = await fixture.post(`/runs/${run.id}/retry`, retry);
       expect(response.status).toBe(409);
-      expect(["implementation_owned", "project_capacity_exhausted"]).toContain((await response.json()).error.code);
+      expect((await response.json()).error.code).toBe("implementation_owned");
       const retained = await fixture.json(path);
       expect(retained.runs).toEqual([stopped]);
       expect(ownership === "worker" ? retained.workers[0].condition : retained.checks[0].condition).toBe(ownership === "worker" ? "ready" : "interrupted");
@@ -1206,7 +1226,7 @@ test.each(["free", "worker", "build"])("a confirmed owner Stop permits one expli
     expect((await responses[1]!.json()).id).toBe(next.id);
     expect(next).toMatchObject({ condition: "working", retry_of: run.id, manifest: { issue_admission: { source: { revision: prepared.revision } } } });
     expect((await fixture.json(`/runs/${run.id}/retry`, retry)).id).toBe(next.id);
-    expect((await fixture.json(path)).runs).toEqual([stopped, next]);
+    expect((await fixture.json(path)).runs).toEqual([stopped, { ...next, condition: "ready" }]);
   } finally { release(); fixture.close(); }
 }, 30_000);
 
@@ -1363,21 +1383,26 @@ test("concurrent owner retries and a lost Retry response create one successor wi
   } finally { release(); fixture.close(); }
 }, 20_000);
 
-test("unreachable execution after restart retains Project capacity until its original identity is observed", async () => {
+test("unreachable execution retains its global Agent reservation without replay across restart", async () => {
   const fixture = githubQueueFixture(true);
   try {
     fixture.save([fixture.issue, { ...fixture.issue, number: 2, node_id: "fictional-2", title: "Next issue" }]);
     const { path, start, route, readiness } = await prepared(fixture);
     const second = await prepareSecond(fixture, route, readiness);
+    await fixture.json("/settings", { max_agents: 1 });
     fixture.setLaunchOutcome("lost"); const uncertain = await fixture.json(path + "/runs", start);
     fixture.setHostOffline(true); fixture.restart();
     expect((await fixture.json(path)).runs[0].condition).toBe("disconnected");
-    const refused = await fixture.post(second.path + "/runs", second.start);
-    expect(refused.status).toBe(409); expect((await refused.json()).error.code).toBe("project_capacity_exhausted");
+    expect((await fixture.json("")).capacity).toMatchObject({ normal: { used: 1, limit: 1 }, contexts: [expect.objectContaining({ id: uncertain.id, uncertain: true })] });
     expect(fixture.launches).toEqual([uncertain.id]);
     fixture.setHostOffline(false);
     expect((await fixture.json(`/runs/${uncertain.id}/reconcile`, {})).id).toBe(uncertain.id);
     expect((await fixture.json(path)).runs[0].condition).toBe("working");
+    const refused = await fixture.post(second.path + "/runs", second.start);
+    expect(refused.status).toBe(202); expect(await refused.json()).toMatchObject({ condition: "queued", reason: expect.stringContaining("1/1") });
+    expect((await fixture.json(second.path)).runs).toEqual([]);
+    expect((await fixture.json("")).capacity.normal).toMatchObject({ used: 1, limit: 1 });
+    expect(fixture.launches).toEqual([uncertain.id]);
   } finally { fixture.close(); }
 }, 20_000);
 
@@ -1386,7 +1411,7 @@ test("Retry cannot replace a failed parent while an uncertain build still owns t
   const fixture = githubQueueFixture(true);
   try {
     const { path, start, route } = await prepared(fixture);
-    await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: false, max_implementations: 2 });
+    await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: false });
     const run = await fixture.json(path + "/runs", start);
     const check = await fixture.json(`/runs/${run.id}/checks`, {});
     expect(check.condition).toBe("interrupted");
@@ -1402,15 +1427,14 @@ test("Retry cannot replace a failed parent while an uncertain build still owns t
   } finally { fixture.close(); }
 }, 20_000);
 
-test.each(["pause", "priority", "scope", "outage", "readiness"])("Retry revalidates current %s instead of reusing failed authorization", async change => {
+test.each(["pause", "scope", "outage", "readiness"])("Retry revalidates current %s instead of reusing failed authorization", async change => {
   const fixture = githubQueueFixture(true);
   try {
     fixture.save([fixture.issue, { ...fixture.issue, number: 2, node_id: "fictional-2", title: "Next issue" }]);
     const { path, start, route, readiness } = await prepared(fixture);
-    const second = await prepareSecond(fixture, route, readiness);
+    await prepareSecond(fixture, route, readiness);
     fixture.setLaunchOutcome("failed"); const failed = await fixture.json(path + "/runs", start);
-    if (change === "pause") await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true, max_implementations: 1 });
-    if (change === "priority") await fixture.json(second.path + "/order", { before_id: failed.implementation_id });
+    if (change === "pause") await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true });
     if (change === "scope") fixture.issue.body += "\nA different behavior.";
     if (change === "readiness") fixture.issue.labels = [];
     if (["scope", "readiness", "outage"].includes(change)) {
@@ -1423,6 +1447,25 @@ test.each(["pause", "priority", "scope", "outage", "readiness"])("Retry revalida
   } finally { fixture.close(); }
 }, 20_000);
 
+
+test("Retry rejects manual priority changes while preserving oldest eligible issue authority", async () => {
+  const fixture = githubQueueFixture(true);
+  try {
+    fixture.save([fixture.issue, { ...fixture.issue, number: 2, node_id: "fictional-2", title: "Next issue" }]);
+    const { path, start, route, readiness } = await prepared(fixture);
+    const second = await prepareSecond(fixture, route, readiness);
+    fixture.setLaunchOutcome("failed"); const failed = await fixture.json(path + "/runs", start);
+    const reordered = await fixture.post(second.path + "/order", { before_id: failed.implementation_id });
+    expect(reordered.status).toBe(409); expect((await reordered.json()).error.code).toBe("automatic_order");
+    fixture.setLaunchOutcome("working");
+    const next = await fixture.json(`/runs/${failed.id}/retry`, { idempotency_key: "oldest-explicit-retry", issue_scope: start.issue_scope });
+    expect(next).toMatchObject({ retry_of: failed.id, condition: "working" });
+    const independent = await fixture.json(second.path + "/runs", second.start);
+    expect(independent.condition).toBe("working");
+    expect((await fixture.json(path)).runs.map((run: any) => run.id)).toEqual([failed.id, next.id]);
+    expect(fixture.launches).toEqual([failed.id, next.id, independent.id]);
+  } finally { fixture.close(); }
+}, 20_000);
 
 test("completed planning Runs allow approved issue preparation and one guarded implementation attempt", async () => {
   const fixture = githubQueueFixture(true);
@@ -1470,12 +1513,12 @@ test.each(["fresh_issue", "dependencies", "graphql", "malformed_history"])("obse
     expect(detail.runs[0].issue_pause?.reason).toBe("readiness_revoked");
     expect(detail.github_sources[0].readiness_evidence.complete).toBe(false);
     expect(detail.runs[0].manifest).toEqual(run.manifest);
-    expect(detail.workers).toEqual([worker]);
+    expect(detail.workers).toEqual([{ ...worker, waiting_reason: expect.stringContaining("uncertain") }]);
     fixture.save([fixture.issue], false, {}, false, [fresh], { events, ...(failure === "dependencies" ? { dependencies: { "1": null } } : { proof: null }) });
     await fixture.json(route + "/sync", {}); fixture.restart();
     const restored = await fixture.json(path);
     expect(restored.runs[0].issue_pause?.reason).toBe("readiness_revoked");
-    expect(restored.workers).toEqual([worker]);
+    expect(restored.workers).toEqual([{ ...worker, waiting_reason: expect.stringContaining("uncertain") }]);
     expect(restored.questions.filter((question: any) => question.run_id === run.id && question.answer === null)).toHaveLength(1);
   } finally { fixture.close(); }
 }, 20_000);
@@ -1613,4 +1656,76 @@ test.each(["app_owner", "github_label"])("a same-second historical revocation be
     expect(detail.runs[0]).toEqual(run);
     expect(detail.questions).toEqual([]);
   } finally { fixture.close(); }
+}, 20_000);
+
+
+test("owner acceptance of a prepared issue starts automatic planning under its exact current issue admission", async () => {
+  const fixture = githubQueueFixture(true);
+  const launch = fixture.holdLaunch();
+  try {
+    const { path, source, start } = await prepared(fixture);
+    const before = await fixture.json(path);
+    const specification = before.specifications.at(-1);
+    const approval = await fixture.json(path + "/specification-acceptance", { specification_id: specification.id, hash: specification.hash, source: "button" });
+    expect(approval).toMatchObject({ automatic_execution: true, revision: specification.id, provenance: { kind: "button", specification_hash: specification.hash } });
+    await Promise.race([launch.waiting, new Promise((_, reject) => setTimeout(() => reject(new Error("Automatic admission did not reach the owned launch")), 8000))]);
+    let detail = await fixture.json(path);
+    expect(detail.automatic_planning[0]).toMatchObject({ condition: "pending", approval_id: approval.id, specification_id: specification.id });
+    expect(detail.runs).toHaveLength(1);
+    expect(detail.runs[0]).toMatchObject({ condition: "accepted", manifest: { planning_authority: { id: approval.id }, issue_admission: { source: { id: source.id, revision: source.revision }, planning: { specification_id: specification.id, graph_hash: start.issue_scope.graph_hash } } } });
+    expect(fixture.launches).toEqual([detail.runs[0].id]);
+    launch.release();
+    const deadline = Date.now() + 8000;
+    // A reserved Run is visible before launch acknowledgement settles its planning request.
+    while (!detail.automatic_planning.some((request: any) => request.condition === "started" || request.condition === "blocked")) {
+      if (Date.now() > deadline) throw new Error("Prepared issue automatic planning did not settle");
+      await new Promise(resolve => setTimeout(resolve, 20));
+      detail = await fixture.json(path);
+    }
+    expect(detail.automatic_planning[0].condition).toBe("started");
+    expect(detail.runs).toHaveLength(1);
+    expect(detail.runs[0]).toMatchObject({ action: "implement-spec", condition: "working", specification_id: specification.id, manifest: { planning_authority: { id: approval.id }, issue_admission: { source: { id: source.id, revision: source.revision }, planning: { specification_id: specification.id, graph_hash: start.issue_scope.graph_hash } } } });
+    expect((await fixture.json(path + "/specification-acceptance", { specification_id: specification.id, hash: specification.hash, source: "button" })).id).toBe(approval.id);
+    fixture.restart();
+    expect((await fixture.json(path)).runs).toHaveLength(1);
+    expect(fixture.launches).toHaveLength(1);
+  } finally { launch.release(); fixture.close(); }
+}, 20_000);
+
+
+for (const drift of ["source", "graph", "queue_pause"] as const) test(`accepted prepared issue does not bypass ${drift} changes during automatic admission`, async () => {
+  const fixture = githubQueueFixture(true);
+  let gate: ReturnType<typeof fixture.holdCapabilities> | undefined;
+  try {
+    const { path, route } = await prepared(fixture);
+    const before = await fixture.json(path);
+    const specification = before.specifications.at(-1);
+    gate = fixture.holdCapabilities();
+    await fixture.json(path + "/specification-acceptance", { specification_id: specification.id, hash: specification.hash, source: "button" });
+    await Promise.race([gate.waiting, new Promise((_, reject) => setTimeout(() => reject(new Error("Automatic admission did not reach the owned Machine")), 8000))]);
+    if (drift === "source") {
+      fixture.issue.body = fixture.issue.body.replace("Show hello.", "Show a different unapproved greeting.");
+      fixture.save();
+      await fixture.json(route + "/sync", {});
+    } else if (drift === "graph") {
+      await fixture.json(path + "/tickets", { specification_id: specification.id, tickets: [{ key: "changed", title: "Changed scope", acceptance: "A different greeting", dependencies: [] }] });
+    } else {
+      const queue = await fixture.json(route + "/queue");
+      await fixture.json(route + "/queue", { expected_revision: queue.policy.revision, automatic_implementation: false, paused: true });
+    }
+    gate.release();
+    const deadline = Date.now() + 8000;
+    let detail = await fixture.json(path);
+    while (!detail.automatic_planning.some((request: any) => request.condition === "blocked")) {
+      if (Date.now() > deadline) throw new Error("Changed prepared admission did not retain its block");
+      await new Promise(resolve => setTimeout(resolve, 20));
+      detail = await fixture.json(path);
+    }
+    expect(detail.runs).toHaveLength(0);
+    expect(fixture.launches).toHaveLength(0);
+    expect(detail.approvals.filter((approval: any) => approval.automatic_execution)).toHaveLength(1);
+    for (const question of before.questions) expect(detail.questions).toContainEqual(question);
+    expect(detail.questions.every((question: any) => question.answer === null)).toBe(true);
+    expect(detail.automatic_planning[0].reason).toBeString();
+  } finally { gate?.release(); fixture.close(); }
 }, 20_000);

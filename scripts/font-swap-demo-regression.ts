@@ -6,6 +6,8 @@ import { chromium, type Page } from "playwright-core";
 import { appFaces } from "./app-faces.ts";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
+import { chromePath } from "./chrome-path.ts";
+import { openSettingsPage } from "./settings-page.ts";
 
 // The late arrival of the app's faces (src/fonts/fonts.css, font-display: swap), on the unmodified
 // app over the demo's fixture transport: the font files are held back here as a slow link holds
@@ -29,7 +31,11 @@ try {
   const index = join(app, "index.html");
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
-  writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    <script type="module"`));
+  // An installed Pretendard fallback can have identical metrics to the held web
+  // face. Use a visibly different fallback so this fixture must exercise reflow.
+  writeFileSync(index, html
+    .replace(/<html\b/, () => `<html style='--font-ui: "Pretendard Variable", monospace'`)
+    .replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    <script type="module"`));
   // fonts.css takes an installed JetBrains Mono before the file; a request this script holds must
   // be the only way to the face, on a developer's desktop that has the font as on CI that has not
   let fileOnly = 0;
@@ -53,8 +59,80 @@ try {
   } });
   const url = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(panes.web)}`;
   try {
-    const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? "/opt/google/chrome/chrome", headless: true, args: ["--no-sandbox"] });
+    const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
+      for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+        const context = await browser.newContext({ viewport, locale: "en-US", isMobile: viewport.width < 640, hasTouch: viewport.width < 640, permissions: ["local-fonts"] });
+        try {
+          await context.addInitScript(() => localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en" })));
+          const page = await context.newPage(); page.setDefaultTimeout(10000);
+          const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
+          const session = await context.newCDPSession(page);
+          const { targetInfo } = await session.send("Target.getTargetInfo");
+          const permission = async (setting: "granted" | "denied") => session.send("Browser.setPermission", { permission: { name: "local-fonts" }, setting, origin: new URL(url).origin, browserContextId: targetInfo.browserContextId });
+          await permission("denied");
+          await page.goto(url);
+          if (viewport.width < 640) await page.getByRole("button", { name: "Open workspace list", exact: true }).click();
+          await page.getByRole("button", { name: "Settings", exact: true }).click();
+          await openSettingsPage(page, "Terminal");
+          const dialog = page.getByRole("dialog", { name: "Settings", exact: true });
+          const field = dialog.getByRole("textbox", { name: "Terminal font", exact: true });
+          const font = dialog.locator(".settings-font-field").filter({ has: page.getByRole("textbox", { name: "Terminal font", exact: true }) });
+          const previous = await field.inputValue();
+          const browse = font.getByRole("button", { name: "Browse installed fonts for Terminal font", exact: true });
+          await browse.click();
+          const unavailable = "Installed fonts could not be listed. Type the name instead.";
+          await font.getByText(unavailable, { exact: true }).waitFor();
+          await font.getByRole("alert").filter({ hasText: unavailable }).waitFor();
+          assert.equal(await font.getByRole("status").filter({ hasText: unavailable }).count(), 0);
+          assert.equal(await field.inputValue(), previous);
+          await permission("granted");
+          const families = await page.evaluate(async () => {
+            const rows = await (window as unknown as { queryLocalFonts: () => Promise<{ family: string }[]> }).queryLocalFonts();
+            const names = [...new Set(rows.map(row => row.family))];
+            const canvas = document.createElement("canvas").getContext("2d")!;
+            const proportional = names.find(name => {
+              canvas.font = `32px "${name.replace(/["\\]/g, "")}"`;
+              return Math.abs(canvas.measureText("W").width - canvas.measureText("i").width) > 1;
+            });
+            const monospace = names.find(name => /mono|courier|console/i.test(name) && name.includes(" "));
+            return { proportional, monospace };
+          });
+          assert(families.proportional && families.monospace, "The browser exposes both real proportional and monospace installed fonts");
+          await browse.click();
+          await font.getByRole("list", { name: "Installed fonts", exact: true }).waitFor();
+          assert.equal(await font.getByText(unavailable, { exact: true }).count(), 0);
+          await font.getByRole("searchbox", { name: "Search fonts", exact: true }).fill(families.proportional);
+          await font.getByRole("button", { name: families.proportional, exact: true }).click();
+          const refused = `${families.proportional} is not monospace. The terminal needs a fixed-width font, so the current font was kept.`;
+          await font.getByText(refused, { exact: true }).waitFor();
+          await font.getByRole("alert").filter({ hasText: refused }).waitFor();
+          assert.equal(await font.getByRole("status").filter({ hasText: refused }).count(), 0);
+          assert.equal(await field.inputValue(), previous);
+          await font.getByRole("searchbox", { name: "Search fonts", exact: true }).fill(families.monospace);
+          await font.getByRole("button", { name: families.monospace, exact: true }).click();
+          assert.equal(await field.inputValue(), `"${families.monospace}"`);
+          assert.equal(await font.getByRole("alert").count(), 0);
+          assert.equal(await font.getByRole("list", { name: "Installed fonts", exact: true }).count(), 0);
+          await openSettingsPage(page, "Shortcuts");
+          const record = dialog.getByRole("button", { name: "Record shortcut for Command palette", exact: true });
+          const row = dialog.locator(".settings-row").filter({ has: page.getByRole("button", { name: "Record shortcut for Command palette", exact: true }) });
+          const before = await page.evaluate(() => JSON.parse(localStorage.getItem("herdr-web-ui:settings")!).shortcutOverrides);
+          await record.click();
+          await row.getByRole("status").filter({ hasText: "Press the new shortcut, or Escape to cancel." }).waitFor();
+          assert.equal(await row.getByRole("alert").count(), 0);
+          await page.keyboard.press("KeyG");
+          await row.getByText(/Hold .* and press a key\./).waitFor();
+          await row.getByRole("alert").filter({ hasText: /Hold .* and press a key\./ }).waitFor();
+          assert.equal(await row.getByRole("status").filter({ hasText: /Hold .* and press a key\./ }).count(), 0);
+          await page.keyboard.press("Escape");
+          assert.equal(await row.getByRole("alert").count(), 0);
+          assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem("herdr-web-ui:settings")!).shortcutOverrides), before, "Rejected recording and Cancel preserve the configured shortcut");
+          assert.deepEqual(errors, []);
+          console.log(`PASS font access denial, proportional refusal, monospace recovery and shortcut error/status controls ${viewport.width}x${viewport.height}`);
+        } finally { await context.close(); }
+      }
+
       /** A phone on a slow link: every font file is held until `release`. `stall` names files that never come at all. */
       const open = async (stall: RegExp | null, height = 844): Promise<{ page: Page; errors: string[]; held: () => number; release: () => void; close: () => Promise<void> }> => {
         const context = await browser.newContext({ viewport: { width: 390, height }, locale: "en-US", hasTouch: true, isMobile: true });
@@ -75,7 +153,23 @@ try {
         await page.locator(".conn-live").waitFor({ state: "attached" });
         await page.locator(".terminal-stack.is-chat").waitFor();
         await page.locator(".chat-turn").first().waitFor();
-        await frames(page);
+        assert.deepEqual(await page.locator(".chat-view").evaluate((node) => {
+          const style = getComputedStyle(node);
+          return [style.paddingTop, style.paddingBottom, getComputedStyle(node.querySelector(".chat-transcript")!).display];
+        }), ["0px", "0px", "block"], "production CSS keeps spacing inside measured virtual rows");
+        await page.waitForFunction(() => {
+          const node = document.querySelector(".chat-view");
+          return node !== null && node.scrollHeight - node.clientHeight - node.scrollTop <= 1;
+        }, undefined, { timeout: 10_000 }).catch(async (error: unknown) => {
+          console.error("CHAT_GEOMETRY", await page.locator(".chat-view").evaluate((node) => ({
+            top: node.scrollTop, height: node.scrollHeight, viewport: node.clientHeight,
+            nodes: [node, ...node.querySelectorAll("div")].map((item) => {
+              const style = getComputedStyle(item), rect = item.getBoundingClientRect();
+              return { class: item.className, inline: item.getAttribute("style"), top: rect.top, height: rect.height, padding: style.padding, margin: style.margin, position: style.position };
+            }),
+          })));
+          throw error;
+        });
         return { page, errors, held: () => asked, release, close: () => { release(); return context.close(); } };
       };
 
@@ -91,6 +185,15 @@ try {
           assert.ok(before.gap <= 1, `an opened conversation is at its end (gap ${before.gap})`);
           release();
           await appFaces(page);
+          await page.waitForFunction((height) => document.querySelector(".chat-view")?.scrollHeight !== height, before.height, { timeout: 10_000 }).catch(async (error: unknown) => {
+            console.error("FONT_GEOMETRY", await page.locator(".chat-view").evaluate((node) => ({
+              height: node.scrollHeight, top: node.scrollTop, viewport: node.clientHeight,
+              rows: [...node.querySelectorAll("[data-chat-row]")].map((row) => ({ height: row.getBoundingClientRect().height, text: row.textContent, font: getComputedStyle(row).fontFamily })),
+              paragraphs: [...node.querySelectorAll("p")].map((p) => ({ height: p.getBoundingClientRect().height, width: p.getBoundingClientRect().width, font: getComputedStyle(p).fontFamily, size: getComputedStyle(p).fontSize })),
+              fonts: [...document.fonts].filter((face) => face.status === "loaded").map((face) => face.family),
+            })));
+            throw error;
+          });
           const after = await viewOf(page);
           assert.notEqual(after.height, before.height, `the faces redrew the conversation at another height (${before.height} -> ${after.height})`);
           assert.ok(after.gap <= 1, `a reader at the end is still there after the faces came (gap ${after.gap}, height ${before.height} -> ${after.height})`);
@@ -112,6 +215,7 @@ try {
           await frames(page);
           assert.equal(await page.evaluate(() => document.fonts.status), "loading", "another face is still on its way");
           assert.equal(await loadedFaces(page, "JetBrains Mono Web"), 0);
+          await page.waitForFunction((height) => document.querySelector(".chat-view")?.scrollHeight !== height, before.height, { timeout: 10_000 });
           const after = await viewOf(page);
           assert.notEqual(after.height, before.height, `the face redrew the conversation at another height (${before.height} -> ${after.height})`);
           assert.ok(after.gap <= 1, `a face that came is followed while another is still on its way (gap ${after.gap}, height ${before.height} -> ${after.height})`);

@@ -1,0 +1,309 @@
+import { createHash } from "node:crypto";
+import type { AccountBindingSnapshot } from "../shared/accounts.ts";
+import type { FactoryCheck, FactoryHumanApproval, FactoryMergeResult, FactoryProject, FactoryPullRequest, FactoryReviewEvidence, FactoryRun, FactoryWorker, Implementation } from "../shared/factory.ts";
+import type { ProjectGitHubPolicy } from "../shared/github-project.ts";
+import type { MachineAccounts } from "./accounts.ts";
+import { FactoryError, git } from "./factory-host.ts";
+import { containsDeliveryChange, type DeliveryTree } from "./factory-delivery.ts";
+import { captureReview } from "./factory-review.ts";
+import type { FactoryStore } from "./factory-store.ts";
+
+type Connection<T> = { nodes: T[]; pageInfo: { hasNextPage: boolean } };
+interface Pull {
+  author?: { login: string } | null;
+  number: number; url: string; state: string; isDraft: boolean; headRefOid: string; headRefName: string; baseRefName: string;
+  headRepository: { nameWithOwner: string }; baseRepository: { nameWithOwner: string };
+  merged: boolean; mergeCommit: { oid: string } | null; mergeStateStatus: string; reviewDecision: string | null;
+  reviews: Connection<{ state: string; author: { login: string } | null; commit: { oid: string } | null; submittedAt: string }>;
+  reviewThreads: Connection<{ isResolved: boolean }>; reviewRequests: Connection<unknown>;
+  commits: Connection<{ commit: { statusCheckRollup: { contexts: Connection<{ name?: string; context?: string; state?: string; status?: string; conclusion?: string }> } | null } }>;
+  baseRef?: { branchProtectionRule?: { isAdminEnforced: boolean; requiredApprovingReviewCount: number; requiredStatusCheckContexts?: string[] } | null };
+}
+interface Intent { id: string; approval: FactoryHumanApproval; pr: FactoryPullRequest; condition: "prepared" | "sending" | "denied" | "verified"; merge_sha?: string; denied_at?: string }
+const fields = `author { login } number url state isDraft headRefOid headRefName baseRefName headRepository { nameWithOwner } baseRepository { nameWithOwner } merged mergeCommit { oid } mergeStateStatus reviewDecision baseRef { branchProtectionRule { isAdminEnforced requiredApprovingReviewCount requiredStatusCheckContexts } }
+reviews(first:100) { nodes { state author { login } commit { oid } submittedAt } pageInfo { hasNextPage } }
+reviewThreads(first:100) { nodes { isResolved } pageInfo { hasNextPage } }
+reviewRequests(first:100) { nodes { __typename } pageInfo { hasNextPage } }
+commits(last:1) { nodes { commit { statusCheckRollup { contexts(first:100) { nodes { ... on CheckRun { name status conclusion } ... on StatusContext { context state } } pageInfo { hasNextPage } } } } } pageInfo { hasNextPage } }`;
+
+const COVERAGE_BLOB_LIMIT = 2 * 1024 * 1024;
+/** Authenticated blob evidence is useful only when its complete bytes match the tree entry. */
+function deliveryText(value: unknown, oid: string): string | null {
+  const blob = value as { sha?: unknown; encoding?: unknown; size?: unknown; content?: unknown } | null;
+  if (!blob || blob.sha !== oid || blob.encoding !== "base64" || typeof blob.size !== "number" || !Number.isSafeInteger(blob.size) || blob.size < 0 || blob.size > COVERAGE_BLOB_LIMIT || typeof blob.content !== "string" || blob.content.length > Math.ceil(COVERAGE_BLOB_LIMIT / 3) * 4 + COVERAGE_BLOB_LIMIT / 20) return null;
+  const encoded = blob.content.replace(/\n/g, "");
+  if (encoded.length % 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) return null;
+  const bytes = Buffer.from(encoded, "base64");
+  if (bytes.length !== blob.size || bytes.toString("base64") !== encoded || createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex") !== oid || bytes.includes(0)) return null;
+  const text = bytes.toString("utf8");
+  return Buffer.from(text, "utf8").equals(bytes) ? text : null;
+}
+
+/** Preserve reviewed additions/replacements and deletions, rather than unchanged context.
+ * Ambiguous locations or removals require exact blobs or a bounded additive proof. */
+function retainsApprovedText(approved: string, observed: string, diff: string): boolean {
+  if (!approved || approved.includes("\0")) return false;
+  const edits: { kind: "+" | "-"; text: string; index: number }[] = [];
+  let index = -1;
+  let hunk = false, previous: typeof edits[number] | undefined;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("@@ ")) {
+      const start = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+      if (!start) return false;
+      index = Math.max(0, Number(start[1]) - 1); hunk = true; previous = undefined;
+    } else if (hunk && (line.startsWith("+") || line.startsWith("-"))) {
+      previous = { kind: line[0] as "+" | "-", text: line.slice(1) + "\n", index }; edits.push(previous);
+      if (previous.kind === "+") index++;
+    } else {
+      if (line === "\\ No newline at end of file" && previous) previous.text = previous.text.slice(0, -1);
+      if (hunk && line.startsWith(" ")) index++;
+      previous = undefined;
+    }
+  }
+  if (!edits.length) return false;
+  const lines = (value: string): string[] => value.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+  const count = (tokens: string[]) => {
+    const result = new Map<string, number>();
+    for (const token of tokens) result.set(token, (result.get(token) ?? 0) + 1);
+    return result;
+  };
+  const required = edits.filter(edit => edit.kind === "+").map(edit => edit.text);
+  const actual = lines(observed), approvedCounts = count(lines(approved)), actualCounts = count(actual);
+  // An unchanged duplicate cannot stand in for an omitted reviewed addition.
+  if (required.some(token => (actualCounts.get(token) ?? 0) < (approvedCounts.get(token) ?? 1))) return false;
+  const withoutNewline = (token: string) => token.endsWith("\n") ? token.slice(0, -1) : token;
+  const retained = count(lines(approved).map(withoutNewline)), current = count(actual.map(withoutNewline));
+  const all = lines(approved), added = new Set(edits.filter(edit => edit.kind === "+").map(edit => edit.index));
+  if (edits.some(edit => edit.kind === "+" && all[edit.index] !== edit.text)) return false;
+  const blocks: { start: number; end: number }[] = [];
+  for (const position of added) {
+    const last = blocks.at(-1);
+    if (last?.end === position) last.end++; else blocks.push({ start: position, end: position + 1 });
+  }
+  const stable = (position: number) => !added.has(position) && approvedCounts.get(all[position]!) === 1 && actualCounts.get(all[position]!) === 1;
+  const located = blocks.every(block => {
+    // Whole-file additions have no old location anchors; the additive proof below applies.
+    if (block.start === 0 && block.end === all.length) return true;
+    let before = block.start - 1, after = block.end;
+    while (before >= 0 && !stable(before)) before--;
+    while (after < all.length && !stable(after)) after++;
+    if (block.start === 0) {
+      if (after === all.length) return actual.slice(0, block.end).join("") === all.slice(0, block.end).join("");
+      const right = actual.indexOf(all[after]!);
+      return right >= after && actual.slice(right - after, right + 1).join("") === all.slice(0, after + 1).join("");
+    }
+    if (block.end === all.length) {
+      if (before < 0) return actual.slice(-all.length + block.start).join("") === all.slice(block.start).join("");
+      const left = actual.indexOf(all[before]!);
+      return actual.slice(left, left + all.length - before).join("") === all.slice(before).join("");
+    }
+    if (before < 0 || after === all.length) return false;
+    const left = actual.indexOf(all[before]!), right = actual.indexOf(all[after]!);
+    // Exact literal neighborhoods prevent an added block moving across retained
+    // context or acquiring an unreviewed wrapper while anchors still match.
+    return left < right && actual.slice(left, right + 1).join("") === all.slice(before, after + 1).join("");
+  });
+  if (!located) return false;
+  // The located or context-free literal additive proof also preserves ambiguous deletions.
+  let matched = 0;
+  for (const token of actual) if (token === all[matched]) matched++;
+  if (matched === all.length && edits.every(edit => edit.kind !== "-" || (current.get(withoutNewline(edit.text)) ?? 0) <= (retained.get(withoutNewline(edit.text)) ?? 0))) return true;
+  if (edits.some(edit => edit.kind === "-" && (retained.has(withoutNewline(edit.text)) || current.has(withoutNewline(edit.text))))) return false;
+  // Repeated unchanged context cannot be remapped to a different occurrence.
+  if (all.some((token, position) => !added.has(position) && approvedCounts.get(token)! > 1 && actualCounts.get(token) !== approvedCounts.get(token))) return false;
+  const requiredContext = all.filter((token, position) => added.has(position) || actualCounts.has(token));
+  let next = 0;
+  for (const token of actual) if (token === requiredContext[next]) next++;
+  return next === requiredContext.length;
+}
+
+/** Unknown sends are observed after restart; only confirmed denials can be retried. */
+export class FactoryMerge {
+  private stopped = false;
+  stop(): void { this.stopped = true; }
+  private readonly busy = new Set<string>();
+  constructor(private readonly store: FactoryStore, private readonly accounts: MachineAccounts | undefined, private readonly head: (id: string) => Promise<{ head: string; workspace_hash: string }>, private readonly observe: (id: string) => Promise<FactoryRun>) {}
+  async merge(id: string, body: Record<string, unknown>): Promise<FactoryMergeResult> {
+    if (this.busy.has(id)) throw new FactoryError("merge_busy", "This candidate's merge is already being reconciled", 409);
+    this.busy.add(id);
+    try { return await this.perform(id, body); } finally { this.busy.delete(id); }
+  }
+  private async perform(id: string, body: Record<string, unknown>): Promise<FactoryMergeResult> {
+    const run = await this.observe(id);
+    const frozen = run.manifest as { project?: FactoryProject; account_snapshot?: AccountBindingSnapshot; github_policy?: ProjectGitHubPolicy | null; implementation?: Implementation; checkout?: { repository?: string } };
+    const policy = frozen.project?.pull_request;
+    const approval = body.approval as FactoryHumanApproval | undefined;
+    const requestedPr = body.pull_request as FactoryPullRequest | undefined;
+    const observing = !!approval && (approval.merge_sha !== null && approval.merge_sha !== undefined || ["merged", "awaiting_release", "released"].includes(approval.condition));
+    const retained = requestedPr ? this.store.get<Intent>("host_merges", `${id}:${requestedPr.head}`) : null;
+    if (observing) {
+      const identity = (value: FactoryHumanApproval) => JSON.stringify([value.id, value.run_id, value.implementation_id, value.review_id, value.snapshot_id, value.head, value.idempotency_key, value.context_revision, value.provenance, value.repair_batch_id, value.repair_scope, value.repair_signature, value.original_candidate]);
+      if (!/^[a-f0-9]{40}$/.test(approval!.merge_sha ?? "") || !retained || retained.condition !== "verified" || retained.merge_sha !== approval!.merge_sha || identity(retained.approval) !== identity(approval!) || !requestedPr || ["run_id", "head", "repository", "base_branch", "branch", "number", "url"].some(key => retained.pr[key as keyof FactoryPullRequest] !== requestedPr[key as keyof FactoryPullRequest])) throw new FactoryError("merge_authority_changed", "Release observation requires the original Machine-verified merge intent", 409);
+    }
+    const pr = observing ? retained!.pr : requestedPr;
+    const publication = pr ? this.store.get<FactoryPullRequest & { condition: string }>("host_publications", `${id}:${pr.head}`) : null;
+    if (!this.accounts || !policy || !frozen.account_snapshot || run.action !== "implement-spec" || !run.worktree || !run.branch || !observing && run.condition !== "ready") throw new FactoryError("merge_unconfigured", "Merge requires a resting owned Run, frozen destination and verified GitHub account", 409);
+    if (!approval || approval.provenance?.kind !== "owner_button" || !approval.provenance.origin || approval.run_id !== id || approval.implementation_id !== run.implementation_id || approval.head !== body.head || !approval.snapshot_id || !approval.review_id || !pr || pr.run_id !== id || pr.head !== body.head || pr.repository !== policy.repository || pr.base_branch !== policy.base_branch || pr.branch !== run.branch || !publication || publication.condition !== "published" || publication.number !== pr.number || publication.head !== pr.head || publication.repository !== pr.repository || publication.base_branch !== pr.base_branch || publication.branch !== pr.branch || pr.url !== `https://github.com/${policy.repository}/pull/${pr.number}`) throw new FactoryError("merge_authority_changed", "Owner authority must match the exact published candidate and frozen target", 409);
+    const scope = frozen.implementation?.delivery_scope;
+    if (scope && (scope.github_repository && scope.github_repository !== pr.repository || scope.branch && scope.branch !== pr.base_branch || scope.repository && scope.repository !== frozen.checkout?.repository)) throw new FactoryError("merge_authority_changed", "The published candidate differs from the Assignment's frozen delivery destination", 409);
+    const check = this.store.list<FactoryCheck>("host_checks", id).filter(c => c.worker_id === null).at(-1);
+    const reports = Array.isArray(body.reports) ? body.reports.map(r => r && typeof r.worker_id === "string" ? this.store.get<FactoryReviewEvidence>("host_review_evidence", r.worker_id) : null) : [];
+    const latestReports = this.store.list<FactoryReviewEvidence>("host_review_evidence", id);
+    const recipes = [...frozen.project?.setup ?? [], ...frozen.project?.checks ?? []];
+    if (!observing && (!check || check.id !== body.check_id || check.id !== pr.check_id || check.run_id !== id || check.worker_id !== null || check.condition !== "passed" || check.head !== pr.head || check.workspace_hash !== body.workspace_hash || !recipes.length || JSON.stringify(check.commands.map(c => c.args)) !== JSON.stringify(recipes) || check.commands.some(c => c.exit_code !== 0) || reports.length !== 2 || reports[0]?.worker_id === reports[1]?.worker_id || !["standards", "spec"].every(axis => reports.some((r, i) => r?.worker_id === latestReports.filter(latest => latest.axis === axis).at(-1)?.worker_id && r?.axis === axis && r.run_id === id && r.head === pr.head && r.outcome === "passed" && r.source_id === (body.reports as { source_id: string }[])[i]?.source_id)))) throw new FactoryError("fresh_evidence_required", "Merge requires the Machine's matching passing checks and independent Standards and Spec reports", 409);
+    const assertLive = () => {
+      if (this.stopped) throw new FactoryError("stopping", "The bridge is stopping; retain the merge intent for reconciliation", 409);
+      const lease = this.store.get<{ run: FactoryRun; closing?: boolean }>("host_leases", id);
+      if (!lease || lease.closing || lease.run.suspension || this.store.get("host_delete_requests", id)) throw new FactoryError("run_stopping", "Pause or Delete stopped this merge operation", 409);
+      if (observing) return;
+      const latestCheck = this.store.list<FactoryCheck>("host_checks", id).filter(c => c.worker_id === null).at(-1);
+      const currentReports = this.store.list<FactoryReviewEvidence>("host_review_evidence", id);
+      if (!latestCheck || latestCheck.id !== check!.id || latestCheck.condition !== "passed" || latestCheck.head !== pr.head || latestCheck.workspace_hash !== check!.workspace_hash || !["standards", "spec"].every(axis => {
+        const expected = reports.find(r => r?.axis === axis);
+        const current = currentReports.filter(r => r.axis === axis).at(-1);
+        return current?.worker_id === expected?.worker_id && current?.source_id === expected?.source_id && current?.head === pr.head && current?.outcome === "passed";
+      })) throw new FactoryError("fresh_evidence_required", "The checked evidence changed during merge reconciliation", 409);
+      if (this.store.list<FactoryWorker>("host_workers", id).some(w => !["completed", "cancelled", "failed"].includes(w.condition))) throw new FactoryError("writers_active", "Quiesce all owned workers before merging", 409);
+    };
+    const assertCurrent = async () => {
+      assertLive();
+      const current = await this.head(id);
+      if (current.head !== pr.head || current.workspace_hash !== check!.workspace_hash) throw new FactoryError("review_stale", "The checked workspace changed; capture and review the current candidate", 409);
+      const origin = (await git(run.worktree!, ["config", "--get", "remote.origin.url"])).trim();
+      if (![ `https://github.com/${policy.repository}`, `https://github.com/${policy.repository}.git`, `git@github.com:${policy.repository}.git`, `ssh://git@github.com/${policy.repository}.git` ].includes(origin)) throw new FactoryError("merge_target_changed", "The owned checkout no longer matches the frozen repository", 409);
+      const tracked = await git(run.worktree!, ["diff", "--no-ext-diff", "--no-textconv", "HEAD", "--"]);
+      const untracked = (await git(run.worktree!, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0").filter(n => n && !n.startsWith(".saurons-eye-") && n !== ".opencode/agents/saurons-eye.md" && !/^(\.agents|\.claude|\.opencode)\/skills\//.test(n));
+      if (tracked || untracked.length) throw new FactoryError("dirty_integration", "Commit and review workspace changes before merging", 409);
+      assertLive();
+    };
+    if (observing) assertLive(); else await assertCurrent();
+    const baseline = scope ? scope.base : run.base;
+    if (!baseline) throw new FactoryError("merge_coverage_unverified", "The Assignment has no retained delivery baseline", 409);
+    const candidate = await captureReview(run.worktree, baseline, "branch", observing ? pr.head : undefined);
+    if (candidate.head !== pr.head || !candidate.files.length || candidate.files.some(file => file.new_oid === undefined || file.new_mode === undefined)) throw new FactoryError("merge_coverage_unverified", "The approved candidate's intended changes could not be verified", 409);
+    const changes = candidate.files.map(file => ({ path: file.path, oid: file.new_oid!, mode: file.new_mode!, ...(file.old_path ? { old_path: file.old_path } : {}) }));
+    const key = `${id}:${pr.head}`;
+    let intent = retained ?? this.store.get<Intent>("host_merges", key);
+    if (intent && (intent.approval.id !== approval.id || JSON.stringify(intent.pr) !== JSON.stringify(pr))) {
+      if (!["prepared", "denied"].includes(intent.condition)) throw new FactoryError("merge_authority_changed", "A different retained approval owns this merge", 409);
+      // A checked no-op repair may retain the head while explicit owner authority
+      // changes. Only a positively unsent or denied intent can adopt the validated request.
+      intent = { ...intent, approval, pr, condition: "prepared" };
+    }
+    intent ??= { id: key, approval, pr, condition: "prepared" };
+    // Only GitHub's positive no-merge receipt permits another validated attempt.
+    // Unknown sends remain sending and can only be observed, never replayed.
+    if (intent.condition === "denied") intent = { ...intent, condition: "prepared" };
+    this.store.put("host_merges", intent, id);
+    const api = async (path: string, args: string[] = [], guard = assertLive) => { const value = await this.accounts!.github(frozen.account_snapshot!, ["api", path, ...args], guard); assertLive(); return value; };
+    const texts = new Map<string, string | null>();
+    const containsChanges = async (ref: string, additions = false) => {
+      const tree = await api(`repos/${pr.repository}/git/trees/${encodeURIComponent(ref)}?recursive=1`) as DeliveryTree;
+      if (tree?.truncated !== false || !Array.isArray(tree.tree)) throw new FactoryError("merge_coverage_unverified", "GitHub delivery tree evidence is incomplete", 409);
+      for (const file of changes) {
+        if (containsDeliveryChange(tree, file)) continue;
+        const entry = tree.tree.find(entry => entry.path === file.path);
+        const reviewed = candidate.files.find(candidate => candidate.path === file.path)!;
+        if (!additions || !file.oid || file.old_path || reviewed.binary || reviewed.oversized || !entry || entry.type !== "blob" || entry.mode !== file.mode || !["100644", "100755"].includes(entry.mode) || !/^[a-f0-9]{40}$/.test(entry.sha)) return false;
+        const previous = (await git(run.worktree!, ["ls-tree", "-z", baseline, "--", file.path])).split("\t")[0]?.split(" ")[2];
+        if (entry.sha === previous) return false;
+        if (!texts.has(entry.sha)) texts.set(entry.sha, deliveryText(await api(`repos/${pr.repository}/git/blobs/${entry.sha}`), entry.sha));
+        const observed = texts.get(entry.sha);
+        const approved = await git(run.worktree!, ["cat-file", "blob", file.oid]);
+        // Presentation diffs may inherit ANSI colors; coverage needs literal Git patch lines.
+        const diff = await git(run.worktree!, ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--unified=3", baseline, pr.head, "--", file.path]);
+        if (observed == null || createHash("sha1").update(`blob ${Buffer.byteLength(approved)}\0`).update(approved).digest("hex") !== file.oid || !retainsApprovedText(approved, observed, diff)) return false;
+      }
+      return true;
+    };
+    const readPull = async () => {
+      const [owner, name] = policy.repository.split("/");
+      const response = await api("graphql", ["-f", `query=query { repository(owner:${JSON.stringify(owner)},name:${JSON.stringify(name)}) { pullRequest(number:${pr.number}) { ${fields} } } }`]) as { errors?: unknown; data?: { repository?: { pullRequest?: Pull } } };
+      const pull = response.data?.repository?.pullRequest;
+      if (response.errors || !pull || pull.number !== pr.number || pull.url !== pr.url || pull.headRefOid !== pr.head || pull.headRefName !== pr.branch || pull.baseRefName !== pr.base_branch || pull.headRepository?.nameWithOwner !== pr.repository || pull.baseRepository?.nameWithOwner !== pr.repository) throw new FactoryError("merge_target_changed", "GitHub's PR identity, candidate or target differs from this approval", 409);
+      return pull;
+    };
+    let pull = await readPull();
+    if (!observing && !pull.merged && intent.condition === "prepared") {
+      const complete = <T>(c: Connection<T> | undefined) => Array.isArray(c?.nodes) && c.pageInfo?.hasNextPage === false;
+      const contexts = pull.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts;
+      if (!complete(pull.reviews) || !complete(pull.reviewThreads) || !complete(pull.reviewRequests) || !complete(pull.commits) || contexts && !complete(contexts)) throw new FactoryError("merge_blocked", "GitHub review and check inventory is incomplete", 409);
+      if (pull.state !== "OPEN" || pull.isDraft || !["CLEAN", "BLOCKED", "UNSTABLE", "UNKNOWN"].includes(pull.mergeStateStatus) || pull.reviewDecision && !["APPROVED", "REVIEW_REQUIRED"].includes(pull.reviewDecision) || pull.reviewThreads.nodes.some(t => !t.isResolved)) throw new FactoryError("merge_blocked", "GitHub protection, pending reviews, unresolved conversations or conflicts block this target", 409);
+      const opinions = new Map<string, Pull["reviews"]["nodes"][number]>();
+      for (const r of [...pull.reviews.nodes].sort((a, b) => (a.submittedAt ?? "").localeCompare(b.submittedAt ?? ""))) if (r.author && ["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(r.state)) opinions.set(r.author.login.toLowerCase(), r);
+      if ([...opinions.values()].some(r => r.state === "CHANGES_REQUESTED")) throw new FactoryError("merge_blocked", "GitHub still has requested changes", 409);
+      const githubPolicy = frozen.github_policy;
+      const trustedApprovals = [...opinions.values()].filter(r => r.state === "APPROVED" && r.commit?.oid === pr.head && r.author?.login.toLowerCase() !== pull.author?.login.toLowerCase() && githubPolicy?.trusted_reviewers.some(login => login.toLowerCase() === r.author?.login.toLowerCase()));
+      if (githubPolicy && githubPolicy.repository !== pr.repository) throw new FactoryError("merge_blocked", "The frozen Project repository differs from this candidate", 409);
+      let waiting = pull.mergeStateStatus === "UNKNOWN" || pull.reviewDecision === "REVIEW_REQUIRED" || pull.reviewRequests.nodes.length > 0 || !!(githubPolicy?.trusted_reviewers.length && trustedApprovals.length < Math.max(1, pull.baseRef?.branchProtectionRule?.requiredApprovingReviewCount ?? 1));
+      for (const name of new Set([...githubPolicy?.required_checks ?? [], ...pull.baseRef?.branchProtectionRule?.requiredStatusCheckContexts ?? []])) {
+        const matching = contexts?.nodes.filter(c => (c.name ?? c.context) === name) ?? [];
+        if (matching.some(c => c.context ? !["SUCCESS", "PENDING", "EXPECTED"].includes(c.state ?? "") : c.status === "COMPLETED" && !["SUCCESS", "NEUTRAL", "SKIPPED"].includes(c.conclusion ?? ""))) throw new FactoryError("merge_blocked", `Required check failed: ${name}`, 409);
+        if (!matching.length || matching.some(c => c.context ? c.state !== "SUCCESS" : c.status !== "COMPLETED")) waiting = true;
+      }
+      if (waiting) throw new FactoryError("merge_waiting", "Waiting for required GitHub checks or reviews; retained approval will be observed automatically", 409);
+      if (pull.mergeStateStatus !== "CLEAN") throw new FactoryError("merge_blocked", "GitHub protection or conflicts block this target", 409);
+      await assertCurrent();
+      intent = { ...intent, condition: "sending" };
+      // The final account/native permission check precedes retaining the irreversible send intent.
+      let mutation: unknown;
+      try {
+        mutation = await api(`repos/${pr.repository}/pulls/${pr.number}/merge`, ["--method", "PUT", "-f", `sha=${pr.head}`, "-f", "merge_method=squash"], () => { assertLive(); this.store.put("host_merges", intent!, id); });
+      } catch { return { run_id: id, head: pr.head, repository: pr.repository, base_branch: pr.base_branch, number: pr.number, condition: "uncertain", merge_sha: null, release_tag: null, reason: "Merge acknowledgment was lost or permission was denied; observe this PR before further action" }; }
+      if ((mutation as { merged?: boolean } | null)?.merged === false) {
+        this.store.put("host_merges", { ...intent, condition: "denied", denied_at: intent.denied_at ?? new Date().toISOString() }, id);
+        throw new FactoryError("merge_denied", "GitHub refused this merge under its repository permissions, protection or conflict rules; inspect the PR before further action", 409);
+      }
+      pull = await readPull();
+    }
+    const result: FactoryMergeResult = { run_id: id, head: pr.head, repository: pr.repository, base_branch: pr.base_branch, number: pr.number, condition: "uncertain", merge_sha: null, release_tag: null, reason: "GitHub has not confirmed this merge; the sent operation will not be replayed" };
+    if (!pull.merged || pull.state !== "MERGED" || !/^[a-f0-9]{40}$/.test(pull.mergeCommit?.oid ?? "")) return result;
+    const sha = pull.mergeCommit!.oid;
+    if (observing && sha !== intent.merge_sha) throw new FactoryError("merge_coverage_unverified", "GitHub no longer confirms the original verified merge commit", 409);
+    const contains = async (target: string) => {
+      const compare = await api(`repos/${pr.repository}/compare/${sha}...${encodeURIComponent(target)}`) as { status: string; merge_base_commit?: { sha: string } };
+      return ["identical", "ahead"].includes(compare.status) && compare.merge_base_commit?.sha === sha;
+    };
+    const target = await api(`repos/${pr.repository}/commits/${encodeURIComponent(`heads/${pr.base_branch}`)}`) as { sha: string };
+    if (!/^[a-f0-9]{40}$/.test(target.sha) || !await contains(target.sha) || !await containsChanges(sha, true) || !await containsChanges(target.sha, true)) throw new FactoryError("merge_coverage_unverified", "The confirmed merge and authorized target do not contain all approved changes", 409);
+    const latestTarget = await api(`repos/${pr.repository}/commits/${encodeURIComponent(`heads/${pr.base_branch}`)}`) as { sha: string };
+    if (latestTarget.sha !== target.sha) throw new FactoryError("merge_coverage_unverified", "The delivery branch changed during verification; observe its current content again", 409);
+    this.store.put("host_merges", { ...intent, condition: "verified", merge_sha: sha }, id);
+    result.merge_sha = sha; result.condition = "merged"; result.reason = null;
+    if ((frozen.implementation?.delivery_scope?.milestone ?? frozen.project?.delivery_policy) === "release") {
+      result.condition = "awaiting_release"; result.reason = "Merge verified; waiting for a published release containing it";
+      const seen = new Set<number>();
+      for (let page = 1; page <= 10; page++) {
+        let releases: { id: number; draft: boolean; prerelease: boolean; tag_name: string; target_commitish: string; published_at: string }[];
+        try { releases = await api(`repos/${pr.repository}/releases?per_page=100&page=${page}`) as typeof releases; }
+        catch (error) {
+          if (error instanceof FactoryError && error.code !== "account_login_unavailable") throw error;
+          throw new FactoryError("release_inventory_unavailable", "The published release inventory is unavailable; retain the verified merge and observe again", 409);
+        }
+        if (!Array.isArray(releases) || releases.length > 100) throw new FactoryError("release_inventory_unavailable", "The published release inventory is incomplete; retain the verified merge and observe again", 409);
+        for (const release of releases) {
+          if (!release || !Number.isSafeInteger(release.id) || release.id < 1 || seen.has(release.id) || typeof release.draft !== "boolean" || typeof release.prerelease !== "boolean" || typeof release.tag_name !== "string" || !release.tag_name.trim() || typeof release.target_commitish !== "string" || !release.target_commitish.trim() || !release.draft && (typeof release.published_at !== "string" || !release.published_at.trim())) throw new FactoryError("release_inventory_unavailable", "The published release inventory is incomplete or changed during pagination; observe it again", 409);
+          seen.add(release.id);
+        }
+        for (const release of releases) if (!release.draft && !release.prerelease) {
+          const commit = await api(`repos/${pr.repository}/commits/${encodeURIComponent(`tags/${release.tag_name}`)}`) as { sha: string };
+          if (/^[a-f0-9]{40}$/.test(commit.sha) && await contains(commit.sha) && await containsChanges(commit.sha, true)) {
+            let current: typeof release;
+            try { current = await api(`repos/${pr.repository}/releases/${release.id}`) as typeof release; }
+            catch (error) {
+              if (error instanceof FactoryError && error.code !== "account_login_unavailable") throw error;
+              throw new FactoryError("release_inventory_unavailable", "The containing release is no longer available; retain the verified merge and observe again", 409);
+            }
+            if (!current || current.id !== release.id || current.draft !== false || current.prerelease !== false || current.tag_name !== release.tag_name || current.target_commitish !== release.target_commitish || current.published_at !== release.published_at) throw new FactoryError("release_inventory_unavailable", "The containing release publication changed during verification; retain the verified merge and observe again", 409);
+            const latest = await api(`repos/${pr.repository}/commits/${encodeURIComponent(`tags/${release.tag_name}`)}`) as { sha: string };
+            if (latest.sha !== commit.sha) throw new FactoryError("merge_coverage_unverified", "The release tag changed during delivery verification; observe it again", 409);
+            result.condition = "released"; result.release_tag = release.tag_name; result.reason = null; return result;
+          }
+        }
+        if (releases.length < 100) return result;
+      }
+      throw new FactoryError("release_inventory_unavailable", "The published release inventory exceeds ten pages; retain the verified merge and observe again", 409);
+    }
+    return result;
+  }
+}

@@ -1,3 +1,8 @@
+import { FactoryStore } from "./factory-store.ts";
+import { published, until } from "../scripts/factory-human-review-fixture.ts";
+import { capacityFixture } from "../scripts/factory-capacity-fixture.ts";
+import { seedWorkflowConversations } from "../scripts/fixtures/workflow-conversations.ts";
+import type { FactoryAction, FactoryDetail, FactoryRun } from "../shared/factory.ts";
 import { nativeSessionRef } from "../shared/native-pane.ts";
 import { describe, expect, it, beforeAll, afterAll } from "bun:test";
 import { Database } from "bun:sqlite";
@@ -12,14 +17,15 @@ import { PortalService } from "./portal.ts";
 import { noInstalledNotes, unmanagedUpdateStatus, type HerdrUpdateStatus, type InstalledNotes, type UpdateNotes } from "../shared/update.ts";
 import { USAGE_PROVIDERS, UsageService } from "./usage.ts";
 import { VoiceService } from "./voice.ts";
-import { herdrRpc, ping, sessionSnapshot, tabCreate, workspaceCreate, workspaceClose } from "./herdr/client.ts";
+import { HerdrSocket } from "../src/lib/ws.ts";
+import { herdrRpc, paneRead, ping, sessionSnapshot, tabCreate, workspaceCreate, workspaceClose } from "./herdr/client.ts";
 import { startFakePushService, type FakePushService } from "./push.fake.ts";
 import { descriptorPath, type BridgeDescriptor } from "./bridge.ts";
 import { handleMachineRequest } from "./machine-api.ts";
 import type { MachineManager } from "./machines.ts";
 import { TailnetIdentitySource } from "./tailscale.ts";
 import { forgetTranscriptState } from "./conversation.ts";
-import type { FactoryAction, FactoryRun } from "../shared/factory.ts";
+import type { RepoDiffFileList, RepoDiffFilePatch } from "../shared/protocol.ts";
 import type { FactoryNative } from "./factory-native.ts";
 import { githubScheduleFixture } from "./github-schedules.fixture.ts";
 import { batchProposal, githubIssueBatchFixture } from "./github-issue-batches.fixture.ts";
@@ -29,7 +35,7 @@ import { factoryMergeFixture } from "./factory-merge.fixture.ts";
 
 describe("factory loading HTTP contract", () => {
   it("authenticates compact reads and scopes lazy report/snapshot bodies to their Assignment", async () => {
-    const fixture = factoryLoadingFixture(); fixture.service.stop();
+    const fixture = factoryLoadingFixture(); fixture.stop();
     const app = createServer({ port: 0, token: "owned-loading-token", stateDir: fixture.root, machines: false, factory: { accountDiscoveryHome: fixture.root } });
     const origin = `http://localhost:${app.port}/api/factory`;
     const headers = { authorization: "Bearer owned-loading-token" };
@@ -113,6 +119,209 @@ async function factoryBoardFixture(native: Partial<FactoryNative> = {}) {
  * user's ~/.config/herdr-web-ui holds their real devices, which a test must never page.
  */
 let server: { port: number; stop: () => void };
+
+it("retains the confirmed Pause cancellation identity in public check responses", async () => {
+  const f = await capacityFixture(); const gate = f.holdNextCheck();
+  let checking: Promise<Response> | undefined;
+  try {
+    const id = await f.assignment("Public Pause check shape");
+    const run = await f.api(`/implementations/${id}/runs`, { action: "work", idempotency_key: "check-shape" }).then(r => r.json());
+    checking = f.api(`/runs/${run.id}/checks`, {});
+    await gate.started;
+    const paused = await f.api(`/implementations/${id}/pause`, {}).then(r => r.json());
+    expect(paused.pause.condition).toBe("paused");
+    const check = await checking.then(r => r.json());
+    expect(check).toMatchObject({ condition: "cancelled", pause_id: paused.pause.id, run_id: run.id, worker_id: null });
+    f.restart();
+    expect(await f.api(`/runs/${run.id}/checks/${check.id}/reconcile`, {}).then(r => r.json())).toMatchObject({ id: check.id, condition: "cancelled", pause_id: paused.pause.id });
+    expect((await f.api("").then(r => r.json())).capacity.builds.used).toBe(0);
+  } finally { gate.release(); await checking?.catch(() => {}); f.close(); }
+});
+
+it("retains Human Review pre-send proof and superseded authority without replacing uncertain merges", async () => {
+  for (const code of ["merge_blocked", "merge_denied", "merge_uncertain"]) {
+    const f = await capacityFixture({ advancingHeads: true });
+    try {
+      const { prefix, detail } = await published(f);
+      const review = (await until(detail, d => d.human_reviews?.[0]?.condition === "ready")).human_reviews[0];
+      f.mergeFailure(code);
+      const approval = await f.api(`${prefix}/human-review/approve`, { review_id: review.id, head: review.head, snapshot_id: review.snapshot_id, idempotency_key: "wire-authority" }).then(r => r.json());
+      expect(approval.merge_not_sent).toBe(code === "merge_blocked");
+      const c = await f.api(`${prefix}/comments`, { snapshot_id: review.snapshot_id, path: "progress.ts", side: "new", line_start: 1, line_end: 1, content: "Explicit replacement feedback" }).then(r => r.json());
+      const response = await f.api(`${prefix}/human-review/submit`, { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, disposition: "decline", comment_ids: [c.id], idempotency_key: "wire-feedback" });
+      expect(response.status).toBe(code === "merge_blocked" ? 202 : 409);
+      const batch = await response.json();
+      if (code !== "merge_blocked") expect(batch.error.code).toBe("approval_conflict");
+      f.restart();
+      const retained = (await detail()).human_review_approvals;
+      expect(retained).toHaveLength(1); expect(retained[0].id).toBe(approval.id);
+      expect(retained[0].superseded_by_batch_id).toBe(code === "merge_blocked" ? batch.id : undefined);
+      expect(f.mergeEffects).toHaveLength(0);
+    } finally { f.close(); }
+  }
+}, 30000);
+
+for (const operation of ["discussion", "feedback submission", "approval"] as const) it(`authenticates Human Review ${operation}, enforces origin/header controls and rejects an unrelated review`, async () => {
+  const f = await capacityFixture();
+  try {
+    const id = await f.assignment("Authenticated Human Review");
+    const path = `http://localhost:${f.app.port}/api/factory/implementations/${id}/human-review/${operation === "discussion" ? "messages" : operation === "approval" ? "approve" : "submit"}`;
+    const body = operation === "discussion" ? { review_id: crypto.randomUUID(), content: "Discuss this result", idempotency_key: "owned-discussion" } : operation === "approval" ? { review_id: crypto.randomUUID(), snapshot_id: crypto.randomUUID(), head: "a".repeat(40), idempotency_key: "owned-approval" } : { review_id: crypto.randomUUID(), snapshot_id: crypto.randomUUID(), head: "a".repeat(40), disposition: "decline", comment_ids: [], idempotency_key: "owned-feedback" };
+    for (const [headers, status] of [
+      [{ "x-herdr-factory": "1" }, 401],
+      [{ authorization: `Bearer ${f.token}` }, 403],
+      [{ authorization: `Bearer ${f.token}`, "x-herdr-factory": "1", origin: "https://foreign.invalid" }, 403],
+      [{ authorization: `Bearer ${f.token}`, "x-herdr-factory": "1" }, 409],
+    ] as const) {
+      const response = await fetch(path, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify(body) });
+      expect(response.status).toBe(status);
+      expect(await response.json()).toMatchObject({ error: { code: expect.any(String), message: expect.any(String) } });
+    }
+  } finally { f.close(); }
+});
+
+it("authenticates permanent Delete, enforces origin/Machine headers and returns a repeat-safe deletion receipt", async () => {
+  const f = await capacityFixture();
+  try {
+    const id = await f.assignment("Authenticated permanent Delete");
+    const origin = `http://localhost:${f.app.port}`;
+    const request = (path: string, headers: Record<string, string>) => fetch(`${origin}${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1", ...headers }, body: "{}" });
+    const path = `/api/factory/implementations/${id}/delete`;
+    expect((await request(path, {})).status).toBe(401);
+    expect((await request(path, { authorization: `Bearer ${f.token}`, origin: "https://foreign.invalid" })).status).toBe(403);
+    const hostPath = `/api/factory-host/runs/${id}/operations/delete`;
+    const denied = await request(hostPath, { authorization: `Bearer ${f.token}` });
+    expect(denied.status).toBe(403);
+    expect((await denied.json()).error).toMatchObject({ code: "invalid_origin", message: expect.any(String) });
+    expect((await request(hostPath, { authorization: `Bearer ${f.token}`, "x-herdr-machine": "1", origin: "https://foreign.invalid" })).status).toBe(403);
+    expect((await f.api(`/implementations/${id}`)).status).toBe(200);
+    expect(await f.api(`/implementations/${id}/delete`, {}).then(r => r.json())).toEqual({ id, condition: "deleted" });
+    expect(await f.api(`/implementations/${id}/delete`, {}).then(r => r.json())).toEqual({ id, condition: "deleted" });
+    expect((await f.api(`/implementations/${id}`)).status).toBe(404);
+  } finally { f.close(); }
+});
+
+it("exposes plan-bound automatic execution progress through authenticated detail and scoped contract", async () => {
+  const f = await capacityFixture();
+  try {
+    const id = await f.assignment("Execution contract"); const path = `/implementations/${id}`;
+    const detail = () => f.api(path).then(r => r.json());
+    await f.api(`/projects/${(await detail()).implementation.project_id}/configure`, { checks: [["bun", "test"]], permissions: "Owned fixtures" });
+    const spec = await f.api(`${path}/specifications`, { content: "Accepted public API behavior" }).then(r => r.json());
+    await f.api(`${path}/specification-acceptance`, { source: "button", specification_id: spec.id, hash: spec.hash });
+    const deadline = Date.now() + 6000; let run: FactoryRun | undefined;
+    while (!run) { run = (await detail()).runs.find((r: FactoryRun) => r.condition === "working"); if (Date.now() > deadline) throw new Error("Orchestrator did not start"); if (!run) await Bun.sleep(20); }
+    const plan = await f.agent(run.id, "tickets", { specification_id: spec.id, testing_plan: "Authenticated HTTP", tickets: [{ key: "one", title: "Accepted behavior", acceptance: "The API serves it", dependencies: [] }] }).then(r => r.json());
+    let progress;
+    while (!progress) { progress = (await detail()).automatic_execution[0]; if (Date.now() > deadline) throw new Error("Execution progress was not retained"); if (!progress) await Bun.sleep(20); }
+    expect(progress).toMatchObject({ run_id: run.id, plan_hash: plan.hash, condition: "executing", attempts: 0 });
+    const contract = await f.agent(run.id, "contract").then(r => r.json());
+    expect(contract.automatic_execution.plan_hash).toBe(plan.hash);
+    expect(contract.execution_plan.authority.kind).toBe("specification");
+    expect(await detail()).toMatchObject({ automatic_review: [], automatic_review_batches: [], pull_requests: [] });
+    const publication = `http://localhost:${f.app.port}/api/factory-host/runs/${run.id}/operations/publish`;
+    for (const [headers, status] of [
+      [{ "x-herdr-factory": "1" }, 401],
+      [{ authorization: `Bearer ${f.token}`, "x-herdr-factory": "1" }, 403],
+      [{ authorization: `Bearer ${f.token}`, "x-herdr-factory": "1", "x-herdr-machine": "1", origin: "https://foreign.invalid" }, 403],
+    ] as const) {
+      const refused = await fetch(publication, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: "{}" });
+      expect(refused.status).toBe(status);
+      expect(await refused.json()).toMatchObject({ error: { code: expect.any(String), message: expect.any(String) } });
+    }
+    const denied = await fetch(`http://localhost:${f.app.port}/api/factory${path}`);
+    expect(denied.status).toBe(401);
+    expect(await denied.json()).toMatchObject({ error: { code: "unauthorized", message: expect.any(String) } });
+  } finally { f.close(); }
+});
+
+it("keeps restored pending Delete authority above authenticated Assignment Resume", async () => {
+  const f = await capacityFixture();
+  try {
+    const id = await f.assignment("Delete takes precedence");
+    const paused = await f.api(`/implementations/${id}/pause`, {}).then(r => r.json());
+    // Restore a persisted lifecycle intent; all behavior is observed through HTTP below.
+    const store = new FactoryStore(f.state);
+    store.put("implementations", { ...paused, deletion: { id: "owned-delete-intent", condition: "pending", reasons: ["Owned Machine cleanup pending"] } });
+    store.close(); f.restart();
+    const response = await f.api(`/implementations/${id}/resume`, {});
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toMatchObject({ code: "assignment_deleting", message: expect.any(String) });
+    const detail = await f.api(`/implementations/${id}`).then(r => r.json());
+    expect(detail.implementation).toMatchObject({ pause: { id: paused.pause.id, condition: "paused" }, deletion: { condition: "pending" } });
+  } finally { f.close(); }
+});
+it("authenticates Assignment suspension and requires same-origin Machine headers for native suspension controls", async () => {
+  const f = await capacityFixture();
+  try {
+    const id = await f.assignment("Authenticated suspension");
+    const origin = `http://localhost:${f.app.port}`;
+    const request = (path: string, headers: Record<string, string>) => fetch(`${origin}${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1", ...headers }, body: "{}" });
+    expect((await request(`/api/factory/implementations/${id}/pause`, {})).status).toBe(401);
+    expect((await request(`/api/factory/implementations/${id}/pause`, { authorization: `Bearer ${f.token}`, origin: "https://foreign.invalid" })).status).toBe(403);
+    const path = `/api/factory-host/runs/${id}/operations/pause`;
+    const denied = await request(path, { authorization: `Bearer ${f.token}` });
+    expect(denied.status).toBe(403);
+    expect((await denied.json()).error).toMatchObject({ code: "invalid_origin", message: expect.any(String) });
+    expect((await request(path, { authorization: `Bearer ${f.token}`, "x-herdr-machine": "1", origin: "https://foreign.invalid" })).status).toBe(403);
+    expect((await f.api(`/implementations/${id}`).then(r => r.json())).implementation.pause).toBeUndefined();
+  } finally { f.close(); }
+});
+it("does not reserve execution for a confirmed stopped Run restored with older suspension metadata", async () => {
+  const f = await capacityFixture();
+  try {
+    const id = await f.assignment("Stopped suspension metadata");
+    const run = await f.api(`/implementations/${id}/runs`, { action: "work", idempotency_key: "root" }).then(r => r.json());
+    await f.api(`/runs/${run.id}/stop`, {});
+    const stopped = await f.api(`/implementations/${id}`).then(r => r.json());
+    const store = new FactoryStore(f.state);
+    store.put("runs", { ...stopped.runs[0], suspension: { pause_id: "owned-prior-pause", condition: "uncertain", previous_condition: "working" } }, id);
+    store.close(); f.restart();
+    expect((await f.api("").then(r => r.json())).capacity.normal.used).toBe(0);
+  } finally { f.close(); }
+});
+
+it("accepts an authenticated durable factory queue request without exposing its private payload", async () => {
+  const f = await capacityFixture();
+  try {
+    await f.api("/settings", { max_agents: 1 });
+    const holder = await f.assignment("Contract holder"); const waiting = await f.assignment("Contract wait");
+    const body = { action: "work", idempotency_key: "public-queue" };
+    await f.api(`/implementations/${holder}/runs`, body);
+    const path = `/implementations/${waiting}/runs`;
+    const unauthorized = await fetch(`http://localhost:${f.app.port}/api/factory${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    expect(unauthorized.status).toBe(401);
+    const response = await f.api(path, body); expect(response.status).toBe(202);
+    const wait = await response.json();
+    expect(wait).toMatchObject({ condition: "queued", purpose: "execution", run_id: null, implementation_id: waiting });
+    expect(Object.keys(wait).sort()).toEqual(["id", "created_at", "updated_at", "implementation_id", "assignment_title", "action", "machine_id", "provider", "idempotency_key", "reason", "reason_is_error", "condition", "purpose", "run_id"].sort());
+    expect(wait.reason_is_error).toBe(false);
+    const conflict = await f.api(path, { ...body, action: "grill-with-docs" });
+    expect(conflict.status).toBe(409);
+    expect((await conflict.json()).error.code).toBe("idempotency_conflict");
+    expect((await f.api("").then(r => r.json())).capacity.waiting).toEqual([wait]);
+  } finally { f.close(); }
+});
+it("exposes waiting-conversation capacity through authenticated factory routes with standard errors", async () => {
+  const f = await capacityFixture();
+  try {
+    const id = await f.assignment("Waiting wire contract");
+    const run = await f.api(`/implementations/${id}/runs`, { action: "work", idempotency_key: "waiting-wire" }).then(r => r.json());
+    const question = await f.agent(run.id, "question", { question: "Which owned result?" }).then(r => r.json());
+    f.runs.get(run.id)!.condition = "ready";
+    const denied = await fetch(`http://localhost:${f.app.port}/api/factory/runs/${run.id}/reconcile`, { method: "POST", headers: { "x-herdr-factory": "1" }, body: "{}" });
+    expect(denied.status).toBe(401);
+    const response = await f.api(`/runs/${run.id}/reconcile`, {});
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect((await response.json()).continuation).toMatchObject({ kind: "owner", condition: "parked", question_revision: null });
+    const capacity = (await f.api("").then(r => r.json())).capacity;
+    expect(capacity.normal.used).toBe(0);
+    expect(capacity.continuations).toEqual([expect.objectContaining({ run_id: run.id, worker_id: null, implementation_id: id, condition: "parked", uncertain: false })]);
+    const stale = await f.api(`/implementations/${id}/questions/${question.id}/answer`, { revision: "stale", answer: "An obsolete answer" });
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toEqual({ error: { code: "stale_question", message: "This asking was changed or already answered" } });
+  } finally { f.close(); }
+});
 const stateDir = mkdtempSync(join(tmpdir(), "herdr-web-ui-contract-"));
 
 beforeAll(() => {
@@ -126,6 +335,25 @@ afterAll(() => {
 
 const base = () => `http://localhost:${server.port}`;
 
+describe("Specification acceptance wire contract", () => {
+  it("returns an exact revision receipt and the standard stale error envelope", async () => {
+    const f = await capacityFixture();
+    try {
+      const id = await f.assignment("Acceptance wire contract");
+      const prefix = `/implementations/${id}`;
+      const spec = await f.api(`${prefix}/specifications`, { content: "Owned API Specification" }).then(r => r.json());
+      const body: import("../shared/protocol.ts").FactoryRequests["specification_acceptance"] = { source: "button", specification_id: spec.id, hash: spec.hash };
+      const response = await f.api(`${prefix}/specification-acceptance`, body);
+      expect(response.status).toBe(201);
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
+      expect(await response.json()).toMatchObject({ implementation_id: id, kind: "specification", revision: spec.id, provenance: { kind: "button", specification_hash: spec.hash } });
+      const stale = await f.api(`${prefix}/specification-acceptance`, { ...body, hash: "superseded" });
+      expect(stale.status).toBe(409);
+      expect(await stale.json()).toEqual({ error: { code: "stale_specification", message: "Accept the presented current Specification revision" } });
+    } finally { f.close(); }
+  });
+});
+
 describe("Project queue contract", () => {
   it("reports capacity and rejects foreign or unmarked queue mutations without changing its revision", async () => {
     const f = await githubScheduleFixture();
@@ -134,7 +362,7 @@ describe("Project queue contract", () => {
       const original = await f.request(route);
       expect(original.status).toBe(200);
       expect(original.body.capacity).toMatchObject({ project_implementations: 0, agents: 0, builds: 0 });
-      const body = { expected_revision: original.body.revision, max_implementations: 1, paused: true };
+      const body = { expected_revision: original.body.revision, paused: true };
       for (const headers of [{ ...f.headers, origin: "https://fictional-foreign.invalid" }, { "content-type": "application/json" }]) {
         const response = await fetch(f.origin() + "/api/factory" + route + "/configure", { method: "POST", headers, body: JSON.stringify(body) });
         expect(response.status).toBe(403); expect((await response.json()).error.code).toBe("invalid_origin");
@@ -178,13 +406,27 @@ describe("Assignment discard", () => {
       await f.start();
       f.disconnect();
       await f.request(`${f.prefix}/discard`, {});
-      f.reconnect();
       const next = await f.request("/implementations", { title: "Wait for owned stop", description: "", project_id: f.project.id }).then(r => r.json());
       const response = await f.request(`/implementations/${next.id}/runs`, { action: "work", idempotency_key: "reserved-until-stopped" });
-      expect(response.status).toBe(409);
-      expect((await response.json()).error.code).toBe("capacity_exhausted");
+      expect(response.status).toBe(202);
+      expect(await response.json()).toMatchObject({ condition: "queued", run_id: null, purpose: "execution" });
+      expect((await f.request("").then(r => r.json())).capacity.normal.used).toBe(1);
+      expect((await f.request(`/implementations/${next.id}`).then(r => r.json())).runs).toEqual([]);
+      f.reconnect();
       expect((await f.request(`${f.prefix}/discard`, {}).then(r => r.json())).outcome).toBe("discarded");
-      expect((await f.request(`/implementations/${next.id}/runs`, { action: "work", idempotency_key: "capacity-after-stop" })).status).toBe(202);
+      const admitted = await f.request(`/implementations/${next.id}/runs`, { action: "work", idempotency_key: "reserved-until-stopped" });
+      expect(admitted.status).toBe(202);
+      const deadline = Date.now() + 12_000;
+      let admittedRuns = (await f.request(`/implementations/${next.id}`).then(r => r.json())).runs;
+      while (!admittedRuns.some((run: FactoryRun) => run.idempotency_key === "reserved-until-stopped" && run.condition === "working")) {
+        if (Date.now() >= deadline) {
+          const detail = await f.request(`/implementations/${next.id}`).then(r => r.json());
+          throw new Error(`Queued recovery did not admit the owned request: ${JSON.stringify({ runs: detail.runs, waiting: detail.capacity_waiting })}`);
+        }
+        await Bun.sleep(50);
+        admittedRuns = (await f.request(`/implementations/${next.id}`).then(r => r.json())).runs;
+      }
+      expect(admittedRuns).toHaveLength(1);
     } finally { await f.close(); }
   }, 30_000);
   it("continues stopping other owned contexts when one child's stop is uncertain", async () => {
@@ -1114,16 +1356,29 @@ describe("factory records", () => {
       expect((await f.request(f.prefix)).board).toMatchObject({ lane: "needs_you", activity: "validating", busy: false, condition: "failed" });
     } finally { release(); await pending?.catch(() => {}); tool.stop(true); await f.close(); }
   }, 30_000);
-  it("persists a global six-task limit and validates its supported range", async () => {
+  it("migrates saved limits without turning the removed Assignment cap into agent capacity", async () => {
     const state = mkdtempSync(join(tmpdir(), "saurons-capacity-settings-"));
-    let app = createServer({ port: 0, stateDir: state, machines: false });
-    const post = (value: unknown) => fetch(`http://localhost:${app.port}/api/factory/settings`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(value) });
+    let app = createServer({ port: 0, stateDir: state, token: "owned-capacity", machines: false });
+    app.stop();
+    // A saved settings document from the previous app version, not a second API seam.
+    const db = new Database(join(state, "factory", "records.sqlite"));
+    db.query("INSERT INTO records(kind,id,parent,data) VALUES(?,?,?,?)").run("settings", "default", null, JSON.stringify({ id: "default", value: { provider: "claude", max_implementations: 1, max_agents: 4, max_builds: 3, max_artifact_bytes: 1024, max_storage_bytes: 8192, skills_path: null } }));
+    db.close();
+    app = createServer({ port: 0, stateDir: state, token: "owned-capacity", machines: false });
+    const headers = { authorization: "Bearer owned-capacity", "content-type": "application/json", "x-herdr-factory": "1" };
+    const post = (value: unknown) => fetch(`http://localhost:${app.port}/api/factory/settings`, { method: "POST", headers, body: JSON.stringify(value) });
+    const overview = () => fetch(`http://localhost:${app.port}/api/factory`, { headers }).then(response => response.json());
     try {
-      expect((await post({ max_implementations: 2 })).status).toBe(200);
-      const saved = await post({ max_implementations: 6, max_agents: 6 }); expect(saved.status).toBe(200); expect((await saved.json()).max_implementations).toBe(6);
-      for (const value of [0, 33, 1.5, "6"]) { const rejected = await post({ max_implementations: value }); expect(rejected.status).toBe(400); expect((await rejected.json()).error.code).toBe("invalid_limit"); }
-      app.stop(); app = createServer({ port: 0, stateDir: state, machines: false });
-      const overview = await fetch(`http://localhost:${app.port}/api/factory`).then(response => response.json()); expect(overview.settings.max_implementations).toBe(6); expect(overview.settings.max_agents).toBe(6);
+      expect((await fetch(`http://localhost:${app.port}/api/factory`)).status).toBe(401);
+      const migrated = await overview();
+      expect(migrated.settings).toMatchObject({ provider: "claude", max_agents: 4, max_builds: 3 });
+      expect(migrated.settings).not.toHaveProperty("max_implementations");
+      expect((await post({ max_implementations: 2 })).status).toBe(400);
+      for (const value of [0, 33, 1.5, "6"]) { const rejected = await post({ max_agents: value }); expect(rejected.status).toBe(400); expect((await rejected.json()).error.code).toBe("invalid_limit"); }
+      expect((await post({ max_agents: 2, max_builds: 1 })).status).toBe(200);
+      app.stop(); app = createServer({ port: 0, stateDir: state, token: "owned-capacity", machines: false });
+      expect((await overview()).settings).toMatchObject({ max_agents: 2, max_builds: 1 });
+      expect((await overview()).settings).not.toHaveProperty("max_implementations");
     } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
   });
   for (const location of ["local", "remote"]) it(`discovers model choices for the selected ${location} Project checkout through the owner API`, async () => {
@@ -1250,24 +1505,42 @@ describe("factory records", () => {
     const state = mkdtempSync(join(tmpdir(), "saurons-eye-stop-child-")); const repo = join(state, "repo");
     const { mkdirSync } = await import("node:fs"); mkdirSync(repo); writeFileSync(join(repo, "notes.txt"), "base\n");
     for (const args of [["init", "-b", "main"], ["add", "."], ["-c", "user.name=Factory test", "-c", "user.email=factory@example.invalid", "commit", "-m", "initial"]]) expect(Bun.spawnSync(["git", ...args], { cwd: repo }).exitCode).toBe(0);
-    let release!: () => void; let allocated!: () => void; let starts = 0; let holdSnapshot = false; let held = false; const workspaces: string[] = [];
+    let release!: () => void; let allocated!: () => void; let starts = 0; let holdReconciliation = false; let childPaneId: string | null = null; const workspaces: string[] = [];
     const gate = new Promise<void>((resolve) => { release = resolve; }); const allocation = new Promise<void>((resolve) => { allocated = resolve; });
-    const app = createServer({ port: 0, stateDir: state, machines: false, factory: { native: { version: async () => "owned-fixture", snapshot: async () => { const snapshot = await sessionSnapshot(); if (holdSnapshot && !held) { held = true; allocated(); await gate; } return snapshot; }, createWorkspace: async (options) => { const result = await workspaceCreate(options); workspaces.push(result.workspace.workspace_id); if (phase === "allocation" && options.label?.startsWith("saurons-eye-worker-")) { allocated(); await gate; } return result; }, startAgent: async (options) => { starts++; await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "idle" }); if (phase === "launch response" && options.name.startsWith("eye-worker-")) { allocated(); await gate; } } } } });
+    // Hold child rest observations, including background ones; a parent snapshot must not satisfy this barrier.
+    const app = createServer({ port: 0, stateDir: state, machines: false, factory: { native: { version: async () => "owned-fixture", ...(phase === "reconciliation" ? { paneState: async (paneId: string) => { const snapshot = await sessionSnapshot(); const pane = snapshot.panes.find(entry => entry.pane_id === paneId); if (holdReconciliation && paneId === childPaneId) { allocated(); await gate; } return pane ?? null; } } : {}), createWorkspace: async (options) => { const result = await workspaceCreate(options); workspaces.push(result.workspace.workspace_id); if (phase === "allocation" && options.label?.startsWith("saurons-eye-worker-")) { allocated(); await gate; } return result; }, startAgent: async (options) => { starts++; await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "idle" }); if (phase === "launch response" && options.name.startsWith("eye-worker-")) { allocated(); await gate; } } } } });
     const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    let child: Promise<Response> | undefined; let stopping: Promise<Response> | undefined;
     try {
       const project = await request("projects", { name: "Owned Stop race", path: repo, machine_id: "local", provider: "codex", tracker: "app" }).then((response) => response.json());
       const idea = await request("implementations", { title: "Stop accepted child", description: "" }).then((response) => response.json());
       await request(`implementations/${idea.id}/configure`, { project_id: project.id });
       const run = await request(`implementations/${idea.id}/runs`, { action: "grill-with-docs", idempotency_key: "parent-stop" }).then((response) => response.json());
-      let child = request(`runs/${run.id}/workers`, { role: "standards", idempotency_key: "accepted-child" });
-      if (phase === "reconciliation") { const worker = await child.then((response) => response.json()); holdSnapshot = true; child = request(`runs/${run.id}/workers/${worker.id}/reconcile`, {}); }
+      child = request(`runs/${run.id}/workers`, { role: "standards", idempotency_key: "accepted-child" });
+      if (phase === "reconciliation") { const worker = await child.then((response) => response.json()); childPaneId = worker.pane_id; holdReconciliation = true; child = request(`runs/${run.id}/workers/${worker.id}/reconcile`, {}); }
       await allocation;
-      expect((await request(`runs/${run.id}/stop`, {})).status).toBe(200);
+      let stopAcknowledged = false;
+      stopping = request(`runs/${run.id}/stop`, {}).then(response => { stopAcknowledged = true; return response; });
+      // Stop closes verified native contexts, but cannot acknowledge shutdown
+      // until the accepted child operation has returned its held response.
+      for (const deadline = Date.now() + 6000;;) {
+        const response = await fetch(`http://localhost:${app.port}/api/session`); expect(response.status).toBe(200);
+        const { snapshot } = await response.json();
+        if (!snapshot.workspaces.some((workspace: { workspace_id: string }) => workspaces.includes(workspace.workspace_id))) break;
+        if (Date.now() >= deadline) throw new Error("Stop did not close its owned native contexts");
+        await Bun.sleep(20);
+      }
+      const pending = await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then(response => response.json());
+      expect(pending.runs.find((entry: FactoryRun) => entry.id === run.id).condition).not.toBe("cancelled");
+      expect(stopAcknowledged).toBe(false);
       release(); const worker = await child.then((response) => response.json());
+      expect((await stopping).status).toBe(200);
+      const stopped = await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then(response => response.json());
+      expect(stopped.runs.find((entry: FactoryRun) => entry.id === run.id).condition).toBe("cancelled");
       expect(worker.condition).toBe("cancelled"); expect(starts).toBe(phase === "allocation" ? 1 : 2);
       expect((await sessionSnapshot()).workspaces.some((workspace) => workspaces.includes(workspace.workspace_id))).toBe(false);
       expect(existsSync(worker.worktree)).toBe(true);
-    } finally { release(); for (const id of workspaces) await workspaceClose(id).catch(() => {}); app.stop(); rmSync(state, { recursive: true, force: true }); }
+    } finally { release(); await stopping?.catch(() => {}); await child?.catch(() => {}); for (const id of workspaces) await workspaceClose(id).catch(() => {}); app.stop(); rmSync(state, { recursive: true, force: true }); }
   }, 15_000);
   it.each(["launch response", "reconciliation"])("preserves Stop after a late coordinator %s", async (phase) => {
     const state = mkdtempSync(join(tmpdir(), "saurons-eye-stop-root-"));
@@ -1370,7 +1643,9 @@ describe("factory records", () => {
       expect(worker.worktree).not.toBe(run.worktree); expect(worker.base).toBe(run.base);
       const specResponse = await request(`runs/${run.id}/workers`, { role: "spec", idempotency_key: "independent-spec" }); expect(specResponse.status).toBe(200);
       const specWorker = await specResponse.json(); workspaces.push(specWorker.workspace_id);
-      expect((await request(`runs/${run.id}/workers`, { role: "standards", idempotency_key: "another-review" })).status).toBe(409);
+      const queuedReview = await request(`runs/${run.id}/workers`, { role: "standards", idempotency_key: "another-review" });
+      expect(queuedReview.status).toBe(202);
+      expect(await queuedReview.json()).toMatchObject({ condition: "queued", purpose: "execution", run_id: run.id });
       expect((await request(`runs/${run.id}/workers`, { role: "standards", idempotency_key: "independent-standards" }).then((response) => response.json())).id).toBe(worker.id);
       expect((await request(`runs/${run.id}/workers/${worker.id}/review-evidence`, {})).status).toBe(409);
       const detail = await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then((response) => response.json()); expect(detail.review_evidence).toEqual([]);
@@ -1536,6 +1811,12 @@ describe("factory records", () => {
       const detail = await fetch(`http://localhost:${app.port}/api/factory/${prefix}`).then((response) => response.json());
       expect(detail.comments.find((comment: { id: string }) => comment.id === first.id).status).toBe("submitted");
       expect(detail.comments.find((comment: { id: string }) => comment.id === second.id).status).toBe("draft");
+      expect((await request(`${prefix}/comments/${first.id}/edit`, { content: "Rewrite submitted feedback" })).status).toBe(409);
+      expect((await request(`${prefix}/comments/${first.id}/delete`, {})).status).toBe(409);
+      const edited = await request(`${prefix}/comments/${second.id}/edit`, { content: "Updated draft" });
+      expect(edited.status).toBe(200);
+      expect(await edited.json()).toMatchObject({ id: second.id, snapshot_id: snapshot.id, content: "Updated draft", status: "draft" });
+      expect((await request(`${prefix}/comments/${second.id}/delete`, {})).status).toBe(200);
     } finally { if (workspaceId) await workspaceClose(workspaceId); app.stop(); rmSync(state, { recursive: true, force: true }); }
   });
   it("retains generated remote research centrally so it remains readable while the host is offline", async () => {
@@ -1609,7 +1890,9 @@ describe("factory records", () => {
       const duplicate = await request(`implementations/${idea.id}/runs`, { action: "grill-me", idempotency_key: "remote-owner-click" }).then((response) => response.json());
       expect(duplicate.id).toBe(run.id);
       const elsewhere = await request(`implementations/${idea.id}/runs`, { action: "grill-me", idempotency_key: "new-click" });
-      expect(elsewhere.status).toBe(409);
+      const competing = await elsewhere.json();
+      if (elsewhere.status === 409) expect(competing.error.code).toBe("implementation_owned");
+      else expect({ status: elsewhere.status, body: competing }).toMatchObject({ status: 202, body: { condition: "blocked", reason: expect.stringContaining("ownership") } });
       const retained = await fetch(`http://localhost:${app.port}/api/factory/implementations/${idea.id}`).then((response) => response.json());
       expect(retained.messages).toMatchObject([{ content: "Keep the original host" }]);
       expect(retained.runs).toHaveLength(1);
@@ -1714,20 +1997,20 @@ describe("factory records", () => {
       expect(copy.implementations).toHaveLength(1);
     } finally { restored?.stop(); app.stop(); rmSync(state, { recursive: true, force: true }); }
   });
-  it("retains unanswered questions and reorders the board without starting work", async () => {
+  it("retains unanswered questions and creation order without starting work", async () => {
     const state = mkdtempSync(join(tmpdir(), "saurons-eye-questions-"));
     let app = createServer({ port: 0, stateDir: state, machines: false });
     const request = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory/${path}`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
     try {
       const first = await request("implementations", { title: "First", description: "" }).then((response) => response.json());
       const second = await request("implementations", { title: "Second", description: "" }).then((response) => response.json());
-      expect((await request(`implementations/${second.id}/order`, { direction: -1 })).status).toBe(200);
+      expect((await request(`implementations/${second.id}/order`, { direction: -1 })).status).toBe(409);
       const questionResponse = await request(`implementations/${first.id}/questions`, { question: "Which public interface should be tested?" });
       expect(questionResponse.status).toBe(201);
       const question = await questionResponse.json();
       app.stop(); app = createServer({ port: 0, stateDir: state, machines: false });
       const board = await fetch(`http://localhost:${app.port}/api/factory`).then((response) => response.json());
-      expect(board.implementations.map((idea: { title: string }) => idea.title)).toEqual(["Second", "First"]);
+      expect(board.implementations.map((idea: { title: string }) => idea.title)).toEqual(["First", "Second"]);
       const detail = await fetch(`http://localhost:${app.port}/api/factory/implementations/${first.id}`).then((response) => response.json());
       expect(detail.questions).toMatchObject([{ id: question.id, answer: null }]);
       expect((await request(`implementations/${first.id}/approvals`, { kind: "shared_understanding", revision: detail.question_revision, scope: "Confirm" })).status).toBe(409);
@@ -2172,6 +2455,25 @@ describe("update API", () => {
     } finally { managed.stop(); rmSync(managedState, { recursive: true, force: true }); }
   });
 
+  it("tells the served build's commit once it differs from the running revision", async () => {
+    const running = "a".repeat(40), moved = "d".repeat(40);
+    let head: string | null = running;
+    const managedState = mkdtempSync(join(tmpdir(), "herdr-update-checkout-"));
+    const managed = createServer({ port: 0, stateDir: managedState,
+      updates: { status: () => ({ ...unmanagedUpdateStatus(), managed: true, current_revision: running }), notes: () => ({ revision: null, releases: [], omitted: 0 }),
+        installed: noInstalledNotes, request() {}, servedRevision: async () => head } });
+    const read = async () => (await (await fetch(`http://localhost:${managed.port}/api/updates`)).json()) as { served_revision?: string | null };
+    try {
+      expect((await read()).served_revision).toBeNull();
+      head = moved;
+      expect((await read()).served_revision).toBe(moved);
+      head = null;
+      expect((await read()).served_revision).toBeNull();
+    } finally { managed.stop(); rmSync(managedState, { recursive: true, force: true }); }
+    // an unmanaged server names no checkout
+    expect((await (await fetch(`${base()}/api/updates`)).json() as { served_revision?: string | null }).served_revision).toBeUndefined();
+  });
+
   it("answers what the last update brought, and nothing where no update was installed", async () => {
     const none = await fetch(`${base()}/api/updates/installed`);
     expect(none.status).toBe(200);
@@ -2271,6 +2573,8 @@ describe("removed upstream telemetry API", () => {
       expect((await response.json() as ApiError).error.code).toBe("not_found");
     }
   });
+
+
 });
 
 describe("phone access", () => {
@@ -2441,6 +2745,9 @@ describe("tab rename and close", () => {
       expect(res.status).toBe(400);
       expect(((await res.json()) as ApiError).error.code).toBe("missing_label");
     }
+    const long = await post("rename", { tab_id: "unknown:t9", label: "T".repeat(81) });
+    expect(long.status).toBe(400);
+    expect(((await long.json()) as ApiError).error.code).toBe("label_too_long");
   });
 
   it("renames a tab, closes one beside another, and takes the workspace with its last tab", async () => {
@@ -2638,6 +2945,7 @@ describe("tab creation", () => {
       [{ cwd: join(tmpdir(), crypto.randomUUID()) }, "invalid_cwd"],
       [{ cwd: 42 }, "invalid_cwd"],
       [{ label: false }, "missing_label"],
+      [{ label: "T".repeat(81) }, "label_too_long"],
       [{ agent: {} }, "invalid_agent"],
       [{ agent: { kind: "muse", args: "--help" } }, "invalid_agent"],
     ] as const) {
@@ -2830,11 +3138,45 @@ describe("workspace and discovery endpoints", () => {
       expect((await kinds()).map((agent) => agent.kind)).not.toContain("gjc");
       for (const name of ["omo", "gjc"]) writeFileSync(join(bin, name), "#!/bin/sh\n", { mode: 0o755 });
       const offered = await kinds();
-      expect(offered).toContainEqual({ kind: "omo", label: "OmO" });
-      expect(offered).toContainEqual({ kind: "gjc", label: "Gajae Code" });
+      expect(offered).toContainEqual({ kind: "omo", label: "OmO", installed: true });
+      expect(offered).toContainEqual({ kind: "gjc", label: "Gajae Code", installed: true });
+      // claude is always listed, and said to be missing where its command is not on PATH
+      expect(offered).toContainEqual({ kind: "claude", label: "Claude Code", installed: false });
     } finally {
       process.env["PATH"] = path;
       rmSync(bin, { recursive: true, force: true });
+    }
+  });
+
+  it("makes one folder for the folder browser, and refuses names, folders and origins it must not", async () => {
+    const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-mkdir-"));
+    const make = (body: unknown, headers: Record<string, string> = {}) => fetch(`${base()}/api/workspace/directories`, {
+      method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body),
+    });
+    const code = async (res: Response) => ((await res.json()) as ApiError).error.code;
+    try {
+      const made = await make({ path: root, name: "new-one" });
+      expect(made.status).toBe(201);
+      expect(await made.json()).toEqual({ path: join(root, "new-one") });
+      expect(statSync(join(root, "new-one")).isDirectory()).toBeTrue();
+      const again = await make({ path: root, name: "new-one" });
+      expect(again.status).toBe(409);
+      expect(await code(again)).toBe("folder_exists");
+      for (const name of ["", "..", "a/b", "../escape"]) {
+        const refused = await make({ path: root, name });
+        expect(refused.status).toBe(400);
+        expect(await code(refused)).toBe("invalid_name");
+      }
+      const missing = await make({ path: join(root, "missing"), name: "x" });
+      expect(await code(missing)).toBe("invalid_cwd");
+      expect(await code(await make({ path: root }))).toBe("invalid_body");
+      // another site's page cannot make folders on this PC
+      const crossSite = await make({ path: root, name: "from-elsewhere" }, { origin: "https://evil.example" });
+      expect(crossSite.status).toBe(403);
+      expect(existsSync(join(root, "from-elsewhere"))).toBeFalse();
+      expect(existsSync(join(tmpdir(), "escape"))).toBeFalse();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
@@ -2913,6 +3255,48 @@ describe("workspace and discovery endpoints", () => {
     expect(close.status).toBe(200);
     expect(await close.json()).toEqual({ ok: true });
     workspaceId = null;
+  }, 20_000);
+
+  it("pushes session-changed when POST /api/workspace/close answers, not after the collector's debounce", async () => {
+    const closing = await workspaceCreate({ cwd: tmpdir(), label: "herdr-web-ui-test-close-push" });
+    const socket = await RecordingSocket.connect(`ws://localhost:${server.port}/ws`);
+    try {
+      // the creation's own frame, debounced, is not the close's
+      await socket.waitFor((frame) => frame.type === "session-changed", "session-changed after create", 5_000);
+      const before = new Set(socket.seen);
+      const changed = socket.waitFor((frame) => frame.type === "session-changed" && !before.has(frame), "session-changed after close", 5_000).then(() => performance.now());
+      const response = await fetch(`${base()}/api/workspace/close`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ workspace_id: closing.workspace.workspace_id }),
+      });
+      const answered = performance.now();
+      expect(response.status).toBe(200);
+      expect(await changed - answered).toBeLessThan(250);
+    } finally {
+      socket.close();
+      await herdrRpc("workspace.close", { workspace_id: closing.workspace.workspace_id }).catch(() => undefined);
+    }
+  }, 20_000);
+
+  it("says a repository has no commits yet instead of passing git's refusal on", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "herdr-web-ui-worktree-empty-"));
+    expect(Bun.spawnSync(["git", "init", "-q", "-b", "main"], { cwd: repo, stdout: "pipe", stderr: "pipe" }).exitCode).toBe(0);
+    const parent = await workspaceCreate({ cwd: repo, label: "herdr-web-ui-test-worktree-empty" });
+    const checkout = join(`${repo}-checkouts`, "feature");
+    try {
+      const create = await fetch(`${base()}/api/worktree/create`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ workspace_id: parent.workspace.workspace_id, branch: "herdr-web-ui-test-unborn", path: checkout }),
+      });
+      expect(create.status).toBe(409);
+      expect(((await create.json()) as ApiError).error.code).toBe("repository_without_commits");
+      expect(existsSync(checkout)).toBeFalse();
+    } finally {
+      await herdrRpc("workspace.close", { workspace_id: parent.workspace.workspace_id }).catch(() => undefined);
+      rmSync(repo, { recursive: true, force: true });
+      rmSync(`${repo}-checkouts`, { recursive: true, force: true });
+    }
   }, 20_000);
 
   it("creates a worktree of an owned repository as a grouped workspace, lists it, and opens it again", async () => {
@@ -3085,6 +3469,12 @@ describe("workspace and discovery endpoints", () => {
   it("uses the shared error envelope for malformed mutation bodies", async () => {
     for (const [path, body, code] of [
       ["/api/workspace/rename", {}, "missing_workspace_id"],
+      // #927: herdr would keep a blank or any-length name
+      ["/api/workspace/rename", { workspace_id: "x", label: "" }, "missing_label"],
+      ["/api/workspace/rename", { workspace_id: "x", label: "   " }, "missing_label"],
+      ["/api/workspace/rename", { workspace_id: "x", label: "W".repeat(81) }, "label_too_long"],
+      ["/api/worktree/create", { workspace_id: "x", branch: "b", label: "W".repeat(81) }, "label_too_long"],
+      ["/api/worktree/open", { workspace_id: "x", path: "/tmp", label: "W".repeat(81) }, "label_too_long"],
       ["/api/workspace/move", { workspace_id: "x", insert_index: -1 }, "invalid_index"],
       ["/api/workspace/close", {}, "missing_workspace_id"],
       ["/api/pane/rename", {}, "missing_pane_id"],
@@ -3386,12 +3776,57 @@ describe("POST /api/pane/image", () => {
     expect(basename(bare.path)).toMatch(/^file-.*\.bin$/);
   });
 
-  it("rejects an image above the size ceiling with 413", async () => {
-    const oversized = Buffer.alloc(9 * 1024 * 1024, 1).toString("base64");
+  it("stores a 20 MiB file whole (regression: 413 while the ceiling was 8 MiB)", async () => {
+    const bytes = Buffer.alloc(20 * 1024 * 1024, 7);
+    const res = await post({ pane_id: qaPaneId, content_type: "application/zip", data_base64: bytes.toString("base64"), name: "big.zip" });
+    expect(res.status).toBe(200);
+    const { path } = (await res.json()) as { path: string };
+    expect(statSync(path).size).toBe(bytes.byteLength);
+  });
+
+  it("rejects a 40 MiB file (a 55.9 MB body, under Bun's 64 MiB cap) with 413 and the JSON reason (control)", async () => {
+    const oversized = Buffer.alloc(40 * 1024 * 1024, 1).toString("base64");
     const res = await post({ pane_id: qaPaneId, content_type: "image/png", data_base64: oversized });
     expect(res.status).toBe(413);
-    const body = (await res.json()) as { error: { code: string } };
+    const body = (await res.json()) as { error: { code: string; message: string } };
     expect(body.error.code).toBe("image_too_large");
+    expect(body.error.message.length).toBeGreaterThan(0);
+  });
+
+  it("counts a streamed body that announces no length and refuses it past the bound (regression: invalid_json on main)", async () => {
+    const chunk = new TextEncoder().encode("A".repeat(1024 * 1024));
+    let sent = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent === 0) controller.enqueue(new TextEncoder().encode(`{"pane_id":"${qaPaneId}","content_type":"application/zip","data_base64":"`));
+        if (sent++ < 60) controller.enqueue(chunk);
+        else controller.close();
+      },
+    });
+    const res = await fetch(`${base()}/api/pane/image`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: stream,
+      duplex: "half",
+    } as RequestInit);
+    expect(res.status).toBe(413);
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe("image_too_large");
+  });
+
+  it("passes a 20 MiB upload through a PC proxy route (regression: the remote refused it above 8 MiB)", async () => {
+    const manager = {
+      endpoint: () => ({ url: base(), token: "" }),
+      trackTerminal: () => () => undefined,
+    } as unknown as MachineManager;
+    const bytes = Buffer.alloc(20 * 1024 * 1024, 9);
+    const res = await handleMachineRequest(new Request("http://127.0.0.1/api/machines/pc1/pane/image", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-herdr-machine": "1" },
+      body: JSON.stringify({ pane_id: qaPaneId, content_type: "application/zip", data_base64: bytes.toString("base64"), name: "remote.zip" }),
+    }), manager);
+    expect(res.status).toBe(200);
+    const { path } = (await res.json()) as { path: string };
+    expect(statSync(path).size).toBe(bytes.byteLength);
   });
 
   it("rejects empty image data with 400", async () => {
@@ -3678,17 +4113,228 @@ describe("WebSocket roles and status push", () => {
       // the terminal lens's grid is the pty's, not the pane's own one the covered attach left it at
       expect(await phone.waitFor((m) => m.type === "pane-geometry" && m.pane_id === paneId && m.cols === 91, "the resize applied after creation", 15_000)).toMatchObject({ cols: 91, rows: 27 });
       await phone.waitFor((m) => m.type === "input-ready" && m.pane_id === paneId, "attach took", 15_000);
-      // one word, "27x91": herdr may draw a space as a cursor move, and "size=27 91" then never arrives as such
-      const from = phone.seen.length;
+      // regression (fails on main): inspect the rendered screen, not diff-rendered PTY bytes
       phone.send({ type: "input", pane_id: paneId, text: "clear; echo size=$(stty size | tr ' ' x)\r" });
-      // over every frame since the command: a read may end in the middle of the word
-      const output = () => phone.seen.slice(from).filter((m) => m.type === "pty-data" && m.pane_id === paneId).map((m) => String(m.data)).join("");
-      await phone.waitFor((m) => m.type === "pty-data" && m.pane_id === paneId && output().includes("size=27x91"), "the shell sees the terminal lens's grid", 15_000);
+      const deadline = Date.now() + 15_000;
+      let screen = "";
+      let lastError: unknown;
+      while (Date.now() <= deadline) {
+        // one read that times out is not the verdict: keep polling until the deadline
+        try {
+          screen = (await paneRead({ paneId, source: "visible", format: "text", timeoutMs: 1_000 })).text;
+        } catch (error) {
+          lastError = error;
+          continue;
+        }
+        if (screen.includes("size=27x91")) break;
+      }
+      expect(screen, `the shell sees the terminal lens's grid (last pane.read error: ${String(lastError)})`).toContain("size=27x91");
     } finally {
       phone.close();
       await workspaceClose(created.workspace.workspace_id).catch(() => undefined);
     }
   }, 60_000);
+
+  // #472: a device that goes back to its chat lens gives the shared pty back to a terminal still
+  // showing, without waiting for that terminal's own resize, focus or click
+  describe("release-size", () => {
+    const ws = () => RecordingSocket.connect(`ws://localhost:${server.port}/ws`);
+    // the shell's `stty size` goes to a file of its own per ask: herdr redraws the pane's screen as
+    // cell updates, so the same answer twice never reads back from the stream. Asked again until the
+    // deadline: herdr applies a pty resize to the pane a moment after it.
+    let asks = 0;
+    const shellSees = async (socket: RecordingSocket, paneId: string, size: string) => {
+      const want = size.replace("x", " ");
+      let last = "";
+      for (const deadline = Date.now() + 15_000; Date.now() < deadline;) {
+        const file = join(tmpdir(), `herdr-web-ui-release-size-${process.pid}-${++asks}`);
+        socket.send({ type: "input", pane_id: paneId, text: `stty size > ${file}.part && mv ${file}.part ${file}\r` });
+        for (const answered = Date.now() + 1000; Date.now() < answered && !existsSync(file);) await Bun.sleep(25);
+        if (!existsSync(file)) continue;
+        last = readFileSync(file, "utf8").trim();
+        rmSync(file, { force: true });
+        if (last === want) return;
+      }
+      throw new Error(`the shell saw "${last}", not "${want}"`);
+    };
+    const attach = async (socket: RecordingSocket, paneId: string, cols: number, rows: number) => {
+      socket.send({ type: "attach", pane_id: paneId, cols, rows });
+      await socket.waitFor((m) => m.type === "input-ready" && m.pane_id === paneId, "attach took", 15_000);
+    };
+
+    it("returns the pty to the desktop's grid when the phone leaves the terminal lens", async () => {
+      const created = await workspaceCreate({ cwd: tmpdir(), label: "herdr-web-ui-test-release-size" });
+      const paneId = created.root_pane.pane_id;
+      const desktop = await ws();
+      const phone = await ws();
+      try {
+        await attach(desktop, paneId, 120, 40);
+        // the phone opens the terminal lens: its viewport takes the shared grid
+        await attach(phone, paneId, 53, 33);
+        await desktop.waitFor((m) => m.type === "pane-geometry" && m.pane_id === paneId && m.cols === 53, "the phone took the grid", 5000);
+        await shellSees(desktop, paneId, "33x53");
+
+        desktop.seen.length = 0;
+        phone.send({ type: "release-size", pane_id: paneId });
+        // regression (fails on main): the desktop's grid comes back within 1 s, with no desktop frame sent
+        expect(await desktop.waitFor((m) => m.type === "pane-geometry" && m.pane_id === paneId, "the grid given back", 5000)).toMatchObject({ cols: 120, rows: 40 });
+        // regression (fails on main): the shell in the pane sees the desktop's grid
+        await shellSees(desktop, paneId, "40x120");
+        // control: one server resize for the release, no ping-pong after it
+        expect(desktop.seen.filter((m) => m.type === "pane-geometry" && m.pane_id === paneId)).toHaveLength(1);
+      } finally {
+        desktop.close();
+        phone.close();
+        await workspaceClose(created.workspace.workspace_id).catch(() => undefined);
+      }
+    }, 60_000);
+
+    it("skips a hidden client's grid when another client releases, leaving the size if nobody shows a terminal", async () => {
+      const created = await workspaceCreate({ cwd: tmpdir(), label: "herdr-web-ui-test-release-size-hidden" });
+      const paneId = created.root_pane.pane_id;
+      const desktop = await ws();
+      const phone = await ws();
+      // Use the actual browser client for keepSize, not a hand-written release frame: the bug is
+      // that a mounted but hidden terminal used to leave its grid on the server.
+      const globals = globalThis as unknown as { window?: unknown };
+      const beforeWindow = globals.window;
+      globals.window = globalThis;
+      const hidden = new HerdrSocket(`ws://localhost:${server.port}/ws`);
+      const nextHidden = (matches: (message: import("../shared/protocol.ts").ServerMessage) => boolean) =>
+        new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => { off(); reject(new Error("hidden client did not answer")); }, 15_000);
+          const off = hidden.on((message) => {
+            const ack = message.type === "pty-data" ? hidden.outputAcknowledgement(message) : undefined;
+            ack?.();
+            if (matches(message)) { clearTimeout(timeout); off(); resolve(); }
+          });
+        });
+      try {
+        await attach(desktop, paneId, 120, 40);
+        const ready = nextHidden((m) => m.type === "input-ready" && m.pane_id === paneId);
+        hidden.attach(paneId, 100, 30);
+        hidden.connect();
+        await ready;
+        await desktop.waitFor((m) => m.type === "pane-geometry" && m.cols === 100, "hidden client's initial grid", 5000);
+        await attach(phone, paneId, 53, 33);
+        await desktop.waitFor((m) => m.type === "pane-geometry" && m.cols === 53, "phone's grid", 5000);
+        await shellSees(desktop, paneId, "33x53");
+
+        // An in-band response on the same connection orders keepSize before the phone releases.
+        // A nonexistent pending ID changes nothing and sends no terminal input.
+        hidden.keepSize(paneId);
+        expect(await hidden.pendingAction(paneId, "nonexistent-472", "discard")).toMatchObject({ ok: false });
+        desktop.seen.length = 0;
+        phone.send({ type: "release-size", pane_id: paneId });
+        // regression (fails on main): the hidden 100x30 candidate must not win.
+        expect(await desktop.waitFor((m) => m.type === "pane-geometry" && m.pane_id === paneId, "remaining terminal's grid", 5000))
+          .toMatchObject({ cols: 120, rows: 40 });
+        await shellSees(desktop, paneId, "40x120");
+        expect(desktop.seen.filter((m) => m.type === "pane-geometry")).toHaveLength(1);
+
+        desktop.seen.length = 0;
+        desktop.send({ type: "release-size", pane_id: paneId });
+        desktop.send({ type: "ping", id: 47221 });
+        await desktop.waitFor((m) => m.type === "pong" && m.id === 47221, "last terminal released", 5000);
+        // control: no terminal viewers remain; do not resize to a hidden or Chat grid.
+        expect(desktop.seen.filter((m) => m.type === "pane-geometry")).toEqual([]);
+        await shellSees(desktop, paneId, "40x120");
+      } finally {
+        hidden.close();
+        globals.window = beforeWindow;
+        desktop.close();
+        phone.close();
+        await workspaceClose(created.workspace.workspace_id);
+      }
+    }, 60_000);
+
+    it("keeps a grid released during attach creation out of the fallback candidates", async () => {
+      const created = await workspaceCreate({ cwd: tmpdir(), label: "herdr-web-ui-test-release-size-creating" });
+      const paneId = created.root_pane.pane_id;
+      const hidden = await ws();
+      const phone = await ws();
+      try {
+        // Back-to-back on the same connection: release lands during the initial terminal lookup.
+        hidden.send({ type: "attach", pane_id: paneId, cols: 100, rows: 30 });
+        hidden.send({ type: "release-size", pane_id: paneId });
+        hidden.send({ type: "ping", id: 47222 });
+        await hidden.waitFor((m) => m.type === "pong" && m.id === 47222, "release processed during creation", 5000);
+        await hidden.waitFor((m) => m.type === "input-ready", "hidden attach completed", 15_000);
+        await attach(phone, paneId, 53, 33);
+        await hidden.waitFor((m) => m.type === "pane-geometry" && m.cols === 53, "phone grid", 5000);
+        await shellSees(phone, paneId, "33x53");
+        hidden.seen.length = 0;
+        phone.send({ type: "release-size", pane_id: paneId });
+        phone.send({ type: "ping", id: 47223 });
+        await phone.waitFor((m) => m.type === "pong" && m.id === 47223, "phone release processed", 5000);
+        // regression (fails on main): the completed attach must not revive a released grid.
+        expect(hidden.seen.filter((m) => m.type === "pane-geometry")).toEqual([]);
+        await shellSees(phone, paneId, "33x53");
+      } finally {
+        hidden.close();
+        phone.close();
+        await workspaceClose(created.workspace.workspace_id);
+      }
+    }, 60_000);
+
+    it("never overwrites a resize another client sends after the release", async () => {
+      const created = await workspaceCreate({ cwd: tmpdir(), label: "herdr-web-ui-test-release-size-race" });
+      const paneId = created.root_pane.pane_id;
+      const desktop = await ws();
+      const phone = await ws();
+      const third = await ws();
+      try {
+        await attach(desktop, paneId, 120, 40);
+        await attach(phone, paneId, 53, 33);
+        // the third client watches from the chat lens until it resizes
+        third.send({ type: "attach", pane_id: paneId, cols: 30, rows: 10, keep_size: true });
+        await third.waitFor((m) => m.type === "input-ready" && m.pane_id === paneId, "third attach took", 15_000);
+        await desktop.waitFor((m) => m.type === "pane-geometry" && m.pane_id === paneId && m.cols === 53, "the phone took the grid", 5000);
+
+        desktop.seen.length = 0;
+        phone.send({ type: "release-size", pane_id: paneId });
+        third.send({ type: "resize", pane_id: paneId, cols: 100, rows: 30 });
+        await desktop.waitFor((m) => m.type === "pane-geometry" && m.pane_id === paneId && m.cols === 100, "the third client's resize", 5000);
+        // control: the pty ends at the later resize, whichever of the two frames the server read first
+        await shellSees(third, paneId, "30x100");
+        // control: at most the release's own resize before the third client's, nothing after it
+        const grids = desktop.seen.filter((m) => m.type === "pane-geometry" && m.pane_id === paneId);
+        expect(grids.length).toBeLessThanOrEqual(2);
+        expect(grids.at(-1)).toMatchObject({ cols: 100, rows: 30 });
+      } finally {
+        for (const socket of [desktop, phone, third]) socket.close();
+        await workspaceClose(created.workspace.workspace_id).catch(() => undefined);
+      }
+    }, 60_000);
+
+    it("ignores a release from a client that never drove the grid, as an older server ignores the frame", async () => {
+      const created = await workspaceCreate({ cwd: tmpdir(), label: "herdr-web-ui-test-release-size-noop" });
+      const paneId = created.root_pane.pane_id;
+      const desktop = await ws();
+      const chat = await ws();
+      try {
+        await attach(desktop, paneId, 120, 40);
+        chat.send({ type: "attach", pane_id: paneId, cols: 53, rows: 33, keep_size: true });
+        await chat.waitFor((m) => m.type === "input-ready" && m.pane_id === paneId, "chat attach took", 15_000);
+        desktop.seen.length = 0;
+        chat.seen.length = 0;
+        chat.send({ type: "release-size", pane_id: paneId });
+        // also for a pane this connection never attached
+        chat.send({ type: "release-size", pane_id: "w-nonexistent:p1" });
+        chat.send({ type: "ping", id: 472 });
+        // control (passes on main): the connection stays open and answers, with no error frame
+        await chat.waitFor((m) => m.type === "pong" && m.id === 472, "pong after release-size", 5000);
+        expect(chat.seen.filter((m) => m.type === "error")).toEqual([]);
+        // control (passes on main): the grid stays the desktop's
+        await shellSees(desktop, paneId, "40x120");
+        expect(desktop.seen.filter((m) => m.type === "pane-geometry")).toEqual([]);
+      } finally {
+        desktop.close();
+        chat.close();
+        await workspaceClose(created.workspace.workspace_id).catch(() => undefined);
+      }
+    }, 60_000);
+  });
 
   it("rejects an unknown role mode with an in-band error", async () => {
     const client = await RecordingSocket.connect(`ws://localhost:${server.port}/ws`);
@@ -4007,6 +4653,30 @@ describe("web push", () => {
     expect(((await gone.json()) as ApiError).error.code).toBe("subscription_not_found");
   });
 
+  // regression (fails on main): an endpoint the push service retired is refused, never-known stays not found (#1038)
+  it.each([404, 410])("answers subscription_gone on the first test when the push service returns %i", async (status) => {
+    const retiring = await startFakePushService();
+    try {
+      expect((await postJson("/api/push/subscribe", { subscription: retiring.subscription })).status).toBe(204);
+      retiring.answerWith(status);
+      const first = await postJson("/api/push/test", { endpoint: retiring.subscription.endpoint });
+      expect(first.status).toBe(410);
+      expect(((await first.json()) as ApiError).error.code).toBe("subscription_gone");
+      const again = await postJson("/api/push/subscribe", { subscription: retiring.subscription });
+      expect(again.status).toBe(410);
+      expect(((await again.json()) as ApiError).error.code).toBe("subscription_gone");
+      const tested = await postJson("/api/push/test", { endpoint: retiring.subscription.endpoint });
+      expect(tested.status).toBe(410);
+      expect(((await tested.json()) as ApiError).error.code).toBe("subscription_gone");
+      // control
+      const unknown = await postJson("/api/push/test", { endpoint: "https://push.example/never-known" });
+      expect(unknown.status).toBe(404);
+      expect(((await unknown.json()) as ApiError).error.code).toBe("subscription_not_found");
+    } finally {
+      retiring.stop();
+    }
+  });
+
   it("pushes a live pane's status change to a subscribed device", async () => {
     const paneId = pushPaneId!;
     expect((await postJson("/api/push/subscribe", { subscription: fake.subscription })).status).toBe(204);
@@ -4294,6 +4964,18 @@ describe("pairing and identity", () => {
     expect(((await refused.json()) as ApiError).error.code).toBe("other_user");
   });
 
+  it("regression: refuses identity headers without a single tailnet forwarded address", async () => {
+    for (const forwardedFor of [null, "127.0.0.1", "203.0.113.50", "100.64.0.9, 100.64.0.10"]) {
+      const headers = { "tailscale-user-login": OWNER, ...(forwardedFor === null ? {} : { "x-forwarded-for": forwardedFor }) };
+      const response = await fetch(`${base()}/api/devices`, { headers });
+      expect(response.status).toBe(401);
+      expect(((await response.json()) as ApiError).error.code).toBe("unauthorized");
+      expect(await auth(headers)).toMatchObject({ authenticated: false, reason: "pairing_required" });
+    }
+    // control: Serve may forward either tailnet address family.
+    expect((await fetch(`${base()}/api/devices`, { headers: proxied(OWNER, { "x-forwarded-for": "fd7a:115c:a1e0::1" }) })).status).toBe(200);
+  });
+
   it("lets the owner's own device in with no login header, where serve is the only ingress and one login owns the tailnet", async () => {
     const state = mkdtempSync(join(tmpdir(), "herdr-sole-user-"));
     const savedOwner = process.env["HERDR_WEB_TAILSCALE_OWNER"];
@@ -4325,6 +5007,8 @@ describe("pairing and identity", () => {
       expect(await at(sole.port, { ...phone, "tailscale-user-login": "someone@example.com" })).toMatchObject({ authenticated: false, reason: "other_user" });
       expect(await at(sole.port, { ...phone, "tailscale-funnel-request": "?1" })).toMatchObject({ authenticated: false, reason: "pairing_required" });
       expect(await at(sole.port, { ...phone, "tailscale-user-login": OWNER })).toMatchObject({ authenticated: true, via: "tailscale" });
+      // regression: a rejected identity is not an absent identity, even at this PC's Host.
+      expect(await at(sole.port, { ...phone, "tailscale-user-login": OWNER, "x-forwarded-for": "127.0.0.1" })).toMatchObject({ authenticated: false, reason: "pairing_required" });
       // where the operator did not declare serve the only ingress, the same request pairs, with or without the tailnet's name as Host
       expect(await at(off.port, proxied())).toMatchObject({ authenticated: false, reason: "pairing_required" });
       expect(await at(off.port, phone)).toMatchObject({ authenticated: false, reason: "pairing_required" });
@@ -4466,7 +5150,11 @@ describe("pairing and identity", () => {
     const at = (headers: Record<string, string> = {}) => fetch(`http://127.0.0.1:${secured.port}/api/health?scope=bridge`, { headers }).then((r) => r.json() as Promise<{ auth: HealthAuth }>).then((b) => b.auth);
     try {
       expect(await at()).toMatchObject({ authenticated: false, reason: "token_required" });
-      expect(await at({ authorization: "Bearer t0k3n" })).toMatchObject({ authenticated: true, via: "token" });
+      expect(await at({ authorization: "Bearer wrong" })).toEqual({ required: true, authenticated: false, reason: "token_required" });
+      expect(await at({ authorization: "Bearer t0k3n" })).toMatchObject({ authenticated: true, via: "token", bearer: true });
+      // a token held in the sign-in cookie is one signing out can clear
+      expect(await at({ cookie: "herdr_web_token=t0k3n" })).toEqual({ required: false, authenticated: true, via: "token", role: "drive" });
+      expect(await at({ cookie: "herdr_web_token=t0k3n", authorization: "Bearer wrong" })).toEqual({ required: false, authenticated: true, via: "token", role: "drive" });
       // another proxy on this PC can pass a visitor's copy of the login header on: the token is asked for anyway
       expect(await at(proxied(OWNER))).toMatchObject({ authenticated: false, reason: "token_required" });
       expect(await at(proxied("someone@example.com"))).toMatchObject({ authenticated: false, reason: "token_required" });
@@ -4562,6 +5250,9 @@ describe("token auth", () => {
       const { code } = (await (await fetch(`http://127.0.0.1:${open.port}/api/devices/pair/start`, { method: "POST", headers: guard })).json()) as { code: string };
       const paired = await fetch(`http://127.0.0.1:${open.port}/api/devices/pair`, { method: "POST", headers: { ...guard, "x-forwarded-for": "100.64.0.9" }, body: JSON.stringify({ code, label: "Phone" }) });
       expect(paired.status).toBe(204);
+      expect((await health(open.port)).lan_exposure).toEqual({ host: "0.0.0.0" });
+      const cookie = paired.headers.get("set-cookie")!.split(";")[0]!;
+      expect((await health(open.port, { cookie })).auth).toMatchObject({ authenticated: true, via: "device" });
       expect((await health(open.port)).auth).toMatchObject({ authenticated: true, via: "local" });
       expect((await health(open.port)).lan_exposure).toBeUndefined();
     } finally {
@@ -4870,11 +5561,22 @@ describe("changed GitHub issue scope", () => {
       let detail = (await f.request(prefix)).body;
       expect(detail.runs[0]).toMatchObject({ condition: "needs_you", scope_pause: { condition: "uncertain" }, manifest: run.manifest });
       expect(detail.workers[0]).toMatchObject({ id: child.id, condition: restingChild ? "ready" : "working", worktree: child.worktree });
-      await f.request("/settings", { max_implementations: 4, max_agents: 2 });
+      await f.request("/settings", { max_agents: 2 });
       const created = await f.request("/implementations", { title: "Independent capacity fixture", description: "Owned capacity check", project_id: f.route.split("/")[2] });
       expect(created.status).toBe(201); const other = created.body;
       const blocked = await f.request(`/implementations/${other.id}/runs`, { action: "work", idempotency_key: "unrelated-scope" });
-      expect(blocked.status).toBe(409); expect(blocked.body.error.code).toBe("capacity_exhausted");
+      expect(blocked.status).toBe(202);
+      if (restingChild) {
+        // Native ready proof releases this child's execution slot while its ownership remains.
+        expect(blocked.body).toMatchObject({ condition: "working", implementation_id: other.id });
+        expect((await f.request(`/implementations/${other.id}`)).body.runs).toHaveLength(1);
+      } else {
+        expect(blocked.body).toMatchObject({ condition: "queued", run_id: null, purpose: "execution" });
+        expect((await f.request(`/implementations/${other.id}`)).body.runs).toEqual([]);
+      }
+      const capacity = (await f.request("")).body.capacity;
+      expect(capacity.normal.used).toBe(2);
+      expect(capacity.contexts.some((context: { worker_id: string | null }) => context.worker_id === child.id)).toBe(!restingChild);
       const more = await f.request(`/runs/${run.id}/workers`, { role: "spec", idempotency_key: "must-not-launch" });
       expect(more.status).toBe(409);
       await f.request(`/runs/${run.id}/reconcile`, {});
@@ -4887,7 +5589,9 @@ describe("changed GitHub issue scope", () => {
       issue.labels = [{ name: "ready-for-agent" }]; writeFileSync(f.responses, JSON.stringify({ issues: [issue] }));
       source = (await f.request(f.route + "/sync", {})).body.sources[0];
       await f.request(f.route + "/issues/12/approve", { policy_revision: policy.revision, issue_revision: source.revision, plan });
-      expect((await f.request(prefix + "/runs", { action: "work", idempotency_key: "renewed-but-owned" })).status).toBe(409);
+      const renewed = await f.request(prefix + "/runs", { action: "work", idempotency_key: "renewed-but-owned" });
+      if (renewed.status === 409) expect(renewed.body.error.code).toBe("implementation_owned");
+      else expect(renewed).toMatchObject({ status: 202, body: { condition: "blocked", run_id: null, reason: expect.stringContaining("ownership") } });
       reachable = true;
       const reconciled = await f.request(`/runs/${run.id}/reconcile`, {});
       expect(reconciled.status).toBe(200);
@@ -4952,6 +5656,66 @@ it("refuses cross-origin changes while allowing same-origin and CLI requests", a
   } finally { instance.stop(); await workspaceClose(created.workspace.workspace_id); rmSync(root, { recursive: true, force: true }); }
 });
 
+describe("workflow conversation history through the owner API", () => {
+  it("nests Ticket work, independent reviewers and fresh fixes under their original workflow", async () => {
+    const state = mkdtempSync(join(tmpdir(), "conversation-hierarchy-"));
+    const f = seedWorkflowConversations(state);
+    const app = createServer({ port: 0, stateDir: state, token: "owned-hierarchy-token", machines: false, factory: { accountDiscoveryHome: state } });
+    const url = `http://localhost:${app.port}/api/factory/implementations/${f.assignment.id}`;
+    try {
+      expect((await fetch(url)).status).toBe(401);
+      const detail: FactoryDetail = await fetch(url, { headers: { authorization: "Bearer owned-hierarchy-token" } }).then(r => r.json());
+      const tree = detail.conversations!;
+      const root = (kind: string) => tree.find(c => c.kind === kind)!;
+      const parentKind = (workerId: string) => {
+        const conversation = tree.find(c => c.contexts.some(context => context.worker_id === workerId))!;
+        return [conversation.kind, tree.find(c => c.id === conversation.parent_id)!.kind];
+      };
+      expect(parentKind(f.implementation.id)).toEqual(["implementation", "orchestrator"]);
+      expect(tree.find(c => c.kind === "implementation")!.title).toBe("Keep the approved Ticket name");
+      expect(parentKind(f.standards.id)).toEqual(["standards", "reviewer"]);
+      expect(parentKind(f.spec.id)).toEqual(["spec", "reviewer"]);
+      expect(root("reviewer").contexts).toEqual([]);
+      expect(root("reviewer").parent_id).toBe(root("orchestrator").id);
+      expect(parentKind(f.automaticFix.id)).toEqual(["review_fixes", "orchestrator"]);
+      expect(parentKind(f.humanFix.id)).toEqual(["review_fixes", "human_review"]);
+      expect(root("human_review").contexts.map(c => c.run_id)).toEqual([f.human.id]);
+      expect(root("orchestrator").contexts[0]!.snapshot_ids).toEqual(["orchestrator-context-history"]);
+      expect(tree.find(c => c.kind === "standards")!.contexts[0]!.snapshot_ids).toEqual(["standards-context-history"]);
+      expect(detail.workers).toHaveLength(5);
+    } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+  it("keeps Specifications identity and both native contexts after a handoff and restart", async () => {
+    const state = mkdtempSync(join(tmpdir(), "conversation-contract-"));
+    const store = new FactoryStore(state);
+    const assignment = { ...store.record(), title: "Owned conversation fixture", description: "", project_id: null, provider: null, machine_id: null, stage: "inbox", position: 0, outcome: "none" };
+    store.put("implementations", assignment);
+    const interview: FactoryRun = { ...store.record(), implementation_id: assignment.id, action: "grill-with-docs", provider: "codex", machine_id: "fixture-machine", condition: "completed", waiting_reason: null, idempotency_key: "interview", specification_id: null, graph_hash: null, base: null, checkout: null, worktree: "/owned/interview", branch: null, workspace_id: "owned-workspace", pane_id: "owned-pane", manifest: {} };
+    store.put("runs", interview, assignment.id);
+    store.close();
+    let app = createServer({ port: 0, stateDir: state, token: "owned-conversation-token", machines: false, factory: { accountDiscoveryHome: state } });
+    const read = () => fetch(`http://localhost:${app.port}/api/factory/implementations/${assignment.id}`, { headers: { authorization: "Bearer owned-conversation-token" } }).then(r => r.json()) as Promise<FactoryDetail>;
+    try {
+      const first = await read();
+      expect(first.conversations?.find(c => c.kind === "specifications")?.contexts.map(c => c.run_id)).toEqual([interview.id]);
+      const identity = first.conversations!.find(c => c.kind === "specifications")!.id;
+      app.stop();
+      const nextStore = new FactoryStore(state);
+      const successor = { ...interview, ...nextStore.record(), action: "to-spec", condition: "ready", pane_id: "successor-pane", worktree: "/owned/successor" };
+      nextStore.put("runs", successor, assignment.id);
+      nextStore.put("native_snapshots", { ...nextStore.record(), run_id: interview.id, source_id: "owned-native-interview", sequence: 0, version: "v1", cursor: null, turns: [{ role: "assistant", ts: "2026-01-01T00:00:00Z", parts: [{ kind: "text", text: "Retained interview decisions" }] }] }, interview.id);
+      nextStore.close();
+      app = createServer({ port: 0, stateDir: state, token: "owned-conversation-token", machines: false, factory: { accountDiscoveryHome: state } });
+      const after = await read();
+      const conversation = after.conversations!.find(c => c.kind === "specifications")!;
+      expect(conversation.id).toBe(identity);
+      expect(conversation.contexts.map(c => [c.run_id, c.pane_id, c.worktree])).toEqual([[interview.id, "owned-pane", "/owned/interview"], [successor.id, "successor-pane", "/owned/successor"]]);
+      expect(conversation.contexts[0]!.snapshot_ids).toEqual([after.native_snapshots[0]!.id]);
+      expect(after.runs).toHaveLength(2);
+      expect(after.workers).toHaveLength(0);
+    } finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+  });
+});
 it("Project issue queue endpoints expose revision-bound previews without creating Runs", async () => {
   const { githubQueueFixture } = await import("../scripts/fixtures/github-queue.ts");
   const fixture = githubQueueFixture();
@@ -4960,8 +5724,8 @@ it("Project issue queue endpoints expose revision-bound previews without creatin
     const response = await fixture.post(route + "/preview", {});
     expect(response.status).toBe(200);
     const preview = await response.json() as import("../shared/issue-queue.ts").IssueQueue;
-    expect(preview).toMatchObject({ policy: { project_id: project.id, automatic_implementation: false, max_implementations: 1 }, global_limit: 6, effective_limit: 1, eligible_count: 0, preview_current: true, preview: { revision: preview.revision, eligible_count: 0 } });
-    const stale = await fixture.post(route + "/queue", { expected_revision: "stale", automatic_implementation: false, paused: true, max_implementations: 1 });
+    expect(preview).toMatchObject({ policy: { project_id: project.id, automatic_implementation: false }, eligible_count: 0, preview_current: true, preview: { revision: preview.revision, eligible_count: 0 } });
+    const stale = await fixture.post(route + "/queue", { expected_revision: "stale", automatic_implementation: false, paused: true });
     expect(stale.status).toBe(409);
     expect(await stale.json()).toEqual({ error: { code: "queue_policy_changed", message: "Refresh the Project queue settings" } });
     expect((await fixture.json("")).activity).toEqual([]);
@@ -5007,7 +5771,7 @@ it("automatic issue policy requires an exact preview and retains a separate paus
   try {
     const { route, configuration } = await fixture.setup();
     await fixture.json(route + "/configure", { ...configuration, expected_revision: (await fixture.json(route)).policy.revision, sync_enabled: true });
-    const config: import("../shared/protocol.ts").QueueConfiguration = { expected_revision: null, automatic_implementation: true, paused: true, max_implementations: 1 };
+    const config: import("../shared/protocol.ts").QueueConfiguration = { expected_revision: null, automatic_implementation: true, paused: true };
     const missing = await fixture.post(route + "/queue", config);
     expect(missing.status).toBe(409);
     expect(await missing.json()).toEqual({ error: { code: "queue_preview_required", message: "Review the current eligible backlog before enabling automatic implementation" } });
@@ -5082,3 +5846,58 @@ it("validates report-only request-changes ownership and rejects mixed batch shap
     expect((await f.request(f.prefix)).body.review_batches[0].id).toBe(sent.body.id);
   } finally { f.close(); }
 }, 30_000);
+
+describe("repository diff of a pane's folder", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-web-ui-test-repo-diff-")));
+  let workspaceId: string | null = null;
+  afterAll(async () => {
+    if (workspaceId) await workspaceClose(workspaceId).catch(() => undefined);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("reads the repository the pane sits in, a folder named from it, and a named folder once the pane is gone", async () => {
+    const git = (...args: string[]) => {
+      const result = Bun.spawnSync(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "-C", root, ...args], { stdout: "ignore", stderr: "pipe" });
+      if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed: ${result.stderr.toString()}`);
+    };
+    git("init", "-q", "-b", "main");
+    mkdirSync(join(root, "sub"));
+    writeFileSync(join(root, "a.txt"), "one\n");
+    git("add", ".");
+    git("commit", "-q", "-m", "first");
+    writeFileSync(join(root, "a.txt"), "two\n");
+    // the pane sits below the repository's top, and in no repository of its own
+    const created = await workspaceCreate({ cwd: join(root, "sub"), label: "herdr-web-ui-test-repo-diff" });
+    workspaceId = created.workspace.workspace_id;
+    const pane = `pane_id=${encodeURIComponent(created.root_pane.pane_id)}`;
+    const expected: RepoDiffFileList["files"] = [{ path: "a.txt", old_path: null, status: "modified", additions: 1, deletions: 1, binary: false }];
+    for (const url of [
+      `${base()}/api/workspace/diff/files?${pane}`,
+      `${base()}/api/machines/local/workspace/diff/files?${pane}`,
+      `${base()}/api/workspace/diff/files?${pane}&directory=..`,
+      `${base()}/api/workspace/diff/files?pane_id=no-such-pane&directory=${encodeURIComponent(root)}`,
+    ]) {
+      const response = await fetch(url);
+      expect([url, response.status]).toEqual([url, 200]);
+      const list = (await response.json()) as RepoDiffFileList;
+      expect(list.repository).toMatchObject({ root, branch: "main", detached: false, unborn: false });
+      expect(list.files).toEqual(expected);
+    }
+    const file = await fetch(`${base()}/api/workspace/diff/file?${pane}&path=a.txt`);
+    expect(file.status).toBe(200);
+    const answer = (await file.json()) as RepoDiffFilePatch;
+    expect(answer).toMatchObject({ file: expected[0], unavailable: null, truncated: false });
+    expect(answer.patch).toStartWith("diff --git a/a.txt b/a.txt\n");
+    expect(answer.patch).toEndWith("-one\n+two\n");
+
+    const gone = await fetch(`${base()}/api/workspace/diff/files?pane_id=no-such-pane`);
+    expect(gone.status).toBe(404);
+    expect(typeof ((await gone.json()) as ApiError).error.code).toBe("string");
+    const relative = await fetch(`${base()}/api/workspace/diff/files?pane_id=no-such-pane&directory=sub`);
+    expect(relative.status).toBe(400);
+    expect(((await relative.json()) as ApiError).error.code).toBe("invalid_cwd");
+    const posted = await fetch(`${base()}/api/workspace/diff/files?${pane}`, { method: "POST", headers: { "x-herdr-machine": "1" } });
+    expect(posted.status).toBe(400);
+    expect(((await posted.json()) as ApiError).error.code).toBe("method_not_allowed");
+  });
+});

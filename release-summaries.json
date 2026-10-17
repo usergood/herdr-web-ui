@@ -1,4 +1,101 @@
 {
+  "0.7.0": {
+    "en": {
+      "new": [
+        "Approve a Specification once to run planning, implementation and review automatically.",
+        "Review work in Specifications, Orchestrator and Human Review conversations.",
+        "Approve comments once to repair, check and merge the exact submitted changes."
+      ],
+      "improved": [
+        "Pause and resume Assignments while retaining work and conversation history.",
+        "See named Tickets, live activity tags and automatic queue progress on the board.",
+        "Updated file browsing, workspaces, tabs and account sign-in from upstream.",
+        "Find agent skills in grouped menus and see selected skills as chat chips.",
+        "See repository branches and worktree trees directly in the sidebar."
+      ],
+      "fixed": [
+        "Keep merge approval tied to reviewed changes and recover pending checks automatically.",
+        "Delete owned Assignment data and linked issues without reviving removed work.",
+        "Use proxy sign-in without redundant browser sign-out or pairing prompts."
+      ]
+    },
+    "ko": {
+      "new": [
+        "명세서를 한 번 승인하면 계획, 구현과 검토가 자동으로 진행됩니다.",
+        "명세서, 오케스트레이터와 사람 검토 대화에서 작업을 확인합니다.",
+        "의견을 한 번 승인하면 해당 변경을 수정하고 검증한 뒤 병합합니다."
+      ],
+      "improved": [
+        "작업과 대화 기록을 보존하면서 과제를 일시 중지하고 재개합니다.",
+        "보드에서 티켓 이름, 현재 활동과 자동 대기열 진행 상태를 확인합니다.",
+        "업스트림의 파일 탐색, 워크스페이스, 탭 및 계정 로그인을 반영했습니다.",
+        "에이전트 스킬을 그룹 메뉴에서 찾고 선택한 스킬을 대화 칩으로 확인합니다.",
+        "사이드바에서 저장소 브랜치와 워크트리 구조를 바로 확인합니다."
+      ],
+      "fixed": [
+        "병합 승인을 검토한 변경에 연결하고 대기 중 검사를 자동으로 복구합니다.",
+        "삭제한 작업이 되살아나지 않도록 과제 소유 데이터와 연결된 이슈를 삭제합니다.",
+        "프록시 로그인 시 불필요한 브라우저 로그아웃과 페어링 안내를 줄였습니다."
+      ]
+    },
+    "ja": {
+      "new": [
+        "仕様を一度承認すると、計画、実装、レビューが自動で進みます。",
+        "仕様、オーケストレーター、人によるレビューの会話で作業を確認できます。",
+        "コメントを一度承認すると、提出された変更を修正、検証してマージします。"
+      ],
+      "improved": [
+        "作業と会話履歴を保ったまま、課題を一時停止して再開できます。",
+        "ボードでチケット名、現在の活動、自動キューの進行状況を確認できます。",
+        "上流のファイル閲覧、ワークスペース、タブ、アカウント認証の改善を取り込みました。",
+        "エージェントのスキルを分類メニューから選び、会話内のチップで確認できます。",
+        "サイドバーにリポジトリのブランチとワークツリー構造を表示します。"
+      ],
+      "fixed": [
+        "マージ承認をレビュー済みの変更に結び付け、保留中の検証を自動で再確認します。",
+        "削除済みの作業が戻らないよう、課題所有データとリンクされた課題を削除します。",
+        "プロキシ認証で不要なブラウザーのログアウトやペアリング案内を減らしました。"
+      ]
+    },
+    "zh": {
+      "new": [
+        "只需批准一次规格，即可自动完成规划、实现和审查。",
+        "在规格、协调器和人工审查对话中查看工作。",
+        "只需批准一次评论，即可修复、检查并合并所提交的确切更改。"
+      ],
+      "improved": [
+        "暂停和恢复任务时保留工作和对话历史。",
+        "在看板上查看工单名称、实时活动标签和自动队列进度。",
+        "同步上游的文件浏览、工作区、标签页和账户登录改进。",
+        "在分组菜单中查找代理技能，并在聊天中以标签显示所选技能。",
+        "直接在侧边栏查看仓库分支和工作树结构。"
+      ],
+      "fixed": [
+        "将合并批准绑定到已审查的更改，并自动恢复等待中的检查。",
+        "删除任务所属数据和关联问题，同时防止已删除工作重新出现。",
+        "使用代理登录时，避免多余的浏览器退出和设备配对提示。"
+      ]
+    },
+    "tr": {
+      "new": [
+        "Planlama, uygulama ve incelemeyi otomatik yürütmek için şartnameyi bir kez onaylayın.",
+        "İşi Şartnameler, Orkestratör ve İnsan İncelemesi konuşmalarında inceleyin.",
+        "Gönderilen değişiklikleri düzeltmek, doğrulamak ve birleştirmek için yorumları onaylayın."
+      ],
+      "improved": [
+        "İşi ve konuşma geçmişini koruyarak görevleri duraklatın ve sürdürün.",
+        "Panoda bilet adlarını, canlı etkinlik etiketlerini ve otomatik kuyruk ilerlemesini görün.",
+        "Dosya tarama, çalışma alanları, sekmeler ve hesap girişindeki yenilikler eklendi.",
+        "Ajan becerilerini gruplu menülerden seçin ve sohbette etiket olarak görün.",
+        "Depo dallarını ve çalışma ağacını doğrudan kenar çubuğunda görün."
+      ],
+      "fixed": [
+        "Birleştirme onayını incelenen değişikliklere bağlayın; bekleyen kontrolleri kurtarın.",
+        "Silinen iş geri gelmeden göreve ait verileri ve bağlantılı sorunları silin.",
+        "Proxy girişiyle gereksiz tarayıcı çıkışı ve eşleme uyarılarını önleyin."
+      ]
+    }
+  },
   "0.6.0": {
     "en": {
       "new": [

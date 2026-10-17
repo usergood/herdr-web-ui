@@ -3,9 +3,14 @@ import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { chromium } from "playwright-core";
+import { chromium, type Page } from "playwright-core";
 import { githubQueueFixture } from "./fixtures/github-queue.ts";
 import { githubReviewFixture } from "./fixtures/github-review.ts";
+
+/** Retain the blocked operation when Playwright's timeout stack ends inside its bundle. */
+function responseFor(page: Page, operation: string, predicate: Parameters<Page["waitForResponse"]>[0]) {
+  return page.waitForResponse(predicate).catch(cause => { throw new Error(`No browser response for ${operation}`, { cause }); });
+}
 
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 const errors: string[] = [];
@@ -33,7 +38,7 @@ try {
         await original.getByText("Controlled pause requested. Issue scope changed.", { exact: true }).waitFor();
         await page.getByText("Advanced controls", { exact: true }).last().click();
         const [stoppedResponse] = await Promise.all([
-          page.waitForResponse(response => response.url().endsWith(`/runs/${run.id}/stop`) && response.request().method() === "POST"),
+          responseFor(page, "stopping the invalidated implementation", response => response.url().endsWith(`/runs/${run.id}/stop`) && response.request().method() === "POST"),
           page.getByRole("button", { name: "Stop Run", exact: true }).click(),
         ]);
         assert.equal(stoppedResponse.status(), 200);
@@ -44,7 +49,7 @@ try {
         for (let remaining = await actions.getByLabel("Your answer", { exact: true }).count(); remaining > 0; remaining--) {
           await actions.getByLabel("Your answer", { exact: true }).first().fill("Keep produced work and use the reviewed current issue plan in a new attempt.");
           const [saved] = await Promise.all([
-            page.waitForResponse(response => /\/questions\/[^/]+\/answer$/.test(response.url()) && response.request().method() === "POST"),
+            responseFor(page, "saving the reopened planning answer", response => /\/questions\/[^/]+\/answer$/.test(response.url()) && response.request().method() === "POST"),
             actions.getByRole("button", { name: "Save answer", exact: true }).first().click(),
           ]);
           assert.equal(saved.status(), 200);
@@ -59,14 +64,14 @@ try {
           await retained.locator("summary").click();
           await retained.getByText("Public CLI greeting", { exact: true }).waitFor();
           const [approval] = await Promise.all([
-            page.waitForResponse(response => response.url().endsWith(path + "/approvals") && response.request().postDataJSON().kind === "testing_seams"),
+            responseFor(page, "renewing the displayed testing seam approval", response => response.url().endsWith(path + "/approvals") && response.request().postDataJSON().kind === "testing_seams"),
             planning.getByRole("button", { name: "Approve retained app plan for this issue revision", exact: true }).click(),
           ]);
           assert.equal(approval.status(), 201);
           assert.equal(approval.request().postDataJSON().scope, "Public CLI greeting");
           await actions.getByLabel("Your answer", { exact: true }).fill("Use the explicitly reviewed Public CLI greeting seam in the successor.");
           const [answered] = await Promise.all([
-            page.waitForResponse(response => /\/questions\/[^/]+\/answer$/.test(response.url()) && response.request().method() === "POST"),
+            responseFor(page, "answering the reviewed seam decision", response => /\/questions\/[^/]+\/answer$/.test(response.url()) && response.request().method() === "POST"),
             actions.getByRole("button", { name: "Save answer", exact: true }).click(),
           ]);
           assert.equal(answered.status(), 200);
@@ -141,7 +146,7 @@ try {
       await planningRun.getByText(`${planning.provider} · ${planning.machine_id} · working`, { exact: true }).waitFor();
       assert.deepEqual((await fixture.json(path)).runs.map((run: any) => [run.id, run.action, run.condition]), [[failed.id, "implement-spec", "failed"], [planning.id, "to-spec", "working"]]);
       const [stoppedPlanning] = await Promise.all([
-        page.waitForResponse(response => response.url().endsWith(`/runs/${planning.id}/stop`) && response.request().method() === "POST"),
+        responseFor(page, "stopping the intervening planning Run", response => response.url().endsWith(`/runs/${planning.id}/stop`) && response.request().method() === "POST"),
         planningRun.getByRole("button", { name: "Stop Run", exact: true }).click(),
       ]);
       assert.equal(stoppedPlanning.status(), 200);

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { transcriptPage } from "../server/conversation.ts";
 import type { ConversationResponse } from "../shared/protocol.ts";
+import { chromePath } from "./chrome-path.ts";
 
 const root = mkdtempSync(join(tmpdir(), "herdr-image-browser-"));
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
@@ -61,12 +62,13 @@ try {
   }
   assert.equal(bytes.size, 2, "the page should address both pictures");
 
-  browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? "/opt/google/chrome/chrome", headless: true, args: ["--no-sandbox"] });
+  browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
   const page = await browser.newPage({ viewport: { width: 1200, height: 800 } });
   const errors: string[] = [];
   const served: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.route("**/api/pane/conversation?*", (route) => route.fulfill({ json: conversation }));
+  await page.route("**/api/pane/commands?*", (route) => route.fulfill({ json: { commands: [] } }));
   await page.goto(`http://127.0.0.1:${server.port}/`);
   await page.getByText("what is in this screenshot?").waitFor();
 
@@ -92,6 +94,34 @@ try {
   const sizes = await page.locator(".chat-tool-images img").evaluateAll((imgs) => imgs.map((img) => [img.naturalWidth, img.naturalHeight]));
   assert.deepEqual(sizes, [[1, 1], [1, 1]], "Chrome decoded both pictures from the served bytes");
   assert.equal(await page.locator(".chat-tool-output pre").textContent(), "read 2 images", "the text answer stays beside the pictures");
+  assert.deepEqual(errors, []);
+
+  // A real missing image response keeps the answer readable and announces the failure.
+  const imageBytes = new Map(bytes);
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    bytes.delete("pi:call-1:0");
+    await page.reload();
+    await page.getByText("what is in this screenshot?").waitFor();
+    await page.locator(".work-block-head").click();
+    await page.locator(".work-row-head").first().click();
+    await page.locator(".chat-tool-images").scrollIntoViewIfNeeded();
+    const failure = page.locator(".chat-tool-images .image-slot.is-failed");
+    await failure.getByText("Image unavailable", { exact: true }).waitFor();
+    assert.equal(await failure.getAttribute("role"), "alert", "missing image error is announced");
+    assert.equal(await page.locator(".chat-tool-output pre").textContent(), "read 2 images");
+    const healthy = page.locator(".chat-tool-images img");
+    await page.waitForFunction(() => [...document.querySelectorAll<HTMLImageElement>(".chat-tool-images img")].every(img => img.complete && img.naturalWidth > 0));
+    assert.equal(await healthy.count(), 1, "the other image remains readable");
+    bytes.set("pi:call-1:0", imageBytes.get("pi:call-1:0")!);
+    await page.reload();
+    await page.getByText("what is in this screenshot?").waitFor();
+    await page.locator(".work-block-head").click();
+    await page.locator(".work-row-head").first().click();
+    await page.locator(".chat-tool-images").scrollIntoViewIfNeeded();
+    await page.waitForFunction(() => { const imgs = [...document.querySelectorAll<HTMLImageElement>(".chat-tool-images img")]; return imgs.length === 2 && imgs.every(img => img.complete && img.naturalWidth > 0); });
+    assert.equal(await page.locator(".chat-tool-images [role=alert]").count(), 0, "decoded images have no error announcement");
+  }
   assert.deepEqual(errors, []);
 
   // a result whose pictures vanish (the branch moved, the file changed) must not strand an <img>

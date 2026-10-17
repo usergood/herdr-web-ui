@@ -38,6 +38,7 @@ try {
   await github.getByRole("button", { name: "Run now", exact: true }).click();
   assert.equal((await run).status(), 200);
   await github.getByText("Succeeded", { exact: true }).waitFor();
+  await github.getByRole("status").filter({ hasText: /^Ready$/ }).waitFor();
   await page.reload(); await page.getByRole("button", { name: "Project settings for Schedule fixture", exact: true }).click(); await page.getByRole("tab", { name: "GitHub", exact: true }).click();
   await github.getByRole("textbox", { name: "Time zone" }).waitFor();
   assert.equal(await github.getByRole("textbox", { name: "Time zone" }).inputValue(), "Europe/Stockholm");
@@ -47,10 +48,21 @@ try {
   await github.getByRole("button", { name: "Run now", exact: true }).click(); assert.equal((await failed).ok(), false);
   await github.getByRole("alert").filter({ hasText: "The selected account could not be verified" }).waitFor();
   await github.locator('time[datetime="2026-10-14T09:00:00.000Z"]').first().waitFor();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const response = await f.request(f.route + "/schedules/run", { job: "github_sync" });
+    assert(response.status >= 400, "Owned GitHub failure remains a rejected public sync request");
+  }
+  await page.getByRole("button", { name: "Refresh schedules", exact: true }).click();
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    await github.getByText("Failed", { exact: true }).first().waitFor();
+    await github.getByRole("alert").filter({ hasText: /^Failed$/ }).waitFor();
+    await github.getByRole("alert").filter({ hasText: "Automatic retries stopped. Correct the problem and choose Run now." }).waitFor();
+  }
   writeFileSync(f.responses, "{}");
   await github.getByRole("button", { name: "Run now", exact: true }).click();
   await github.locator("li").first().getByText("Succeeded", { exact: true }).waitFor();
-  assert.equal(await github.locator("li").count(), 3);
+  assert.equal(await github.locator("li").count(), 6);
   await upstream.getByLabel("Local time", { exact: true }).fill("04:30");
   await upstream.getByRole("textbox", { name: "Time zone" }).fill("Asia/Tokyo");
   const upstreamSave = page.waitForResponse(response => response.url().endsWith(f.route + "/schedules/configure"));
@@ -59,9 +71,12 @@ try {
   const deadline = Date.now() + 5000;
   while (!existsSync(join(f.root, "reading")) && Date.now() < deadline) await Bun.sleep(10);
   assert.equal(existsSync(join(f.root, "reading")), true);
+  await page.getByRole("button", { name: "Refresh schedules", exact: true }).click();
+  await github.getByRole("status").filter({ hasText: /^Running$/ }).waitFor();
   f.restart(); writeFileSync(join(f.root, "continue"), "continue"); await pending;
   await page.goto(f.origin() + `/#projects/${projectId}/settings`); await page.getByRole("tab", { name: "GitHub", exact: true }).click();
   await github.getByRole("button", { name: "Reconcile sync", exact: true }).waitFor();
+  await github.getByRole("status").filter({ hasText: /^Uncertain$/ }).waitFor();
   assert.equal(await github.getByRole("button", { name: "Run now", exact: true }).isDisabled(), true);
   await github.getByRole("button", { name: "Reconcile sync", exact: true }).click();
   await github.getByText("Reconciled", { exact: true }).waitFor();

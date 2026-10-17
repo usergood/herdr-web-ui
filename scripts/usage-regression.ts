@@ -31,19 +31,24 @@ const report = (): UsageReport => ({
   ],
 });
 
-async function staged(context: BrowserContext): Promise<string[]> {
+/** a header the check puts on every request of the page it reloads: what that page asked for, whenever it is counted */
+const RELOADED = "x-usage-qa-reloaded";
+
+async function staged(context: BrowserContext, makeReport: () => UsageReport = report): Promise<{ asked: string[]; afterReload: string[] }> {
   const asked: string[] = [];
+  const afterReload: string[] = [];
   await context.route("**/api/usage*", (route) => {
     asked.push(new URL(route.request().url()).search);
-    return route.fulfill({ json: report() });
+    if (route.request().headers()[RELOADED]) afterReload.push(route.request().url());
+    return route.fulfill({ json: makeReport() });
   });
-  return asked;
+  return { asked, afterReload };
 }
 
 export async function checkUsageMeters(browser: Browser, origin: string): Promise<void> {
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
   try {
-    const asked = await staged(context);
+    const { asked, afterReload } = await staged(context);
     const page = await context.newPage();
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -81,7 +86,7 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
     assert.equal(await page.locator(".usage-chip").count(), 3);
     assert.equal(await page.locator(".usage-more").textContent(), "+4");
     assert.match(await strip.getAttribute("aria-label") ?? "",
-      /^Subscription usage: Claude · me@example\.com 63% \(Runs out in 2d 1h\), Codex · me@work\.example 91% \(Runs out in 6h \d+m\), Codex · me@example\.com 30%, Cursor 20%, Copilot · me 0%, Grok 0%, Antigravity —$/);
+      /^Subscription usage: Claude · me@example\.com 63% \(Runs out in 2d 1h\), Codex · me@work\.example 91% \(Runs out in 6h \d+m\), Codex · me@example\.com 30%, Cursor 20%, GitHub Copilot · me 0%, Grok 0%, Antigravity —$/);
     assert.equal(await page.locator(".usage-chip").nth(1).evaluate((chip) => chip.classList.contains("is-high")), true);
     assert.deepEqual(await page.locator(".usage-chip").evaluateAll((chips) => chips.map((chip) => chip.classList.contains("is-fast"))), [true, true, false]);
     assert.equal(await strip.evaluate((el) => el.scrollWidth <= el.clientWidth), true, "the chips fit beside Settings");
@@ -121,13 +126,13 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
     await openSettingsPage(page, "Subscription usage");
     await page.getByRole("button", { name: "Remaining", exact: true }).click();
     await page.getByRole("switch", { name: "Show Codex · me@work.example", exact: true }).click();
-    await page.getByRole("button", { name: "Move Cursor up", exact: true }).click();
+    await page.getByRole("button", { name: "Move Codex · me@example.com up", exact: true }).click();
     await page.keyboard.press("Escape");
     assert.equal(await strip.getAttribute("aria-label"),
-      "Subscription usage: Claude · me@example.com 37% left (Runs out in 2d 1h), Cursor 80% left, Codex · me@example.com 70% left, Copilot · me 100% left, Grok 100% left, Antigravity —");
-    assert.deepEqual(await page.locator(".usage-chip-value").allTextContents(), ["37%", "80%", "70%"]);
+      "Subscription usage: Claude · me@example.com 37% left (Runs out in 2d 1h), Codex · me@example.com 70% left, Cursor 80% left, GitHub Copilot · me 100% left, Grok 100% left, Antigravity —");
+    assert.deepEqual(await page.locator(".usage-chip-value").allTextContents(), ["37%", "70%", "80%"]);
     await strip.click();
-    assert.deepEqual((await names()).slice(0, 3), ["Claude · me@example.com", "Cursor", "Codex · me@example.com"], "a hidden account is left out of the popover too");
+    assert.deepEqual((await names()).slice(0, 3), ["Claude · me@example.com", "Codex · me@example.com", "Cursor"], "a hidden account is left out of the popover too");
     assert.equal(await popover.locator(".usage-provider").count(), 6);
     assert.equal(await popover.locator(".usage-row-value").first().textContent(), "58% left");
     const leftMarker = await marker();
@@ -142,7 +147,7 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
     // the session instead of the week: an account without one keeps the limit it has
     await page.locator('.segmented[aria-label="Limit shown"]').getByRole("button", { name: "Session", exact: true }).click();
     await page.keyboard.press("Escape");
-    assert.match(await strip.getAttribute("aria-label") ?? "", /^Subscription usage: Claude · me@example.com 58% left, Cursor 80% left, Codex · me@example.com 70% left,/);
+    assert.match(await strip.getAttribute("aria-label") ?? "", /^Subscription usage: Claude · me@example.com 58% left, Codex · me@example.com 70% left, Cursor 80% left,/);
     const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("herdr-web-ui:settings") ?? "{}") as { usageHidden?: string[]; usageCount?: string; usageGlance?: string });
     assert.deepEqual([stored.usageHidden, stored.usageCount, stored.usageGlance], [["codex:work"], "left", "session"]);
 
@@ -151,10 +156,15 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
     await openSettingsPage(page, "Subscription usage");
     await toggle.click();
     await strip.waitFor({ state: "detached" });
-    const before = asked.length;
+    assert.equal(await page.locator(".usage-accounts-intro .settings-note").count(), 1);
+    assert.equal(await page.locator(".usage-provider").count(), 0, "disabled meters leave no provider placeholders");
+    // a request Settings made before the switch can still be on its way here, so the count is of
+    // the reloaded page's own requests, not of what arrives after the reload
+    await context.setExtraHTTPHeaders({ [RELOADED]: "1" });
     await page.reload();
     await page.locator(".sidebar-footer").waitFor();
-    assert.equal(asked.length, before, "a hidden strip asks for nothing");
+    assert.deepEqual(afterReload, [], "a hidden strip asks for nothing");
+    await context.setExtraHTTPHeaders({});
     assert.deepEqual(errors, []);
   } finally {
     await context.close();
@@ -181,14 +191,68 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
     await page.locator(".sidebar-footer-row .sidebar-footer-action").click();
     await openSettingsPage(page, "Subscription usage");
     const accounts = page.locator(".usage-accounts");
-    await accounts.scrollIntoViewIfNeeded();
+    await accounts.first().scrollIntoViewIfNeeded();
     assert.equal(await accounts.locator(".usage-accounts-row").count(), 7);
-    assert.equal(await accounts.evaluate((card) => [...card.querySelectorAll(".usage-accounts-row")].every((row) => row.scrollWidth <= row.clientWidth)), true, "each account row fits the phone");
+    assert.equal(await accounts.evaluateAll((cards) => cards.every((card) => [...card.querySelectorAll(".usage-accounts-row")].every((row) => row.scrollWidth <= row.clientWidth))), true, "each account row fits the phone");
     if (process.env.UI_EVIDENCE_DIR) {
       await page.getByRole("tabpanel", { name: "Subscription usage", exact: true }).screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "usage-settings-phone.png") });
     }
   } finally {
     await phone.close();
   }
+  // Owned provider outcomes cross the same HTTP report seam as the meters.
+  // Each account's error must be announced without making a healthy sign-in assertive.
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    const accounts = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640, locale: "en-US" });
+    try {
+      const problems = ["expired", "failed", "rate_limited", "locked", null] as const;
+      await staged(accounts, () => ({ providers: problems.map(problem => ({
+        id: "claude" as const, key: `claude:owned-${problem ?? "healthy"}`,
+        account: `${problem ?? "healthy"}@example.test`, plan: "owned", problem, checked_at: at(0), windows: [],
+      })) }));
+      await accounts.addInitScript(() => localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en", showUsage: true })));
+      const page = await accounts.newPage(); page.setDefaultTimeout(10_000);
+      const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
+      await page.goto(`${origin}/?settings=usage`);
+      await openSettingsPage(page, "Subscription usage");
+      for (const problem of problems) {
+        const account = `${problem ?? "healthy"}@example.test`;
+        const row = page.locator(".usage-accounts-row").filter({ has: page.getByText(account, { exact: true }) });
+        const status = problem === null ? "Signed in" : problem === "expired" ? "Expired" : "Failed";
+        await row.getByText(status, { exact: true }).waitFor();
+        console.log(JSON.stringify({ viewport: viewport.width, problem, account, status, role: await row.locator(".usage-account-status").getAttribute("role") }));
+        await row.getByRole(problem === null ? "status" : "alert").filter({ hasText: status }).waitFor();
+        assert.equal(await row.getByRole(problem === null ? "alert" : "status").count(), 0);
+      }
+      assert.equal(await page.locator(".usage-accounts-row").count(), 5);
+      assert.equal(await page.locator(".usage-accounts-row").evaluateAll(rows => rows.every(row => row.scrollWidth <= row.clientWidth)), true);
+      assert.deepEqual(errors, []);
+    } finally { await accounts.close(); }
+  }
   console.log("PASS plan meters beside Settings: accounts, order, hiding, used or left, overflow, popover, refresh, Escape, off switch and phone fit");
+}
+
+if (import.meta.main) {
+  await import("./test-herdr.ts");
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { chromium } = await import("playwright-core");
+  const { chromePath } = await import("./chrome-path.ts");
+  const { createServer } = await import("../server/index.ts");
+  const { UsageService } = await import("../server/usage.ts");
+  const root = mkdtempSync(join(tmpdir(), "herdr-usage-meters-"));
+  let server: ReturnType<typeof createServer> | undefined;
+  let browser: Browser | undefined;
+  try {
+    server = createServer({
+      port: 0, hostname: "127.0.0.1", token: "", stateDir: root,
+      usage: new UsageService(undefined, []),
+    });
+    browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
+    await checkUsageMeters(browser, `http://127.0.0.1:${server.port}`);
+  } finally {
+    await browser?.close();
+    server?.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
 }

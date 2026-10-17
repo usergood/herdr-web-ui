@@ -1,5 +1,5 @@
 import { readyIssuePlanningStep } from "../shared/issue-queue.ts";
-import type { FactoryProject, FactoryRun, Implementation, ProjectCheckout } from "../shared/protocol.ts";
+import type { FactoryCapacityWait, FactoryProject, FactoryRun, Implementation, ProjectCheckout } from "../shared/protocol.ts";
 import { FactoryError, hash } from "./factory-host.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { FactoryWorkflow } from "./factory-workflow.ts";
@@ -8,19 +8,33 @@ import { FactoryRuntime } from "./factory-runtime.ts";
 interface Continuation {
   id: string; implementation_id: string; key: string; signature: string;
   body: Record<string, unknown>; origin: string; scope_hash: string; run_id: string | null;
-  condition: "starting" | "verifying" | "started" | "failed";
+  condition: "starting" | "queued" | "verifying" | "started" | "failed";
+  queued_request?: Record<string, unknown>;
+  queued_source_id?: string;
   problem: string | null;
   verification_deadline?: number;
 }
 
 /** One explicit owner Continue retains the handoff and advances an approved scope. */
 export class FactoryContinuation {
-  private readonly pending = new Map<string, Promise<FactoryRun>>();
+  private readonly pending = new Map<string, Promise<FactoryRun | FactoryCapacityWait>>();
   private readonly verifying = new Set<string>();
   private readonly retries = new Map<string, ReturnType<typeof setTimeout>>();
   private stopped = false;
   stop(): void { this.stopped = true; for (const timer of this.retries.values()) clearTimeout(timer); this.retries.clear(); }
   constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly runtime: FactoryRuntime, private readonly retain: (id: string, allowPartial: boolean) => Promise<void>) {
+    runtime.queue.continuing = (id, body) => this.store.list<Continuation>("workflow_continuations", id).some(entry => entry.condition === "queued" && entry.queued_source_id && hash(JSON.stringify(entry.queued_request)) === hash(JSON.stringify(body)));
+    runtime.queue.continueWorkflow = (id, body, origin) => {
+      const record = this.store.list<Continuation>("workflow_continuations", id).find(entry => entry.condition === "queued" && entry.queued_request?.idempotency_key === body.idempotency_key);
+      return record ? this.admit(record, body, origin) : null;
+    };
+    runtime.queue.onRun = run => {
+      const record = this.store.list<Continuation>("workflow_continuations", run.implementation_id).find(entry => entry.key === run.idempotency_key || entry.queued_request?.idempotency_key === run.idempotency_key);
+      if (!record || this.stopped) return;
+      const verifying = run.action === "verify-provider" && record.body.action === "implement-spec";
+      this.store.put("workflow_continuations", { ...record, run_id: run.id, condition: verifying ? "verifying" : "started", problem: null }, run.implementation_id);
+      if (verifying) this.retry(run.id);
+    };
     for (const record of this.store.list<Continuation>("workflow_continuations")) if (record.condition === "verifying" && record.run_id) this.retry(record.run_id);
   }
 
@@ -41,7 +55,7 @@ export class FactoryContinuation {
     timer.unref(); this.retries.set(runId, timer);
   }
 
-  start(id: string, body: Record<string, unknown>, origin: string): Promise<FactoryRun> {
+  start(id: string, body: Record<string, unknown>, origin: string): Promise<FactoryRun | FactoryCapacityWait> {
     if (this.stopped) return Promise.reject(new FactoryError("stopping", "The bridge is stopping; retain the current workflow", 409));
     if (this.pending.has(id)) return Promise.reject(new FactoryError("continuation_busy", "This Assignment is already continuing; refresh its current step", 409));
     const operation = this.advance(id, body, origin);
@@ -79,13 +93,14 @@ export class FactoryContinuation {
     this.validate(id, body);
     if (body.action === "implement-spec" && body.issue_scope !== undefined) this.runtime.validateIssueScope(id, body.issue_scope, planningRunId);
   }
-  private async advance(id: string, body: Record<string, unknown>, origin: string): Promise<FactoryRun> {
+  private async advance(id: string, body: Record<string, unknown>, origin: string): Promise<FactoryRun | FactoryCapacityWait> {
     const signature = hash(JSON.stringify(body));
     const previous = this.store.list<Continuation>("workflow_continuations", id).find(record => record.key === body.idempotency_key);
     if (previous) {
       if (previous.signature !== signature) throw new FactoryError("continuation_conflict", "This Continue key belongs to another scope", 409);
       const run = previous.run_id ? this.store.get<FactoryRun>("runs", previous.run_id) : null;
       if (run) return run;
+      if (previous.condition === "queued" && previous.queued_request) return this.runtime.requestStart(id, previous.queued_request, previous.origin);
       throw new FactoryError("continuation_uncertain", previous.problem ?? "The previous Continue needs reconciliation; it was not replayed", 409);
     }
     this.validate(id, body);
@@ -111,25 +126,47 @@ export class FactoryContinuation {
     this.validateScope(id, scopeHash, body);
     const record: Continuation = { id: this.store.record().id, implementation_id: id, key: String(body.idempotency_key), signature, body, origin, scope_hash: scopeHash, run_id: null, condition: "starting", problem: null };
     this.store.put("workflow_continuations", record, id);
+    // Preserve the original authorization separately from the selected probe. The
+    // durable queued intent reconstructs predecessor handoff after a restart.
+    // Initial handoff stays outside the drain: a Machine may acknowledge it only
+    // after another public request settles. The final reservation still uses FIFO.
+    const startBody = action === "verify-provider" && body.action === "implement-spec" ? { ...body, issue_scope: undefined } : body;
+    const intent = { ...record, condition: "starting" as const, queued_request: { ...startBody, action }, ...(source && !["completed", "cancelled", "failed"].includes(source.condition) ? { queued_source_id: source.id } : {}) };
+    this.store.put("workflow_continuations", intent, id);
     try {
-      // Keep issue authorization on the durable intent; verification itself has no
-      // implementation scope. The successor rechecks the original displayed scope.
-      const startBody = action === "verify-provider" && body.action === "implement-spec" ? { ...body, issue_scope: undefined } : body;
-      const run = await this.runtime.start(id, { ...startBody, action }, origin, { validateScope: () => this.validateScope(id, record.scope_hash, body), ...(source && !["completed", "cancelled", "failed"].includes(source.condition) ? { runId: source.id, finish: async () => {
-        const observed = await this.runtime.reconcile(source.id);
-        if (observed.condition !== "ready") throw new FactoryError("step_not_ready", observed.waiting_reason ?? "The current step is still working; continue when its proposal is ready", 409);
-        await this.retain(source.id, body.allow_partial_handoff === true);
-        const finished = await this.runtime.finishStep(source.id);
-        if (body.issue_scope !== undefined && finished.condition !== "completed") throw new FactoryError("step_not_finished", "Observe the retained planning step before continuing", 409);
-      } } : {}) });
-      if (this.stopped) return run;
-      this.store.put("workflow_continuations", { ...record, run_id: run.id, condition: action === "verify-provider" && body.action === "implement-spec" ? "verifying" : "started" }, id);
+      const run = await this.admit(intent, intent.queued_request, origin, false);
+      if (!this.stopped) this.runtime.queue.onRun?.(run);
       return run;
     } catch (error) {
       if (this.stopped) throw error;
-      this.store.put("workflow_continuations", { ...record, condition: "failed", problem: error instanceof FactoryError ? error.message : "Continue could not be confirmed; inspect retained ownership" }, id);
+      const predecessorFinished = !intent.queued_source_id || this.store.get<FactoryRun>("runs", intent.queued_source_id)?.condition === "completed";
+      if (predecessorFinished && error instanceof FactoryError && ["capacity_exhausted", "machine_offline", "machine_disconnected", "remote_factory_unavailable"].includes(error.code)) {
+        this.store.put("workflow_continuations", { ...intent, condition: "queued" }, id);
+        return this.runtime.requestStart(id, intent.queued_request, origin);
+      }
+      if (!this.stopped) this.store.put("workflow_continuations", { ...intent, condition: "failed", problem: error instanceof FactoryError ? error.message : "Continue could not be confirmed; inspect retained ownership" }, id);
       throw error;
     }
+  }
+
+  private async admit(record: Continuation, body: Record<string, unknown>, origin: string, admitting = true): Promise<FactoryRun> {
+    const id = record.implementation_id;
+    if (this.stopped || hash(JSON.stringify(body)) !== hash(JSON.stringify(record.queued_request))) throw new FactoryError("continuation_uncertain", "The retained Continue request changed; inspect its scope", 409);
+    const sourceId = record.queued_source_id;
+    const validate = () => this.validateScope(id, record.scope_hash, record.body, sourceId);
+    validate();
+    const source = sourceId ? this.store.get<FactoryRun>("runs", sourceId) : null;
+    if (sourceId && (!source || source.implementation_id !== id || ["cancelled", "failed"].includes(source.condition))) throw new FactoryError("step_changed", "The retained predecessor was stopped or changed; submit a new explicit Continue", 409);
+    if (source?.action === "verify-provider" && record.body.action === "implement-spec") await this.runtime.verifyProvider(source);
+    return this.runtime.start(id, body, origin, { runId: sourceId, validateScope: validate, ...(source ? { finish: async () => {
+      const current = this.store.get<FactoryRun>("runs", source.id);
+      if (current?.condition === "completed") return;
+      const observed = await this.runtime.reconcile(source.id);
+      if (observed.condition !== "ready") throw new FactoryError("step_not_ready", observed.waiting_reason ?? "The current step is still working; continue when its proposal is ready", 409);
+      await this.retain(source.id, record.body.allow_partial_handoff === true);
+      const finished = await this.runtime.finishStep(source.id);
+      if (record.body.issue_scope !== undefined && finished.condition !== "completed") throw new FactoryError("step_not_finished", "Observe the retained planning step before continuing", 409);
+    } } : {}) }, admitting);
   }
 
   /** Collector/consumption events may complete a probe only under retained owner intent. */
@@ -143,19 +180,27 @@ export class FactoryContinuation {
       const run = await this.runtime.reconcile(runId);
       if (this.stopped) return;
       if (["working", "needs_you", "blocked"].includes(run.condition)) { this.retry(runId); return; }
-      if (run.condition !== "ready") return;
+      if (run.condition !== "ready") { this.retry(runId); return; }
       this.validate(record.implementation_id, record.body);
       this.validateScope(record.implementation_id, record.scope_hash, record.body, runId);
       await this.runtime.verifyProvider(run);
       if (this.stopped) return;
       this.validateScope(record.implementation_id, record.scope_hash, record.body, runId);
-      // All evidence and approvals are still checked by normal factory admission.
-      const next = await this.runtime.start(record.implementation_id, { ...record.body, idempotency_key: `${record.key.slice(0, 110)}-verified` }, record.origin, { runId, validateScope: () => this.validateScope(record.implementation_id, record.scope_hash, record.body, runId), finish: async () => {
-        await this.retain(runId, false);
-        await this.runtime.finishStep(runId);
-      } });
-      if (this.stopped) return;
-      this.store.put("workflow_continuations", { ...record, run_id: next.id, condition: "started", problem: null }, record.implementation_id);
+      // Queue the successor under the same retained owner scope. No callback or
+      // native input is reconstructed from memory after reconnect/restart.
+      const intent = { ...record, condition: "starting" as const, queued_source_id: runId, queued_request: { ...record.body, idempotency_key: `${record.key.slice(0, 110)}-verified` }, problem: null };
+      this.store.put("workflow_continuations", intent, record.implementation_id);
+      try {
+        const next = await this.admit(intent, intent.queued_request, record.origin, false);
+        if (!this.stopped) this.runtime.queue.onRun?.(next);
+      } catch (error) {
+        if (this.stopped) return;
+        const predecessorFinished = this.store.get<FactoryRun>("runs", runId)?.condition === "completed";
+        if (predecessorFinished && error instanceof FactoryError && ["capacity_exhausted", "machine_offline", "machine_disconnected", "remote_factory_unavailable"].includes(error.code)) {
+          this.store.put("workflow_continuations", { ...intent, condition: "queued" }, record.implementation_id);
+          await this.runtime.requestStart(record.implementation_id, intent.queued_request, record.origin);
+        } else throw error;
+      }
     } catch (error) {
       // Missing native evidence remains an honest wait. Other failures require an
       // explicit new Continue rather than restarting unattended after an ambiguity.

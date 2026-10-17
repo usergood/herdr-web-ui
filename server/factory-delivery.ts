@@ -1,7 +1,14 @@
 import { hasIssueSource } from "./issue-delivery.ts";
-import type { FactoryRun, FactoryWorker, FactoryCheck, FactoryQuestion, ReviewSnapshot, Implementation } from "../shared/factory.ts";
+import type { FactoryRun, FactoryWorker, FactoryCheck, FactoryQuestion, ReviewSnapshot, Implementation, DeliveryChange } from "../shared/factory.ts";
 import type { FactoryStore } from "./factory-store.ts";
 import type { FactoryRuntime } from "./factory-runtime.ts";
+
+/** Exact intended Git content, including mode changes, deletions and renamed paths. */
+export interface DeliveryTree { truncated: boolean; tree: { path: string; mode: string; type: string; sha: string }[] }
+export function containsDeliveryChange(tree: DeliveryTree, file: DeliveryChange): boolean {
+  const entry = tree.tree.find(entry => entry.path === file.path);
+  return file.oid === null ? !entry : entry?.sha === file.oid && entry.mode === file.mode && (!file.old_path || !tree.tree.some(entry => entry.path === file.old_path));
+}
 
 /** A later owner question cannot revive execution already accepted and stopped.
  * This observes physical retirement only; completion and delivery keep their gates. */
@@ -33,6 +40,7 @@ export class FactoryDelivery {
     const runs = this.store.list<FactoryRun>("runs", id);
     let changes: "none" | "changes" | "unknown" = this.store.list<ReviewSnapshot>("snapshots", id).some(snapshot => snapshot.files.length > 0) ? "changes" : "none";
     let quiescent = true;
+    let failed = false;
     try {
       for (const run of runs) {
         const observed = await this.runtime.reconcile(run.id);
@@ -52,8 +60,8 @@ export class FactoryDelivery {
           }
         }
       }
-    } catch { changes = changes === "changes" ? "changes" : "unknown"; quiescent = false; }
-    const evidence: NonNullable<Implementation["completion_evidence"]> = { repository_changes: changes, quiescent, reason: changes === "changes" && (!manualCompletionAllowed(this.store, idea) || hasIssueSource(this.store, id)) ? "Repository changes require verified PR delivery. Link the delivery evidence before completing this Assignment." : changes === "unknown" ? "Repository change evidence is unavailable. Reconnect the Machine and inspect the retained work before accepting research." : !quiescent ? "Owned work is still active or uncertain. Reconcile it before accepting research." : null, checked_at: new Date().toISOString() };
+    } catch { changes = changes === "changes" ? "changes" : "unknown"; quiescent = false; failed = true; }
+    const evidence: NonNullable<Implementation["completion_evidence"]> = { repository_changes: changes, quiescent, reason_is_error: failed, reason: failed ? "Repository change evidence is unavailable. Reconnect the Machine and inspect the retained work before accepting research." : changes === "changes" && (!manualCompletionAllowed(this.store, idea) || hasIssueSource(this.store, id)) ? "Repository changes require verified PR delivery. Link the delivery evidence before completing this Assignment." : changes === "unknown" ? "Repository change evidence is unavailable. Reconnect the Machine and inspect the retained work before accepting research." : !quiescent ? "Owned work is still active or uncertain. Reconcile it before accepting research." : null, checked_at: new Date().toISOString() };
     const current = this.store.get<Implementation>("implementations", id)!;
     this.store.put("implementations", { ...current, completion_evidence: evidence });
     return evidence;

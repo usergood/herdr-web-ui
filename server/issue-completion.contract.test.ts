@@ -5,6 +5,7 @@ import { githubReviewFixture } from "../scripts/fixtures/github-review.ts";
 import { summarizeIssueAdmission, type IssueAdmission } from "../shared/issue-admission.ts";
 import { githubDeliveryResponses } from "../scripts/fixtures/github-delivery.ts";
 import type { ProjectPullRequest } from "../shared/github-project.ts";
+import type { FactoryRun } from "../shared/factory.ts";
 
 test("review browser origin reaches retained Assignment state after restart", async () => {
   const fixture = githubReviewFixture();
@@ -18,6 +19,12 @@ test("review browser origin reaches retained Assignment state after restart", as
     expect((await response.json()).implementation).toMatchObject({ id: assignment.id, title: "Retained review Assignment" });
   } finally { retired?.stop(true); fixture.close(); }
 });
+
+async function observeReviewedRest(fixture: ReturnType<typeof githubReviewFixture>, run: FactoryRun, head: string): Promise<void> {
+  // A child-summary delivery acknowledgment does not prove the coordinator's turn rested.
+  const observed = await fixture.json(`/runs/${run.id}/reconcile`, {});
+  expect(observed).toMatchObject({ id: run.id, implementation_id: run.implementation_id, machine_id: run.machine_id, worktree: run.worktree, branch: run.branch, workspace_id: run.workspace_id, pane_id: run.pane_id, condition: "completed", implementation_completion: { head } });
+}
 
 async function prepareManual(fixture: ReturnType<typeof githubReviewFixture>) {
   const { project, route } = await fixture.setup();
@@ -38,6 +45,7 @@ test("owner acceptance completes a manual Assignment and allows archiving withou
     await fixture.integrate(run);
     const check = await fixture.json(`/runs/${run.id}/checks`, {});
     await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    await observeReviewedRest(fixture, run, check.head);
     await fixture.json(`/runs/${run.id}/accept`, { head: check.head });
     const detail = await fixture.json(path);
     expect(detail.github_sources).toEqual([]);
@@ -189,6 +197,7 @@ test("accepting a checked and independently reviewed issue implementation awaits
     await fixture.integrate(run);
     const check = await fixture.json(`/runs/${run.id}/checks`, {});
     await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    await observeReviewedRest(fixture, run, check.head);
     expect((await fixture.post(`/runs/${run.id}/accept`, { head: check.head })).status).toBe(200);
     const detail = await fixture.json(path);
     expect(detail.implementation).toMatchObject({ stage: "review", outcome: "implementation_complete" });
@@ -201,7 +210,7 @@ test("owner Retry cannot bypass a failed-looking parent whose retirement is stil
   const fixture = githubReviewFixture();
   try {
     const { run, path, route } = await fixture.prepare();
-    await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: false, max_implementations: 2 });
+    await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: false });
     await fixture.integrate(run); await fixture.json(`/runs/${run.id}/checks`, {});
     await fixture.review(run, "standards"); await fixture.review(run, "spec");
     fixture.setStopCondition("failed");
@@ -213,7 +222,7 @@ test("owner Retry cannot bypass a failed-looking parent whose retirement is stil
   } finally { fixture.close(); }
 }, 20_000);
 
-test("restart keeps uncertain retirement recoverable through public controls while retaining its slot", async () => {
+test("restart keeps uncertain retirement recoverable through public controls while retaining ownership", async () => {
   const fixture = githubReviewFixture();
   try {
     const { run, path, route } = await fixture.prepare();
@@ -222,15 +231,15 @@ test("restart keeps uncertain retirement recoverable through public controls whi
     fixture.setUncertainStop(true);
     expect((await fixture.post(`/runs/${run.id}/reconcile`, {})).status).toBe(409);
     fixture.restart();
-    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1, available_slots: 0 });
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1 });
     expect((await fixture.json(path)).runs[0].implementation_completion_pending).toBe(true);
     fixture.setUncertainStop(false);
     expect((await fixture.json(`/runs/${run.id}/reconcile`, {})).condition).toBe("completed");
-    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 0, available_slots: 1 });
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 0 });
   } finally { fixture.close(); }
 }, 20_000);
 
-test("uncertain implementation retirement cannot authorize cleanup or release its slot", async () => {
+test("uncertain implementation retirement cannot authorize cleanup or certify stopped ownership", async () => {
   const fixture = githubReviewFixture();
   try {
     const { run, path, route } = await fixture.prepare();
@@ -241,7 +250,7 @@ test("uncertain implementation retirement cannot authorize cleanup or release it
     expect((await fixture.post(`/runs/${run.id}/cleanup`, {})).status).toBe(409);
     fixture.restart();
     expect((await fixture.json(path)).runs[0].implementation_completion_pending).toBe(true);
-    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1, available_slots: 0 });
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1 });
   } finally { fixture.close(); }
 }, 20_000);
 
@@ -274,7 +283,7 @@ test.each(["worker", "build"])("a retained %s still owns capacity after a coordi
     }
     fixture.setCoordinator("completed"); await fixture.json(`/runs/${run.id}/reconcile`, {});
     fixture.restart();
-    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1, available_slots: 0 });
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1 });
     expect((await fixture.post(`/runs/${run.id}/accept`, { head: "a".repeat(40) })).status).toBe(409);
   } finally { fixture.close(); }
 }, 20_000);
@@ -288,12 +297,12 @@ test.each(["failed", "stale"])("%s review evidence cannot finish implementation 
     if (kind === "failed") fixture.setReview("failed"); else fixture.setHead("b".repeat(40));
     await fixture.review(run, "spec");
     await fixture.json(`/runs/${run.id}/reconcile`, {});
-    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1, available_slots: 0 });
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1 });
     expect((await fixture.json(path)).implementation.activity).toBeUndefined();
   } finally { fixture.close(); }
 }, 20_000);
 
-test("stale completion keeps Needs you and its slot across cached native cancellation and restart until exact proof is restored", async () => {
+test("stale completion keeps Needs you and ownership across cached native cancellation and restart until exact proof is restored", async () => {
   const fixture = githubReviewFixture();
   try {
     fixture.setNativeIdentity();
@@ -306,13 +315,13 @@ test("stale completion keeps Needs you and its slot across cached native cancell
     for (let attempt = 0; attempt < 3; attempt++) {
       if (attempt === 1) fixture.restart();
       expect(await fixture.json(`/runs/${run.id}/reconcile`, {})).toMatchObject({ condition: "needs_you", waiting_reason: expect.stringContaining("evidence changed") });
-      expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1, available_slots: 0 });
+      expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1 });
       expect((await fixture.post(`/runs/${run.id}/cleanup`, {})).status).toBe(409);
       expect((await fixture.json(path)).implementation.activity).toBeUndefined();
     }
     fixture.setHead(check.head);
     expect((await fixture.json(`/runs/${run.id}/reconcile`, {})).condition).toBe("completed");
-    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 0, available_slots: 1 });
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 0 });
     expect((await fixture.post(`/runs/${run.id}/cleanup`, {})).status).toBe(409);
     await fixture.json(`/runs/${run.id}/accept`, { head: check.head });
     expect((await fixture.post(`/runs/${run.id}/cleanup`, {})).status).toBe(200);
@@ -327,7 +336,7 @@ test("a revision changed during native retirement cannot release implementation 
     await fixture.review(run, "standards"); await fixture.review(run, "spec");
     fixture.setStopHead("b".repeat(40));
     expect((await fixture.post(`/runs/${run.id}/reconcile`, {})).status).toBe(409);
-    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1, available_slots: 0 });
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1 });
     expect((await fixture.json(path)).implementation.activity).toBeUndefined();
   } finally { fixture.close(); }
 }, 20_000);
@@ -342,10 +351,10 @@ test("confirmed native retirement with a changed checkout recovers after restart
     expect((await fixture.post(`/runs/${run.id}/reconcile`, {})).status).toBe(409);
     fixture.restart();
     expect((await fixture.json(`/runs/${run.id}/reconcile`, {})).condition).toBe("needs_you");
-    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1, available_slots: 0 });
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1 });
     fixture.setHead(check.head);
     expect((await fixture.json(`/runs/${run.id}/reconcile`, {})).condition).toBe("completed");
-    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 0, available_slots: 1 });
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 0 });
   } finally { fixture.close(); }
 }, 15_000);
 
@@ -442,7 +451,7 @@ test.each(["unknown", "working", "failed"] as const)("%s Stop during paused reti
     await fixture.post(`/runs/${run.id}/stop`, {});
     fixture.restart(); await fixture.json(`/runs/${run.id}/reconcile`, {});
     expect((await fixture.json(path)).runs[0]).toMatchObject({ implementation_completion_pending: true, issue_pause: { reason: "scope_changed" }, manifest: run.manifest });
-    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1, available_slots: 0 });
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1 });
     expect((await fixture.post(`/runs/${run.id}/cleanup`, {})).status).toBe(409);
     expect((await fixture.post(`/runs/${run.id}/retry`, { idempotency_key: "uncertain-pause-retry", issue_scope: (run.manifest as any).issue_admission })).status).toBe(409);
     fixture.setUncertainStop(false); fixture.setStopCondition("cancelled");
@@ -472,7 +481,7 @@ test.each(["worker", "build"] as const)("paused historical retirement cannot cle
     expect(stopped).toMatchObject({ condition: "cancelled", implementation_completion_pending: true, issue_pause: paused.issue_pause });
     fixture.restart();
     expect((await fixture.json(`/runs/${run.id}/reconcile`, {})).implementation_completion_pending).toBe(true);
-    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1, available_slots: 0 });
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1 });
     expect((await fixture.post(`/runs/${run.id}/cleanup`, {})).status).toBe(409);
   } finally { fixture.close(); }
 }, 20_000);
@@ -485,7 +494,7 @@ test("an uncertain stop response retains capacity despite finished checks and re
     await fixture.review(run, "standards"); await fixture.review(run, "spec");
     fixture.setStopCondition("working");
     expect((await fixture.post(`/runs/${run.id}/reconcile`, {})).status).toBe(409);
-    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1, available_slots: 0 });
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1 });
     expect((await fixture.json(path)).implementation.activity).toBeUndefined();
   } finally { fixture.close(); }
 }, 20_000);
@@ -495,30 +504,34 @@ test("owner acceptance cannot release a still-working implementation coordinator
   try {
     const { run, path } = await fixture.prepare();
     await fixture.integrate(run); const check = await fixture.json(`/runs/${run.id}/checks`, {});
-    await fixture.review(run, "standards"); await fixture.review(run, "spec");
     fixture.setCoordinator("working");
+    expect((await fixture.json(`/runs/${run.id}/reconcile`, {})).condition).toBe("working");
+    await fixture.review(run, "standards"); await fixture.review(run, "spec");
     const accepted = await fixture.post(`/runs/${run.id}/accept`, { head: check.head });
     expect(accepted.status).toBe(409);
     expect((await fixture.json(path)).approvals).toEqual([]);
     fixture.setCoordinator("ready");
+    expect((await fixture.json(`/runs/${run.id}/reconcile`, {})).condition).toBe("completed");
     expect((await fixture.post(`/runs/${run.id}/accept`, { head: check.head })).status).toBe(200);
   } finally { fixture.close(); }
 }, 20_000);
 
-test("a changed checked workspace reclaims released capacity before unrelated admission", async () => {
+test("a changed checked workspace invalidates its own completion without blocking unrelated Agent admission", async () => {
   const fixture = githubReviewFixture();
   try {
     fixture.save([fixture.issue, { ...fixture.issue, number: 2, node_id: "fictional-2", title: "Unrelated scope" }]);
     const { run, path, route, readiness } = await fixture.prepare();
     const second = await fixture.second(route, readiness);
-    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1, available_slots: 0 });
-    await fixture.integrate(run); await fixture.json(`/runs/${run.id}/checks`, {});
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1 });
+    await fixture.integrate(run); const check = await fixture.json(`/runs/${run.id}/checks`, {});
     await fixture.review(run, "standards"); await fixture.review(run, "spec");
     await fixture.json(`/runs/${run.id}/reconcile`, {});
     fixture.setWorkspaceHash("changed-after-review");
-    const refused = await fixture.post(second.path + "/runs", second.start);
-    expect(refused.status).toBe(409);
-    expect((await fixture.json(second.path)).runs).toEqual([]);
+    expect((await fixture.post(second.path + "/runs", second.start)).status).toBe(202);
+    expect((await fixture.json(second.path)).runs).toMatchObject([{ condition: "working" }]);
+    const acceptance = await fixture.post(`/runs/${run.id}/accept`, { head: check.head });
+    expect(acceptance.status).toBe(409);
+    expect((await fixture.json(path)).approvals).toEqual([]);
     expect((await fixture.json(path)).implementation.activity).toBeUndefined();
   } finally { fixture.close(); }
 }, 20_000);
@@ -531,6 +544,7 @@ test("verified owner cleanup preserves exact completion and released capacity ac
     const second = await fixture.second(route, readiness);
     await fixture.integrate(run); const check = await fixture.json(`/runs/${run.id}/checks`, {});
     await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    await observeReviewedRest(fixture, run, check.head);
     await fixture.json(`/runs/${run.id}/accept`, { head: check.head });
     const completion = (await fixture.json(path)).runs[0].implementation_completion;
     expect(await fixture.json(`/runs/${run.id}/cleanup`, {})).toMatchObject({ removed: [run.worktree], branches_retained: true, notes_retained: true });
@@ -539,9 +553,9 @@ test("verified owner cleanup preserves exact completion and released capacity ac
       const reconciled = await fixture.json(`/runs/${run.id}/reconcile`, {});
       expect(reconciled.condition).toBe("completed");
       expect(reconciled.implementation_completion).toEqual(completion);
-      expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 0, available_slots: 1 });
+      expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 0 });
     }
-    await fixture.json("/settings", { max_implementations: 1 });
+    await fixture.json("/settings", { max_agents: 1 });
     expect((await fixture.post(second.path + "/runs", second.start)).status).toBe(202);
     expect((await fixture.json(path)).implementation).toMatchObject({ stage: "review", activity: "awaiting_merge" });
   } finally { fixture.close(); }
@@ -620,6 +634,7 @@ test("accepting an earlier Run at the same head does not authorize cleanup of it
     const { run, path } = await prepareManual(fixture);
     await fixture.integrate(run); const check = await fixture.json(`/runs/${run.id}/checks`, {});
     await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    await observeReviewedRest(fixture, run, check.head);
     await fixture.json(`/runs/${run.id}/accept`, { head: check.head });
     const successor = await fixture.json(path + "/runs", { action: "implement-spec", idempotency_key: "unaccepted-successor" });
     await fixture.integrate(successor); await fixture.json(`/runs/${successor.id}/checks`, {});
@@ -639,6 +654,7 @@ test.each(["unexpected", "lost", "unconfirmed", "other_checkout"] as const)("%s 
     const { run, path, route } = await fixture.prepare();
     await fixture.integrate(run); const check = await fixture.json(`/runs/${run.id}/checks`, {});
     await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    await observeReviewedRest(fixture, run, check.head);
     await fixture.json(`/runs/${run.id}/accept`, { head: check.head });
     if (kind === "unexpected") fixture.setHeadUnavailable();
     else {
@@ -646,7 +662,7 @@ test.each(["unexpected", "lost", "unconfirmed", "other_checkout"] as const)("%s 
       expect((await fixture.post(`/runs/${run.id}/cleanup`, {})).status).toBe(kind === "lost" ? 503 : 200);
     }
     fixture.restart();
-    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1, available_slots: 0 });
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1 });
     const detail = await fixture.json(path);
     expect(detail.runs[0].implementation_completion).toBeUndefined();
     expect(detail.implementation.activity).toBeUndefined();
@@ -659,11 +675,12 @@ test.each(["before", "after"])("a workspace changed %s cleanup cannot establish 
     const { run, path, route } = await fixture.prepare();
     await fixture.integrate(run); const check = await fixture.json(`/runs/${run.id}/checks`, {});
     await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    await observeReviewedRest(fixture, run, check.head);
     await fixture.json(`/runs/${run.id}/accept`, { head: check.head });
     if (when === "after") await fixture.json(`/runs/${run.id}/cleanup`, {});
     fixture.setHeadUnavailable(false); fixture.setWorkspaceHash("changed-checkout");
     expect((await fixture.post(`/runs/${run.id}/cleanup`, {})).status).toBe(409);
-    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1, available_slots: 0 });
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1 });
     expect((await fixture.json(path)).runs[0].implementation_completion).toBeUndefined();
   } finally { fixture.close(); }
 }, 20_000);
@@ -679,7 +696,7 @@ test("frozen setup and checks allow independent-review retirement, slot release 
     await fixture.review(run, "standards"); await fixture.review(run, "spec");
     const finished = await fixture.json(`/runs/${run.id}/reconcile`, {});
     expect(finished).toMatchObject({ condition: "completed", implementation_completion: { head: check.head, workspace_hash: check.workspace_hash, check_id: check.id } });
-    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 0, available_slots: 1 });
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 0 });
     expect((await fixture.json(path)).approvals).toEqual([]);
     expect((await fixture.post(`/runs/${run.id}/accept`, { head: check.head })).status).toBe(200);
     expect((await fixture.json(path)).approvals).toContainEqual(expect.objectContaining({ kind: "review", revision: check.head }));
@@ -720,7 +737,7 @@ test.each([
     expect(check.condition).toBe("passed");
     await fixture.review(run, "standards"); await fixture.review(run, "spec");
     expect((await fixture.json(`/runs/${run.id}/reconcile`, {})).condition).toBe("ready");
-    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1, available_slots: 0 });
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1 });
     const accepted = await fixture.post(`/runs/${run.id}/accept`, { head: check.head });
     expect(accepted.status).toBe(409); expect((await accepted.json()).error.code).toBe("fresh_evidence_required");
     const detail = await fixture.json(path);
@@ -736,19 +753,23 @@ test("setup commands without known checks cannot authorize implementation", asyn
   } finally { fixture.close(); }
 }, 15_000);
 
-test("a completed-looking coordinator without both reviews retains the Project slot", async () => {
+test("a completed-looking coordinator without both reviews retains ownership while independent work can start", async () => {
   const fixture = githubReviewFixture();
   try {
     fixture.save([fixture.issue, { ...fixture.issue, number: 2, node_id: "fictional-2", title: "Unrelated scope" }]);
-    const { run, route, readiness } = await fixture.prepare();
+    const { run, path, route, readiness } = await fixture.prepare();
     const second = await fixture.second(route, readiness);
     await fixture.integrate(run); await fixture.json(`/runs/${run.id}/checks`, {}); await fixture.review(run, "standards");
     fixture.setCoordinator("completed");
     await fixture.json(`/runs/${run.id}/reconcile`, {});
-    const response = await fixture.post(second.path + "/runs", second.start);
-    expect(response.status).toBe(409);
-    expect((await response.json()).error.code).toBe("project_capacity_exhausted");
-    expect((await fixture.json(second.path)).runs).toEqual([]);
+    const incomplete = await fixture.json(path);
+    expect(incomplete.runs[0].implementation_completion).toBeUndefined();
+    expect(incomplete.approvals).toEqual([]);
+    expect(incomplete.review_evidence.map((report: any) => report.axis)).toEqual(["standards"]);
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1 });
+    expect((await fixture.post(second.path + "/runs", second.start)).status).toBe(202);
+    expect((await fixture.json(second.path)).runs).toMatchObject([{ condition: "working" }]);
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 2 });
   } finally { fixture.close(); }
 }, 20_000);
 
@@ -766,7 +787,7 @@ test("reconciled implementation with current checks and both reviews frees capac
     const detail = await fixture.json(path);
     expect(detail.implementation).toMatchObject({ stage: "review", activity: "awaiting_merge", outcome: "none" });
     expect(detail.approvals).toEqual([]);
-    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 0, available_slots: 1, entries: expect.arrayContaining([expect.objectContaining({ implementation_id: run.implementation_id, lane: "review", activity: "awaiting_merge" })]) });
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 0, entries: expect.arrayContaining([expect.objectContaining({ implementation_id: run.implementation_id, lane: "review", activity: "awaiting_merge" })]) });
     expect((await fixture.post(second.path + "/runs", second.start)).status).toBe(202);
     fixture.restart();
     expect((await fixture.json(path)).implementation.stage).toBe("review");
@@ -785,6 +806,7 @@ test("historically accepted implementations with cleaned workspaces retain relea
     const second = await fixture.second(route, readiness);
     await fixture.integrate(run); const check = await fixture.json(`/runs/${run.id}/checks`, {});
     await fixture.review(run, "standards"); await fixture.review(run, "spec");
+    await observeReviewedRest(fixture, run, check.head);
     await fixture.json(`/runs/${run.id}/accept`, { head: check.head });
     const accepted = await fixture.json(path);
     // Persist the pre-upgrade input format while the disposable server is stopped.
@@ -799,8 +821,8 @@ test("historically accepted implementations with cleaned workspaces retain relea
         db.query("UPDATE records SET data=? WHERE kind='implementations' AND id=?").run(JSON.stringify({ ...accepted.implementation, stage: "done" }), run.implementation_id);
       } finally { db.close(); }
     });
-    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 0, available_slots: 1 });
-    await fixture.json("/settings", { max_implementations: 1 });
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 0 });
+    await fixture.json("/settings", { max_agents: 1 });
     expect((await fixture.post(second.path + "/runs", second.start)).status).toBe(202);
     expect((await fixture.json(path)).implementation).toMatchObject({ stage: "done", outcome: "implementation_complete" });
     expect((await fixture.json(path)).runs[0]).toMatchObject({ condition: "completed" });
@@ -817,7 +839,7 @@ test("matching dirty check receipts and committed HEAD reviews cannot retire or 
     expect(check.condition).toBe("passed"); // An older Machine may retain this receipt.
     await fixture.review(run, "standards"); await fixture.review(run, "spec");
     expect((await fixture.json(`/runs/${run.id}/reconcile`, {})).condition).toBe("ready");
-    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1, available_slots: 0 });
+    expect(await fixture.json(route + "/queue")).toMatchObject({ implementing_count: 1 });
     const accepted = await fixture.post(`/runs/${run.id}/accept`, { head: check.head });
     expect(accepted.status).toBe(409); expect((await accepted.json()).error.code).toBe("fresh_evidence_required");
   } finally { fixture.close(); }

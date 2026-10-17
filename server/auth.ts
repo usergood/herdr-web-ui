@@ -39,7 +39,7 @@ const AUTH_FAILURE_BUDGET = 5;
 const AUTH_BACKOFF_MS = 1_000;
 const AUTH_BACKOFF_MAX_MS = 60_000;
 /** addresses remembered; past the cap the ones whose wait is over are dropped first */
-const AUTH_CLIENTS_MAX = 1024;
+export const AUTH_CLIENTS_MAX = 1024;
 const authAttempts = new Map<string, { failures: number; until: number }>();
 const BEARER_PREFIX = "bearer ";
 const encoder = new TextEncoder();
@@ -73,6 +73,12 @@ export function isAuthenticated(request: Request, token: string): boolean {
   if (token === "") return true;
   const cookie = parseCookies(request.headers.get("cookie")).get(TOKEN_COOKIE);
   if (cookie !== undefined && matches(cookie, token)) return true;
+  return bearerMatches(request, token);
+}
+
+/** The token came in an `Authorization` header: a proxy or a script sends it with every request, so signing out cannot take it away. */
+export function bearerMatches(request: Request, token: string): boolean {
+  if (token === "") return false;
   const authorization = request.headers.get("authorization") ?? "";
   if (authorization.slice(0, BEARER_PREFIX.length).toLowerCase() !== BEARER_PREFIX) return false;
   return matches(authorization.slice(BEARER_PREFIX.length), token);
@@ -148,6 +154,9 @@ type Channel = "sign-in" | "presented";
 const SHARED_FAILURES = AUTH_FAILURE_BUDGET * 10;
 const SHARED_WINDOW_MS = 10 * 60_000;
 const sharedFailures = new Map<string, number[]>();
+export function sharedFailuresSize(): number {
+  return sharedFailures.size;
+}
 /** addresses that presented the right token, and when: the shared hold passes them */
 const ADMITTED_FOR_MS = 30 * 24 * 60 * 60_000;
 const admitted = new Map<string, number>();
@@ -185,7 +194,19 @@ function recordFailure(channel: Channel, client: string | null): void {
   if (key === null) return;
   const recent = (sharedFailures.get(key) ?? []).filter((time) => Date.now() - time < SHARED_WINDOW_MS);
   recent.push(Date.now());
+  // re-inserted, so a full map evicts the proxy that failed longest ago, never one failing now
+  sharedFailures.delete(key);
   sharedFailures.set(key, recent.slice(-SHARED_FAILURES));
+  trimSharedFailures();
+}
+
+/** The shared proxy budgets cannot retain more distinct addresses than the per-client budgets. */
+function trimSharedFailures(): void {
+  for (const [address, failures] of sharedFailures) {
+    if (failures.every((time) => Date.now() - time >= SHARED_WINDOW_MS)) sharedFailures.delete(address);
+  }
+  if (sharedFailures.size <= AUTH_CLIENTS_MAX) return;
+  while (sharedFailures.size > AUTH_CLIENTS_MAX) sharedFailures.delete(sharedFailures.keys().next().value!);
 }
 
 /** The right token from `client`: its own waits are spent, and the shared hold passes it from now on. */

@@ -16,7 +16,7 @@ execFileSync("git", ["add", "."], { cwd: repo }); execFileSync("git", ["-c", "us
 execFileSync("git", ["remote", "add", "origin", "https://github.com/fictional/project.git"], { cwd: repo });
 const fixture = join(state, "github-cli.mjs");
 writeFileSync(fixture, `if (process.argv.includes("login")) {
-  process.stdout.write("First copy your one-time code: DEMO-1234\\nOpen https://github.com/login/device\\n"); process.stdin.once("data", () => process.exit(0));
+  process.stdout.write("First copy your one-time code: DEMO-1234\\nOpen https://github.com/login/device\\n"); process.stdin.once("data", (input) => process.exit(String(input).trim() === "owned-failed-sign-in" ? 1 : 0));
 } else if (process.argv.includes("user/keys")) process.stdout.write(JSON.stringify(process.argv.includes("POST") ? { id: 1042, key: process.argv.find((arg) => arg.startsWith("key=")).slice(4) } : []));
 else if (process.argv[2] === "api" && process.argv[3] === "repos/fictional/project") process.stdout.write(JSON.stringify({full_name:"fictional/project",default_branch:"main"}));
 else if (process.argv[2] === "api" && process.argv[3]?.includes("/dependencies/blocked_by")) process.stdout.write("[]");
@@ -55,7 +55,7 @@ try {
   const authorization = accounts.getByLabel("Native authorization response", { exact: true }); await authorization.fill("owned-unsent-authorization-response");
   await page.evaluate(() => window.dispatchEvent(new Event("pagehide"))); assert.equal(await authorization.inputValue(), "");
   await accounts.getByRole("button", { name: "Continue sign-in", exact: true }).click();
-  await card.getByText("Ready", { exact: true }).waitFor();
+  await card.getByRole("status").filter({ hasText: /^Ready$/ }).waitFor();
   await card.getByRole("button", { name: "Register public key with GitHub", exact: true }).click(); await card.getByText("Public key registered", { exact: true }).waitFor();
   await accounts.getByRole("combobox", { name: "GitHub profile", exact: true }).selectOption({ label: "Work account" });
   await accounts.getByRole("button", { name: "Save Project accounts", exact: true }).click(); await accounts.getByText("Project accounts saved", { exact: true }).waitFor();
@@ -81,8 +81,8 @@ try {
   await card.getByRole("textbox", { name: "Account name", exact: true }).fill("Updated work account");
   await card.getByRole("button", { name: "Save account profile", exact: true }).click();
   const updated = accounts.getByRole("article").filter({ has: page.getByRole("heading", { name: "Updated work account", exact: true }) });
-  await updated.getByText("Needs sign-in", { exact: true }).waitFor();
-  await updated.getByRole("button", { name: "Verify account identity", exact: true }).click(); await updated.getByText("Ready", { exact: true }).waitFor();
+  await updated.getByRole("status").filter({ hasText: /^Needs sign-in$/ }).waitFor();
+  await updated.getByRole("button", { name: "Verify account identity", exact: true }).click(); await updated.getByRole("status").filter({ hasText: /^Ready$/ }).waitFor();
   const overview = await (await fetch(origin + "/api/factory")).json(); assert(overview.projects.find((entry: { id: string }) => entry.id === project.id).account_bindings.local.github);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForFunction(() => { const drawer = document.querySelector(".sidebar"); return !drawer || getComputedStyle(drawer).visibility === "hidden"; });
@@ -91,5 +91,21 @@ try {
     const bounds = await control.boundingBox(); assert(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 390, "Account controls fit the phone viewport");
   }
   if (process.env["UI_EVIDENCE_DIR"]) { mkdirSync(process.env["UI_EVIDENCE_DIR"], { recursive: true }); await page.screenshot({ path: join(process.env["UI_EVIDENCE_DIR"], "project-accounts-mobile.png") }); }
-  assert.deepEqual(errors, []); console.log("Project accounts browser: create, key, native sign-in, registration, binding and mobile passed");
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    await updated.getByRole("button", { name: "Start sign-in", exact: true }).click();
+    await accounts.getByText("DEMO-1234", { exact: true }).waitFor();
+    await updated.getByRole("status").filter({ hasText: /^Signing in$/ }).waitFor();
+    await accounts.getByRole("status").filter({ hasText: "Complete authorization in your browser, then return here." }).waitFor();
+    await accounts.getByLabel("Native authorization response", { exact: true }).fill("owned-failed-sign-in");
+    await accounts.getByRole("button", { name: "Send authorization response", exact: true }).click();
+    const failure = "Native sign-in did not complete; verify CLI support and try again";
+    await accounts.getByText(failure, { exact: true }).waitFor();
+    await accounts.getByRole("alert").filter({ hasText: failure }).waitFor();
+    await updated.getByRole("status").filter({ hasText: /^Needs sign-in$/ }).waitFor();
+    await updated.getByRole("alert").filter({ hasText: "Sign-in stopped or was not verified; check the selected account before retrying" }).waitFor();
+  }
+  await updated.getByRole("button", { name: "Disable account profile", exact: true }).click();
+  await updated.getByRole("status").filter({ hasText: /^Disabled$/ }).waitFor();
+  assert.deepEqual(errors, []); console.log("Project accounts browser: create, key, native sign-in, registration, binding, mobile and desktop/mobile sign-in failure alerts passed");
 } finally { app.stop(); await browser.close(); rmSync(state, { recursive: true, force: true }); }

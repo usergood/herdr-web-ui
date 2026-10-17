@@ -1,9 +1,219 @@
-import { expect, test } from "bun:test";
-import { factoryDeliveryFixture } from "./factory-delivery.fixture.ts";
-import { factoryPublicationFixture } from "./factory-publication.fixture.ts";
-import { rmSync, writeFileSync } from "node:fs";
+import { expect, it, test } from "bun:test";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "./index.ts";
+import { factoryDeliveryFixture } from "./factory-delivery.fixture.ts";
+import { machinePublicationFixture as publicationFixture, factoryPublicationFixture } from "./factory-publication.fixture.ts";
 import { fictionalGitHubPull } from "../site/demo/github-fixtures.ts";
+
+
+const routingCases = (["initial", "repaired"] as const).flatMap(candidate =>
+  (["insteadOf", "pushInsteadOf"] as const).flatMap(kind =>
+    (["local", "global", "system"] as const).map(scope => ({ candidate, kind, scope }))));
+it.each(routingCases)("the $candidate automatic publication refuses $scope Git $kind routing before mutating either destination", async ({ candidate, kind, scope }) => {
+  const f = await publicationFixture();
+  try {
+    let body = f.body, head = f.head;
+    if (candidate === "repaired") {
+      expect((await f.post(f.route + "publish", f.body)).status).toBe(409);
+      expect((await f.post(f.route + "publish", f.body)).status).toBe(200);
+      const repaired = await f.repair(); body = repaired.repairBody; head = repaired.repairedHead;
+    }
+    const intendedBefore = execFileSync("git", ["--git-dir", f.bare, "for-each-ref", "--format=%(objectname) %(refname)"], { encoding: "utf8" });
+    const before = readFileSync(f.calls, "utf8"); f.rewrite(kind, scope);
+    expect(f.git(["config", "--show-scope", "--get-regexp", "^url"]).startsWith(scope)).toBe(true);
+    const response = await f.post(f.route + "publish", body); const result = await response.json();
+    // Ref evidence is checked before the response: GitHub may reject only after an unsafe push.
+    expect(f.redirectedRefs()).toBe("");
+    expect(execFileSync("git", ["--git-dir", f.bare, "for-each-ref", "--format=%(objectname) %(refname)"], { encoding: "utf8" })).toBe(intendedBefore);
+    expect(response.status).toBe(409); expect(result).toMatchObject({ error: { code: "publication_routing_changed" } });
+    const requests = readFileSync(f.calls, "utf8").slice(before.length);
+    expect(requests).not.toContain('"POST"'); expect(requests).not.toContain('"PATCH"');
+    f.clearRewrites(); f.restart();
+    // Reuse the same checked request; no replacement authority or evidence is needed.
+    expect((await f.post(f.route + "publish", body)).status).toBe(409);
+    expect(await f.post(f.route + "publish", body).then(r => r.json())).toMatchObject({ head, number: 27 });
+    expect(execFileSync("git", ["--git-dir", f.bare, "rev-parse", `refs/heads/${f.branch}`], { encoding: "utf8" }).trim()).toBe(head);
+    expect(f.redirectedRefs()).toBe("");
+  } finally { f.close(); }
+}, 20000);
+
+it.each(["initial", "repaired"] as const)("the %s automatic publication rechecks Git routing after a held GitHub lookup", async candidate => {
+  const f = await publicationFixture(); let publishing: Promise<Response> | undefined;
+  try {
+    let body = f.body;
+    if (candidate === "repaired") {
+      expect((await f.post(f.route + "publish", f.body)).status).toBe(409);
+      expect((await f.post(f.route + "publish", f.body)).status).toBe(200);
+      body = (await f.repair()).repairBody;
+    }
+    const before = readFileSync(f.calls, "utf8"); writeFileSync(f.control, JSON.stringify({ hold_lookup: true }));
+    publishing = f.post(f.route + "publish", body); await waitFor(() => existsSync(f.waiting));
+    f.rewrite("pushInsteadOf", "global"); writeFileSync(f.release, "release");
+    const response = await publishing; expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: "publication_routing_changed" } });
+    expect(f.redirectedRefs()).toBe("");
+    const requests = readFileSync(f.calls, "utf8").slice(before.length);
+    expect(requests).not.toContain('"POST"'); expect(requests).not.toContain('"PATCH"');
+  } finally { writeFileSync(f.release, "release"); await publishing?.catch(() => {}); f.close(); }
+}, 20000);
+
+it("the owned Machine publishes the exact commit and reconciles a lost GitHub create acknowledgment without another POST", async () => {
+  const f = await publicationFixture();
+  const { calls, id, route, body, head, branch, bare, post } = f;
+  try {
+    const untrusted = await fetch(`http://localhost:${f.app.port}/api/${route}publish`, { method: "POST", headers: { authorization: "Bearer owned-publication", "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+    expect(untrusted.status).toBe(403);
+    const forged = await post(route + "publish", { ...body, check_id: "unverified-check" });
+    expect((await forged.json()).error.code).toBe("fresh_evidence_required");
+    const first = await post(route + "publish", body);
+    expect(first.status).toBe(409);
+    f.restart();
+    const second = await post(route + "publish", body);
+    const result = await second.json();
+    expect(result).not.toHaveProperty("error");
+    expect(second.status).toBe(200);
+    expect(result).toMatchObject({ run_id: id, head, number: 27, base_branch: "main" });
+    expect((await post(route + "publish", body)).status).toBe(200);
+    expect(readFileSync(calls, "utf8").trim().split("\n").map(line => JSON.parse(line)).filter(args => args.includes("POST"))).toHaveLength(1);
+    // Verify the effect through Git's public interface, never the factory store.
+    expect(execFileSync("git", ["--git-dir", bare, "rev-parse", `refs/heads/${branch}`], { encoding: "utf8" }).trim()).toBe(head);
+    expect((await post(route + "publish", { ...body, head: "f".repeat(40) })).status).toBe(409);
+    const { repairedHead, repairBody } = await f.repair();
+    await post(route + "publish", repairBody); // Lost PATCH acknowledgment must reconcile without replay.
+    f.restart();
+    const updated = await post(route + "publish", repairBody);
+    expect(await updated.json()).toMatchObject({ run_id: id, head: repairedHead, number: 27 });
+    expect(updated.status).toBe(200);
+    expect(execFileSync("git", ["--git-dir", bare, "rev-parse", `refs/heads/${branch}`], { encoding: "utf8" }).trim()).toBe(repairedHead);
+    const requests = readFileSync(calls, "utf8").trim().split("\n").map(line => JSON.parse(line));
+    expect(requests.filter(args => args.includes("POST"))).toHaveLength(1);
+    expect(requests.filter(args => args.includes("PATCH"))).toHaveLength(1);
+
+  } finally { f.close(); }
+}, 20000);
+
+it.each(["initial", "repaired"] as const)("the %s publication push excludes reachable release tags despite repository followTags", async (candidate) => {
+  const f = await publicationFixture();
+  try {
+    let body = f.body;
+    let head = f.head;
+    if (candidate === "repaired") {
+      expect((await f.post(f.route + "publish", f.body)).status).toBe(409);
+      expect((await f.post(f.route + "publish", f.body)).status).toBe(200);
+      const repaired = await f.repair();
+      body = repaired.repairBody;
+      head = repaired.repairedHead;
+    }
+    f.git(["config", "push.followTags", "true"]);
+    f.git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "tag", "-a", "v999.0.0-owned-publication-fixture", "-m", "Owned unpublished release fixture", head]);
+    // Both create and repair lose their acknowledgment; retry must observe the same receipt.
+    expect((await f.post(f.route + "publish", body)).status).toBe(409);
+    f.restart();
+    const observed = await f.post(f.route + "publish", body);
+    expect(observed.status).toBe(200);
+    expect(await observed.json()).toMatchObject({ head, number: 27 });
+    expect(execFileSync("git", ["--git-dir", f.bare, "rev-parse", `refs/heads/${f.branch}`], { encoding: "utf8" }).trim()).toBe(head);
+    expect(execFileSync("git", ["--git-dir", f.bare, "for-each-ref", "--format=%(refname)", "refs/tags/"], { encoding: "utf8" }).trim()).toBe("");
+    const mutations = readFileSync(f.calls, "utf8").trim().split("\n").map(line => JSON.parse(line));
+    expect(mutations.filter(args => args.includes("POST"))).toHaveLength(1);
+    expect(mutations.filter(args => args.includes("PATCH"))).toHaveLength(candidate === "repaired" ? 1 : 0);
+  } finally { f.close(); }
+}, 20000);
+
+it.each([
+  [undefined, "feat(factory): Fixture"],
+  ["Improve fictional publication", "feat(factory): Improve fictional publication"],
+  ["fix(review): retain the exact candidate", "fix(review): retain the exact candidate"],
+  ["feat(factory)!: change the fictional contract", "feat(factory)!: change the fictional contract"],
+] as const)("publication title %s has the required scope without nesting a valid title", async (assignmentTitle, expected) => {
+  const f = await publicationFixture(assignmentTitle);
+  try {
+    expect((await f.post(f.route + "publish", f.body)).status).toBe(409);
+    f.restart();
+    expect((await f.post(f.route + "publish", f.body)).status).toBe(200);
+    const creates = readFileSync(f.calls, "utf8").trim().split("\n").map(line => JSON.parse(line)).filter(args => args.includes("POST"));
+    expect(creates).toHaveLength(1);
+    expect(creates[0]).toContain(`title=${expected}`);
+  } finally { f.close(); }
+}, 20000);
+
+async function waitFor(check: () => boolean) {
+  const deadline = Date.now() + 8000;
+  while (!check()) { if (Date.now() > deadline) throw new Error("Owned publication observation deadline"); await Bun.sleep(10); }
+}
+
+it("Stop retains publication held at its final account check and prevents PR creation afterward", async () => {
+  const f = await publicationFixture(); let publishing: Promise<Response> | undefined; let stopping: Promise<Response> | undefined;
+  try {
+    writeFileSync(f.control, JSON.stringify({ hold_account: true }));
+    publishing = f.post(f.route + "publish", f.body); await waitFor(() => existsSync(f.waiting));
+    let stopAnswered = false;
+    stopping = f.post(`factory-host/runs/${f.id}/stop`, {}).then(response => { stopAnswered = true; return response; });
+    await waitFor(() => f.closed);
+    // The fake native boundary proves Stop took ownership before the final account gate opens.
+    writeFileSync(f.release, "release");
+    const stopped = await stopping; expect(stopped.status).toBe(200); expect(await stopped.json()).toMatchObject({ condition: "cancelled" });
+    const refused = await publishing; expect(refused.status).toBe(409); expect(await refused.json()).toMatchObject({ error: { code: "run_stopping" } });
+    const mutations = readFileSync(f.calls, "utf8").trim().split("\n").map(line => JSON.parse(line)).filter(args => args.includes("POST") || args.includes("PATCH"));
+    expect(mutations).toHaveLength(0); expect(stopAnswered).toBe(true);
+  } finally { writeFileSync(f.release, "release"); await publishing?.catch(() => {}); await stopping?.catch(() => {}); f.close(); }
+}, 20000);
+
+it("Stop waits for an already dispatched uncertain PR create before releasing its owned Run", async () => {
+  const f = await publicationFixture(); let publishing: Promise<Response> | undefined; let stopping: Promise<Response> | undefined;
+  try {
+    writeFileSync(f.control, JSON.stringify({ hold_mutation: true }));
+    publishing = f.post(f.route + "publish", f.body); await waitFor(() => existsSync(f.waiting));
+    stopping = f.post(`factory-host/runs/${f.id}/stop`, {}); await waitFor(() => f.closed);
+    const retained = await f.post(`factory-host/runs/${f.id}/reconcile`, {}).then(r => r.json());
+    expect(retained.condition).not.toBe("cancelled");
+    writeFileSync(f.release, "release");
+    const uncertain = await publishing; expect(uncertain.status).toBe(409); expect(await uncertain.json()).toMatchObject({ error: { code: "publication_uncertain" } });
+    expect(await (await stopping).json()).toMatchObject({ condition: "cancelled" });
+    f.restart(); expect((await f.post(f.route + "publish", f.body)).status).toBe(409);
+    const mutations = readFileSync(f.calls, "utf8").trim().split("\n").map(line => JSON.parse(line)).filter(args => args.includes("POST"));
+    expect(mutations).toHaveLength(1);
+    expect(execFileSync("git", ["--git-dir", f.bare, "rev-parse", `refs/heads/${f.branch}`], { encoding: "utf8" }).trim()).toBe(f.head);
+  } finally { writeFileSync(f.release, "release"); await publishing?.catch(() => {}); await stopping?.catch(() => {}); f.close(); }
+}, 20000);
+
+it("Stop prevents a repaired PR PATCH after its final account verification resumes", async () => {
+  const f = await publicationFixture(); let publishing: Promise<Response> | undefined; let stopping: Promise<Response> | undefined;
+  try {
+    expect((await f.post(f.route + "publish", f.body)).status).toBe(409);
+    expect((await f.post(f.route + "publish", f.body)).status).toBe(200);
+    const { repairedHead, repairBody } = await f.repair();
+    writeFileSync(f.control, JSON.stringify({ hold_account: true }));
+    publishing = f.post(f.route + "publish", repairBody); await waitFor(() => existsSync(f.waiting));
+    stopping = f.post(`factory-host/runs/${f.id}/stop`, {}); await waitFor(() => f.closed);
+    writeFileSync(f.release, "release");
+    expect(await (await stopping).json()).toMatchObject({ condition: "cancelled" });
+    const refused = await publishing;
+    const mutations = readFileSync(f.calls, "utf8").trim().split("\n").map(line => JSON.parse(line));
+    expect(mutations.filter(args => args.includes("POST"))).toHaveLength(1);
+    expect(mutations.filter(args => args.includes("PATCH"))).toHaveLength(0);
+    expect(refused.status).toBe(409); expect(await refused.json()).toMatchObject({ error: { code: "run_stopping" } });
+    expect(execFileSync("git", ["--git-dir", f.bare, "rev-parse", `refs/heads/${f.branch}`], { encoding: "utf8" }).trim()).toBe(repairedHead);
+  } finally { writeFileSync(f.release, "release"); await publishing?.catch(() => {}); await stopping?.catch(() => {}); f.close(); }
+}, 20000);
+
+it("Stop also retains publication waiting for its initial frozen account verification", async () => {
+  const f = await publicationFixture(); let publishing: Promise<Response> | undefined; let stopping: Promise<Response> | undefined;
+  try {
+    writeFileSync(f.control, JSON.stringify({ arm_user: true }));
+    publishing = f.post(f.route + "publish", f.body); await waitFor(() => existsSync(f.waiting));
+    stopping = f.post(`factory-host/runs/${f.id}/stop`, {}); await waitFor(() => f.closed);
+    expect((await f.post(`factory-host/runs/${f.id}/reconcile`, {}).then(r => r.json())).condition).not.toBe("cancelled");
+    writeFileSync(f.release, "release");
+    expect((await publishing).status).toBe(409);
+    expect(await (await stopping).json()).toMatchObject({ condition: "cancelled" });
+    expect(readFileSync(f.calls, "utf8")).not.toContain('"POST"');
+    expect(readFileSync(f.calls, "utf8")).not.toContain('"PATCH"');
+  } finally { writeFileSync(f.release, "release"); await publishing?.catch(() => {}); await stopping?.catch(() => {}); f.close(); }
+}, 20000);
 
 test("implementation PR publication defaults off and requires its own explicit Project setting", async () => {
   const f = await factoryDeliveryFixture();
@@ -21,9 +231,24 @@ test("implementation PR publication defaults off and requires its own explicit P
 
 test("only an explicitly published accepted head opens its scoped PR and retains Awaiting merge", async () => {
   const f = await factoryPublicationFixture();
+  const held = f.holdParentPrompt();
   try {
     const proof = { head: f.head, title: "fix(factory): retain the reviewed result", body: "Completed work previously remained ambiguous. Preserve the accepted final change and its evidence." };
     expect((await f.request(f.route + "/publish", proof)).status).toBe(409);
+    const reviewerResponse = await f.request(`/runs/${f.run.id}/workers`, { role: "standards", idempotency_key: "publication-standards" });
+    expect(reviewerResponse.ok).toBe(true);
+    const reviewer = await reviewerResponse.json();
+    expect(reviewer).toMatchObject({ run_id: f.run.id, role: "standards" });
+    expect((await f.request(`/runs/${f.run.id}/workers/${reviewer.id}/reconcile`, {})).ok).toBe(true);
+    expect((await f.request(`/runs/${f.run.id}/reconcile`, {})).ok).toBe(true);
+    await Promise.race([held.waiting, new Promise((_, reject) => setTimeout(() => reject(new Error("Owned parent continuation did not reach native prompt")), 8000))]);
+    const sending = await f.request(f.prefix).then(response => response.json());
+    expect(sending.runs.find((run: { id: string }) => run.id === f.run.id)).toMatchObject({ id: f.run.id, condition: "accepted", continuation: { kind: "children", condition: "sending" } });
+    expect((await f.request(`/runs/${f.run.id}/workers/${reviewer.id}/review-evidence`, {})).status).toBe(409);
+    expect((await f.request(f.route + "/publish", proof)).status).toBe(409);
+    expect(f.uploads).toHaveLength(0);
+    // Releasing native delivery does not immediately settle the coordinator's reservation.
+    held.release();
     await f.verify();
     expect((await f.request(`/runs/${f.run.id}/accept`, proof)).status).toBe(200);
     expect(f.uploads).toHaveLength(0);
@@ -44,7 +269,7 @@ test("only an explicitly published accepted head opens its scoped PR and retains
     expect((await f.request(f.route + "/publish", proof).then(r => r.json())).id).toBe(receipt.id);
     expect(f.calls().filter(call => call.args.includes("--method"))).toHaveLength(1);
     expect(f.calls().every(call => call.scoped && !call.args.some(arg => /\/(merge|releases|deployments)$/.test(arg)))).toBe(true);
-  } finally { await f.close(); }
+  } finally { held.release(); await f.close(); }
 }, 60_000);
 
 test("GitHub's canonical repository casing still identifies the approved publication receipt", async () => {
@@ -213,3 +438,14 @@ test("a separate automatic publication opt-in publishes only after acceptance wi
     expect((await f.request(f.prefix).then(r => r.json())).implementation.outcome).toBe("pr_open");
   } finally { await f.close(); }
 }, 60_000);
+
+
+test("Machine PR publication rejects a foreign owner origin before dispatch", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "publication-origin-"));
+  const app = createServer({ port: 0, stateDir, token: "", machines: false, factory: { accountDiscoveryHome: stateDir, native: { version: async () => null } } });
+  try {
+    const response = await fetch(`http://localhost:${app.port}/api/factory-host/publication`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1", "x-herdr-machine": "1", origin: "https://foreign.example.invalid" }, body: "{}" });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error: { code: "invalid_origin" } });
+  } finally { app.stop(); rmSync(stateDir, { recursive: true, force: true }); }
+});

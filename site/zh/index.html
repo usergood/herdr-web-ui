@@ -123,6 +123,7 @@
       .cmd { display: inline-flex; align-items: stretch; max-width: 100%; margin-top: 32px; border: 1px solid var(--line2); background: color-mix(in srgb, var(--panel) 92%, transparent); }
       .cmd code { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 12px 16px; color: var(--ink); font-size: 14px; overflow-x: auto; white-space: nowrap; }
       .cmd code::before { content: "$"; color: var(--spot); }
+      .cmd.ps code::before { content: ">"; }
       .copy { flex: none; padding: 0 16px; border: 0; border-left: 1px solid var(--line2); background: none; color: var(--faint); cursor: pointer; }
       .copy:hover, .copy.is-done { color: var(--spot); }
       .hero-meta { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 18px 32px; margin-top: 22px; }
@@ -285,10 +286,12 @@
       .end { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 40px clamp(32px, 5vw, 80px); align-items: center; margin-top: clamp(48px, 6vw, 80px); padding: clamp(48px, 6vw, 88px) var(--gut); border-top: 1px solid var(--line); }
       .end h2 { color: var(--ink); font-family: var(--disp); font-weight: 900; font-size: clamp(42px, 5vw, 72px); line-height: 0.95; letter-spacing: -0.05em; }
       .end > div > p { margin-top: 22px; max-width: 32em; font-size: 15.5px; color: var(--faint); }
+      .end > div > p:not(.after) code { color: var(--dim); font-size: 0.88em; }
       .end .after { max-width: none; margin-top: 16px; font-family: var(--mono); font-size: 12px; line-height: 1.8; color: var(--faint); }
       .end .after code { color: var(--dim); }
       .end .after a { color: var(--spot); }
       .end .after a:hover { text-decoration: underline; text-underline-offset: 0.2em; }
+      .end .after + .cmd { margin-top: 8px; }
       .end figure img { width: 100%; border: 1px solid var(--line2); }
       .end figcaption { margin-top: 10px; font-size: 13.5px; color: var(--faint); }
       @media (max-width: 900px) { .end { grid-template-columns: minmax(0, 1fr); } }
@@ -670,6 +673,16 @@
             applyMode(button.dataset.mode);
             try { localStorage.setItem("herdr-web-ui-site-mode", button.dataset.mode); } catch {}
           });
+        }
+
+        // a Windows visitor sees the PowerShell command first; without JS, or elsewhere, the page keeps curl
+        if (/Windows/.test(navigator.userAgent) || navigator.userAgentData?.platform === "Windows") {
+          const hero = document.querySelector(".hero .cmd");
+          const command = "irm https://herdrweb.dev/install.ps1 | iex";
+          hero.classList.add("ps");
+          hero.querySelector("code").textContent = command;
+          hero.querySelector(".copy").dataset.copy = command;
+          document.querySelector(".hero-meta p").innerHTML = 'Windows x64 · PowerShell · herdr 0.9.0+ · MIT — <a href="#install">Linux、macOS、只装插件，或从源码运行 →</a>';
         }
 
         for (const button of document.querySelectorAll(".copy")) {

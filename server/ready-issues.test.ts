@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { readyIssuesFixture } from "./ready-issues.fixture.ts";
+import { reviewReworkFixture } from "./factory-review-rework.fixture.ts";
 
 test("a trusted ready issue automatically implements its accepted plan in an isolated factory Run", async () => {
   const f = await readyIssuesFixture();
@@ -24,6 +25,22 @@ test("a trusted ready issue automatically implements its accepted plan in an iso
     expect(f.launches.map(run => run.action)).toEqual(["implement-spec"]);
     await f.tick(); f.restart(); await f.tick();
     expect((await f.request(`/implementations/${source.implementation_id}`)).body.runs).toHaveLength(1);
+  } finally { f.close(); }
+}, 30_000);
+
+test("unconfigured Projects admit independent ready Assignments through available agent slots", async () => {
+  const f = await readyIssuesFixture();
+  try {
+    const policy = (await f.request(f.route + "/configure", f.policy)).body;
+    f.respond({ issues: [f.issue(1), f.issue(2)] });
+    const sources = (await f.request(f.route + "/sync", {})).body.sources;
+    for (const source of sources) await f.request(f.route + `/issues/${source.number}/approve`, { issue_revision: source.revision, policy_revision: policy.revision, plan: f.plan });
+    await f.tick();
+    for (const source of sources) expect((await f.request(`/implementations/${source.implementation_id}`)).body.runs).toMatchObject([{ action: "implement-spec", condition: "working" }]);
+    expect(f.launches).toHaveLength(2);
+    const queue = (await f.request(`/projects/${f.project.id}/queue`)).body;
+    expect(queue.revision).toBeNull();
+    expect(queue.capacity.agents).toBe(2);
   } finally { f.close(); }
 }, 30_000);
 
@@ -65,9 +82,10 @@ test.each(["merge", "release", "wrong_branch", "old_checkout"])("a prerequisite 
   } finally { f.close(); }
 }, 30_000);
 
-test.each(["verified", "stale_head", "uncertain_check"])("only current verified implementation releases the slot before manual merge (%s)", async mode => {
+test.each(["verified", "stale_head", "uncertain_check"])("only current verified implementation retires before manual merge while independent work already runs (%s)", async mode => {
   const f = await readyIssuesFixture();
   try {
+    expect((await f.request(`/projects/${f.project.id}/queue/configure`, { expected_revision: null, paused: false })).status).toBe(200);
     const policy = (await f.request(f.route + "/configure", f.policy)).body;
     f.respond({ issues: [f.issue(1), f.issue(2)] });
     const sources = (await f.request(f.route + "/sync", {})).body.sources;
@@ -75,8 +93,10 @@ test.each(["verified", "stale_head", "uncertain_check"])("only current verified 
     await f.tick();
     const a = sources.find((source: any) => source.number === 1), b = sources.find((source: any) => source.number === 2);
     const run = (await f.request(`/implementations/${a.implementation_id}`)).body.runs[0];
+    const independent = (await f.request(`/implementations/${b.implementation_id}`)).body.runs[0];
+    expect(independent).toMatchObject({ action: "implement-spec", condition: "working" });
     f.rest(run.id); await f.tick();
-    expect((await f.request(`/implementations/${b.implementation_id}`)).body.runs).toHaveLength(0);
+    expect((await f.request(`/implementations/${b.implementation_id}`)).body.runs[0]).toMatchObject({ id: independent.id, condition: "working" });
     const workerRoute = `/runs/${run.id}/workers`;
     const worker = (await f.request(workerRoute, { role: "implementer", ticket_id: run.manifest.tickets[0].id, idempotency_key: "bounded-implementation" })).body;
     writeFileSync(worker.worktree + "/ready.txt", "Reviewed fixture change\n");
@@ -84,14 +104,38 @@ test.each(["verified", "stale_head", "uncertain_check"])("only current verified 
     f.restWorker(worker.id);
     await f.request(`${workerRoute}/${worker.id}/reconcile`, {});
     expect((await f.request(`${workerRoute}/${worker.id}/check`, {})).body.condition).toBe("passed");
-    expect((await f.request(`${workerRoute}/${worker.id}/integrate`, {})).body.condition).toBe("completed");
-    expect((await f.request(`/runs/${run.id}/checks`, {})).body.condition).toBe("passed");
+    let integration = await f.request(`${workerRoute}/${worker.id}/integrate`, {});
+    const integrationDeadline = Date.now() + 5000;
+    // A parent resuming after its child wait briefly holds an accepted lease.
+    // Both admission guards reject before integration dispatch; the precise
+    // continuation wait distinguishes an admitted lease whose Send is pending.
+    while (integration.status === 409 && ["factory_run_required", "continuation_waiting"].includes(integration.body.error?.code) && Date.now() < integrationDeadline) {
+      const parent = (await f.request(`/implementations/${a.implementation_id}`)).body.runs.find((entry: any) => entry.id === run.id);
+      expect(parent).toMatchObject({ id: run.id, action: "implement-spec", checkout: run.checkout, worktree: run.worktree, branch: run.branch, workspace_id: run.workspace_id, pane_id: run.pane_id, continuation: { kind: "children" } });
+      await f.tick(); await Bun.sleep(10);
+      integration = await f.request(`${workerRoute}/${worker.id}/integrate`, {});
+    }
+    expect(integration).toMatchObject({ status: 200, body: { condition: "completed" } });
+    let resumed = (await f.request(`/runs/${run.id}/reconcile`, {})).body;
+    const resumedDeadline = Date.now() + 5000;
+    while (resumed.condition !== "working" && Date.now() < resumedDeadline) {
+      await f.tick(); await Bun.sleep(10);
+      resumed = (await f.request(`/runs/${run.id}/reconcile`, {})).body;
+    }
+    expect(resumed).toMatchObject({ id: run.id, condition: "working" });
+    // In the positive case, unfinished checks keep retirement gated until the summary turn rests.
+    if (mode !== "verified") expect(await f.request(`/runs/${run.id}/checks`, {})).toMatchObject({ status: 200, body: { condition: "passed" } });
     const standards = (await f.request(workerRoute, { role: "standards", idempotency_key: "independent-standards" })).body;
     await f.request(`${workerRoute}/${standards.id}/review-evidence`, {});
     await f.tick();
-    expect((await f.request(`/implementations/${b.implementation_id}`)).body.runs).toHaveLength(0);
+    expect((await f.request(`/implementations/${b.implementation_id}`)).body.runs[0]).toMatchObject({ id: independent.id, condition: "working" });
     const spec = (await f.request(workerRoute, { role: "spec", idempotency_key: "independent-spec" })).body;
-    await f.request(`${workerRoute}/${spec.id}/review-evidence`, {});
+    if (mode === "verified") {
+      f.rest(run.id);
+      const parked = await f.request(`/runs/${run.id}/reconcile`, {});
+      expect(parked).toMatchObject({ status: 200, body: { continuation: { kind: "children", condition: "parked" } } });
+      expect(parked.body.continuation.worker_keys).toContain("independent-spec");
+    }
     if (mode === "stale_head") {
       writeFileSync(run.worktree + "/later.txt", "An unreviewed later change\n");
       for (const args of [["add", "later.txt"], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "later change"]]) execFileSync("git", ["-C", run.worktree, ...args], { stdio: "ignore" });
@@ -100,20 +144,52 @@ test.each(["verified", "stale_head", "uncertain_check"])("only current verified 
       f.offline(true); await f.request(`/runs/${run.id}/checks`, {}); f.offline(false);
       f.restart();
     }
+    const finalReview = await f.request(`${workerRoute}/${spec.id}/review-evidence`, {});
+    expect(finalReview.status).toBe(mode === "stale_head" ? 409 : 200);
+    if (mode === "stale_head") expect(finalReview.body.error.code).toBe("review_stale");
+    // Native Send executes the resumed parent until this explicit end of its turn.
+    // Negative evidence is already arranged before native rest can permit retirement.
+    f.rest(run.id);
     await f.tick();
-    const complete = (await f.request(`/implementations/${a.implementation_id}`)).body;
+    let complete = (await f.request(`/implementations/${a.implementation_id}`)).body;
+    if (mode === "verified") {
+      const deadline = Date.now() + 5000;
+      let checked = false;
+      while (complete.runs[0].condition !== "completed" && Date.now() < deadline) {
+        const current = complete.runs.find((entry: { id: string }) => entry.id === run.id);
+        if (!checked && current.condition === "working" && current.continuation?.kind === "children" && current.continuation.condition === "resumed") {
+          expect(current).toMatchObject({ id: run.id, machine_id: run.machine_id, worktree: run.worktree, branch: run.branch, workspace_id: run.workspace_id, pane_id: run.pane_id });
+          // The summary ACK started a native turn after the first rest observation.
+          f.rest(run.id);
+          expect(await f.request(`/runs/${run.id}/reconcile`, {})).toMatchObject({ status: 200, body: { id: run.id, condition: "ready", worktree: run.worktree, workspace_id: run.workspace_id, pane_id: run.pane_id } });
+          expect(await f.request(`/runs/${run.id}/checks`, {})).toMatchObject({ status: 200, body: { condition: "passed" } });
+          checked = true;
+        }
+        await f.tick();
+        complete = (await f.request(`/implementations/${a.implementation_id}`)).body;
+        if (complete.runs[0].condition !== "completed") await Bun.sleep(10);
+      }
+      expect(checked).toBe(true);
+    }
     if (mode !== "verified") {
       expect(complete.runs[0].condition).not.toBe("completed");
-      expect((await f.request(`/implementations/${b.implementation_id}`)).body.runs).toHaveLength(0);
+      expect((await f.request(`/implementations/${b.implementation_id}`)).body.runs[0]).toMatchObject({ id: independent.id, condition: "working" });
       const queue = (await f.request(`/projects/${f.project.id}/queue`)).body;
-      expect(queue.capacity.project_implementations).toBe(1);
+      expect(queue.capacity.project_implementations).toBe(2);
       if (mode === "uncertain_check") expect(queue.capacity.builds).toBe(1);
       return;
     }
     expect(complete.runs[0].condition).toBe("completed");
     expect(complete.implementation).toMatchObject({ stage: "review", outcome: "implementation_complete" });
     expect(complete.board).toMatchObject({ lane: "needs_you", activity: "awaiting_merge" });
-    expect((await f.request(`/implementations/${b.implementation_id}`)).body.runs[0]).toMatchObject({ action: "implement-spec", condition: "working" });
+    let next = (await f.request(`/implementations/${b.implementation_id}`)).body;
+    const deadline = Date.now() + 5000;
+    while (!next.runs.length && Date.now() < deadline) {
+      await f.tick(); next = (await f.request(`/implementations/${b.implementation_id}`)).body;
+      if (!next.runs.length) await Bun.sleep(10);
+    }
+    expect(next.runs[0]).toMatchObject({ id: independent.id, action: "implement-spec", condition: "working" });
+    expect((await f.request(`/projects/${f.project.id}/queue`)).body.capacity.project_implementations).toBe(1);
     expect(f.calls().some(args => args.includes("--method"))).toBe(false);
   } finally { f.close(); }
 }, 30_000);
@@ -151,9 +227,9 @@ test("automatic launch preserves opt-in, scope, pause, owner-question and uncert
     await f.tick(); expect(f.launches).toHaveLength(0); // The changed trust policy needs its own receipt.
     await f.request(f.route + "/issues/1/approve", { issue_revision: source.revision, policy_revision: policy.revision, plan: f.plan });
     const queueRoute = `/projects/${f.project.id}/queue`;
-    let queue = (await f.request(queueRoute + "/configure", { expected_revision: null, paused: true, max_implementations: 1 })).body;
+    let queue = (await f.request(queueRoute + "/configure", { expected_revision: null, paused: true })).body;
     await f.tick(); expect(f.launches).toHaveLength(0);
-    queue = (await f.request(queueRoute + "/configure", { expected_revision: queue.revision, paused: false, max_implementations: 1 })).body;
+    queue = (await f.request(queueRoute + "/configure", { expected_revision: queue.revision, paused: false })).body;
     issue.body = "An unapproved scope edit"; f.respond({ issues: [issue] });
     await f.tick(); expect(f.launches).toHaveLength(0);
     source = (await f.request(f.route)).body.sources.find((source: any) => source.number === 1);
@@ -208,5 +284,22 @@ test("an owner-stopped automatic attempt is not relaunched by the same readiness
     f.restart(); await f.tick();
     expect(f.launches).toHaveLength(1);
     expect((await f.request(`/implementations/${source.implementation_id}`)).body.runs[0].condition).toBe("cancelled");
+  } finally { f.close(); }
+}, 30_000);
+
+test.each([false, true])("an accepted native review notification executes once even when its acknowledgment is lost (%s)", async lost => {
+  const f = await reviewReworkFixture();
+  try {
+    await f.restRun(); const priorDeliveries = f.deliveries.length; f.uncertainDelivery(lost);
+    const sent = await f.request(f.prefix + "/request-changes", f.submission);
+    expect(sent).toMatchObject({ status: 200, body: { status: lost ? "uncertain" : "sent" } });
+    expect((await f.request(`/runs/${f.run.id}/reconcile`, {})).body.condition).toBe("working");
+    expect((await f.request(f.prefix + "/request-changes", f.submission)).body.id).toBe(sent.body.id);
+    expect(f.deliveries).toHaveLength(priorDeliveries + 1);
+    expect(f.deliveries.at(-1)).toContain(`Request changes batch ${sent.body.id}`);
+    expect((await f.request(`/runs/${f.run.id}/stop`, {})).body.condition).toBe("cancelled");
+    f.rest(f.run.id);
+    expect((await f.request(`/runs/${f.run.id}/reconcile`, {})).body.condition).toBe("cancelled");
+    expect(f.deliveries).toHaveLength(priorDeliveries + 1);
   } finally { f.close(); }
 }, 30_000);

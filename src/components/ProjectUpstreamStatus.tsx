@@ -18,7 +18,7 @@ export function UpstreamReleaseStatus({ view }: { view: ProjectSchedulesOverview
     <div><p>{state.detected ? t("Detected release: {tag}", { tag: state.detected.tag }) : t("No release detected")}</p>{state.detected && release(state.detected)}</div>
     <div>{state.active ? <><a className="project-upstream-active" href={`#factory/${state.active.implementation_id}`}>{t("Active update: {tag}", { tag: state.active.release.tag })}</a>{release(state.active.release)}</> : <p>{t("No active update")}</p>}</div>
     <div><p>{state.candidate ? t("Next release: {tag}", { tag: state.candidate.tag }) : t("No next release")}</p>{state.candidate && release(state.candidate)}</div>
-    {result && <div role="status"><p>{t("Sync results")}: <time dateTime={result.started_at}>{new Date(result.started_at).toLocaleString()}</time> · <span>{result.condition === "succeeded" ? t("Succeeded") : result.condition === "failed" ? t("Failed") : result.condition === "uncertain" ? t("Uncertain") : result.condition === "reconciled" ? t("Reconciled") : t("Running")}</span></p>{result.problem && <p>{result.problem}</p>}</div>}
+    {result && <div role={result.condition === "failed" || result.problem ? "alert" : "status"}><p>{t("Sync results")}: <time dateTime={result.started_at}>{new Date(result.started_at).toLocaleString()}</time> · <span>{result.condition === "succeeded" ? t("Succeeded") : result.condition === "failed" ? t("Failed") : result.condition === "uncertain" ? t("Uncertain") : result.condition === "reconciled" ? t("Reconciled") : t("Running")}</span></p>{result.problem && <p>{result.problem}</p>}</div>}
   </section>;
 }
 

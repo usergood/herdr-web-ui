@@ -53,6 +53,6 @@ export function SecretInput({ prompt, active = true, onSend, onCancel }: {
       <button type="submit" className="btn btn-primary" disabled={pending}><Send size={14} aria-hidden="true" /> {t("Send")}</button>
       <button type="button" className="btn" disabled={pending} onClick={() => { if (input.current) input.current.value = ""; onCancel(); }}>{t("Cancel")}</button>
     </div>
-    {error && <p className="secret-input-error" role="status">{error}</p>}
+    {error && <p className="secret-input-error" role="alert">{error}</p>}
   </form>;
 }

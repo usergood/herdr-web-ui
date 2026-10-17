@@ -48,6 +48,6 @@ export function badRequest(code: string, message: string): Response {
   return httpError(400, code, message);
 }
 
-export function httpError(status: number, code: string, message: string): Response {
-  return jsonResponse({ error: { code, message } }, status);
+export function httpError(status: number, code: string, message: string, details: { candidates?: string[] } = {}): Response {
+  return jsonResponse({ error: { ...details, code, message } }, status);
 }

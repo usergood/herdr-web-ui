@@ -1,6 +1,5 @@
 .project-queue { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
 .project-queue p, .project-queue a { overflow-wrap: anywhere; }
-.project-queue-limit { width: 5rem; min-width: 0; }
 .project-queue-list { margin: 0; padding: 0; list-style: none; }
 .project-queue-list li { padding: var(--space-3); border-bottom: var(--hairline) solid var(--border); }
 .project-queue-list li:last-child { border-bottom: 0; }

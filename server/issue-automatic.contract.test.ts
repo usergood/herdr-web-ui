@@ -14,7 +14,7 @@ test("automatic opt-in requires the selected identity and exact current backlog 
   const fixture = githubQueueFixture(true);
   try {
     const { route } = await synced(fixture);
-    const config = { expected_revision: null, automatic_implementation: true, paused: true, max_implementations: 1 };
+    const config = { expected_revision: null, automatic_implementation: true, paused: true };
     const missing = await fixture.post(route + "/queue", config);
     expect(missing.status).toBe(409);
     expect((await missing.json()).error.code).toBe("queue_preview_required");
@@ -29,9 +29,9 @@ test("automatic opt-in requires the selected identity and exact current backlog 
   } finally { fixture.close(); }
 }, 20_000);
 
-async function enable(fixture: ReturnType<typeof githubQueueFixture>, route: string, paused = false, limit = 1) {
+async function enable(fixture: ReturnType<typeof githubQueueFixture>, route: string, paused = false) {
   const preview = await fixture.json(route + "/preview", {});
-  return fixture.json(route + "/queue", { expected_revision: preview.policy.revision, automatic_implementation: true, preview_revision: preview.revision, paused, max_implementations: limit });
+  return fixture.json(route + "/queue", { expected_revision: preview.policy.revision, automatic_implementation: true, preview_revision: preview.revision, paused });
 }
 
 test("remote automation without an owner-configured callback fails before reserving or launching a Run", async () => {
@@ -39,9 +39,9 @@ test("remote automation without an owner-configured callback fails before reserv
   try {
     const { route } = await synced(fixture);
     const preview = await fixture.json(route + "/preview", {});
-    const response = await fixture.post(route + "/queue", { expected_revision: null, automatic_implementation: true, preview_revision: preview.revision, paused: false, max_implementations: 1 }, { ...fixture.headers, "x-forwarded-host": "untrusted.example", "x-forwarded-proto": "https" });
+    const response = await fixture.post(route + "/queue", { expected_revision: null, automatic_implementation: true, preview_revision: preview.revision, paused: false }, { ...fixture.headers, "x-forwarded-host": "untrusted.example", "x-forwarded-proto": "https" });
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ dispatch_problem: { code: "factory_public_url_required" }, implementing_count: 0, available_slots: 1 });
+    expect(await response.json()).toMatchObject({ dispatch_problem: { code: "factory_public_url_required" }, implementing_count: 0 });
     expect(fixture.launches).toEqual([]);
     const source = (await fixture.json(route)).sources[0];
     expect((await fixture.json(`/implementations/${source.implementation_id}`)).runs).toEqual([]);
@@ -118,7 +118,7 @@ test("reviewed backlog and future trusted plans dispatch once through the existi
   const fixture = githubQueueFixture(true);
   try {
     const { route } = await synced(fixture);
-    await enable(fixture, route, false, 2);
+    await enable(fixture, route, false);
     const first = (await fixture.json(route)).sources[0];
     const run = (await fixture.json(`/implementations/${first.implementation_id}`)).runs[0];
     expect(run).toMatchObject({ condition: "working", action: "implement-spec", manifest: { issue_admission: { queue_policy: { automatic_implementation: true }, source: { revision: first.revision } } } });
@@ -165,7 +165,7 @@ test("a preview made before a scope edit cannot enable automatic implementation"
     const preview = await fixture.json(route + "/preview", {});
     fixture.issue.body += "\nA different requirement.";
     fixture.save(undefined, false, {}, true); await fixture.json(route + "/sync", {});
-    const response = await fixture.post(route + "/queue", { expected_revision: null, automatic_implementation: true, preview_revision: preview.revision, paused: false, max_implementations: 1 });
+    const response = await fixture.post(route + "/queue", { expected_revision: null, automatic_implementation: true, preview_revision: preview.revision, paused: false });
     expect(response.status).toBe(409); expect((await response.json()).error.code).toBe("queue_preview_required");
     expect((await fixture.json(route + "/queue")).policy.automatic_implementation).toBe(false);
     expect(fixture.launches).toEqual([]);
@@ -195,14 +195,15 @@ test.each(["disable", "pause", "scope", "outage", "priority", "readiness", "depe
     fixture.save([fixture.issue, later], false, {}, true); await fixture.renewLabels(route, [2]);
     const preview = await fixture.json(route + "/preview", {});
     const gate = fixture.holdCapabilities(); release = gate.release;
-    pending = fixture.post(route + "/queue", { expected_revision: null, automatic_implementation: true, preview_revision: preview.revision, paused: false, max_implementations: 1 });
+    pending = fixture.post(route + "/queue", { expected_revision: null, automatic_implementation: true, preview_revision: preview.revision, paused: false });
     await Promise.race([gate.waiting, new Promise((_, reject) => setTimeout(() => reject(new Error("Automatic admission did not reach native observation")), 5000))]);
     if (change === "disable" || change === "pause") {
       const queue = await fixture.json(route + "/queue");
-      await fixture.json(route + "/queue", { expected_revision: queue.policy.revision, automatic_implementation: change !== "disable", paused: change === "pause", max_implementations: 1 });
+      await fixture.json(route + "/queue", { expected_revision: queue.policy.revision, automatic_implementation: change !== "disable", paused: change === "pause" });
     } else if (change === "priority") {
       const entries = (await fixture.json(route + "/queue")).entries;
-      await fixture.json(`/implementations/${entries[1].implementation_id}/order`, { before_id: entries[0].implementation_id });
+      const rejected = await fixture.post(`/implementations/${entries[1].implementation_id}/order`, { before_id: entries[0].implementation_id });
+      expect(rejected.status).toBe(409);
     } else if (change === "readiness") {
       await fixture.json(route + "/readiness", { expected_revision: readiness.revision, account_profile_id: readiness.account_profile_id, triage_labels: {}, blocked_label: "on-hold" });
     } else {
@@ -212,9 +213,16 @@ test.each(["disable", "pause", "scope", "outage", "priority", "readiness", "depe
       expect(sync.status).toBe(change === "outage" ? 409 : 200);
     }
     release(); expect((await pending).status).toBe(200);
-    expect(fixture.launches).toEqual([]);
     const sources = (await fixture.json(route)).sources;
-    for (const source of sources) expect((await fixture.json(`/implementations/${source.implementation_id}`)).runs).toEqual([]);
+    if (change === "priority") {
+      const ordered = [...sources].sort((a: any, b: any) => a.number - b.number);
+      const runs = await Promise.all(ordered.map((source: any) => fixture.json(`/implementations/${source.implementation_id}`).then(detail => detail.runs[0])));
+      expect(runs.map(run => run.condition)).toEqual(["working", "working"]);
+      expect(fixture.launches).toEqual(runs.map(run => run.id));
+    } else {
+      expect(fixture.launches).toEqual([]);
+      for (const source of sources) expect((await fixture.json(`/implementations/${source.implementation_id}`)).runs).toEqual([]);
+    }
   } finally { release(); await pending?.catch(() => {}); fixture.close(); }
 }, 20_000);
 
@@ -236,9 +244,13 @@ test("failed automatic attempts await explicit Retry and uncertain attempts reta
     fixture.save([fixture.issue, later], false, {}, true); await fixture.renewLabels(route, [2]); await fixture.json(route + "/sync", {});
     expect((await fixture.json(route + "/queue")).implementing_count).toBe(1);
     expect(fixture.launches).toEqual([failed.id, next.id]);
-    fixture.setHostOffline(false); await fixture.json(`/runs/${next.id}/reconcile`, {}); await fixture.json(route + "/sync", {});
+    fixture.setLaunchOutcome("working"); fixture.setHostOffline(false); await fixture.json(`/runs/${next.id}/reconcile`, {}); await fixture.json(route + "/sync", {});
     expect((await fixture.json(path)).runs.at(-1)).toMatchObject({ id: next.id, condition: "working" });
-    expect(fixture.launches).toEqual([failed.id, next.id]);
+    const independent = (await fixture.json(route)).sources.find((source: any) => source.number === 2);
+    const independentRun = (await fixture.json(`/implementations/${independent.implementation_id}`)).runs[0];
+    expect(independentRun.condition).toBe("working");
+    expect(fixture.launches).toEqual([failed.id, next.id, independentRun.id]);
+    expect((await fixture.json(path)).runs.map((run: any) => run.id)).toEqual([failed.id, next.id]);
   } finally { fixture.close(); }
 }, 20_000);
 
@@ -263,7 +275,7 @@ test("automatic preview reuses an approved app plan and graph without a manual P
   } finally { fixture.close(); }
 }, 20_000);
 
-test("the existing polling loop starts unrelated queued work after review releases implementation capacity", async () => {
+test("independent queued work starts before another Assignment retires while verified review still controls retirement", async () => {
   const { githubReviewFixture } = await import("../scripts/fixtures/github-review.ts");
   const fixture = githubReviewFixture();
   try {
@@ -274,19 +286,20 @@ test("the existing polling loop starts unrelated queued work after review releas
     await enable(fixture, route);
     const source = (await fixture.json(route)).sources.find((source: any) => source.number === 2);
     const secondPath = `/implementations/${source.implementation_id}`;
-    expect((await fixture.json(secondPath)).runs).toEqual([]);
-    expect((await fixture.json(route + "/queue")).dispatch_problem.code).toBe("project_capacity_exhausted");
+    const independent = (await fixture.json(secondPath)).runs[0];
+    expect(independent).toMatchObject({ condition: "working", manifest: { issue_admission: { source: { id: source.id } } } });
+    expect((await fixture.json(route + "/queue")).dispatch_problem).toBeNull();
     await fixture.integrate(run); await fixture.json(`/runs/${run.id}/checks`, {});
     await fixture.review(run, "standards"); await fixture.review(run, "spec");
     await fixture.json(`/runs/${run.id}/reconcile`, {});
     const deadline = Date.now() + 14_000;
     let next;
     while (Date.now() < deadline) {
-      next = (await fixture.json(secondPath)).runs[0];
-      if (next?.condition === "working") break;
+      next = (await fixture.json(path));
+      if (next.implementation.activity === "awaiting_merge") break;
       await new Promise(resolve => setTimeout(resolve, 25));
     }
-    expect(next).toMatchObject({ condition: "working", manifest: { issue_admission: { source: { id: source.id } } } });
+    expect((await fixture.json(secondPath)).runs[0]).toMatchObject({ id: independent.id, condition: "ready", manifest: { issue_admission: { source: { id: source.id } } } });
     expect((await fixture.json(path)).implementation).toMatchObject({ stage: "review", activity: "awaiting_merge", outcome: "none" });
     expect((await fixture.json(secondPath)).runs).toHaveLength(1);
   } finally { fixture.close(); }

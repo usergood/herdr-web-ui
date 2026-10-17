@@ -105,15 +105,15 @@ test("an explicit Continue from the ready verification prerequisite reuses displ
   } finally { fixture.close(); }
 }, 15_000);
 
-test.each(["scope", "readiness", "policy", "pause", "outage", "dependencies", "project_limit", "global_limit"])("%s changed while verifying blocks the retained issue intent before implementation admission", async blocker => {
+test.each(["scope", "readiness", "policy", "pause", "outage", "dependencies"])("%s changed while verifying blocks the retained issue intent before implementation admission", async blocker => {
   const fixture = issueContinuationFixture();
   try {
-    const { path, body, route, readiness, project } = await fixture.preparedPlanning("to-spec");
+    const { path, body, route, readiness } = await fixture.preparedPlanning("to-spec");
     fixture.setFactoryReady(false);
     const probe = await fixture.json(path + "/continue", body);
     const question = await fixture.agent(probe.id, "question", { question: "Confirm the fictional verification round?" }).then(response => response.json());
     await fixture.json(path + `/questions/${question.id}/answer`, { revision: question.revision, answer: "Owned fixture answer" });
-    if (blocker === "pause") await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true, max_implementations: 1 });
+    if (blocker === "pause") await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true });
     else if (blocker === "readiness") await fixture.json(route + "/readiness", { expected_revision: readiness.revision, account_profile_id: readiness.account_profile_id, triage_labels: {}, blocked_label: "on-hold" });
     else if (blocker === "policy") {
       const policy = (await fixture.json(route)).policy;
@@ -123,19 +123,6 @@ test.each(["scope", "readiness", "policy", "pause", "outage", "dependencies", "p
       if (blocker === "scope") fixture.issue.body += "\nA new greeting requirement.";
       fixture.save([fixture.issue], blocker === "outage", blocker === "dependencies" ? { 1: [{ ...fixture.issue, number: 42, node_id: "undelivered-verification-dependency", html_url: "https://github.com/fictional/project/issues/42" }] } : {});
       expect((await fixture.post(route + "/sync", {})).status).toBe(blocker === "outage" ? 409 : 200);
-    } else {
-      const other = await fixture.json("/implementations", { title: "Other owned execution", project_id: project.id, description: "Unrelated fixture" });
-      if (blocker === "global_limit") {
-        await fixture.json(`/implementations/${other.id}/runs`, { action: "work", idempotency_key: "global-verification-blocker" });
-        await fixture.json("/settings", { max_agents: 1 });
-      } else {
-        const spec = await fixture.json(`/implementations/${other.id}/specifications`, { content: "Independent owned execution" });
-        for (const kind of ["specification", "testing_seams"]) await fixture.json(`/implementations/${other.id}/approvals`, { kind, revision: spec.id, scope: "Owned HTTP fixture" });
-        const graph = await fixture.json(`/implementations/${other.id}/tickets`, { specification_id: spec.id, tickets: [{ key: "other", title: "Other", acceptance: "Other fixture", dependencies: [] }] });
-        await fixture.json(`/implementations/${other.id}/approvals`, { kind: "ticket_graph", revision: graph.hash, scope: "Owned fixture graph" });
-        fixture.setFactoryReady(true);
-        await fixture.json(`/implementations/${other.id}/runs`, { action: "implement-spec", idempotency_key: "project-verification-blocker" });
-      }
     }
     fixture.setVerificationAvailable(); fixture.setRunCondition(probe.id, "ready");
     const contract = await fixture.agent(probe.id, "contract").then(response => response.json());
@@ -148,11 +135,67 @@ test.each(["scope", "readiness", "policy", "pause", "outage", "dependencies", "p
       await Bun.sleep(25);
     } while (Date.now() < deadline);
     expect(detail.events.some((event: any) => event.kind === "continuation_waiting" && event.data.run_id === probe.id)).toBe(true);
-    expect(detail.runs.map((run: any) => [run.action, run.condition])).toEqual([["to-spec", "completed"], ["verify-provider", blocker === "global_limit" ? "completed" : "ready"]]);
+    expect(detail.runs.map((run: any) => [run.action, run.condition])).toEqual([["to-spec", "completed"], ["verify-provider", "ready"]]);
     fixture.restart();
     expect((await fixture.json(path)).runs).toHaveLength(2);
     const replay = await fixture.json(path + "/continue", body);
     expect(replay.id).toBe(probe.id);
+  } finally { fixture.close(); }
+}, 15_000);
+
+test("capacity filled during verification retains one queued successor across restart and admits it once capacity is released", async () => {
+  const fixture = issueContinuationFixture();
+  try {
+    const { path, planning, body, project } = await fixture.preparedPlanning("to-spec");
+    fixture.setFactoryReady(false);
+    const probe = await fixture.json(path + "/continue", body);
+    const question = await fixture.agent(probe.id, "question", { question: "Confirm the fictional verification round?" }).then(response => response.json());
+    await fixture.json(path + `/questions/${question.id}/answer`, { revision: question.revision, answer: "Owned fixture answer" });
+    const other = await fixture.json("/implementations", { title: "Other owned execution", project_id: project.id, description: "Unrelated fixture" });
+    const occupied = await fixture.json(`/implementations/${other.id}/runs`, { action: "work", idempotency_key: "global-verification-blocker" });
+    expect(occupied.condition).toBe("working");
+    await fixture.json("/settings", { max_agents: 1 });
+    fixture.setVerificationAvailable(); fixture.setRunCondition(probe.id, "ready");
+    const contract = await fixture.agent(probe.id, "contract").then(response => response.json());
+    expect((await fixture.agent(probe.id, "consume", { revision: contract.question_revision })).status).toBe(200);
+    const deadline = Date.now() + 5000;
+    let detail;
+    do {
+      detail = await fixture.json(path);
+      // Observe the dispatcher's capacity decision before restarting its transport.
+      if (detail.capacity_waiting.some((wait: any) => wait.action === "implement-spec" && wait.condition === "queued" && wait.reason.includes("1/1"))) break;
+      await Bun.sleep(25);
+    } while (Date.now() < deadline);
+    expect(detail.runs).toMatchObject([{ id: planning.id, condition: "completed" }, { id: probe.id, action: "verify-provider", condition: "completed" }]);
+    expect(detail.runs).toHaveLength(2);
+    expect(detail.capacity_waiting).toHaveLength(1);
+    const queued = detail.capacity_waiting[0];
+    expect(queued).toMatchObject({ action: "implement-spec", condition: "queued", idempotency_key: `${body.idempotency_key}-verified`, reason: expect.stringContaining("1/1") });
+    expect((await fixture.json("")).capacity).toMatchObject({ normal: { used: 1, limit: 1 }, contexts: [expect.objectContaining({ run_id: occupied.id })] });
+    fixture.restart();
+    expect((await fixture.json(path + "/continue", body)).id).toBe(probe.id);
+    const retained = await fixture.json(path);
+    expect(retained.runs).toHaveLength(2);
+    expect(retained.capacity_waiting).toContainEqual(expect.objectContaining({ id: queued.id, created_at: queued.created_at, idempotency_key: queued.idempotency_key, condition: "queued" }));
+    // The owned Machine now observes the unrelated context at rest; the public
+    // reconciliation releases its slot without replaying the retained Continue.
+    fixture.setRunCondition(occupied.id, "ready");
+    await fixture.json(`/runs/${occupied.id}/reconcile`, {});
+    const resumedDeadline = Date.now() + 5000;
+    do {
+      detail = await fixture.json(path);
+      if (detail.runs.some((run: any) => run.action === "implement-spec" && run.condition === "working")) break;
+      await Bun.sleep(25);
+    } while (Date.now() < resumedDeadline);
+    expect(detail.runs).toHaveLength(3);
+    const successor = detail.runs[2];
+    expect(successor).toMatchObject({ action: "implement-spec", condition: "working", idempotency_key: queued.idempotency_key, graph_hash: body.issue_scope.graph_hash, manifest: { issue_admission: { source: { id: body.issue_scope.source_id, revision: body.issue_scope.source_revision } } } });
+    expect(detail.capacity_waiting).toEqual([]);
+    expect((await fixture.json(path + "/continue", body)).id).toBe(successor.id);
+    fixture.restart();
+    await fixture.json(`/runs/${successor.id}/reconcile`, {});
+    expect((await fixture.json(path + "/continue", body)).id).toBe(successor.id);
+    expect((await fixture.json(path)).runs.map((run: any) => run.id)).toEqual([planning.id, probe.id, successor.id]);
   } finally { fixture.close(); }
 }, 15_000);
 
@@ -162,16 +205,25 @@ test("an uncertain verification launch retains its accepted identity and never r
     const { path, body } = await fixture.preparedPlanning();
     fixture.setFactoryReady(false); fixture.setVerificationLaunchUncertain();
     const probe = await fixture.json(path + "/continue", body);
-    expect(probe).toMatchObject({ action: "verify-provider", condition: "disconnected" });
+    expect(probe).toMatchObject({ action: "verify-provider", capacity_pool: "normal", condition: "disconnected" });
     expect((await fixture.json(path + "/continue", body)).id).toBe(probe.id);
     fixture.restart();
-    await fixture.json(`/runs/${probe.id}/reconcile`, {});
+    expect(await fixture.json(`/runs/${probe.id}/reconcile`, {})).toMatchObject({ id: probe.id, condition: "working" });
     expect((await fixture.json(path + "/continue", body)).id).toBe(probe.id);
     const other = await fixture.json("/implementations", { title: "Other work", description: "Owned independent context" });
     await fixture.json(`/implementations/${other.id}/configure`, { machine_id: "fictional-host", provider: "codex" });
     await fixture.json("/settings", { max_agents: 1 });
-    const blocked = await fixture.post(`/implementations/${other.id}/runs`, { action: "grill-me", idempotency_key: "uncertain-probe-still-owns" });
-    expect(blocked.status).toBe(409); expect((await blocked.json()).error.code).toBe("capacity_exhausted");
+    const planningResponse = await fixture.post(`/implementations/${other.id}/runs`, { action: "grill-me", idempotency_key: "extra-planning-while-probe-owns" });
+    expect(planningResponse.status).toBe(202);
+    const planning = await planningResponse.json(); expect(planning).toMatchObject({ capacity_pool: "planning", condition: "working" });
+    const capacity = (await fixture.json("")).capacity;
+    expect(capacity).toMatchObject({ normal: { used: 1, limit: 1 }, planning: { used: 1, limit: 1 } });
+    expect(capacity.contexts).toContainEqual(expect.objectContaining({ run_id: probe.id, pool: "normal", uncertain: false }));
+    const last = await fixture.json("/implementations", { title: "Additional planning", description: "Owned pending context" });
+    await fixture.json(`/implementations/${last.id}/configure`, { machine_id: "fictional-host", provider: "codex" });
+    const queued = await fixture.json(`/implementations/${last.id}/runs`, { action: "grill-me", idempotency_key: "planning-pool-full" });
+    expect(queued).toMatchObject({ condition: "queued" });
+    expect((await fixture.json(`/implementations/${last.id}`)).runs).toEqual([]);
     expect((await fixture.json(path)).runs.map((run: any) => run.action)).toEqual(["to-tickets", "verify-provider"]);
     expect(fixture.verificationRequests).toBe(0);
   } finally { fixture.close(); }
@@ -279,7 +331,8 @@ test("a ready planning predecessor cannot release an uncertain worker reservatio
     const response = await fixture.post(path + "/continue", body);
     expect(response.status).toBe(409); expect((await response.json()).error.code).toBe("implementation_owned");
     const detail = await fixture.json(path);
-    expect(detail.workers).toEqual([worker]);
+    expect(detail.workers).toEqual([{ ...worker, waiting_reason: expect.stringContaining("uncertain") }]);
+    expect((await fixture.json("")).capacity.contexts).toContainEqual(expect.objectContaining({ run_id: planning.id, worker_id: worker.id, pool: "normal", uncertain: true }));
     expect(detail.runs).toHaveLength(1); expect(detail.runs[0]).toMatchObject({ id: planning.id, condition: "ready" });
   } finally { fixture.close(); }
 }, 15_000);
@@ -289,7 +342,7 @@ test.each(["pause", "outage", "scope", "dependencies"])("Continue revalidates %s
   try {
     const { path, planning, body, route } = await fixture.preparedPlanning();
     fixture.beforeFinish(async () => {
-      if (blocker === "pause") await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true, max_implementations: 1 });
+      if (blocker === "pause") await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true });
       if (blocker === "outage") { fixture.save([fixture.issue], true); expect((await fixture.post(route + "/sync", {})).status).toBe(409); }
       if (blocker === "scope") { fixture.issue.body += "\nChanged greeting during handoff."; fixture.save(); await fixture.json(route + "/sync", {}); }
       if (blocker === "dependencies") {
@@ -304,6 +357,31 @@ test.each(["pause", "outage", "scope", "dependencies"])("Continue revalidates %s
     expect(detail.runs[0]).toMatchObject({ id: planning.id, condition: "completed" });
     expect(detail.messages.some((message: any) => message.content.includes("Retained fictional planning handoff."))).toBe(true);
   } finally { fixture.close(); }
+}, 15_000);
+
+test("Continue never replays a held native handoff after bridge restart", async () => {
+  const fixture = issueContinuationFixture();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => release = resolve);
+  let entered!: () => void, repeated!: () => void;
+  const waiting = new Promise<void>(resolve => entered = resolve), duplicate = new Promise<void>(resolve => repeated = resolve);
+  let finishes = 0;
+  const pending: Promise<unknown>[] = [];
+  try {
+    const { path, planning, body } = await fixture.preparedPlanning();
+    fixture.beforeFinish(async () => { finishes++; if (finishes === 1) entered(); else repeated(); await gate; });
+    pending.push(fixture.post(path + "/continue", body).catch(() => null));
+    await Promise.race([waiting, new Promise((_, reject) => setTimeout(() => reject(new Error("Native handoff did not reach its owned gate")), 5000))]);
+    fixture.restart();
+    const replay = fixture.post(path + "/continue", body).then(async response => ({ status: response.status, body: await response.json() }));
+    pending.push(replay.catch(() => null));
+    const result = await Promise.race([replay, duplicate.then(() => ({ replayed: true })), new Promise((_, reject) => setTimeout(() => reject(new Error("Retained handoff replay did not settle")), 5000))]);
+    expect(result).toMatchObject({ status: 409, body: { error: { code: "continuation_uncertain" } } });
+    const detail = await fixture.json(path);
+    expect(detail.runs).toEqual([expect.objectContaining({ id: planning.id, pane_id: planning.pane_id, workspace_id: planning.workspace_id })]);
+    expect(detail.capacity_waiting).toEqual([]);
+    expect(finishes).toBe(1);
+  } finally { release(); await Promise.allSettled(pending); fixture.close(); }
 }, 15_000);
 
 test("an uncertain planning finish cannot admit a successor or release the predecessor", async () => {
@@ -328,27 +406,42 @@ test("a ready ordinary Work Run is not a retiring issue planning predecessor", a
   } finally { fixture.close(); }
 }, 15_000);
 
-test.each(["project", "global"])("Continue rechecks %s capacity acquired while the planning handoff finishes", async limit => {
+test.each(["independent_project", "global"])("Continue preserves global capacity and admits independent Project work after the planning handoff (%s)", async limit => {
   const fixture = issueContinuationFixture();
   try {
-    const { path, planning, body, route, readiness, project } = await fixture.preparedPlanning();
+    const { path, planning, body, project } = await fixture.preparedPlanning();
+    let occupied: any;
     fixture.beforeFinish(async () => {
-      if (limit === "global") {
-        const idea = await fixture.json("/implementations", { title: "Other active context", project_id: project.id, description: "Owned unrelated Work" });
-        await fixture.json(`/implementations/${idea.id}/runs`, { action: "work", idempotency_key: "other-active-context" });
-        await fixture.json("/settings", { max_agents: 1 });
-      } else {
-        fixture.save([fixture.issue, { ...fixture.issue, number: 2, node_id: "other-issue", title: "Other issue", html_url: "https://github.com/fictional/project/issues/2" }]);
-        const second = (await fixture.json(route + "/sync", {})).sources.find((source: any) => source.number === 2);
-        await fixture.json(route + "/issues/2/approve", { source_revision: second.revision, policy_revision: readiness.revision });
-        await fixture.json(route + "/issues/2/prepare", { source_revision: second.revision });
-        const current = (await fixture.json(route + "/sync", {})).sources.find((source: any) => source.number === 2);
-        await fixture.json(`/implementations/${current.implementation_id}/runs`, { action: "implement-spec", idempotency_key: "other-project-owner", issue_scope: { source_id: current.id, source_revision: current.revision, graph_hash: current.planning.graph_hash } });
-      }
+      const idea = await fixture.json("/implementations", { title: "Other active context", project_id: project.id, description: "Owned independent Work" });
+      occupied = await fixture.json(`/implementations/${idea.id}/runs`, { action: "work", idempotency_key: "other-active-context" });
+      expect(occupied.condition).toBe("working");
+      if (limit === "global") await fixture.json("/settings", { max_agents: 1 });
     });
     const response = await fixture.post(path + "/continue", body);
-    expect(response.status).toBe(409); expect((await response.json()).error.code).toBe(limit === "project" ? "project_capacity_exhausted" : "capacity_exhausted");
-    expect((await fixture.json(path)).runs).toMatchObject([{ id: planning.id, condition: "completed" }]);
+    const result = await response.json();
+    expect({ status: response.status, body: result }).toMatchObject({ status: 202 });
+    if (limit === "global") {
+      expect(result).toMatchObject({ condition: "queued", reason: expect.stringContaining("1/1") });
+      const waiting = (await fixture.json(path));
+      expect(waiting.runs).toMatchObject([{ id: planning.id, condition: "completed" }]);
+      expect(waiting.capacity_waiting).toContainEqual(expect.objectContaining({ id: result.id, idempotency_key: body.idempotency_key, condition: "queued", created_at: result.created_at }));
+      expect((await fixture.json(path)).capacity_waiting).toEqual(waiting.capacity_waiting);
+      expect((await fixture.json("")).capacity).toMatchObject({ normal: { used: 1, limit: 1 } });
+      fixture.setRunCondition(occupied.id, "ready");
+      await fixture.json(`/runs/${occupied.id}/reconcile`, {});
+      const deadline = Date.now() + 5000;
+      let detail;
+      do {
+        detail = await fixture.json(path);
+        if (detail.runs.some((run: any) => run.action === "implement-spec" && run.condition === "working")) break;
+        await Bun.sleep(25);
+      } while (Date.now() < deadline);
+      expect(detail.runs).toMatchObject([{ id: planning.id, condition: "completed" }, { action: "implement-spec", idempotency_key: body.idempotency_key, condition: "working", manifest: { issue_admission: { source: { id: body.issue_scope.source_id, revision: body.issue_scope.source_revision } } } }]);
+    } else {
+      expect(result).toMatchObject({ action: "implement-spec", condition: "working" });
+      expect((await fixture.json(path)).runs).toMatchObject([{ id: planning.id, condition: "completed" }, { id: result.id, action: "implement-spec", condition: "working" }]);
+      expect((await fixture.json("")).capacity).toMatchObject({ normal: { used: 2, limit: 6 } });
+    }
   } finally { fixture.close(); }
 }, 15_000);
 
@@ -369,7 +462,7 @@ test.each(["pause", "outage"])("Continue refuses current %s evidence before reti
   const fixture = issueContinuationFixture();
   try {
     const { path, body, route } = await fixture.preparedPlanning();
-    if (blocker === "pause") await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true, max_implementations: 1 });
+    if (blocker === "pause") await fixture.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true });
     else { fixture.save([fixture.issue], true); expect((await fixture.post(route + "/sync", {})).status).toBe(409); }
     const response = await fixture.post(path + "/continue", body);
     expect(response.status).toBe(409); expect((await response.json()).error.code).toBe(blocker === "pause" ? "queue_paused" : "issue_not_eligible");

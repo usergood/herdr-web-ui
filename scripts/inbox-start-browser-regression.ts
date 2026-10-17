@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { createServer } from "../server/index.ts";
 import { herdrRpc, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
+import { routeDrained } from "./drained-route.ts";
 
 const root=mkdtempSync(join(tmpdir(),"saurons-inbox-browser-"));const repo=join(root,"project");mkdirSync(repo);writeFileSync(join(repo,"README.md"),"Owned project\n");
 for(const args of [["init","-b","main"],["add","."],["-c","user.name=Fixture","-c","user.email=fixture@example.invalid","commit","-m","initial"]])execFileSync("git",args,{cwd:repo,stdio:"ignore"});
@@ -35,15 +36,20 @@ try {
   await shot("inbox-actions-desktop.png");if(evidence){await page.setViewportSize({width:390,height:844});await shot("inbox-actions-mobile.png");await page.setViewportSize({width:1440,height:1000});}
   const launched=page.waitForResponse(r=>r.url().endsWith("/runs")&&r.request().method()==="POST");await page.getByRole("button",{name:"Start work",exact:true}).click();const result=await launched;assert.equal(result.status(),202);const work=await result.json();assert.equal(work.action,"work");assert.equal(work.condition,"working");
   await page.locator(".factory-panel").waitFor({state:"hidden"});assert.equal(await page.getByRole("button",{name:"Chat",exact:true}).getAttribute("aria-pressed"),"true");
-  await page.route(`**/api/factory/implementations/${work.implementation_id}?view=current`,async route=>{if(route.request().method()!=="GET")return route.continue();const response=await route.fetch();const detail=await response.json();await route.fulfill({json:{...detail,runs:detail.runs.map((r:any)=>r.id===work.id&&!["cancelled","completed","failed"].includes(r.condition)?{...r,condition:"interrupted",waiting_reason:"Owned fixture: native launch rejected an argument"}:r)}});});
+  const closeInterruptedRoute=await routeDrained(page,`**/api/factory/implementations/${work.implementation_id}?view=current`,async route=>{if(route.request().method()!=="GET")return route.continue();const response=await route.fetch();const detail=await response.json();await route.fulfill({json:{...detail,runs:detail.runs.map((r:any)=>r.id===work.id&&!["cancelled","completed","failed"].includes(r.condition)?{...r,condition:"interrupted",waiting_reason:"Owned fixture: native launch rejected an argument"}:r)}});});
   await page.goto(`http://localhost:${app.port}/#factory/${work.implementation_id}`);const recovery=page.getByRole("region",{name:"Next step",exact:true});
   await recovery.getByRole("button",{name:"Stop this attempt",exact:true}).waitFor();assert.equal(await recovery.getByRole("button",{name:"Accept research",exact:true}).count(),0);
-  const stoppedWork=page.waitForResponse(r=>r.url().endsWith(`/runs/${work.id}/stop`)&&r.request().method()==="POST");await recovery.getByRole("button",{name:"Stop this attempt",exact:true}).click();assert.equal((await stoppedWork).status(),200);
-  await page.unroute(`**/api/factory/implementations/${work.implementation_id}?view=current`);await recovery.getByRole("button",{name:"Start work",exact:true}).waitFor();
+  const stoppedWork=page.waitForResponse(r=>r.url().endsWith(`/runs/${work.id}/stop`)&&r.request().method()==="POST");await recovery.getByRole("button",{name:"Stop this attempt",exact:true}).click();const stoppedResponse=await stoppedWork;assert.equal(stoppedResponse.status(),200);const stopped=await stoppedResponse.json();assert.equal(stopped.id,work.id);assert.equal(stopped.condition,"cancelled");
+  await closeInterruptedRoute();
+  try {await recovery.getByRole("button",{name:"Start work",exact:true}).waitFor();} catch(error) {
+    const current=await page.request.get(`http://localhost:${app.port}/api/factory/implementations/${work.implementation_id}?view=current`).then(response=>response.json());
+    console.error("Owned Stop recovery",JSON.stringify({stopped:{id:stopped.id,condition:stopped.condition},runs:current.runs.map((run:any)=>({id:run.id,condition:run.condition,waiting_reason:run.waiting_reason})),next_step:await recovery.textContent()}));
+    await shot("inbox-stop-recovery-failure.png");throw error;
+  }
   await page.goto(`http://localhost:${app.port}/#projects/${project.id}/inbox`);await page.getByRole("textbox",{name:"Idea title",exact:true}).fill("Plan the new checkout");await page.getByRole("button",{name:"Capture idea",exact:true}).click();
   await page.getByRole("heading",{name:"Plan the new checkout",exact:true}).waitFor();
   const planningId=new URL(page.url()).hash.slice("#factory/".length);
-  const planning=page.waitForResponse(r=>r.url().endsWith("/continue")&&r.request().method()==="POST");await page.getByRole("button",{name:"Plan implementation",exact:true}).click();const planned=await planning;assert.equal(planned.status(),202);const plan=await planned.json();assert.equal(plan.action,"grill-with-docs");assert.equal(plan.condition,"working",JSON.stringify(fixtureFailures));
+  const planning=page.waitForResponse(r=>r.url().endsWith("/continue")&&r.request().method()==="POST");await page.getByRole("button",{name:"Plan implementation",exact:true}).click();const planned=await planning;assert.equal(planned.status(),202);const plan=await planned.json();assert.equal(plan.action,"grill-with-docs");assert.equal(plan.condition,"needs_you",JSON.stringify(fixtureFailures));
   await page.locator(".factory-panel").waitFor({state:"hidden"});
   const workflow=page.getByRole("dialog",{name:"Workflow",exact:true});
   const openWorkflow=async()=>{await page.getByRole("button",{name:"Workflow",exact:true}).click();await workflow.waitFor();};
@@ -80,18 +86,20 @@ try {
   await workflow.getByRole("button",{name:"Confirm shared understanding",exact:true}).click();
   const confirmed=await page.request.get(`http://localhost:${app.port}/api/factory/implementations/${planningId}`).then(r=>r.json());
   assert.equal(confirmed.questions.find((q:any)=>q.id===confirmation.id).answer,"Confirmed");
-  await workflow.getByRole("button",{name:"Accept specification",exact:true}).click();await workflow.getByRole("button",{name:"Confirm testing seams",exact:true}).click();
-  const ticketRun=await continueStep();assert.equal(ticketRun.action,"to-tickets");
-  await openWorkflow();await workflow.getByText("Add the receipt preview",{exact:true}).waitFor();
-  await workflow.getByRole("button",{name:"Approve Ticket graph",exact:true}).click();
-  const verifyRun=await continueStep();assert.equal(verifyRun.action,"verify-provider");
-  await openWorkflow();await workflow.getByRole("textbox",{name:"Your answer",exact:true}).fill("Confirmed for this owned read-only fixture.");await workflow.getByRole("button",{name:"Save answer",exact:true}).click();
-  await workflow.getByText("Native verification will run before implementation.",{exact:true}).waitFor();
-  assert.equal(await workflow.getByRole("button",{name:"Finish this step",exact:true}).count(),0);
+  await workflow.getByRole("button",{name:"Accept specification",exact:true}).click();
+  await workflow.getByText("Internal planning continues automatically after Specification approval.",{exact:true}).waitFor();
+  assert.equal(await workflow.getByRole("button",{name:"Confirm testing seams",exact:true}).count(),0);
+  assert.equal(await workflow.getByRole("button",{name:"Approve Ticket graph",exact:true}).count(),0);
+  assert.equal(await workflow.getByRole("button",{name:"Continue workflow",exact:true}).count(),0);
+  // This native stand-in cannot certify factory readiness or a complete native handoff.
+  // The automatic request exposes that concrete blocker rather than inventing receipts.
+  await page.waitForFunction(async id=>{const d=await fetch(`/api/factory/implementations/${id}`).then(r=>r.json());return d.automatic_planning?.some((r:{condition:string})=>r.condition==="blocked");},planningId);
+  const automatic=await page.request.get(`http://localhost:${app.port}/api/factory/implementations/${planningId}`).then(r=>r.json());
+  assert.equal(automatic.approvals.filter((a:any)=>a.kind==="testing_seams"||a.kind==="ticket_graph").length,0);
+  const verifyRun=specRun; // Retained identity for the independent reviewed-head UI fixture below.
   assert.equal(await workflow.getByRole("button",{name:"Stop Run",exact:true}).count(),0);
-  assert.equal(await page.locator(".factory-panel").isVisible(),false);
   const snapshot=await page.request.get(`http://localhost:${app.port}/api/session`).then(r=>r.json()).then(result=>result.snapshot);
-  for(const run of [plan,specRun,ticketRun])assert(snapshot.panes.some((pane:any)=>pane.pane_id===run.pane_id),"Finished planning chats must remain available");
+  for(const run of [plan,specRun])assert(snapshot.panes.some((pane:any)=>pane.pane_id===run.pane_id),"Finished planning chats must remain available");
   await shot("inbox-workflow-desktop.png");await page.setViewportSize({width:390,height:844});
   assert(await workflow.evaluate(el=>el.scrollWidth<=el.clientWidth),"Workflow must fit a phone");
   await shot("inbox-workflow-mobile.png");await page.setViewportSize({width:1440,height:1000});
@@ -99,10 +107,12 @@ try {
   const actual=await page.request.get(`http://localhost:${app.port}/api/factory/providers?machine_id=local&implementation_id=${planningId}`).then(r=>r.json());assert.equal(actual.providers.find((p:any)=>p.provider==="codex").factory_ready,false);
   await page.goto(`http://localhost:${app.port}/#factory/${planningId}`);const steps=page.getByRole("region",{name:"Next step",exact:true});
   const head=execFileSync("git",["rev-parse","HEAD"],{cwd:repo,encoding:"utf8"}).trim();const now=new Date().toISOString();const reviewId=crypto.randomUUID();
-  await page.route(`**/api/factory/implementations/${planningId}?view=current`,async route=>{if(route.request().method()!=="GET")return route.continue();const original=await route.fetch();const detail=await original.json();await route.fulfill({json:{...detail,runs:[...detail.runs,{...verifyRun,id:reviewId,action:"implement-spec",condition:"working"}],checks:[{id:crypto.randomUUID(),created_at:now,updated_at:now,run_id:reviewId,worker_id:null,head,workspace_hash:"owned-ui-fixture",commands:[],condition:"passed"}]}});});
+  // Model a retained legacy attempt explicitly; automatic attempts use Human Review.
+  await page.route(`**/api/factory/implementations/${planningId}?view=current`,async route=>{if(route.request().method()!=="GET")return route.continue();const original=await route.fetch();const detail=await original.json();await route.fulfill({json:{...detail,approvals:detail.approvals.map((approval:any)=>({...approval,automatic_execution:undefined})),runs:[...detail.runs,{...verifyRun,manifest:{...verifyRun.manifest,planning_authority:undefined},id:reviewId,action:"implement-spec",condition:"working"}],checks:[{id:crypto.randomUUID(),created_at:now,updated_at:now,run_id:reviewId,worker_id:null,head,workspace_hash:"owned-ui-fixture",commands:[],condition:"passed"}]}});});
   let acceptedHead:string|undefined;let stoppedReview=false;
   await page.route(`**/api/factory/runs/${reviewId}/accept`,async route=>{acceptedHead=route.request().postDataJSON().head;await route.fulfill({status:409,json:{error:{code:"fixture_review_gate",message:"Owned UI response fixture: acceptance remains gated by the server."}}});});
   page.on("request",r=>{if(r.url().endsWith(`/runs/${reviewId}/stop`))stoppedReview=true;});
   await page.reload();await steps.getByRole("button",{name:"Accept reviewed head",exact:true}).click();await page.getByRole("alert").filter({hasText:"Owned UI response fixture"}).waitFor();assert.equal(acceptedHead,head);assert.equal(stoppedReview,false);assert.equal(await steps.getByRole("button",{name:"Finish this step",exact:true}).count(),0);
+  await page.unrouteAll({behavior:"wait"});
   assert.deepEqual(errors,[]);console.log("Inbox browser: chat-side approvals and continuation retain planning chats on desktop/mobile; fixture cannot certify native readiness");
 } finally {await browser.close();app.stop();for(const id of owned)await workspaceClose(id).catch(()=>{});rmSync(root,{recursive:true,force:true});}

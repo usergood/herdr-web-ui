@@ -7,11 +7,19 @@ function fakeWindow() {
   const entries: Array<{ state: unknown; href: string }> = [{ state: null, href: "/?pane=a" }];
   let index = 0;
   const listeners: Array<(event: { state: unknown }) => void> = [];
+  /** a browser runs a traversal later, toward the entry it named when called: a test turns this on to open something meanwhile */
+  let deferred = false;
+  let pending = false;
   const traverse = (by: number): void => {
     const next = Math.max(0, Math.min(entries.length - 1, index + by));
     if (next === index) return;
-    index = next;
-    queueMicrotask(() => { for (const listener of listeners) listener({ state: entries[index]!.state }); });
+    const land = (): void => {
+      index = Math.min(next, entries.length - 1);
+      for (const listener of listeners) listener({ state: entries[index]!.state });
+    };
+    if (!deferred) { index = next; queueMicrotask(() => { for (const listener of listeners) listener({ state: entries[index]!.state }); }); return; }
+    pending = true;
+    setTimeout(() => { pending = false; land(); }, 1);
   };
   const history = {
     get state() { return entries[index]!.state; },
@@ -26,7 +34,7 @@ function fakeWindow() {
     get location() { return { href: entries[index]!.href }; },
     addEventListener(type: string, listener: (event: { state: unknown }) => void) { if (type === "popstate") listeners.push(listener); },
   };
-  return { window, entries, at: () => index, marks: () => entries.map((entry) => typeof (entry.state as Record<string, unknown> | null)?.["herdr-web-ui:sheet"] === "string") };
+  return { window, entries, at: () => index, defer: (on: boolean) => { deferred = on; }, pending: () => pending, marks: () => entries.map((entry) => typeof (entry.state as Record<string, unknown> | null)?.["herdr-web-ui:sheet"] === "string") };
 }
 const fake = fakeWindow();
 (globalThis as unknown as { window: unknown }).window = fake.window;
@@ -35,7 +43,7 @@ const settled = async () => { await new Promise((resolve) => setTimeout(resolve,
 
 const h = fake.window.history;
 /** RowMenu's effect, without React: the hook's enter on mount and leave on unmount (sheetHistory exports them for this) */
-const { enterSheet, leaveSheet } = await import("./sheetHistory.ts");
+const { enterSheet, leaveSheet, sheetSteppedOff } = await import("./sheetHistory.ts");
 const hooks = { enter: (onBack: () => void): (() => void) => { const id = enterSheet(onBack, null); return () => leaveSheet(id); } };
 
 afterAll(() => {
@@ -124,5 +132,40 @@ describe("a phone's sheet in the history", () => {
     // beyond the retired entry: nothing, so Forward stays put on it as an ordinary entry
     h.forward(); await settled();
     expect(fake.at()).toBe(start + 1); expect(fake.marks()[start + 1]).toBe(false);
+  });
+
+  it("keeps a sheet that opens while the step off a closed sheet's entry is on its way", async () => {
+    const start = fake.at();
+    let closed = 0;
+    const leaveFirst = hooks.enter(() => {});
+    fake.defer(true);
+    leaveFirst();
+    // the leave's step back is called, and the browser has not run it yet
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fake.pending()).toBe(true);
+    const leaveSecond = hooks.enter(() => { closed += 1; });
+    await settled();
+    fake.defer(false);
+    expect(fake.pending()).toBe(false);
+    expect(closed).toBe(0);
+    expect(fake.at()).toBe(start + 1); expect(fake.marks()[start + 1]).toBe(true);
+    // its entry is an ordinary sheet's: Back closes it onto the pane, and closing it steps off nothing more
+    h.back(); await settled();
+    expect(closed).toBe(1); expect(fake.at()).toBe(start);
+    leaveSecond(); await settled();
+    expect(fake.at()).toBe(start);
+  });
+
+  it("tells the app a closed sheet's own step off its entry from a Back", async () => {
+    // the app's Back listens after this module, as App's effect does
+    const seen: boolean[] = [];
+    fake.window.addEventListener("popstate", () => { seen.push(sheetSteppedOff()); });
+    // an item that opened a pane the roster does not list yet: nothing wrote the address, so the sheet steps back
+    const leave = hooks.enter(() => {});
+    leave(); await settled();
+    expect(seen).toEqual([true]);
+    hooks.enter(() => {});
+    h.back(); await settled();
+    expect(seen).toEqual([true, false]);
   });
 });

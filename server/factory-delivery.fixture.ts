@@ -8,7 +8,7 @@ import type { FactoryRun } from "../shared/factory.ts";
 import type { FactoryNative } from "./factory-native.ts";
 
 /** Owned external repository and native workspace; every observation uses HTTP. */
-export async function factoryDeliveryFixture(remote = false, reviewReports = false, native: Partial<FactoryNative> = {}, options: { githubRepository?: string; accountTools?: import("./account-tools.ts").AccountTools } = {}) {
+export async function factoryDeliveryFixture(remote = false, reviewReports = false, native: Partial<FactoryNative> = {}, options: { githubRepository?: string; accountTools?: import("./account-tools.ts").AccountTools; coordinatorNative?: Partial<FactoryNative> } = {}) {
   const root = mkdtempSync(join(tmpdir(), "saurons-delivery-"));
   const repo = join(root, "repo"); mkdirSync(repo);
   writeFileSync(join(repo, "README.md"), "Owned delivery fixture\n");
@@ -21,6 +21,7 @@ export async function factoryDeliveryFixture(remote = false, reviewReports = fal
     version: async () => "owned-delivery-fixture",
     createWorkspace: async options => { const result = await herdrRpc<WorkspaceCreateResult>("workspace.create", { ...options, focus: false }); owned.push(result.workspace.workspace_id); return result; },
     startAgent: async options => { await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "idle" }); },
+    prompt: async (paneId, _text, _socket, authorize) => { if (authorize && !authorize()) throw new Error("Owned native delivery was cancelled"); await herdrRpc("pane.report_agent", { pane_id: paneId, source: "manual", agent: "codex", state: "working" }); },
     ...native,
   } } });
   let offline = false;
@@ -31,13 +32,19 @@ export async function factoryDeliveryFixture(remote = false, reviewReports = fal
   const proxy = remote ? Bun.serve({ port: 0, async fetch(request) {
     const url = new URL(request.url);
     if (url.pathname.endsWith("/operations/transcript") && handoffWrite) { const write = handoffWrite; handoffWrite = null; await write(); }
+    if (reviewReports && url.pathname.endsWith("/operations/transcript")) {
+      const body = await request.clone().json() as { worker_id?: string; before?: string };
+      const runId = url.pathname.split("/runs/")[1]!.split("/")[0]!;
+      const earlier = body.before !== undefined;
+      return Response.json({ ...(body.worker_id ? { worker_id: body.worker_id } : {}), source_id: `owned-delivery-history:${runId}:${body.worker_id ?? "parent"}`, version: earlier ? "earlier-v1" : "latest-v1", cursor: earlier ? null : "owned-earlier-page", turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: `${earlier ? "Earlier" : "Final"} owned delivery context retained before verified closure` }] }] });
+    }
     if (reviewReports && url.pathname.endsWith("/operations/review-evidence")) return Response.json({ head: reviewHead, source_id: "owned-external-review", content: `Owned external review ${reviewOutcome}`, outcome: reviewOutcome });
     const response = await fetch(`http://localhost:${host.port}${url.pathname}${url.search}`, request);
     if (loseCheckResponse && url.pathname.endsWith("/operations/check")) { await response.arrayBuffer(); return new Response(null, { status: 503 }); }
     const headers = new Headers(response.headers); headers.delete("content-encoding"); headers.delete("content-length");
     return new Response(response.body, { status: response.status, headers });
   } }) : null;
-  const coordinator = () => createServer({ port: 0, token: "", stateDir: join(root, "coordinator"), machines: false, factory: { accountTools: options.accountTools, accountDiscoveryHome: root, machineEndpoint: id => id === "delivery-host" && !offline ? { url: `http://localhost:${proxy!.port}`, token: "owned-delivery-host" } : undefined } });
+  const coordinator = () => createServer({ port: 0, token: "", stateDir: join(root, "coordinator"), machines: false, factory: { accountTools: options.accountTools, accountDiscoveryHome: root, native: options.coordinatorNative, machineEndpoint: id => id === "delivery-host" && !offline ? { url: `http://localhost:${proxy!.port}`, token: "owned-delivery-host" } : undefined } });
   let app = remote ? coordinator() : host;
   const request = (path: string, body?: unknown) => fetch(`http://localhost:${app.port}/api/factory${path}`, { method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1", "x-herdr-machine": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const project = await request("/projects", { name: "Delivery Project", path: repo, machine_id: remote ? "delivery-host" : "local", provider: "codex", tracker: "app" }).then(r => r.json());

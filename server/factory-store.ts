@@ -20,7 +20,7 @@ export class FactoryStore {
     const path = join(this.root, "records.sqlite");
     this.db = new Database(path, { create: true, strict: true });
     chmodSync(path, 0o600);
-    this.db.exec("PRAGMA journal_mode=DELETE; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
+    this.db.exec("PRAGMA journal_mode=DELETE; PRAGMA secure_delete=ON; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
     const version = this.db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version;
     if (version > 1) { this.db.close(); throw new Error("Factory database requires a newer application; preserve it for recovery"); }
     this.db.transaction(() => {
@@ -39,6 +39,16 @@ export class FactoryStore {
     return row ? JSON.parse(row.data) as T : null;
   }
   put<T extends { id: string }>(kind: string, record: T, parent: string | null = null): T {
+    // Late HTTP/native/check results cannot resurrect purged content. The content-free
+    // context identities remain solely to reject results accepted before the fence.
+    // Remote Machines retain host_deleted_runs rather than connection-server tombstones.
+    if (!["deleted_assignments", "assignment_deletions", "host_deleted_runs", "github_deletions"].includes(kind)) {
+      const value = record as T & { implementation_id?: string; run_id?: string; worker_id?: string; deletion?: unknown };
+      const identities = [record.id, parent, value.implementation_id, value.run_id, value.worker_id];
+      const deleted = this.list<{ id: string; context_ids?: string[] }>("deleted_assignments").some(entry => identities.some(id => id && (id === entry.id || entry.context_ids?.includes(id))));
+      const hostDeleted = this.list<{ id: string }>("host_deleted_runs").some(entry => identities.includes(entry.id));
+      if (hostDeleted || deleted && !(kind === "implementations" && value.deletion)) return record;
+    }
     this.db.query("INSERT INTO records(kind,id,parent,data) VALUES(?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET parent=excluded.parent,data=excluded.data").run(kind, record.id, parent, JSON.stringify(record));
     this.revision = randomUUID();
     return record;

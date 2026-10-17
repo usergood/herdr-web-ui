@@ -29,21 +29,27 @@ function linesInDiff(diff: string, side: "old" | "new"): Set<number> {
   return lines;
 }
 
-export async function captureReview(path: string, base: string, mode: ReviewSnapshot["mode"]): Promise<{ files: ReviewSnapshot["files"]; head: string }> {
+export async function captureReview(path: string, base: string, mode: ReviewSnapshot["mode"], revision?: string): Promise<{ files: ReviewSnapshot["files"]; head: string }> {
     const take = async (): Promise<{ files: ReviewSnapshot["files"]; head: string }> => {
-      const head = (await git(path, ["rev-parse", "HEAD"])).trim();
+      const head = (await git(path, ["rev-parse", mode === "branch" ? revision ?? "HEAD" : "HEAD"])).trim();
       const files: ReviewSnapshot["files"] = [];
       const groups = mode === "branch" ? [{ name: "branch", args: [base, head] }] : [{ name: "staged", args: ["--cached", "HEAD"] }, { name: "unstaged", args: [] as string[] }];
       let size = 0;
       for (const group of groups) {
-        const changes = namedChanges(await git(path, ["diff", "--no-ext-diff", "--no-textconv", "--name-status", "-z", "--find-renames", ...group.args, "--"]));
+        const changes = namedChanges(await git(path, ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--name-status", "-z", "--find-renames", ...group.args, "--"]));
         for (const change of changes) {
           const file = join(path, change.path);
-          const oversized = existsSync(file) && lstatSync(file).size > FILE_LIMIT;
-          const diff = oversized ? "" : await git(path, ["diff", "--no-ext-diff", "--no-textconv", "--find-renames", ...group.args, "--", ...(change.oldPath ? [change.oldPath] : []), change.path]);
-          size += diff.length;
+          const revisions = mode === "branch" ? [base, head] : ["HEAD"];
+          let oversized = mode === "workspace" && existsSync(file) && lstatSync(file).size > FILE_LIMIT;
+          for (const revision of revisions) {
+            const metadata = await git(path, ["ls-tree", "-l", "-z", revision, "--", ...(change.oldPath ? [change.oldPath] : []), change.path]);
+            if (metadata.split("\0").some(row => Number(/^\d+ \w+ [a-f0-9]+\s+(\d+)\t/.exec(row)?.[1] ?? 0) > FILE_LIMIT)) oversized = true;
+          }
+          let diff = oversized ? "" : await git(path, ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames", ...group.args, "--", ...(change.oldPath ? [change.oldPath] : []), change.path]);
+          if (Buffer.byteLength(diff) > FILE_LIMIT) { diff = ""; oversized = true; }
+          size += Buffer.byteLength(diff);
           const treeEntry = mode === "branch" ? (await git(path, ["ls-tree", "-z", head, "--", change.path])).split("\t")[0]?.split(" ") : undefined;
-          files.push({ path: change.path, status: `${group.name}:${change.status}`, diff, binary: /Binary files .* differ|GIT binary patch/.test(diff), oversized, ...(mode === "branch" ? { new_oid: treeEntry?.[2] ?? null, new_mode: treeEntry?.[0] || null, ...(change.oldPath ? { old_path: change.oldPath } : {}) } : {}) });
+          files.push({ path: change.path, ...(change.oldPath ? { old_path: change.oldPath } : {}), status: `${group.name}:${change.status}`, diff, binary: /Binary files .* differ|GIT binary patch/.test(diff), oversized, ...(mode === "branch" ? { new_oid: treeEntry?.[2] ?? null, new_mode: treeEntry?.[0] || null } : {}) });
         }
       }
       if (mode === "workspace") for (const name of (await git(path, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0").filter(Boolean)) {
@@ -90,6 +96,7 @@ export class FactoryReview {
       for (const comment of this.store.list<ReviewComment>("comments", id)) {
         const previous = this.store.get<ReviewSnapshot>("snapshots", comment.snapshot_id);
         const resolution = comment.resolution;
+        if (resolution && comment.batch_id && this.store.get<{ origin?: string }>("review_batches", comment.batch_id)?.origin === "human") continue;
         if (comment.status === "resolved" && resolution?.head === snapshot.head && (snapshot.mode === "branch" || snapshot.files.length === 0)) continue;
         if (previous?.mode === snapshot.mode && previous.run_id === snapshot.run_id && previous.hash !== snapshot.hash) this.store.put("comments", { ...comment, status: "outdated", updated_at: snapshot.created_at }, id);
       }
@@ -104,10 +111,25 @@ export class FactoryReview {
     const candidates = snapshot.files.filter((file) => file.path === body.path && (body.change === undefined || body.change === file.status));
     if (candidates.length !== 1) throw new FactoryError("ambiguous_anchor", "Select the exact staged, unstaged or branch change");
     const file = candidates[0]!;
+    if (file.binary || file.oversized) throw new FactoryError("invalid_anchor", "This capture has no reviewable text lines");
     const lines = linesInDiff(file.diff, body.side as "old" | "new");
     for (let line = Number(body.line_start); line <= Number(body.line_end); line++) if (!lines.has(line)) throw new FactoryError("invalid_anchor", "This line is not present on the selected side of the captured hunk");
-    const comment: ReviewComment = { ...this.store.record(), implementation_id: id, run_id: snapshot.run_id, snapshot_id: snapshot.id, path: file.path, change: file.status, side: body.side as "old" | "new", line_start: body.line_start as number, line_end: body.line_end as number, context: file.diff, content: body.content.trim(), status: "draft", batch_id: null };
+    const latest = this.store.list<ReviewSnapshot>("snapshots", id).filter(s => s.run_id === snapshot.run_id && s.mode === snapshot.mode).at(-1);
+    const comment: ReviewComment = { ...this.store.record(), implementation_id: id, run_id: snapshot.run_id, snapshot_id: snapshot.id, path: file.path, change: file.status, side: body.side as "old" | "new", line_start: body.line_start as number, line_end: body.line_end as number, context: file.diff, content: body.content.trim(), status: latest && latest.hash !== snapshot.hash ? "outdated" : "draft", batch_id: null };
     this.store.db.transaction(() => { this.store.put("comments", comment, id); this.store.event(id, "review_drafted", { comment_id: comment.id, snapshot_id: snapshot.id }); })(); return comment;
+  }
+  draft(id: string, commentId: string, action: "edit" | "delete", body: Record<string, unknown>): ReviewComment | { id: string } {
+    const comment = this.store.get<ReviewComment>("comments", commentId);
+    if (!comment || comment.implementation_id !== id) throw new FactoryError("not_found", "Review comment not found", 404);
+    if (comment.batch_id !== null || comment.resolution || !["draft", "outdated"].includes(comment.status)) throw new FactoryError("comment_submitted", "Only unsent drafts can be edited or removed", 409);
+    if (action === "edit" && (typeof body.content !== "string" || !body.content.trim() || body.content.length > 10_000)) throw new FactoryError("invalid_comment", "Enter a bounded review comment");
+    const next = { ...comment, content: action === "edit" ? (body.content as string).trim() : comment.content, updated_at: new Date().toISOString() };
+    this.store.db.transaction(() => {
+      if (action === "delete") this.store.remove("comments", commentId);
+      else this.store.put("comments", next, id);
+      this.store.event(id, action === "delete" ? "review_draft_removed" : "review_draft_edited", { comment_id: commentId, snapshot_id: comment.snapshot_id });
+    })();
+    return action === "delete" ? { id: commentId } : next;
   }
   async requestChanges(id: string, body: Record<string, unknown>, send: (run: FactoryRun, text: string) => Promise<void>): Promise<{ id: string; status: string }> {
     if (body.report_ids !== undefined) return this.requestReports(id, body, send);
@@ -133,7 +155,7 @@ export class FactoryReview {
     const text = `Request changes batch ${batch.id} for Run ${run.id}, snapshot ${snapshot.id} (${snapshot.base}..${snapshot.head}, ${snapshot.mode}).\n\n${comments.map((comment) => `${comment!.path}:${comment!.line_start}-${comment!.line_end} (${comment!.side}, ${comment!.change})\n${comment!.content}\n\nCaptured hunk:\n${comment!.context}`).join("\n\n")}\n\nRetain the original finding anchors. Use a fresh owned Ticket worker with review_batch_id ${batch.id}; keep the coordinator read-only. Rework needs fresh checks and separate Standards and Spec evidence before owner acceptance.`;
     try { await send(run, text); batch.status = "sent"; }
     catch (error) {
-      batch.status = error instanceof FactoryError && ["agent_busy", "delivery_busy", "input_draft", "run_unavailable", "native_identity_changed", "disconnected", "recovery_copy"].includes(error.code) || error instanceof HerdrError && ["agent_blocked", "agent_not_found", "agent_not_ready", "cancelled", "input_draft"].includes(error.code) ? "blocked" : "uncertain";
+      batch.status = error instanceof FactoryError && ["capacity_exhausted", "agent_busy", "delivery_busy", "input_draft", "run_unavailable", "native_identity_changed", "disconnected", "recovery_copy"].includes(error.code) || error instanceof HerdrError && ["agent_blocked", "agent_not_found", "agent_not_ready", "cancelled", "input_draft"].includes(error.code) ? "blocked" : "uncertain";
       if (batch.status === "blocked") for (const comment of comments) this.store.put("comments", { ...comment!, status: "draft", batch_id: null }, id);
     }
     this.store.db.transaction(() => { this.store.put("review_batches", batch, id); this.store.event(id, batch.status === "sent" ? "request_changes_delivered" : "request_changes_uncertain", { batch_id: batch.id, run_id: run.id }); })();

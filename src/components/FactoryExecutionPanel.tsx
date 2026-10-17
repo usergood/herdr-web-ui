@@ -1,3 +1,4 @@
+import { factoryReasonRole } from "../lib/factoryPresentation.ts";
 import { useState } from "react";
 import type { FactoryRequestBody, FactoryDetail, FactoryProject, Implementation } from "../../shared/protocol.ts";
 import type { ProjectIssueExecutionScope } from "../../shared/github-project.ts";
@@ -12,7 +13,7 @@ export function FactoryExecutionPanel({ detail, project, busy, perform, onOpenPa
   const [reworkTicket, setReworkTicket] = useState(detail.tickets[0]?.id ?? "");
   if (!run?.checkout) return null;
   const prefix = `/runs/${run.id}`;
-  const active = !run.scope_pause && !run.issue_pause && ["working", "ready", "needs_you", "blocked"].includes(run.condition);
+  const active = !run.scope_pause && !run.issue_pause && !detail.implementation.pause && !detail.implementation.deletion && ["working", "ready", "needs_you", "blocked"].includes(run.condition);
   const issueScope = (run.manifest as { issue_scope?: ProjectIssueExecutionScope }).issue_scope;
   const command = (path: string, body: FactoryRequestBody = {}) => perform(async () => { await factoryRequest(`${prefix}${path}`, body); });
   const workerCommand = (workerId: string, runId: string, action: string) => perform(async () => { await factoryRequest(`/runs/${runId}/workers/${workerId}/${action}`, {}); });
@@ -43,9 +44,9 @@ export function FactoryExecutionPanel({ detail, project, busy, perform, onOpenPa
       <label>{t("Tickets")}<select className="select factory-input" value={reworkTicket} onChange={(event) => setReworkTicket(event.target.value)}>{detail.tickets.map((ticket) => <option key={ticket.id} value={ticket.id}>{ticket.title}</option>)}</select></label>
       {[...new Set([...(detail.review_batches ?? []).filter(batch => batch.run_id === run.id && batch.status === "sent" && batch.report_ids?.length && !detail.workers.some(worker => worker.rework_batch_id === batch.id)).map(batch => batch.id), ...detail.comments.filter((comment) => comment.run_id === run.id && comment.batch_id && comment.status !== "resolved").map((comment) => comment.batch_id!)])].map((batch) => <button className="btn factory-button" key={batch} disabled={busy || !active || !reworkTicket} onClick={() => void command("/workers", { role: "implementer", ticket_id: reworkTicket, review_batch_id: batch, shared_paths: shared, idempotency_key: crypto.randomUUID() })}>{t("Start rework worker")} · {batch}</button>)}
     </>}
-    {detail.workers.map((worker) => { const owner = detail.runs.find((entry) => entry.id === worker.run_id); const workerActive = !!owner && !owner.scope_pause && !owner.issue_pause && ["working", "ready", "needs_you", "blocked"].includes(owner.condition); return <article className="factory-message" key={worker.id}>
+    {detail.workers.map((worker) => { const owner = detail.runs.find((entry) => entry.id === worker.run_id); const workerActive = !owner?.scope_pause && !owner?.issue_pause && !detail.implementation.pause && !detail.implementation.deletion && !!owner && ["working", "ready", "needs_you", "blocked"].includes(owner.condition); return <article className="factory-message" key={worker.id}>
       <strong>{worker.role}</strong><p>{worker.condition} · {worker.branch}</p>
-      {worker.waiting_reason && <p role="status">{worker.waiting_reason}</p>}
+      {worker.waiting_reason && <p role={factoryReasonRole(worker.condition)}>{worker.waiting_reason}</p>}
       <div className="factory-actions">
         {worker.pane_id && <button className="btn factory-button" onClick={() => onOpenPane(owner?.machine_id ?? run.machine_id, worker.pane_id!)}>{t("Open agent")}</button>}
         <button className="btn factory-button" disabled={busy} onClick={() => void workerCommand(worker.id, worker.run_id, "reconcile")}>{t("Reconcile Run")}</button>
@@ -61,7 +62,7 @@ export function FactoryExecutionPanel({ detail, project, busy, perform, onOpenPa
       <button className="btn factory-button" disabled={busy || !active} onClick={() => void command("/checks")}>{t("Run integration checks")}</button>
       <button className="btn factory-button" disabled={busy || !active} onClick={() => void command("/workers", { role: "standards", idempotency_key: crypto.randomUUID() })}>{t("Start Standards review")}</button>
       <button className="btn factory-button" disabled={busy || !active} onClick={() => void command("/workers", { role: "spec", idempotency_key: crypto.randomUUID() })}>{t("Start Spec review")}</button>
-      {!accepted && <button className="btn factory-button" disabled={busy || !canAccept || check?.condition !== "passed"} onClick={() => void command("/accept", { head: reviewed?.head ?? check?.head ?? "" })}>{t("Accept reviewed head")}</button>}
+      {!accepted && !detail.human_reviews?.length && !(run.manifest as { planning_authority?: { automatic_execution?: boolean } }).planning_authority?.automatic_execution && <button className="btn factory-button" disabled={busy || !canAccept || check?.condition !== "passed"} onClick={() => void command("/accept", { head: reviewed?.head ?? check?.head ?? "" })}>{t("Accept reviewed head")}</button>}
     </div>
     {detail.checks.map((entry) => <details key={entry.id}><summary>{t("Checks")} · {entry.condition} · {entry.head}</summary><button className="btn factory-button" disabled={busy} onClick={() => void perform(async () => { await factoryRequest(`/runs/${entry.run_id}/checks/${entry.id}/reconcile`, {}); })}>{t("Reconcile checks")}</button>{entry.commands.map((command, index) => <div key={index}><p>{command.args.join(" ")} · {command.exit_code}</p><pre>{command.output}</pre></div>)}</details>)}
     {detail.review_evidence.map((report) => <details key={report.id}><summary>{report.axis} · {report.outcome} · {report.head}</summary><pre>{report.content}</pre></details>)}

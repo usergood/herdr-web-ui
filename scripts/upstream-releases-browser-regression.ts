@@ -38,8 +38,10 @@ try {
   const active = upstream.getByRole("link", { name: "Active update: v11", exact: true });
   await active.focus(); await page.keyboard.press("Enter");
   await page.getByRole("heading", { name: "Update from fictional/upstream v11", exact: true }).waitFor();
-  const discarded = page.waitForResponse(response => response.url().endsWith("/discard") && response.request().method() === "POST");
-  await page.getByRole("button", { name: "Discard Assignment", exact: true }).click(); assert.equal((await discarded).status(), 200);
+  // Arrange the retained legacy outcome through HTTP; current owner controls are Pause/Delete.
+  assert.equal(await page.getByRole("button", { name: "Discard Assignment", exact: true }).count(), 0);
+  const activeId = (await f.request(f.route + "/schedules")).body.upstream.active.implementation_id;
+  assert.equal((await f.request(`/implementations/${activeId}/discard`, {})).status, 200);
   await page.goto(f.origin() + `/#projects/${projectId}`);
   await upstream.getByRole("link", { name: "Active update: v13", exact: true }).waitFor();
   assert.equal(await upstream.getByRole("link", { name: "Active update: v12", exact: true }).count(), 0);
@@ -52,6 +54,27 @@ try {
   assert.equal((await f.request("")).body.implementations.length, 2);
   const state = (await f.request(f.route + "/schedules")).body.upstream;
   assert.equal((await f.request(`/implementations/${state.active.implementation_id}`)).body.runs.length, 0);
+
+  writeFileSync(f.responses, JSON.stringify({ releases: "Owned invalid upstream release inventory" }));
+  const failedSync = await f.request(f.route + "/schedules/run", { job: "upstream_sync" });
+  assert.equal(failedSync.status, 409);
+  assert.equal(failedSync.body.error.code, "github_invalid_response");
+  const failedResult = (await f.request(f.route + "/schedules")).body.results.filter((result: { job: string }) => result.job === "upstream_sync").at(-1);
+  assert.equal(failedResult.condition, "failed");
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport); await page.reload();
+    const alert = upstream.getByRole("alert");
+    await alert.getByText("Failed", { exact: true }).waitFor();
+    await alert.getByText("GitHub did not return upstream releases", { exact: true }).waitFor();
+    assert.equal(await upstream.getByRole("status").filter({ hasText: "Failed" }).count(), 0);
+  }
+  writeFileSync(f.responses, JSON.stringify({ releases: [{ id: 13, tag_name: "v13", draft: false, published_at: "2026-10-13T09:00:00Z" }], release_heads: { v13: "d".repeat(40) } }));
+  assert.equal((await f.request(f.route + "/schedules/run", { job: "upstream_sync" })).status, 200);
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport); await page.reload();
+    await upstream.getByRole("status").getByText("Succeeded", { exact: true }).waitFor();
+    assert.equal(await upstream.getByRole("alert").count(), 0);
+  }
 
   const merged = await factoryMergeFixture(false, "merge", true, {}, true);
   try {

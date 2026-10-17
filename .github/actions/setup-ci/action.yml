@@ -1,0 +1,66 @@
+name: Set up CI toolchain
+description: Bun (with its dependency cache), and optionally Node 22 and the checksum-pinned herdr. Callers check out the repository first.
+inputs:
+  bun-version:
+    description: Bun version for ci.yml, pages.yml and release.yml; the one place it is set.
+    required: false
+    default: '1.4.2'
+  node:
+    description: "'true' installs Node 22 (the PTY sidecar runs on it)."
+    required: false
+    default: 'false'
+  herdr:
+    description: "'true' installs the checksum-pinned herdr 0.9.5 (Linux x86_64) on PATH."
+    required: false
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    # Keep cached files inside the checkout. Home-directory archives contain relative paths
+    # that cannot be restored between GitHub's workspace and the image's shorter /w path.
+    - name: Select workspace-local Bun cache
+      shell: bash
+      env:
+        BUN_CACHE_DIR: ${{ github.workspace }}/.ci-cache/bun
+      run: printf 'BUN_INSTALL_CACHE_DIR=%s\n' "$BUN_CACHE_DIR" >> "$GITHUB_ENV"
+    - name: Select workspace-local hosted browser cache
+      if: runner.environment != 'self-hosted'
+      shell: bash
+      env:
+        BROWSER_CACHE_DIR: ${{ github.workspace }}/.ci-cache/playwright
+      run: printf 'PLAYWRIGHT_BROWSERS_PATH=%s\n' "$BROWSER_CACHE_DIR" >> "$GITHUB_ENV"
+    - name: Verify prepared self-hosted tools
+      if: runner.environment == 'self-hosted'
+      shell: bash
+      env:
+        EXPECTED_BUN_VERSION: ${{ inputs.bun-version }}
+        NEED_NODE: ${{ inputs.node }}
+        NEED_HERDR: ${{ inputs.herdr }}
+      run: bash scripts/ci-preinstalled-tools.sh
+    - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      if: runner.environment != 'self-hosted'
+      with:
+        bun-version: ${{ inputs.bun-version }}
+    - if: inputs.node == 'true' && runner.environment != 'self-hosted'
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+      with:
+        node-version: '22.23.2'
+    - name: Cache Bun dependencies
+      # On the measured self-hosted connection this archive costs 37–43s to restore,
+      # versus 7–20s for a fresh install. Do not pay for restore/save on disposable runners.
+      if: runner.environment != 'self-hosted'
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: .ci-cache/bun
+        key: bun-workspace-v2-${{ runner.environment }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.bun-version }}-${{ hashFiles('bun.lock') }}
+        restore-keys: |
+          bun-workspace-v2-${{ runner.environment }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.bun-version }}-
+    - name: Install checksum-pinned herdr 0.9.5
+      if: inputs.herdr == 'true' && runner.environment != 'self-hosted'
+      shell: bash
+      run: |
+        mkdir -p "$RUNNER_TEMP/herdr-bin"
+        curl --fail --location --retry 3 https://github.com/herdrdev/herdr/releases/download/v0.9.5/herdr-linux-x86_64 -o "$RUNNER_TEMP/herdr-bin/herdr"
+        echo "14d9e8bc8b4a9e0118d77c32266f76d461f09b40342eb23752960bd89f59929d  $RUNNER_TEMP/herdr-bin/herdr" | sha256sum --check
+        chmod +x "$RUNNER_TEMP/herdr-bin/herdr"
+        echo "$RUNNER_TEMP/herdr-bin" >> "$GITHUB_PATH"

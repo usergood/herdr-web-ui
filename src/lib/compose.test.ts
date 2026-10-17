@@ -1,10 +1,123 @@
 import { describe, expect, it } from "bun:test";
 
+import { skillSyntax } from "../../shared/skill-syntax.ts";
 import { agentDisplayLabel, composerDelivery, composerMessage, terminalOnlyCommand, composerSendShown, composerPayload, composerModelDraw, composerStatusCompact, composerStatusHint, composerStatusWord, COMPOSER_STATUS_COMPACT_BELOW, contextLeftPercent, formatTokens, imageMention, insertLeadingMention, MAX_COMPOSER_CHARS, QUEUE_READY_STATUS, rankSlashCommands, submitNote, submitNotTyped, submitRefusal, sameMessage } from "./compose.ts";
+import { briefDescription, commandGroup, commandsForTrigger, slashCommandReplacement } from "./compose.ts";
+import { activeTrigger, applyCompletion, type ActiveTrigger } from "./mentions.ts";
+
+describe("menu rows", () => {
+  it("keeps a description's first sentence, without its full stop", () => {
+    expect(briefDescription("Drives a real browser through omowright. Use for any interactive browser task; not for a plain search.")).toBe("Drives a real browser through omowright");
+    expect(briefDescription("Explains any senpi tip in depth, including Tip: lines in the TUI. Use when the user asks about a tip.")).toBe("Explains any senpi tip in depth, including Tip: lines in the TUI");
+    expect(briefDescription("Set thinking level")).toBe("Set thinking level");
+    expect(briefDescription("Show changelog entries.")).toBe("Show changelog entries");
+    // a stop before a lowercase word, inside a version or in an ellipsis ends no sentence
+    expect(briefDescription("Fetch docs, e.g. for react. Then stop.")).toBe("Fetch docs, e.g. for react");
+    expect(briefDescription("Upgrade to v1.2 now")).toBe("Upgrade to v1.2 now");
+    expect(briefDescription("Loading...")).toBe("Loading...");
+    expect(briefDescription("\uC2A4\uD0AC\uC744 \uCC3E\uB294\uB2E4. \uADF8\uB9AC\uACE0 \uC124\uCE58\uD55C\uB2E4.")).toBe("\uC2A4\uD0AC\uC744 \uCC3E\uB294\uB2E4");
+    expect(briefDescription("\u30B9\u30AD\u30EB\u3092\u63A2\u3059\u3002\u6B21\u306B\u5165\u308C\u308B\u3002")).toBe("\u30B9\u30AD\u30EB\u3092\u63A2\u3059");
+  });
+
+  it("groups a skill by where it comes from, and anything else by its source", () => {
+    expect(commandGroup({ name: "skill:mine", description: "", source: "skill", origin: "user" })).toBe("skill-user");
+    expect(commandGroup({ name: "deploy", description: "", source: "skill", origin: "project" })).toBe("skill-project");
+    expect(commandGroup({ name: "skill:mass-ulw", description: "", source: "skill", origin: "bundled" })).toBe("skill-bundled");
+    expect(commandGroup({ name: "hud:setup", description: "", source: "skill", origin: "plugin" })).toBe("skill-plugin");
+    expect(commandGroup({ name: "review", description: "", source: "skill" })).toBe("skill");
+    expect(commandGroup({ name: "model", description: "", source: "builtin" })).toBe("builtin");
+    // a plugin's command file is not a skill: it keeps its own group
+    expect(commandGroup({ name: "hud:configure", description: "", source: "plugin" })).toBe("plugin");
+  });
+});
+
+describe("omo command completion", () => {
+  const builtin = { name: "model", description: "", source: "builtin" as const };
+  const skill = { name: "skill:mass-ulw", description: "", source: "skill" as const };
+  const commands = [builtin, skill];
+  const slash: ActiveTrigger = { kind: "slash", query: "", start: 0, end: 1 };
+  const dollar: ActiveTrigger = { ...slash, prefix: "$" };
+
+  it("offers only skills for dollar triggers at the start or inside a message", () => {
+    expect(commandsForTrigger(commands, "omo", dollar)).toEqual([skill]);
+    expect(commandsForTrigger(commands, "omo", { ...dollar, start: 4, end: 5 })).toEqual([skill]);
+  });
+
+  it("offers commands and skills for leading slash triggers but nothing inline", () => {
+    expect(commandsForTrigger(commands, "omo", slash)).toEqual(commands);
+    expect(commandsForTrigger(commands, "omo", { ...slash, start: 4, end: 5 })).toEqual([]);
+  });
+
+  it("matches skills by a bare name or a namespaced prefix", () => {
+    for (const query of ["mas", "skill:mas"]) {
+      expect(rankSlashCommands(commandsForTrigger(commands, "omo", dollar), query, {}, true)).toEqual([skill]);
+    }
+  });
+
+  it("inserts omo slash and dollar skills with their namespace and trailing space", () => {
+    for (const text of ["/skill:mas", "$skill:mas", "use $skill:mas"]) {
+      const trigger = activeTrigger(text, text.length, { skills: true, namespaced: true });
+      if (trigger === null) throw new Error("Expected omo skill trigger");
+      const replacement = slashCommandReplacement(skill, "omo", trigger);
+      const completed = applyCompletion(text, trigger, replacement);
+      const expected = text.replace("skill:mas", "skill:mass-ulw ");
+      expect(completed).toEqual({ text: expected, caret: expected.length });
+    }
+    expect(slashCommandReplacement(builtin, "omo", slash)).toBe("/model ");
+  });
+
+  it("keeps Claude, Codex and pi filtering and insertion unchanged", () => {
+    const claudeSkill = { name: "delegate", description: "", source: "skill" as const };
+    const codexSkill = { ...claudeSkill, trigger: "$" as const };
+    const inline = { ...slash, start: 4, end: 5 };
+    expect(commandsForTrigger([builtin, claudeSkill], "claude", slash)).toEqual([builtin, claudeSkill]);
+    expect(commandsForTrigger([builtin, claudeSkill], "claude", inline)).toEqual([claudeSkill]);
+    expect(commandsForTrigger([builtin, codexSkill], "codex", slash)).toEqual([builtin]);
+    expect(commandsForTrigger([builtin, codexSkill], "codex", dollar)).toEqual([codexSkill]);
+    expect(commandsForTrigger([builtin, codexSkill], "codex", inline)).toEqual([codexSkill]);
+    expect(commandsForTrigger([builtin, codexSkill], "codex", { ...inline, prefix: "$" })).toEqual([codexSkill]);
+    expect(commandsForTrigger(commands, "pi", slash)).toEqual(commands);
+    expect(commandsForTrigger(commands, "pi", inline)).toEqual([]);
+    expect(activeTrigger("$", 1)).toBeNull();
+    expect(slashCommandReplacement(claudeSkill, "claude", inline)).toBe("/delegate ");
+    expect(slashCommandReplacement(codexSkill, "codex", inline)).toBe("$delegate ");
+    expect(slashCommandReplacement(skill, "pi", slash)).toBe("/skill:mass-ulw ");
+  });
+
+  it("keeps a Claude, Codex or pi menu open past the colon of a namespaced name", () => {
+    const options = (agent: string) => ({ skills: skillSyntax(agent).skillTriggers.includes("$"), namespaced: skillSyntax(agent).namespaced });
+    expect(activeTrigger("/plugin:bra", 11, options("claude"))).toEqual({ kind: "slash", query: "plugin:bra", start: 0, end: 11 });
+    expect(activeTrigger("/prompts:rev", 12, options("codex"))).toEqual({ kind: "slash", query: "prompts:rev", start: 0, end: 12 });
+    expect(activeTrigger("/skill:pd", 9, options("pi"))).toEqual({ kind: "slash", query: "skill:pd", start: 0, end: 9 });
+    expect(activeTrigger("x $", 3, options("pi"))).toBeNull();
+    // the whole namespaced name is what Enter writes, for a pi skill as for an omo one
+    expect(applyCompletion("/skill:pd", activeTrigger("/skill:pd", 9, options("pi"))!, slashCommandReplacement(skill, "pi", slash))).toEqual({ text: "/skill:mass-ulw ", caret: 16 });
+  });
+
+  it("offers omp inline /skill: but not /model or dollar triggers", () => {
+    const syntax = skillSyntax("omp");
+    const options = { skills: syntax.skillTriggers.includes("$"), namespaced: syntax.namespaced };
+    const text = "please /skill:mas";
+    const trigger = activeTrigger(text, text.length, options);
+    if (trigger === null) throw new Error("Expected omp skill trigger");
+    expect(rankSlashCommands(commandsForTrigger(commands, "omp", trigger), trigger.query, {}, true)).toEqual([skill]);
+    const model = "please /model";
+    const modelTrigger = activeTrigger(model, model.length, options);
+    if (modelTrigger === null) throw new Error("Expected slash trigger");
+    expect(rankSlashCommands(commandsForTrigger(commands, "omp", modelTrigger), modelTrigger.query, {}, true)).toEqual([]);
+    expect(activeTrigger("x $", 3, options)).toBeNull();
+  });
+});
 
 describe("composerMessage and submitNote", () => {
   it("keeps the message as written for agent.prompt: inner newlines stay, the composer's own trailing ones go", () => {
     expect(composerMessage("line one\r\nline two\n\n")).toBe("line one\nline two");
+  });
+
+  it("keeps pasted Markdown, blank lines and code indentation in one submitted message", () => {
+    const message = "# Reply\n\n- first\n- second\n\n```ts\n  run();\n```";
+    expect(composerMessage(message.replaceAll("\n", "\r\n"))).toBe(message);
+    expect(composerPayload(message, true)).toBe("\u001b[200~" + message.replaceAll("\n", "\r") + "\u001b[201~");
   });
 
   it("says why a message did not go, and never claims a lost one was sent", () => {
@@ -22,6 +135,9 @@ describe("composerMessage and submitNote", () => {
     expect(["pane_not_found", "retired_submit_id"].map(submitNotTyped)).toEqual([true, true]);
     // refused before the paste because Claude's input box held a draft (#609)
     expect(submitNotTyped("input_draft")).toBe(true);
+    // refused by the view while the terminal holds input, before anything reached the socket
+    expect(submitNotTyped("held_input")).toBe(true);
+    expect(submitNote("held_input", "x")).toBe("Not sent: send or discard the held input first.");
     expect(submitNote("pending_input_unsupported", "x")).toBe("Update this PC to send messages in the next turn. Your draft stayed here.");
     expect(submitNotTyped("submit_changed")).toBe(false);
     expect(submitNotTyped("pending_uncertain")).toBe(false);
@@ -33,6 +149,15 @@ describe("composerMessage and submitNote", () => {
     // bash mode, a clipped box or an older bridge name none: the note alone
     expect(submitRefusal("input_draft", "x")).toBe(submitNote("input_draft", "x"));
     expect(submitRefusal("agent_blocked", "x", "ㅔ")).toBe(submitNote("agent_blocked", "x"));
+  });
+
+  it("offers to send anyway only when the server showed the box and named no draft", () => {
+    expect(submitRefusal("input_draft", "x", undefined, "! ls")).toEqual({ note: "Not sent: Claude Code's input box in the terminal may not be empty. It shows “! ls”.", anyway: true });
+    // a box the server could not read whole is shown nothing to send over: the plain note
+    expect(submitRefusal("input_draft", "x", undefined, "")).toBe(submitNote("input_draft", "x"));
+    // a named draft is cleared, not sent over
+    expect(submitRefusal("input_draft", "x", "ㅔ", "❯ ㅔ")).toEqual({ note: "Not sent: Claude Code's input box in the terminal already holds “ㅔ”.", draft: "ㅔ" });
+    expect(submitRefusal("agent_blocked", "x", undefined, "! ls")).toBe(submitNote("agent_blocked", "x"));
   });
 });
 
@@ -112,12 +237,12 @@ describe("insertLeadingMention", () => {
 
   it("goes in whole or not at all: a cut path would name a file that does not exist", () => {
     const full = "x".repeat(MAX_COMPOSER_CHARS - 2);
-    expect(insertLeadingMention(full, first, [])).toEqual({ text: full, at: 0, length: 0 });
+    expect(insertLeadingMention(full, first, [])).toEqual({ text: full, at: 0, length: 0, missing: 10 });
     const room = "x".repeat(MAX_COMPOSER_CHARS - first.length);
     expect(insertLeadingMention(room, first, [])).toEqual({ text: `${first}${room}`, at: 0, length: first.length });
     // the separating space counts: after a command with no room for it, nothing goes in
     const command = `/review${"x".repeat(MAX_COMPOSER_CHARS - 7 - first.length)}`;
-    expect(insertLeadingMention(command, first, [])).toEqual({ text: command, at: command.length, length: 0 });
+    expect(insertLeadingMention(command, first, [])).toEqual({ text: command, at: command.length, length: 0, missing: 1 });
   });
 });
 
@@ -174,6 +299,15 @@ describe("composer presentation helpers", () => {
     expect(composerStatusHint({ uploading: true, connected: false, text: "" })).toBe("uploading");
     // with a draft the placeholder is gone: the reconnecting sentence is the one said (the tile says Uploading)
     expect(composerStatusHint({ uploading: true, connected: false, text: "draft" })).toBe("offline");
+  });
+
+  it("counts the characters left only near the limit, and puts a path with no room first", () => {
+    const near = "x".repeat(MAX_COMPOSER_CHARS - 200);
+    expect(composerStatusHint({ uploading: false, connected: true, text: "x".repeat(MAX_COMPOSER_CHARS - 201) })).toBe(null);
+    expect(composerStatusHint({ uploading: false, connected: true, text: near })).toBe("near-limit");
+    expect(composerStatusHint({ uploading: true, connected: true, text: near })).toBe("uploading");
+    expect(composerStatusHint({ uploading: true, connected: true, text: near, noRoom: true })).toBe("no-room");
+    expect(composerStatusHint({ uploading: false, connected: false, text: near, noRoom: true })).toBe("offline");
   });
 
   it("removes the effort word before shortening the model", () => {
@@ -249,6 +383,18 @@ describe("composer presentation helpers", () => {
   it("matches subsequences containing letters outside the basic multilingual plane", () => {
     const command = { name: "prefix:𐐨ab", description: "", source: "plugin" as const };
     expect(rankSlashCommands([command], "𐐀b", {})).toEqual([command]);
+  });
+
+  it("limits inline matching to name prefixes and segments after hyphens or colons", () => {
+    const commands = ["deploy", "tools:deploy", "safe-deploy", "redeploy", "tools_deploy", "tools.deploy"]
+      .map((name) => ({ name, description: "deployment", source: "skill" as const }));
+    expect(rankSlashCommands(commands, "DEP", {}, true).map(({ name }) => name)).toEqual(["deploy", "safe-deploy", "tools:deploy"]);
+    expect(rankSlashCommands(commands, "dply", {}, true)).toEqual([]);
+    expect(rankSlashCommands(commands, "deployment", {}, true)).toEqual([]);
+    expect(rankSlashCommands(commands, "", {}, true)).toHaveLength(6);
+    const template = { name: "template-creator", description: "Create a reusable template", source: "skill" as const };
+    expect(rankSlashCommands([template], "tmp", {})).toEqual([template]);
+    expect(rankSlashCommands([template], "creator", {}, true)).toEqual([template]);
   });
 });
 

@@ -7,6 +7,7 @@ $state = @{ installed = $false; installs = 0; uninstalls = 0; ref = ''; running 
 $pluginRoot = Join-Path $root 'plugin'
 $launcher = Join-Path $pluginRoot 'scripts\plugin.ps1'
 function Assert([bool]$Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
+function gh { throw 'The fork installer must not inspect or mutate GitHub stars' }
 function Get-Command([string]$Name, [string]$ErrorAction) {
     if ($Name -eq 'herdr' -and -not $state.hasHerdr) { return $null }
     Microsoft.PowerShell.Core\Get-Command $Name -ErrorAction SilentlyContinue
@@ -14,7 +15,7 @@ function Get-Command([string]$Name, [string]$ErrorAction) {
 function bun {
     $global:LASTEXITCODE = 0
     if ($args[0] -eq '--version') { $state.bunVersion }
-    elseif ($args[-1] -eq 'status') { 'running http://127.0.0.1:7317'; 'config: none' }
+    elseif ($args[-1] -eq 'status') { 'running http://127.0.0.1:7317 (pid 1234)'; 'config: none' }
     else { throw "Unexpected Bun command: $args" }
 }
 function herdr {

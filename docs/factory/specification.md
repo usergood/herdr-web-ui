@@ -2,6 +2,8 @@
 
 Status: implementation requested by the owner. Both testing seams were explicitly confirmed. This remains the complete product contract; operator procedures, implementation choices and validation limits are recorded in [runtime.md](runtime.md). Production promotion and external publication remain separately scoped.
 
+The later accepted [Q1–Q20 workflow design](automatic-dispatch-pause-delete-design.md) supersedes conflicting manual-execution, repeated approval, capacity, lifecycle and review-authority clauses in this original contract. Preserve this document as provenance for the remaining scope; the newer design is an implementation target, not a claim of deployed behavior.
+
 ## Problem statement
 
 The owner already uses Herdr and Codex with a working Herdr Web UI deployment. Ideas, specifications, agent sessions, changes, reviews and research need a durable home across projects and execution machines. A live terminal or native chat alone does not provide assignment identity, approved specification versions, review anchors or retained history.

@@ -195,7 +195,7 @@ try {
         const initial = await guarded.json(path);
         assert.deepEqual(initial.approvals, []); assert.deepEqual(initial.questions, []);
         assert.equal(prepared.planning.condition, "prepared"); assert.equal(prepared.planning.origin, "issue_body");
-        await guarded.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true, max_implementations: 1 });
+        await guarded.json(route + "/queue", { expected_revision: null, automatic_implementation: false, paused: true });
         guarded.setNativeIdentity();
         async function openControl() {
           const url = guarded.origin + `/#factory/${source.implementation_id}`;
@@ -236,7 +236,7 @@ try {
         assert.equal(recovered.planning.condition, "prepared");
         assert.deepEqual((await guarded.json(path)).approvals, []);
         const queue = await guarded.json(route + "/queue");
-        await guarded.json(route + "/queue", { expected_revision: queue.policy.revision, automatic_implementation: false, paused: false, max_implementations: 1 });
+        await guarded.json(route + "/queue", { expected_revision: queue.policy.revision, automatic_implementation: false, paused: false });
         await openControl();
         const started = page.waitForResponse(response => response.url().endsWith(path + "/runs") && response.request().method() === "POST");
         await page.getByRole("button", { name: control, exact: true }).click();
@@ -393,8 +393,7 @@ try {
   const evidence = process.env["UI_EVIDENCE_DIR"]; if (evidence) mkdirSync(evidence, { recursive: true });
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
     const queue = await fixture.json(route + "/queue");
-    await fixture.json(route + "/queue", { expected_revision: queue.policy.revision, automatic_implementation: false, paused: false, max_implementations: 1 });
-    await fixture.json(`/implementations/${view.sources[0].implementation_id}/order`, { before_id: view.sources[1].implementation_id });
+    await fixture.json(route + "/queue", { expected_revision: queue.policy.revision, automatic_implementation: false, paused: false });
     const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });
     page.setDefaultTimeout(10_000); page.on("pageerror", recordPageError);
     const queueResponses: unknown[] = [];
@@ -424,17 +423,20 @@ try {
       const excluded = region.getByRole("article").filter({ has: page.getByRole("link", { name: "#3 · Blocked greeting", exact: true }) });
       await excluded.getByText("Resolve the issue's blocked signal before implementation.", { exact: true }).waitFor();
       await region.getByText("Needs you", { exact: false }).waitFor();
-      await first.getByRole("button", { name: "Move later", exact: true }).click();
-      await region.getByText("Preview changed. Review the backlog again.", { exact: true }).waitFor();
-      assert((await region.getByRole("article").first().textContent())?.includes("Later greeting"));
+      assert.equal(await region.getByRole("button", { name: "Move earlier", exact: true }).count(), 0);
+      assert.equal(await region.getByRole("button", { name: "Move later", exact: true }).count(), 0);
+      assert(await first.isVisible());
+      await region.getByRole("article").first().getByRole("link", { name: "#1 · Fictional scope", exact: true }).waitFor();
       await region.getByLabel("Pause queue", { exact: true }).check();
-      await region.getByLabel("Implementing Assignment limit", { exact: true }).fill("2");
+      assert.equal(await region.getByLabel("Implementing Assignment limit", { exact: true }).count(), 0, "Assignment quotas are absent; Pause remains independently configurable");
       await region.getByRole("button", { name: "Save queue settings", exact: true }).click();
       await region.getByText("Queue paused. Admitted work continues.", { exact: true }).waitFor();
+      await region.getByText("Preview changed. Review the backlog again.", { exact: true }).waitFor();
       await page.reload();
       await reopenGitHubSettings();
       assert(await region.getByLabel("Pause queue", { exact: true }).isChecked());
-      assert.equal(await region.getByLabel("Implementing Assignment limit", { exact: true }).inputValue(), "2");
+      assert.equal(await region.getByLabel("Implementing Assignment limit", { exact: true }).count(), 0, "Assignment quotas remain absent after reload");
+      assert.equal("max_implementations" in (await fixture.json(route + "/queue")).policy, false);
       const refreshedPreview = page.waitForResponse(response => response.url().endsWith(route + "/preview") && response.request().method() === "POST");
       await region.getByRole("button", { name: "Preview eligible backlog", exact: true }).click();
       assert.equal((await refreshedPreview).status(), 200);
@@ -466,7 +468,7 @@ try {
     } finally { await page.close(); }
   }
   assert.deepEqual(errors, []);
-  console.log("PASS: desktop/mobile backlog count/reasons, stale preview, priority, pause, limits, Needs you and outage; no starts");
+  console.log("PASS: desktop/mobile backlog count/reasons, stale preview, automatic creation order, pause without Assignment quotas, Needs you and outage; no starts");
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
     const admitted = githubQueueFixture(true);
     const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });
@@ -547,7 +549,8 @@ try {
       await page.getByRole("button", { name: `Project settings for ${project.name}`, exact: true }).click();
       await page.getByRole("tab", { name: "GitHub", exact: true }).click();
       const queue = page.getByRole("region", { name: "Issue queue", exact: true });
-      await queue.getByText("Project implementation slots available: 1", { exact: true }).waitFor();
+      assert.equal(await queue.getByText(/Project implementation slots available/).count(), 0);
+      assert.equal(await queue.getByRole("spinbutton", { name: "Concurrent Assignments", exact: true }).count(), 0);
       await queue.getByText("Implementing Assignments: 0", { exact: true }).waitFor();
       assert(await queue.evaluate(element => element.scrollWidth <= element.clientWidth));
       if (evidence) await page.screenshot({ path: join(evidence, `issue-completion-${viewport.width}.png`), fullPage: true });
@@ -559,7 +562,7 @@ try {
     } finally { await page.close(); reviewed.close(); }
   }
   assert.deepEqual(errors, []);
-  console.log("PASS: desktop/mobile awaiting merge, separate owner acceptance, available Project capacity and unrelated admission without false delivery");
+  console.log("PASS: desktop/mobile awaiting merge, separate owner acceptance, informational ownership and unrelated Agent admission without false delivery");
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
     const automatic = githubQueueFixture(true);
     const page = await browser.newPage({ viewport, extraHTTPHeaders: { authorization: "Bearer fixture-owner" } });
@@ -597,20 +600,17 @@ try {
       // Lane and eligibility share one rendered status paragraph.
       await queue.getByText("Queued · Eligible", { exact: true }).first().waitFor();
       await queue.getByText("Resolve the issue's blocked signal before implementation.", { exact: true }).waitFor();
-      const first = queue.getByRole("article").filter({ has: page.getByRole("link", { name: "#1 · Fictional scope", exact: true }) });
-      const moved = page.waitForResponse(response => response.url().endsWith("/order") && response.request().method() === "POST");
-      await first.getByRole("button", { name: "Move later", exact: true }).click();
-      assert.equal((await moved).status(), 200);
-      assert.equal((await automatic.json(route + "/queue")).entries[0].number, 2);
-      await queue.getByRole("article").first().getByRole("link", { name: `#2 · ${later.title}`, exact: true }).waitFor();
-      assert((await queue.getByRole("article").first().textContent())?.includes(later.title));
+      assert.equal(await queue.getByRole("button", { name: "Move earlier", exact: true }).count(), 0);
+      assert.equal(await queue.getByRole("button", { name: "Move later", exact: true }).count(), 0);
+      assert.equal((await automatic.json(route + "/queue")).entries[0].number, 1);
+      await queue.getByRole("article").first().getByRole("link", { name: "#1 · Fictional scope", exact: true }).waitFor();
       automatic.setLaunchOutcome("failed");
       await queue.getByLabel("Pause queue", { exact: true }).uncheck();
       await queue.getByRole("button", { name: "Save queue settings", exact: true }).click();
       await queue.getByText("Automatic implementation is on.", { exact: true }).waitFor();
       await page.waitForFunction(() => !document.querySelector('[aria-label="Issue queue"] form button:disabled'));
       const sources = (await automatic.json(route)).sources;
-      const failedSource = sources.find((source: any) => source.number === 2);
+      const failedSource = sources.find((source: any) => source.number === 1);
       const failedPath = `/implementations/${failedSource.implementation_id}`;
       const failed = (await automatic.json(failedPath)).runs[0];
       assert.equal(failed.condition, "failed");
@@ -629,7 +629,7 @@ try {
       assert.equal((await automatic.post(route + "/sync", {})).status, 409);
       await page.reload();
       await contract.getByText("Execution confirmed.", { exact: true }).waitFor();
-      later.body += "\nChanged automatic scope.";
+      automatic.issue.body += "\nChanged automatic scope.";
       automatic.save([automatic.issue, later, blocked], false, {}, true); await automatic.json(route + "/sync", {});
       await page.reload();
       await contract.getByText("Controlled pause requested. Issue scope changed.", { exact: true }).waitFor();
@@ -638,5 +638,5 @@ try {
     } finally { await page.close(); automatic.close(); }
   }
   assert.deepEqual(errors, []);
-  console.log("PASS: desktop/mobile identity selection, reviewed automatic opt-in, queued/blocked priority, pause, failed-attempt Retry, outage continuation and controlled pause");
+  console.log("PASS: desktop/mobile identity selection, reviewed automatic opt-in, queued/blocked creation order, pause, failed-attempt Retry, outage continuation and controlled pause");
 } finally { await browser.close(); fixture.close(); }

@@ -1,0 +1,3 @@
+# Separate temporary Pause from permanent Delete
+
+The owner needs resumable suspension and permanent removal: Pause preserves work/progress, while Delete removes every attempt's factory-owned data, dirty worktrees, Assignment-only local branches, app-managed backup copies and linked GitHub issues. This supersedes ADR 0001's retained-history Discard clause, at the cost of recoverable pending cleanup, verified shutdown/identity and content-free source suppression; PRs, pushed branches, primary checkouts, unrelated/shared resources, exported copies and external provider stores remain protected or excluded. See the [accepted design](../factory/automatic-dispatch-pause-delete-design.md); the delivery milestone remains unchanged and implementation is tracked separately.

@@ -25,16 +25,27 @@ test("an upstream Specification retains the detected release instead of a later 
 });
 
 test("upstream preparation requires accepted Specification, testing seams and Tickets even for direct Work", async () => {
-  const f = await githubScheduleFixture({ version: async () => "owned-upstream-provider" });
+  let allocations = 0;
+  const f = await githubScheduleFixture({ version: async () => "owned-upstream-provider", createWorkspace: async () => { allocations++; throw new Error("Blocked upstream preparation must never allocate native work"); } });
   try {
     await f.request(f.route + "/configure", { ...f.policy, upstream_repository: "fictional/upstream" });
     writeFileSync(f.responses, JSON.stringify({ releases: [{ id: 11, tag_name: "v1", draft: false, published_at: "2026-10-11T09:00:00Z" }], release_heads: { v1: "a".repeat(40) } }));
     const detected = (await f.request(f.route + "/schedules/run", { job: "upstream_sync" })).body.upstream;
     const prefix = `/implementations/${detected.active.implementation_id}`;
-    const blocked = async () => {
-      const result = await f.request(prefix + "/runs", { action: "work", idempotency_key: "prepare-approved-upstream" });
-      expect(result).toMatchObject({ status: 409, body: { error: { code: "scope_unaccepted" } } });
+    let attempt = 0;
+    const blocked = async (code = "scope_unaccepted", reason = "Accept the upstream release's Specification", condition: "blocked" | "queued" = "blocked") => {
+      // A material planning change needs a fresh explicit Start. Reusing an old
+      // key only observes its retained block; it cannot authorize new work.
+      const request = { action: "work", idempotency_key: `prepare-approved-upstream-${++attempt}` };
+      const result = await f.request(prefix + "/runs", request);
+      if (condition === "blocked") expect(result).toMatchObject({ status: 409, body: { error: { code } } });
+      else expect(result).toMatchObject({ status: 202, body: { condition, run_id: null } });
+      const retained = await f.request(prefix + "/runs", request);
+      expect(retained).toMatchObject({ status: 202, body: { implementation_id: detected.active.implementation_id, idempotency_key: request.idempotency_key, action: "work", condition, run_id: null } });
+      expect(retained.body.reason).toContain(reason);
       expect((await f.request(prefix)).body.runs).toHaveLength(0);
+      expect(allocations).toBe(0);
+      return { request, retained: retained.body };
     };
     await blocked();
     const spec = (await f.request(prefix + "/specifications", { content: "Integrate only v1 in owned worktrees. Ask about conflicts." })).body;
@@ -46,16 +57,16 @@ test("upstream preparation requires accepted Specification, testing seams and Ti
     const graph = (await f.request(prefix + "/tickets", { specification_id: spec.id, tickets: [{ key: "upstream", title: "Prepare v1", acceptance: "Retain isolated diff, checks and reviews", dependencies: [] }] })).body;
     await blocked();
     await f.request(prefix + "/approvals", { kind: "ticket_graph", revision: graph.hash, scope: "Owned upstream Ticket graph approval" });
-    const missingChecks = await f.request(prefix + "/runs", { action: "work", idempotency_key: "prepare-approved-upstream" });
-    expect(missingChecks.status).toBe(409);
-    expect(missingChecks.body.error.code).toBe("project_setup_required");
-    expect((await f.request(prefix)).body.runs).toHaveLength(0);
+    const missingChecks = await blocked("project_setup_required", "Configure known Project checks and execution permissions");
     const projectId = f.route.split("/")[2]!;
     await f.request(`/projects/${projectId}/configure`, { checks: [["git", "status", "--porcelain"]], permissions: "Only this owned upstream fixture" });
     await f.request(prefix + "/questions", { question: "The release needs a new compatibility decision before preparation. Which behavior should be retained?" });
-    const unanswered = await f.request(prefix + "/runs", { action: "work", idempotency_key: "prepare-approved-upstream" });
-    expect(unanswered.status).toBe(409);
-    expect(unanswered.body.error.code).toBe("answers_unready");
+    // Renewing setup cannot replay the older refused preparation request.
+    const retainedSetup = await f.request(prefix + "/runs", missingChecks.request);
+    expect(retainedSetup).toEqual({ status: 202, body: missingChecks.retained });
+    await blocked("answers_unready", "Answer pending owner questions", "queued");
+    f.restart();
+    expect(allocations).toBe(0);
     expect((await f.request(prefix)).body).toMatchObject({ runs: [], board: { lane: "needs_you" } });
     expect(f.calls().every(args => !args.includes("--method"))).toBe(true);
   } finally { f.close(); }

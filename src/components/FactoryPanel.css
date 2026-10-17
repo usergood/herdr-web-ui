@@ -1,5 +1,5 @@
 .factory-panel { height: 100%; overflow: auto; padding: var(--space-4); background: var(--bg-panel); color: var(--text); }
-.factory-heading, .factory-heading-actions, .factory-actions, .factory-filters, .factory-card-order { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
+.factory-heading, .factory-heading-actions, .factory-actions, .factory-filters { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
 .factory-heading-actions { margin-left: auto; justify-content: flex-end; }
 .factory-heading h1 { margin-right: auto; font-size: var(--fs-lg); color: var(--text-strong); }
 .factory-heading h1, .factory-heading-actions { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }

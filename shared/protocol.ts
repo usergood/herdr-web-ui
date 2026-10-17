@@ -84,7 +84,8 @@ export type { Machine, MachineEvent, PaneTarget, SetupJob, SetupRequest, SetupAc
  *         and the usual token gate. Managed starts only; status is polled during restart.
  *  GET    /api/agents                    -> { agents: AgentKind[] } (herdr's agent manifests: the
  *         kinds `agent.start` accepts, plus omo and gjc when they are on this server's PATH,
- *         for the new-session dialog)
+ *         each with `installed`: whether its command is on this server's PATH; for the
+ *         new-session dialog)
  *  GET    /api/integrations              -> IntegrationsResponse (herdr's `integration.list`, in
  *         herdr's order; read only: nothing here installs or removes one, Settings shows the
  *         `herdr integration install` command instead)
@@ -171,6 +172,20 @@ export type { Machine, MachineEvent, PaneTarget, SetupJob, SetupRequest, SetupAc
  *         keeps: its task list or checklist, read from the transcript; null when it keeps none)
  *  GET    /api/pane/files?pane_id=&q=&limit=  -> { files: string[] } (paths relative to the pane
  *         cwd matching q, for @-mentions; git ls-files when the cwd is a repo, bounded walk otherwise)
+ *  GET    /api/workspace/diff/files?pane_id=&directory=&scope=&base=&head= -> RepoDiffFileList
+ *         (what changed in the git repository the pane's folder, or `directory`, is inside: read
+ *         only, on the PC that owns the pane. `directory` is absolute, `~/…`, or relative to the
+ *         pane's folder; one of pane_id and directory is required. scope: workspace (the default:
+ *         working tree against the index, plus untracked files), staged (index against HEAD) or
+ *         commit (`base` against `head`, HEAD when absent; each one commit). The list is capped
+ *         (`limits`), and `truncated` says when it was. 400 invalid_scope / invalid_revision /
+ *         invalid_cwd / missing_directory, 404 revision_not_found, 409 not_a_repository,
+ *         503 git_unavailable, 504 git_timeout; 403 read_only for a watching device, as a file read)
+ *  GET    /api/workspace/diff/file?pane_id=&directory=&scope=&base=&head=&path=&old_path=
+ *         -> RepoDiffFilePatch (one file of that comparison as a standard `diff --git` unified
+ *         patch; `path` and, for a rename, `old_path` are the list's own, relative to the
+ *         repository root. The patch is whole or null: `unavailable` says why it is null, and no
+ *         cut hunk is ever sent. 400 invalid_path, 404 not_found when nothing changed there)
  *  GET    /api/pane/prompt?pane_id=     -> { prompt: InteractivePrompt | null, suggestion: string | null, restored: string | null }
  *         (the agent's TUI question/approval menu currently on screen, parsed from the visible pane
  *         text; with no menu, the next prompt Claude Code suggests, grey in its empty input box, and
@@ -184,20 +199,25 @@ export type { Machine, MachineEvent, PaneTarget, SetupJob, SetupRequest, SetupAc
  *  POST   /api/tab/create { workspace_id, cwd?, label?, agent?: { kind, name?, args? } }
  *         -> TabCreated (tab.create in that workspace, then the same agent launch in the tab's root
  *         pane; without cwd herdr uses the workspace's folder, without label the tab's number)
+ *         Both creates trim `label`; a blank one counts as not given, one over MAX_LABEL_CHARS
+ *         (shared/labels.ts) is refused with 400 label_too_long.
  *  POST   /api/tab/rename { tab_id, label } -> { ok: true } (tab.rename; an empty label is refused:
- *         herdr would keep it as the name)
+ *         herdr would keep it as the name; over MAX_LABEL_CHARS: 400 label_too_long)
  *  POST   /api/tab/move { tab_id, insert_index } -> TabMoved
  *         (tab.move: an insertion boundary in the original workspace tab order, 0..tab count;
  *         preserves the active tab/pane and returns the authoritative workspace tab order)
  *  POST   /api/tab/close  { tab_id } -> { ok: true } (tab.close: every pane in the tab closes, and
  *         a workspace's last tab takes the workspace with it)
- *  POST   /api/workspace/rename { workspace_id, label } -> { ok: true }
+ *  POST   /api/workspace/rename { workspace_id, label } -> { ok: true } (trimmed; empty: 400
+ *         missing_label, over MAX_LABEL_CHARS: 400 label_too_long)
  *  POST   /api/workspace/move   { workspace_id, insert_index } -> { ok: true } (sidebar reorder)
  *  POST   /api/workspace/close  { workspace_id, close_group? } -> { ok: true } (close_group takes the
  *         repository's open worktree workspaces with it; without it herdr refuses: workspace_group_close_required)
  *  POST   /api/worktree/create { workspace_id, branch, base?, label?, path?, agent?: { kind, name?, args? } } -> WorktreeOpened
  *         (worktree.create: a git worktree of that workspace's repo, checked out under herdr's
- *         worktree directory unless `path` says where, and opened as a new workspace grouped with it)
+ *         worktree directory unless `path` says where, and opened as a new workspace grouped with it;
+ *         409 repository_without_commits when no base is named and the repository has no commit yet;
+ *         both worktree routes refuse a label over MAX_LABEL_CHARS with 400 label_too_long)
  *  GET    /api/worktree/list?workspace_id= -> WorktreeListing (worktree.list: the repo's checkouts)
  *  POST   /api/worktree/open   { workspace_id, path | branch, label? } -> WorktreeOpened
  *         (worktree.open: an existing checkout as a workspace; already_open names the one it has)
@@ -214,8 +234,10 @@ export type { Machine, MachineEvent, PaneTarget, SetupJob, SetupRequest, SetupAc
  *  PATCH  /api/devices/:id  { label }    -> PairedDevice;  DELETE /api/devices/:id -> 204 (revoked at its next request)
  *  GET    /api/push                      -> PushKey (the VAPID application server key)
  *  POST   /api/push/subscribe { subscription }  -> 204 (a browser PushSubscription JSON; upsert by endpoint)
+ *         | 410 subscription_gone (its push service answered 404/410 for that endpoint since the server
+ *         started: the browser must unsubscribe and subscribe anew; an older server never says it)
  *  DELETE /api/push/subscribe { endpoint }      -> 204
- *  POST   /api/push/test      { endpoint }      -> 204 | 404 subscription_not_found | 502 push_failed
+ *  POST   /api/push/test      { endpoint }      -> 204 | 404 subscription_not_found | 410 subscription_gone | 502 push_failed
  *  GET    /api/usage[?refresh=1]         -> UsageReport (plan limits of the AI subscriptions signed in on this PC)
  *  Errors: non-2xx with { error: { code, message } }
  *
@@ -231,7 +253,7 @@ export type { Machine, MachineEvent, PaneTarget, SetupJob, SetupRequest, SetupAc
  *  login, when no token is configured); the upgrade is refused. Static files are always public.
  */
 export interface ApiError {
-  error: { code: string; message: string };
+  error: { code: string; message: string; candidates?: string[] };
 }
 
 export interface PaneFindMatch {
@@ -309,6 +331,38 @@ export interface UsageReport {
   readonly providers: readonly ProviderUsage[];
 }
 
+/**
+ * Hub management (CLIProxyAPI); successful responses use Cache-Control: no-store.
+ * CLIProxyStatus omits the saved management key.
+ * GET /api/cliproxy -> CLIProxyStatus for the saved connection.
+ * PUT /api/cliproxy { url, management_key? } -> CLIProxyStatus; a first save or URL change
+ * requires a supplied key. DELETE /api/cliproxy -> unconfigured CLIProxyStatus.
+ * POST /api/cliproxy/login { provider: "claude" | "codex" } -> CLIProxyLogin (URL and state).
+ * GET /api/cliproxy/login?state=... -> CLIProxyLoginStatus (wait or ok). A terminal ok
+ * consumes the state; an upstream status:error consumes it and returns 502.
+ * DELETE /api/cliproxy/login?state=... -> { status: "ok" }, cancelling that pending login.
+ * POST /api/cliproxy/callback { provider, state, redirect_url } -> { status: "ok" };
+ * provider and redirect query state must match the pending login, and the redirect must
+ * use HTTP(S) and include code or error. Callback success still needs the status poll.
+ * States belong to this server instance, expire after five minutes (400 when missing or
+ * expired), and allow at most eight pending logins (409 when full). Saving/removing the
+ * connection clears pending states; restarting the server also loses them.
+ */
+export interface CLIProxyStatus {
+  readonly configured: boolean;
+  readonly url: string;
+  readonly ok: boolean;
+  readonly problem: string | null;
+}
+export type CLIProxyProvider = "claude" | "codex";
+export interface CLIProxyLogin {
+  readonly url: string;
+  readonly state: string;
+}
+export interface CLIProxyLoginStatus {
+  readonly status: "wait" | "ok" | "error";
+}
+
 /** How a request got in, when it did. */
 export type AccessVia = "local" | "tailscale" | "device" | "token" | "open";
 /** Why a request did not. */
@@ -321,6 +375,8 @@ export interface HealthAuth {
   readonly required: boolean;
   readonly authenticated: boolean;
   readonly via?: AccessVia;
+  /** with `via: "token"`: the token came in an `Authorization` header (a proxy sends it), so signing out of this browser would change nothing */
+  readonly bearer?: true;
   readonly role?: DeviceRole;
   readonly reason?: AccessRefusal;
 }
@@ -660,6 +716,22 @@ export interface DirectoryListing {
   files?: { name: string; size: number }[];
 }
 
+/**
+ * POST /api/workspace/directories: makes one folder `name` directly inside `path` (absolute,
+ * `~` or `~/…`), for the folder browser's New folder. 201 with the folder made; 400
+ * invalid_cwd / invalid_name (empty, `.`, `..`, a separator, over 255 bytes), 403
+ * permission_denied, 409 folder_exists. Nothing is made recursively or overwritten.
+ */
+export interface CreateDirectoryRequest {
+  path: string;
+  name: string;
+}
+
+export interface DirectoryCreated {
+  /** the folder made, absolute */
+  path: string;
+}
+
 /** How the file viewer shows a file. */
 export type FileKind = "image" | "video" | "audio" | "pdf" | "text" | "binary";
 
@@ -678,9 +750,102 @@ export interface FileInfo {
   kind: FileKind;
 }
 
+/** Which two states of a repository are compared. */
+export type RepoDiffScope = "workspace" | "staged" | "commit";
+
+/** How one file changed. `untracked` exists only in the `workspace` scope. */
+export type RepoDiffStatus = "added" | "deleted" | "modified" | "renamed" | "copied" | "type_changed" | "unmerged" | "untracked";
+
+/** The repository a comparison was read from, on the PC that owns it. */
+export interface RepoDiffRepository {
+  /** the working tree's top folder, absolute */
+  root: string;
+  /** the checked-out branch; null on a detached HEAD */
+  branch: string | null;
+  /** HEAD's commit hash; null before the first commit */
+  head: string | null;
+  detached: boolean;
+  /** no commit yet: `staged` then lists everything added so far */
+  unborn: boolean;
+}
+
+export interface RepoDiffFile {
+  /** relative to the repository root, forward slashes, as git names it (never quoted) */
+  path: string;
+  /** where a renamed or copied file came from; null otherwise */
+  old_path: string | null;
+  status: RepoDiffStatus;
+  /** lines added and removed; null for a binary file, an untracked one, and past the list's byte cap */
+  additions: number | null;
+  deletions: number | null;
+  /** null when not determined: an untracked file in a list is not opened to find out */
+  binary: boolean | null;
+}
+
+/** GET /api/workspace/diff/files */
+export interface RepoDiffFileList {
+  repository: RepoDiffRepository;
+  scope: RepoDiffScope;
+  /** the commits compared, as full hashes, in the `commit` scope; null in the others */
+  base: string | null;
+  head: string | null;
+  /** sorted by path, at most `limits.max_files` */
+  files: RepoDiffFile[];
+  /** how many files changed in all; null when git printed more than `limits.max_list_bytes` */
+  total: number | null;
+  /** `files` is not the whole list */
+  truncated: boolean;
+  limits: { max_files: number; max_list_bytes: number };
+}
+
+/**
+ * GET /api/workspace/diff/file. `patch` is git's own output for that one file, from its
+ * `diff --git` line on, and is either complete or null.
+ */
+export interface RepoDiffFilePatch {
+  repository: RepoDiffRepository;
+  scope: RepoDiffScope;
+  base: string | null;
+  head: string | null;
+  file: RepoDiffFile;
+  patch: string | null;
+  /**
+   * Why there is no patch: `binary` (no text to show), `too_large` (past `limits.max_patch_bytes`),
+   * `unmerged` (a conflict: git prints a combined diff, which is not a unified patch) or
+   * `unsupported` (an untracked path that is not a regular file). Null when `patch` is set.
+   */
+  unavailable: "binary" | "too_large" | "unmerged" | "unsupported" | null;
+  /** the patch exists and was left out for its size */
+  truncated: boolean;
+  limits: { max_patch_bytes: number; context_lines: number };
+}
+
 export interface AgentKind {
   kind: string;
   label: string;
+  /** whether the server finds the agent's command (its kind) on its PATH; absent from an older bridge */
+  installed?: boolean;
+}
+
+/**
+ * GET /api/integrations: one of herdr's built-in agent integrations (`integration.list`, herdr
+ * 0.9.3; the saved schema predates it, so the shape is written out here). `state` widens like the
+ * generated enums: a newer herdr may report one this build does not know.
+ */
+export interface AgentIntegration {
+  /** herdr's integration target, e.g. `claude`, `antigravity_cli` */
+  target: string;
+  /** the name herdr shows, also the argument `herdr integration install` takes */
+  label: string;
+  /** the agent's executable */
+  command: string;
+  /** whether that executable is on the PATH of the PC herdr runs on */
+  available: boolean;
+  state: "not_installed" | "current" | "outdated" | (string & {});
+}
+
+export interface IntegrationsResponse {
+  integrations: AgentIntegration[];
 }
 
 /**
@@ -922,6 +1087,12 @@ export interface SlashCommand {
   source: "builtin" | "user" | "project" | "skill" | "plugin";
   /** `$`: typed as `$name` (Codex skills); otherwise `/name` */
   trigger?: "$";
+  /**
+   * where a skill comes from, for every agent: `user` is the person's own (the agent's own
+   * directory or ~/.agents/skills), `project` the checkout's, `bundled` ships with the agent,
+   * `plugin` comes with one of its plugins
+   */
+  origin?: "user" | "project" | "bundled" | "plugin";
 }
 
 /**
@@ -955,6 +1126,8 @@ export interface InteractivePrompt {
   /** the last-resort card for a blocked pane no reader knows: answered with its own buttons only,
    * so a message typed in the chat still goes to the agent as typed */
   fallback?: true;
+  /** Claude's plan file behind a plan card, whose whole text is then the body: opened in the file viewer */
+  plan_file?: string;
 }
 
 export interface InteractivePromptStep {
@@ -986,6 +1159,8 @@ export interface PushPayload {
   /** Absent in legacy payloads means local. */
   machine_id?: string;
   pane_id: string | null;
+  /** The workspace the pane was last seen in, so the tap of an ended pane opens that workspace. Absent when not known. */
+  workspace_id?: string;
   title: string;
   body: string;
   tag: string;
@@ -994,7 +1169,7 @@ export interface PushPayload {
 /** WebSocket at /ws
  *
  *  Client -> server frames: attach {pane_id, cols, rows} | detach {pane_id} | input {pane_id, text}
- *    | keys {pane_id, keys} | resize {pane_id, cols, rows} | role {mode}
+ *    | keys {pane_id, keys} | resize {pane_id, cols, rows} | release-size {pane_id} | role {mode}
  *    | pty-ack {pane_id, stream_id, offset} | secret {id, pane_id, prompt, secret}
  *    | watch {pane_id, cols, rows} | unwatch {pane_id} | conversation-watch {pane_id, enabled}
  *  Server -> client frames: snapshot | pty-data | pty-exit | pane-geometry | role-ack
@@ -1043,7 +1218,9 @@ export type ClientMessage =
   | { type: "conversation-watch"; pane_id: string; enabled: boolean }
   /** a pane another web bridge holds (`attach_held`): take herdr's attach slot from it, here, now */
   | { type: "take-over"; pane_id: string }
-  | { type: "input"; pane_id: string; text: string }
+  /** `stop`: the composer's Stop (text a lone ESC). The bridge sends it in the pane's turn, after typing
+   * still on its way, and a message sent next waits for it; an older bridge types it like any key. */
+  | { type: "input"; pane_id: string; text: string; stop?: true }
   | { type: "keys"; pane_id: string; keys: string[] }
   /** a composer message, sent to servers whose snapshot lists "submit": the server types it and
    * its own Enter after a short gap, and answers with a submit-result of the same id. `text` is
@@ -1059,13 +1236,27 @@ export type ClientMessage =
    * receipt, and retired ids are rejected rather than executed after history eviction.
    * `clear_draft`: an immediate chat message only, sent again over the `draft` its input_draft
    * refusal named: the server clears Claude's input box first while it still holds exactly that,
-   * and refuses again (input_draft) when it holds anything else or does not read empty after. */
-  | { type: "submit"; id: number; pane_id: string; text: string; payload: string; typed?: boolean; delivery?: "immediate" | "queue" | "hold"; clear_draft?: string }
-  | { type: "pending-action"; id: number; pane_id: string; pending_id: string; action: "steer" | "discard" }
+   * and refuses again (input_draft) when it holds anything else or does not read empty after.
+   * `send_anyway`: an immediate chat message only, sent again after an input_draft refusal that
+   * named no draft and showed the box (`box`): the server sends once over that box, only into the same
+   * Claude terminal and session that refusal was for (else pending_target_changed), and only while the
+   * box still shows that `box` or reads empty (else input_draft again, with the new box). Not with
+   * `clear_draft`.
+   * `resend_id`: stable held-copy ID for immediate chat resends across connections; the bridge
+   * shares the first outcome for 60 seconds after settlement. `resend_generation` defaults to 0;
+   * only a definitive no-input refusal permits the next attempt generation. Not with `send_anyway`:
+   * that combination returns invalid_delivery before reserving or replaying an ID. No `clear_draft`.
+   * Older peers ignore it. */
+  | { type: "submit"; id: number; pane_id: string; text: string; payload: string; typed?: boolean; delivery?: "immediate" | "queue" | "hold"; clear_draft?: string; send_anyway?: true; resend_id?: string; resend_generation?: number }
+  | { type: "pending-action"; id: number; pane_id: string; pending_id: string; action: "steer" | "discard"; resend_generation?: number }
   /** Masked input: revalidate the visible prompt, type literal bytes + Enter immediately.
    * Never queued, retried, sent through agent.prompt, or echoed in a result. */
   | { type: "secret"; id: number; pane_id: string; prompt: string; secret: string }
   | { type: "resize"; pane_id: string; cols: number; rows: number }
+  /** this client's terminal is covered again (the chat lens): if the pty has its grid, the server sizes
+   * the pty for the latest grid of another interact client still showing the terminal, or leaves it.
+   * Never answered; an older server ignores it, so it needs no feature. */
+  | { type: "release-size"; pane_id: string }
   /** Cumulative UTF-8 payload bytes processed by xterm, only for this subscription. */
   | { type: "pty-ack"; pane_id: string; stream_id: string; offset: number }
   | { type: "role"; mode: ClientRole }
@@ -1076,10 +1267,15 @@ export type ClientMessage =
   | { type: "presence"; active: boolean }
   /** a read-only view of the pane at this grid, for a tab out of use (feature "watch"); never resizes the pane */
   | { type: "watch"; pane_id: string; cols: number; rows: number }
-  | { type: "unwatch"; pane_id: string };
+  | { type: "unwatch"; pane_id: string }
+  /** liveness only (feature "ping"): answered at once with a `pong` of the same id, for any role. The
+   * client sends it when the page comes back, the network changes or nothing arrived for a while,
+   * and drops a socket that stays silent: a half-open one still reads OPEN in the browser. A remote
+   * PC's socket relays it unchanged, so the remote server's snapshot decides whether it is sent. */
+  | { type: "ping"; id: number };
 
 /** What a server supports beyond the base protocol, listed in its first snapshot; older bridges list nothing. */
-export type ServerFeature = "submit" | "pending-input" | "pending-hold" | "secret-input" | "input-ready" | "take-over" | "watch" | "conversation-watch";
+export type ServerFeature = "submit" | "pending-input" | "pending-hold" | "secret-input" | "input-ready" | "take-over" | "watch" | "conversation-watch" | "ping";
 
 export type ServerMessage =
   | { type: "snapshot"; snapshot: SessionSnapshot; features?: ServerFeature[] }
@@ -1096,9 +1292,12 @@ export type ServerMessage =
   /** ok after Enter delivery, or bridge acceptance (`pending`); never an agent execution acknowledgement.
    * `draft`: on an immediate send's input_draft, the one-row draft in Claude's input box that a send
    * with `clear_draft` may clear (absent when the box is not one the server clears).
+   * `box`: on an immediate send's input_draft that names no draft, what the server read in Claude's
+   * input box (plain rows, cut at 200 characters; empty when no whole box could be read). Present
+   * only when a send with `send_anyway` may follow; an older server never sends it.
    * `submit_partial`: the explicitly confirmed terminal draft was cleared, but the send's
    * deadline then expired before the message was sent; never a nothing-typed receipt. */
-  | { type: "submit-result"; id: number; pane_id: string; ok: boolean; pending?: PendingMessage; code?: string; message?: string; draft?: string }
+  | { type: "submit-result"; id: number; pane_id: string; ok: boolean; pending?: PendingMessage; code?: string; message?: string; draft?: string; box?: string }
   | { type: "pending-result"; id: number; pane_id: string; pending_id: string; ok: boolean; code?: string; message?: string }
   /** Owner-only receipt and state; only an explicit removed outcome permits deleting a retained client message. */
   | { type: "pending-messages"; pane_id: string; messages: PendingMessage[]; removed?: Array<{ id: string; outcome: "sent" | "discarded" }> }
@@ -1115,6 +1314,8 @@ export type ServerMessage =
   | { type: "watch-data"; pane_id: string; data: string }
   /** the watch ended (pane gone, herdr closed it, or this herdr has no read-only view); the client keeps its last screen */
   | { type: "watch-end"; pane_id: string }
+  /** the answer to a `ping`, with its id; only this frame, for a ping in flight, ends the client's liveness probe */
+  | { type: "pong"; id: number }
   /** `pane_id` names the pane an error is about, when it is about one (`attach_held`) */
   | { type: "error"; code: string; message: string; pane_id?: string };
 
@@ -1125,20 +1326,35 @@ export const DEFAULT_PORT = 7317;
  * Factory routes use connection-server records. Mutation bodies are FactoryRequests
  * keys below; all JSON errors are ApiError. Mutations require same-origin and
  * x-herdr-factory: 1; reads and writes require owner access.
- * GET /api/factory -> FactoryOverview; GET /api/factory/implementations/:id -> FactoryDetail.
+ * GET /api/factory -> FactoryOverview with global normal/planning/build limits,
+ * occupied/uncertain reservations and retained capacity waits. progress contains one
+ * five-lane board rollup per Assignment: named Tickets, waiting/running/completed counts,
+ * concurrent evidence-backed activities and dependency/capacity/failure reasons.
+ * Paused and pending lifecycle operations remain independent of the lane/activity tags.
+ * Normal contexts share max_agents across Projects, providers and Machines. One additional
+ * interview/pre-approval Specification context may execute globally; workers cannot use it.
+ * Ordinary terminals and independently launched agents are excluded. Ready chats consume
+ * no slot; uncertain execution retains its reservation. Builds have a separate max_builds.
+ * GET /api/factory/implementations/:id -> FactoryDetail.
  * FactoryDetail includes github_sources (current issue observations and revision history) and
  * github_sync (last complete sync and current problem), separate from notes and frozen Runs.
  * GET /api/factory?navigation=1 -> FactoryOverview without checkout instruction contents;
  * sidebar/page polling uses metadata; full instructions remain in frozen Run context.
  * Both include a board projection with five lifecycle lanes, current workflow activity,
  * execution condition and nullable Ticket progress; stored stages and Run history are retained.
- * GET /api/factory?navigation=1 -> FactoryOverview without Assignment descriptions/delivery
+ * GET /api/factory?navigation=1 -> FactoryOverview with only visible Project conversation trees
+ * and structural run/worker context IDs; without Assignment descriptions/delivery
  * evidence/upstream bodies or checkout instruction contents. Sidebar and board share this read.
  * GET /api/factory/implementations/:id?view=current -> FactoryCurrent: current decisions,
  *   Run manifests include execution_preset, bounded IssueAdmissionSummary and rework identity;
  *   frozen issue history and planning content remain in the lazy full Assignment response.
  * latest Specification, Ticket graph, Run status/model summaries, report/check metadata and
- * current continuation warnings. No frozen manifests, transcripts, diffs or historical bodies.
+ * current continuation warnings. Human Review and automatic execution/review reasons carry optional
+ * reason_is_error metadata so retrying faults remain distinct from ordinary waits. Runs retain optional
+ * delivery_completion_error independently of native status until verified cleanup succeeds.
+ * No frozen manifests, transcripts, diffs or historical bodies.
+ * GET ...?view=workflow&conversation_id= -> FactoryDetail-shaped selected logical conversation;
+ * only its chat, native history and Human Review evidence bodies are read. Current polls keep metadata.
  * GET ...?view=review -> FactoryReviewDetail: selectable report/snapshot metadata and findings.
  * GET ...?view=report&record_id= -> FactoryReviewEvidence; ?view=snapshot&record_id= -> ReviewSnapshot.
  * Evidence must belong to the named Assignment (otherwise 404). The default full detail remains
@@ -1158,6 +1374,15 @@ export const DEFAULT_PORT = 7317;
  * POST /api/factory-host/pane-state ({pane_id}) -> native status/background counts;
  * read-only state for authenticated Machine bridge archive validation.
  * POST /api/factory/implementations/:id/configure (configure) -> Implementation; future defaults only.
+ * POST /api/factory/implementations/:id/human-review/messages (human_review_message) -> FactoryMessage, 202;
+ * repeat-safe explicit discussion, queued on normal capacity; no fixes or merge authority.
+ * POST /api/factory/implementations/:id/human-review/submit (human_review_submission) -> FactoryHumanFeedbackBatch, 202;
+ * atomically submits Approve or Decline with all exact-snapshot drafts, repeat-safe by identity;
+ * Approve conditionally authorizes these repairs and merge after fresh checks/independent reviews;
+ * Decline grants no merge authority and returns for explicit approval. Owner-only, same-origin control.
+ * FactoryCapabilities.human_review_protocol: 1 is required on the execution bridge;
+ * older bridges cannot launch discussion as ordinary editing work.
+ * FactoryDetail.human_reviews retains the automatic checked-PR handoff and captured snapshot.
  * POST .../chats (chat) -> FactoryChat, 201; POST .../messages (message) -> FactoryMessage, 201.
  * Native messages use source_id/sequence for idempotency; conflicting imports fail 409.
  * POST .../artifacts (artifact) -> FactoryArtifact, 201; size/hash and ownership checked.
@@ -1175,24 +1400,32 @@ export const DEFAULT_PORT = 7317;
  * -> FactoryQuestion; revision-bound, never invents answers. Missing answer_kind means text.
  * Explicit shared_understanding approval confirms pending confirmation questions atomically
  * and binds to the resulting product question revision. Unanswered text questions still block.
- * POST .../order (order) -> {ok:true}; reordering never dispatches.
+ * POST .../order is retired: 409 automatic_order; dispatch uses oldest eligible request age.
+ * POST .../complete-work (complete_work) -> Implementation; explicit owner completion of the
+ * latest direct-work Run after confirmed native stop, with its worktree retained.
+ * POST .../pause|resume (empty) -> Implementation; same-origin owner controls need no agent slot.
+ * pause.pending retains reservations and Machine/resource reasons until every attempt stops;
+ * pause.paused preserves board lane, worktrees, edits, history, approvals and completed Tickets.
+ * Resume durably queues retained unfinished contexts, revalidating scope before admission.
+ * POST /api/factory/settings (settings) -> FactorySettings; global agent/build limits and future defaults.
+ * The removed max_implementations setting is rejected; saved agent/build limits migrate unchanged.
  * GET .../completion-evidence -> Implementation["completion_evidence"]; freshly checks all
- * retained Run/worker repositories and ownership. Unavailable Machine evidence stays unknown.
+ * retained Run/worker repositories and ownership. Failed observations retain known changes and
+ * reason_is_error; a successful fresh inspection clears the fault. Ordinary completion waits
+ * and historical missing-proof gates remain status reasons.
  * POST .../complete-work (complete_work) -> Implementation; accepts no-change research only
  * after fresh repository and quiescence evidence; repository changes require PR delivery.
  * GET .../delivery -> AssignmentDelivery | null; owner-linked repository, branch and PR evidence.
  * POST .../delivery (AssignmentDeliveryConfiguration) -> AssignmentDelivery; revision-bound correction.
  * POST .../delivery/sync ({expected_revision}) -> AssignmentDelivery; read-only GitHub verification;
  * all intended committed changes and linked merges must be covered before merge-based completion.
+ * Completion evidence retains typed verification faults; successful sync clears them while
+ * unmerged PRs, owner questions and a complete inventory without a release remain ordinary waits.
  * Release milestones additionally verify a published release tag contains every linked merge;
  * retained release ID, URL, tag commit and publication time are inspectable. No release writes.
  * POST /api/factory-host/delivery-read (DeliveryReadRequest) -> bounded read-only GitHub resource;
  * selected Machine account snapshot only, no publication or merge authority.
- * POST .../discard (discard) -> Implementation; explicitly stops owned Runs, workers and
- * builds while retaining evidence. Unconfirmed stops retain discard_requested_at and
- * Needs you / Discard pending. Repeating the action reconciles the same owned work.
  * GET overview/detail board.sidebar_hidden is true only for finished, quiescent work.
- * POST /api/factory/settings (settings) -> FactorySettings; validated limits and future defaults.
  * POST /api/factory/projects/:id/configure (project_settings) -> FactoryProject;
  * auto_publish_pr is a separate default-off publication opt-in; editing it requires
  * same origin and x-herdr-machine: 1, independently of issue publication/automatic implementation.
@@ -1215,13 +1448,20 @@ export const DEFAULT_PORT = 7317;
  * POST .../accounts/:id/setup/(status|input|cancel) -> owner-only ephemeral AccountSetup.
  * POST /api/factory/projects/:id/accounts/verify -> credential-free AccountBindingSnapshot.
  * POST /api/factory/machines/:id/prepare (empty) -> FactoryCapabilities; pinned private source only.
- * POST /api/factory/implementations/:id/runs (start) -> FactoryRun, 202; scoped idempotent admission.
+ * POST /api/factory/implementations/:id/runs (start) -> FactoryRun | FactoryCapacityWait, 202;
+ * durably queues at capacity. Queued requests retain identity/age across restart and dispatch
+ * oldest eligible first. GET /api/factory exposes public capacity.waiting, including blocked reasons.
+ * Optional reason_is_error keeps retryable Machine faults distinct from ordinary queued waits;
+ * current/overview boards preserve it as waiting_reason_is_error and progress.error_reasons.
  * Optional issue_scope: IssueStartScope reuses a prepared trusted plan after fresh eligibility
  * revalidation; manifest.issue_admission freezes its source, plan, provenance and policies.
  * Known active changes retain issue_pause and Needs you; outage alone preserves admitted work.
- * POST .../continue (continue_workflow) -> FactoryRun, 202; retain a resting step's chat/handoff
+ * POST .../continue (continue_workflow) -> FactoryRun | FactoryCapacityWait, 202; retain a resting step's chat/handoff
  * and start its approved successor. Implementation may first run genuine native verification
  * under retained owner intent. Missing approvals are never inferred.
+ * Waiting conversations expose FactoryRun.continuation and capacity.continuations; parking
+ * releases capacity only after native rest is verified. Answers/child results queue resumption
+ * of the same identity; unknown execution and delivery retain their reservations.
  * Resting Runs/workers are ready: native capacity released, exclusive worktree ownership retained.
  * POST /api/factory/runs/:id/reconcile (empty) -> FactoryRun; observation never redispatches.
  * A resting implementation with current frozen Project checks, both independent reviews and no
@@ -1244,16 +1484,44 @@ export const DEFAULT_PORT = 7317;
  * POST .../verify-provider (empty) -> FactoryCapabilities; genuine loading/owner-round evidence required.
  * POST .../import-artifacts (empty) -> FactoryArtifact[], 201; verified outputs retained centrally.
  * POST .../import-conversation (import_conversation) -> NativeConversationSnapshot; immutable native page.
- * Retaining a verified page saves unambiguous user replies to that Run's text questions;
- * it preserves existing answers and never grants approval.
- * POST .../send-answers (send_answers) -> FactoryAnswerDelivery; uncertainty never replays.
- * POST .../workers (worker) -> FactoryWorker; frontier/rework and global reservation checked.
+ * Retaining a verified page saves unambiguous user replies to that Run's text questions.
+ * Only an explicit accepted reply immediately following that Run's exact current Specification
+ * presentation can grant Specification approval; shared understanding always needs its explicit control.
+ * POST /api/factory/implementations/:id/specification-acceptance (specification_acceptance), 201:
+ * button -> FactoryApproval; owner_chat -> {message:FactoryMessage,approval:FactoryApproval|null}.
+ * Requires the presented current ID/hash; repeat delivery retains one durable automatic planning request. Specification authority
+ * starts Orchestrator through normal capacity, without testing-plan or Ticket-graph owner gates.
+ * Detail exposes automatic_planning waits and execution_plans with Specification-derived authority.
+ * Accepted execution plans dispatch their frontier and reconcile/check/integrate candidates automatically.
+ * Detail.automatic_execution retains plan-bound executing/waiting/blocked/checked progress across restart.
+ * Detail.automatic_review tracks independent review, up to three fresh repair rounds,
+ * publication waits and the published PR; pull_requests binds its exact head to checks/reports.
+ * Project configure accepts pull_request:{repository,base_branch}|null. Its destination and
+ * selected Machine GitHub account are frozen before Specification acceptance; missing policy
+ * never grants publication. PR publication leaves review/pr_open, never Done or merge authority.
+ * Machine-only POST /api/factory-host/runs/:id/operations/publish reconciles the owned branch/PR
+ * identity after lost acknowledgment; scoped agents cannot publish or resolve their own findings.
+ * POST /api/factory/implementations/:id/human-review/approve (human_review_approval) ->
+ * FactoryHumanApproval. Same-origin authenticated owner control; no Agent context needed.
+ * Exact snapshot/head plus fresh checks and both independent reports are required; retained
+ * comments cannot be omitted. Detail.human_review_approvals retains the decision and result.
+ * merge_not_sent positively records a pre-send protection refusal; only that blocked authority
+ * may be superseded by explicit feedback (superseded_by_batch_id). Historical receipts persist;
+ * repaired candidates require a new snapshot-bound approval identity and fresh evidence.
+ * Unknown sent outcomes cannot be superseded or replayed.
+ * Machine-only operations/merge requires x-herdr-machine: 1 and the exact retained owner
+ * approval/publication identity. A sent merge is observed, never replayed. Done requires
+ * verified target coverage and a containing published release if frozen delivery_policy=release.
+ * This operation grants no release creation or deployment authority.
+ * Historical Runs without automatic Specification authority retain explicit worker controls.
+ * POST .../send-answers (send_answers) -> FactoryAnswerDelivery; queued continuations share admission with Start; uncertainty never replays.
+ * POST .../workers (worker) -> FactoryWorker, or FactoryCapacityWait, 202 when queued;
+ * root and child requests share ordering; frontier/rework and global reservation checked.
  * POST .../workers/:worker/refresh|reconcile|integrate (empty) -> FactoryWorker;
  * POST .../workers/:worker/check (empty) -> FactoryCheck; stop (empty) -> {ok:true};
  * POST .../workers/:worker/review-evidence (empty) -> FactoryReviewEvidence; independent current-head report.
- * POST .../checks (empty), POST .../checks/:check/reconcile (empty) -> FactoryCheck; owned build reservation.
- * POST .../accept (accept) -> FactoryRun; exact head, fresh checks/reviews, resolved findings;
- * publication requires its separate default-off Project opt-in or later Publish PR action.
+ * POST .../checks (empty), POST .../checks/:check/reconcile (empty) -> FactoryCheck; owned build reservation. Confirmed Pause cancellation is cancelled with pause_id; Resume reruns unfinished validation.
+ * POST .../accept (accept) -> FactoryRun; exact head, fresh checks/reviews, resolved findings; no publication.
  * GET /api/factory/runs/:id/publication -> PublicationOverview; accepted scope and current blockers.
  * POST .../publication/publish (publish) -> ImplementationPublication; exact accepted head,
  * optional repository-appropriate title/body, current checks and independent reviews,
@@ -1266,12 +1534,19 @@ export const DEFAULT_PORT = 7317;
  * GET /api/factory/tickets/:id -> FactoryTicket; stable app-native tracker identity.
  * POST /api/factory/implementations/:id/snapshots (snapshot) -> ReviewSnapshot, 201;
  * POST .../comments (comment) -> ReviewComment, 201; immutable line/hunk anchor.
- * POST .../request-changes (request_changes) -> FactoryBatchReceipt; selected inline drafts or immutable failed reports delivered once; uncertain receipts are never replayed.
+ * POST .../comments/:comment/edit (comment_edit) -> ReviewComment; unsent draft text only, retains anchors.
+ * POST .../comments/:comment/delete (empty) -> {id}; unsent drafts only, including stale drafts.
+ * POST .../request-changes (request_changes) -> FactoryBatchReceipt; selected drafts or immutable failed reports delivered once; uncertain receipts never replay.
  * POST .../comments/:comment/resolve (resolve) -> ReviewComment; current checks and both axes required.
  * POST /api/factory/projects/:id/retrospectives (retrospective) -> FactoryRetrospective, 201;
  * POST /api/factory/retrospectives/:id/approve (approve_retrospective) -> FactoryRetrospective; exact scope.
  * GET /api/factory/backups -> FactoryBackupManifest[]; POST (empty) -> FactoryBackupManifest, 201.
  * POST /api/factory/backups/:id/restore (empty) -> FactoryRestore, 201; separate disabled copy only.
+ * POST /api/factory/implementations/:id/delete (empty) -> FactoryDeleteResult,
+ * 200 deleted or 202 pending with concrete reasons. Same-origin owner control, no agent slot.
+ * Delete fences dispatch/writes, confirms every attempt's Machine cleanup, then purges
+ * owned data. Linked issues or app-managed recovery obligations require separate cleanup
+ * confirmation; pending is never a final deletion or delivery receipt. Repeats reconcile.
  * Machine bridge routes require bridge authentication; operational leases are not a second tracker.
  * GET /api/factory-host/capabilities -> FactoryCapabilities;
  * POST /api/factory-host/capabilities ({account_snapshot}) -> profile-scoped FactoryCapabilities.
@@ -1284,9 +1559,16 @@ export const DEFAULT_PORT = 7317;
  * POST .../launch (launch) -> FactoryRun, 202; accepted identity preserved.
  * POST .../runs/:id/reconcile|stop|finish (empty) -> FactoryRun; finish retains a verified resting chat;
  * verify-provider (empty) -> FactoryCapabilities;
+ * POST .../runs/:id/operations/send-worker (operation with worker_id/text) -> {ok:true}; verified native rest and ownership required.
  * POST .../runs/:id/send (send) -> {ok:true}; GET .../runs/:id/artifacts -> FactoryOutput[];
  * GET .../runs/:id/artifacts/content?name=&hash= -> {content_base64:string}; owned notes only.
  * POST .../runs/:id/operations/:action (operation) -> FactoryWorker (worker/refresh/integrate/reconcile-worker),
+ * FactoryDeleteAttemptResult (delete; deletion_id and implementation_id required;
+ * authenticated same-origin Machine header, durable shutdown/cleanup checkpoints),
+ * FactoryPauseResult (pause; pause_id required), FactoryRun|FactoryWorker (resume-context;
+ * pause_id, bounded history and optional worker_id; repeat-safe retained worktree continuation),
+ * FactoryRun|FactoryWorker (resume-status; pause_id and optional worker_id; observation only,
+ * stopped suspension proves no continuation was accepted and permits safe queue recovery),
  * FactoryCheck (check/check-reconcile), FactoryCleanup (cleanup), {ok:true} (stop-worker),
  * {head:string,workspace_hash:string} (head), Omit<NativeConversationSnapshot,id|timestamps|sequence|run_id>
  * (transcript), or {head:string,source_id:string,content:string,outcome:passed|failed} (review-evidence).
@@ -1297,18 +1579,15 @@ export const DEFAULT_PORT = 7317;
  * POST .../question -> FactoryQuestion, 201; consume -> {receipt:{id:string,run_id:string,
  * worker_id:string|null,revision:string,created_at:string,updated_at:string},questions:FactoryQuestion[]}.
  * POST .../sync-answers (sync_answers) -> FactoryNativeAnswers; verified native replies only,
- * optional older-page cursor from this Run. Ambiguous/missing replies remain pending; no approval.
+ * optional older-page cursor from this Run. Ambiguous/missing replies remain pending; only the
+ * exact Specification presentation rule above grants approval, never historical confirmation text.
  * POST .../worker -> FactoryWorker; checks -> FactoryCheck; artifact -> FactoryArtifact, 201;
  * specification -> SpecificationVersion, 201; tickets -> {hash:string,tickets:FactoryTicket[]}, 201;
  * proposal -> FactoryRetrospective, 201. Bodies are FactoryAgentRequests; proposals are action-scoped.
  * POST .../worker/:id/:action (empty) has the corresponding owner worker response above.
  */
+export type { FactoryOverview, FactoryDetail, Implementation, FactoryProject, ProjectCheckout, FactoryChat, FactoryMessage, FactoryEvent, SpecificationVersion, FactoryTicket, FactoryApproval, FactoryQuestion, FactoryArtifact, FactoryRun, ReviewSnapshot, ReviewComment, FactorySettings, FactoryProvider, FactoryStage, FactoryAction, RunCondition, FactoryCapabilities, FactoryProviderCapability, FactoryOutput, FactoryWorker, FactoryCheck, FactoryReviewEvidence, FactoryRetrospective, FactoryPauseResult, FactorySuspension, FactoryDeleteResult, FactoryDeleteAttemptResult, NativeConversationSnapshot, FactoryCapacity, FactoryCapacityReservation, FactoryCapacityWait, FactoryPaneLink, FactoryPaneArchive, FactoryCurrent, FactoryReviewDetail, FactoryBoardItem, FactoryBoardLane, FactoryActivity, FactoryRework, AssignmentDelivery, AssignmentDeliveryConfiguration, DeliveryChange } from "./factory.ts";
 export type { IssueAdmissionSummary } from "./issue-admission.ts";
-export type { FactoryCurrent, FactoryReviewDetail, FactoryBoardItem, FactoryBoardLane, FactoryActivity, FactoryOverview, FactoryDetail, Implementation, FactoryProject, ProjectCheckout, FactoryChat, FactoryMessage, FactoryEvent, SpecificationVersion, FactoryTicket, FactoryApproval, FactoryQuestion, FactoryArtifact, FactoryRun, ReviewSnapshot, ReviewComment, FactorySettings, FactoryProvider, FactoryStage, FactoryAction, RunCondition, FactoryCapabilities, FactoryProviderCapability, FactoryOutput } from "./factory.ts";
-export type { FactoryWorker, FactoryCheck, FactoryReviewEvidence, FactoryRetrospective, FactoryRework } from "./factory.ts";
-export type { NativeConversationSnapshot } from "./factory.ts";
-export type { FactoryPaneLink, FactoryPaneArchive } from "./factory.ts";
-export type { AssignmentDelivery, AssignmentDeliveryConfiguration, DeliveryChange } from "./factory.ts";
 export type { DeliveryReadRequest } from "./factory-delivery.ts";
 export type { ImplementationPublication, PublicationOverview } from "./factory-publication.ts";
 export type { ProjectReference, ProjectReferenceLibrary, CodexReferenceContext, ProjectReferencePayload } from "./factory.ts";
@@ -1321,6 +1600,7 @@ export type { ProjectReference, ProjectReferenceLibrary, CodexReferenceContext, 
  */
 export type { AgentModelCatalog, AgentModelSelection, AgentExecutionPreset } from "./agent-models.ts";
 export interface FactoryRequests {
+  human_review_message: { review_id: string; content: string; idempotency_key: string };
   queue_configuration: import("./project-queue.ts").ProjectQueueConfiguration;
   queue_retry: { run_id: string };
   model_catalog: { project_id: string; machine_id: string; provider: import("./factory.ts").FactoryProvider };
@@ -1343,7 +1623,8 @@ export interface FactoryRequests {
   delivery_sync: { expected_revision: string | null };
   discard: Record<string, never>;
   project: { name: string; path: string; machine_id: string; provider: import("./factory.ts").FactoryProvider; tracker: import("./factory.ts").FactoryProject["tracker"]; tracker_reference?: string; guided_setup?: boolean; permission_mode?: import("./agent-permissions.ts").AgentPermissionMode; check_ids?: string[]; context_target_tokens?: number; guidance_task?: boolean; github_account_id?: string };
-  project_settings: Partial<Pick<import("./factory.ts").FactoryProject, "name" | "checks" | "setup" | "environment" | "permissions" | "permission_mode" | "execution_preset" | "shared_paths" | "provider" | "machine_id" | "account_bindings" | "workflow_instructions" | "context_target_tokens" | "delivery_policy" | "delivery_branch" | "auto_publish_pr">>;
+  human_review_approval: { review_id: string; snapshot_id: string; head: string; idempotency_key: string };
+  project_settings: Partial<Pick<import("./factory.ts").FactoryProject, "delivery_branch" | "auto_publish_pr" | "pull_request" | "delivery_policy" | "name" | "checks" | "setup" | "environment" | "permissions" | "permission_mode" | "execution_preset" | "shared_paths" | "provider" | "machine_id" | "account_bindings" | "workflow_instructions" | "context_target_tokens">>;
   project_discovery: { machine_id: string; path: string };
   account_import: { source_id: string; path?: string };
   checkout: { machine_id: string; path: string };
@@ -1357,9 +1638,10 @@ export interface FactoryRequests {
   reference_remove: { expected_revision: string };
   reference_prepare: { expected_revision: string; machine_id: string };
   specification: { content: string };
+  specification_acceptance: { specification_id: string; hash: string; source: "button" } | { specification_id: string; hash: string; source: "owner_chat"; content: string; idempotency_key: string };
   tickets: { specification_id: string; tickets: { key: string; title: string; acceptance: string; dependencies: string[] }[] };
   approval: { kind: Exclude<import("./factory.ts").FactoryApproval["kind"], "review">; revision: string; scope: string; issue_scope?: { source_id: string; source_revision: string } };
-  question: { question: string; run_id?: string; answer_kind?: "text" | "confirmation" };
+  question: { question: string; run_id?: string; worker_id?: string; answer_kind?: "text" | "confirmation" };
   answer: { revision: string; answer: string };
   order: { direction: -1 | 1 } | { before_id: string };
   issue_retry: { idempotency_key: string; issue_scope?: import("./issue-admission.ts").IssueStartScope; execution_preset?: import("./agent-models.ts").AgentModelSelection };
@@ -1372,6 +1654,8 @@ export interface FactoryRequests {
   accept: { head: string };
   snapshot: { mode: "branch" | "workspace"; run_id?: string };
   comment: { snapshot_id: string; path: string; change?: string; side: "old" | "new"; line_start: number; line_end: number; content: string };
+  comment_edit: { content: string };
+  human_review_submission: { review_id: string; snapshot_id: string; head: string; disposition: "decline" | "approve"; comment_ids: string[]; idempotency_key: string };
   publish: { head: string; title?: string; body?: string };
   request_changes: { run_id: string; snapshot_id: string; comment_ids: string[]; idempotency_key: string } | { run_id: string; head: string; report_ids: string[]; idempotency_key: string };
   resolve: { head: string; summary: string };
@@ -1382,9 +1666,9 @@ export interface FactoryRequests {
 export type FactoryRequestBody = FactoryRequests[keyof FactoryRequests];
 /** GET /api/factory/projects/:id/github/queue -> IssueQueue, one current eligibility result
  * shared by previews, source detail and board intake badges. Each excluded issue retains reason codes
- * and dependency identities. Policy defaults to automatic_implementation:false, paused:false,
- * max_implementations:1. effective_limit also respects the current global limit. implementing_count
- * includes uncertain execution and builds; available_slots reports remaining Project capacity.
+ * and dependency identities. Policy defaults to automatic_implementation:false and paused:false.
+ * implementing_count reports accepted Assignments, including uncertain execution and builds;
+ * it is informational. Global agent/build pools control execution; there is no Assignment quota.
  * POST .../github/queue (QueueConfiguration) -> IssueQueue; expected_revision guards replacement.
  * Enabling automatic_implementation requires preview_revision from the exact current preview,
  * an explicitly selected readiness identity, enabled sync and issue imports. Existing and future
@@ -1429,7 +1713,8 @@ export type FactoryRequestBody = FactoryRequests[keyof FactoryRequests];
  */
 /** GET /api/factory/projects/:id/queue -> ProjectQueueOverview; observes, never dispatches.
  * POST /api/factory/projects/:id/queue/configure -> ProjectQueueOverview;
- * ProjectQueueConfiguration requires the current revision and x-herdr-factory: 1.
+ * ProjectQueueConfiguration accepts only expected_revision and paused, with x-herdr-factory: 1.
+ * Obsolete Assignment quotas are rejected; saved quota values do not restrict admission.
  * Pause stops new admissions while accepted work continues.
  * POST /api/factory/implementations/:id/retry ({run_id}) -> ProjectQueueOverview;
  * authorizes one replacement for the current failed attempt without dispatching. */
@@ -1488,7 +1773,7 @@ export interface FactoryBatchReceipt {
 }
 export interface FactoryAnswerDelivery {
   id: string; created_at: string; updated_at: string; run_id: string; revision: string;
-  key: string; condition: "sending" | "sent" | "blocked" | "uncertain";
+  key: string; condition: "queued" | "sending" | "sent" | "blocked" | "uncertain";
 }
 export interface FactoryBackupManifest {
   id: string; created_at: string; format_version: 1; schema_version: 1;
@@ -1497,21 +1782,29 @@ export interface FactoryBackupManifest {
 export interface FactoryRestore { id: string; state_dir: string; execution_enabled: false }
 export interface FactoryCleanup { removed: string[]; branches_retained: true; notes_retained: true }
 export interface FactoryAgentContract {
+  automatic_review?: import("./factory.ts").FactoryAutomaticReview | null;
+  pull_requests?: import("./factory.ts").FactoryPullRequest[];
+  automatic_execution?: import("./factory.ts").FactoryAutomaticExecution | null;
+  execution_plan?: import("./factory.ts").FactoryExecutionPlan | null;
   tracker_guide: string;
   run: import("./factory.ts").FactoryRun; workers: import("./factory.ts").FactoryWorker[];
-  checks: import("./factory.ts").FactoryCheck[]; review_batches: FactoryBatchReceipt[];
+  checks: import("./factory.ts").FactoryCheck[]; review_batches: (FactoryBatchReceipt | import("./factory.ts").FactoryAutomaticReviewBatch)[];
   messages: import("./factory.ts").FactoryMessage[]; question_revision: string;
   questions: import("./factory.ts").FactoryQuestion[]; frontier: import("./factory.ts").FactoryTicket[];
   artifacts: import("./factory.ts").FactoryArtifact[];
 }
+/** Scoped tickets on an automatically admitted implement-spec Run additionally require
+ * testing_plan and return FactoryExecutionPlan (201). One immutable graph per Run;
+ * pending/unconsumed owner answers block submission. The contract/frontier reads that
+ * plan while run.manifest stays frozen. Legacy to-tickets returns {hash,tickets}. */
 export interface FactoryAgentRequests {
   question: FactoryRequests["question"];
-  sync_answers: { before?: string };
+  sync_answers: { before?: string; worker_id?: string };
   consume: { revision: string; worker_id?: string };
   worker: FactoryRequests["worker"];
   artifact: Omit<FactoryRequests["artifact"], "chat_id">;
   specification: FactoryRequests["specification"];
-  tickets: FactoryRequests["tickets"];
+  tickets: FactoryRequests["tickets"] & { testing_plan?: string };
   proposal: { proposal: string };
 }
 export interface FactoryNativeAnswers {
@@ -1531,7 +1824,10 @@ export interface FactoryHostRequests {
   review: { path: string; base: string; mode: "branch" | "workspace" };
   launch: { run: import("./factory.ts").FactoryRun; access?: { token: string; url: string }; attachments?: (Pick<import("./factory.ts").FactoryArtifact, "id" | "name" | "hash" | "size"> & { content_base64: string })[]; references?: import("./factory.ts").ProjectReferencePayload };
   send: { text: string };
-  operation: { worker_id?: string | null; check_id?: string; tip?: string; before?: string; worker?: import("./factory.ts").FactoryWorker; check?: import("./factory.ts").FactoryCheck; context?: unknown };
+  operation: { deletion_id?: string; implementation_id?: string; pause_id?: string; history?: string; text?: string; worker_id?: string | null; check_id?: string; tip?: string; before?: string; worker?: import("./factory.ts").FactoryWorker; check?: import("./factory.ts").FactoryCheck; context?: unknown } | import("./factory.ts").FactoryPublicationRequest | import("./factory.ts").FactoryMergeRequest;
 }
 
+/** GET /api/factory/implementations/:id -> FactoryDetail, including stable workflow
+ * conversations and their Run/worker/native-history provenance. Reads never start agents. */
+export type { FactoryConversation, FactoryConversationContext, FactoryConversationKind } from "./factory.ts";
 export type { IssueQueue, IssueQueueEntry, ProjectQueuePolicy, QueueConfiguration } from "./issue-queue.ts";

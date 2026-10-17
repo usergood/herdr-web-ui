@@ -64,23 +64,34 @@ try {
   const nativeOrder = (await sessionSnapshot()).workspaces.map((w) => w.workspace_id);
   const moveReceipt = page.waitForResponse((response) => response.url().endsWith("/api/workspace/move") && response.request().method() === "POST");
   await mixedRow.press("Alt+ArrowUp"); const moved = await moveReceipt;
-  assert.equal(moved.status(), 200); assert.equal(moved.request().postDataJSON().insert_index, nativeOrder.indexOf(sibling.workspace.workspace_id));
+  assert.equal(moved.status(), 200);
+  assert(nativeOrder.indexOf(mixed.workspace.workspace_id) > nativeOrder.indexOf(sibling.workspace.workspace_id));
+  // The move planner may move the adjacent workspace down to achieve the same order.
+  // Assert the native result instead of prescribing which insertion boundary it uses.
+  await page.waitForFunction(async ([movedId, beforeId]) => {
+    const { snapshot } = await fetch("/api/session").then(response => response.json());
+    const order = snapshot.workspaces.map((workspace: { workspace_id: string }) => workspace.workspace_id);
+    return order.includes(movedId) && order.indexOf(movedId) < order.indexOf(beforeId);
+  }, [mixed.workspace.workspace_id, sibling.workspace.workspace_id]);
+  const movedOrder = (await sessionSnapshot()).workspaces.map(workspace => workspace.workspace_id);
+  assert(movedOrder.indexOf(mixed.workspace.workspace_id) < movedOrder.indexOf(sibling.workspace.workspace_id));
+  for (const id of ownedWorkspaces) assert(movedOrder.includes(id), "reordering preserves every owned workspace");
   const unrelated = await page.request.post(`http://localhost:${app.port}/api/factory/implementations`, { headers: { "x-herdr-factory": "1" }, data: { title: "Global idea outside this Project", description: "Owned scope fixture" } }); assert.equal(unrelated.status(), 201);
   await page.locator(".project-navigation").getByRole("button", { name: "Browser Project", exact: true }).click();
   await page.getByRole("button", { name: "Add message", exact: true }).click();
   assert.equal(await page.locator(".factory-panel").getByRole("button", { name: "Global idea outside this Project", exact: true }).count(), 0);
   assert.equal(await page.locator(".tab-strip").count(), 0);
   await page.getByText("Factory settings and recovery", { exact: true }).click();
-  const taskLimit = page.getByRole("spinbutton", { name: "Concurrent Implementations", exact: true });
+  const taskLimit = page.getByRole("spinbutton", { name: "Agent context limit", exact: true });
   assert.equal(await taskLimit.inputValue(), "6");
   await taskLimit.fill("2");
   let savedLimit = page.waitForResponse(response => response.url().endsWith("/api/factory/settings") && response.request().method() === "POST");
   await page.getByRole("button", { name: "Save factory settings", exact: true }).click(); assert.equal((await savedLimit).status(), 200);
-  assert.equal((await page.request.get(`http://localhost:${app.port}/api/factory`).then(r => r.json())).settings.max_implementations, 2);
+  assert.equal((await page.request.get(`http://localhost:${app.port}/api/factory`).then(r => r.json())).settings.max_agents, 2);
   await taskLimit.fill("6");
   savedLimit = page.waitForResponse(response => response.url().endsWith("/api/factory/settings") && response.request().method() === "POST");
   await page.getByRole("button", { name: "Save factory settings", exact: true }).click(); assert.equal((await savedLimit).status(), 200);
-  assert.equal((await page.request.get(`http://localhost:${app.port}/api/factory`).then(r => r.json())).settings.max_implementations, 6);
+  assert.equal((await page.request.get(`http://localhost:${app.port}/api/factory`).then(r => r.json())).settings.max_agents, 6);
   await page.getByText("Factory settings and recovery", { exact: true }).click();
 
   await page.getByRole("textbox", { name: "Idea title", exact: true }).fill("Project scoped idea");

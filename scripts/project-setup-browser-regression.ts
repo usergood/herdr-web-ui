@@ -62,9 +62,20 @@ try {
   await page.route("**/api/factory/project-discovery",route=>route.fulfill({status:409,json:{error:{code:"machine_offline",message:"Owned execution host is offline"}}}));
   await page.getByRole("tab",{name:"GitHub",exact:true}).click();
   await page.waitForFunction(()=>document.querySelector('[data-testid="project-github"] input[readonly]')?.getAttribute("value")==="fictional/storefront");
-  assert.equal(await page.getByRole("button",{name:"Sync GitHub",exact:true}).isEnabled(),true);
-  assert.equal(await page.getByRole("combobox",{name:"GitHub account",exact:true}).inputValue(),accountId);
+  for (const viewport of [{width:1440,height:1000},{width:390,height:844}]) {
+    await page.setViewportSize(viewport);
+    await page.getByTestId("project-github").getByText("Owned execution host is offline",{exact:false}).waitFor();
+    await page.getByTestId("project-github").getByRole("alert").filter({hasText:"Owned execution host is offline"}).waitFor();
+    assert.equal(await page.getByRole("button",{name:"Sync GitHub",exact:true}).isEnabled(),true);
+    assert.equal(await page.getByRole("combobox",{name:"GitHub account",exact:true}).inputValue(),accountId);
+  }
+  await page.setViewportSize({width:1440,height:1000});
   await page.unroute("**/api/factory/project-discovery");
+  await page.getByRole("tab",{name:"Workflow",exact:true}).click();
+  await page.getByRole("tab",{name:"GitHub",exact:true}).click();
+  await page.getByTestId("project-github").getByRole("textbox",{name:"Repository (owner/name)",exact:true}).waitFor();
+  assert.equal(await page.getByTestId("project-github").getByRole("alert").filter({hasText:"Owned execution host is offline"}).count(),0);
+  await page.setViewportSize({width:1440,height:1000});
   await page.getByRole("button",{name:"Close settings",exact:true}).click();
   const group=page.locator(".project-navigation-group").filter({has:page.getByRole("button",{name:"storefront",exact:true})});await group.locator('.project-navigation-heading [data-status="working"]').waitFor();
   const chats=group.getByRole("button",{name:"Project chats for storefront",exact:true});await chats.press("Enter");await herdrRpc("pane.report_agent",{pane_id:workspace.root_pane.pane_id,source:"manual",agent:"codex",state:"blocked"});await group.locator('.project-navigation-heading [data-status="blocked"]').waitFor();assert.equal(await chats.getAttribute("aria-expanded"),"false");

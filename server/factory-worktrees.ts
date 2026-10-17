@@ -1,3 +1,5 @@
+import { claudeInputDraft, noteSubmitted, viewportShowsLive } from "./prompt.ts";
+import { paneRead, paneScrollInfo } from "./herdr/client.ts";
 import { projectWorkflowPrompt } from "./factory-project-policy.ts";
 import { writePrivateFile } from "./factory-files.ts";
 import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
@@ -5,11 +7,11 @@ import { dirname, join } from "node:path";
 import type { FactoryCheck, FactoryProject, FactoryRun, FactoryWorker } from "../shared/protocol.ts";
 import { factoryPaneResting, factoryWorkspaceGone, factoryAgentArguments, type FactoryNative } from "./factory-native.ts";
 import { prepareFactoryPrompt } from "./factory-prompt.ts";
-import { CLEAN_WORKSPACE_HASH, FactoryError, git, hash, inspectCheckout } from "./factory-host.ts";
+import { CLEAN_WORKSPACE_HASH, FactoryError, git, hash, inspectCheckout, withinRoot } from "./factory-host.ts";
 import { provisionFactoryAgent, provisionSkills, verifySkills } from "./factory-skills.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { factoryTrackerClient, factoryTrackerGuide } from "./factory-tracker-client.ts";
-import { runFactoryCommand } from "./factory-command.ts";
+import { assertFactoryBuildPlatform, runFactoryCommand } from "./factory-command.ts";
 import { recordScaffolding } from "./factory-cleanup.ts";
 import { factoryEnvironment } from "./factory-environment.ts";
 import type { AccountBindingSnapshot } from "../shared/accounts.ts";
@@ -20,6 +22,7 @@ type Lease = { id: string; signature: string; run: FactoryRun; closing?: boolean
 
 /** The execution Machine owns Git/process operations; the connection server owns the task graph. */
 export class FactoryWorktrees {
+  private stopped = false;
   private readonly locks = new Set<string>();
   private readonly builds = new Map<string, { run_id: string; controller: AbortController; promise: Promise<FactoryCheck> }>();
   constructor(private readonly store: FactoryStore, private readonly native: FactoryNative, private readonly skillsPath: () => string | null, private readonly accounts?: MachineAccounts) {}
@@ -46,6 +49,14 @@ export class FactoryWorktrees {
     if (lease?.id !== id || run?.id !== id || !run.worktree || !run.branch || !run.checkout) throw new FactoryError("factory_run_required", "Use a recorded repository Run", 409);
     const path = await this.identity(run);
     return { head: (await git(path, ["rev-parse", "HEAD"])).trim(), workspace_hash: await this.workspaceHash(path) };
+  }
+  async reviewHead(id: string, workerId: string): Promise<string> {
+    const run = this.run(id, false); const worker = this.store.get<FactoryWorker>("host_workers", workerId);
+    if (!worker || worker.run_id !== id || worker.role === "implementer") throw new FactoryError("independent_review_required", "Select an independent review context", 409);
+    const path = await this.identity(run, worker); await this.quiescent(worker);
+    const head = (await git(path, ["rev-parse", "HEAD"])).trim();
+    if (head !== worker.base || (await git(path, ["diff", "--no-ext-diff", "--no-textconv", "HEAD", "--"])).trim()) throw new FactoryError("review_stale", "The independent reviewer changed its checked candidate", 409);
+    return head;
   }
   private async workspaceHash(path: string): Promise<string> {
     const diff = await git(path, ["diff", "--binary", "--no-ext-diff", "--no-textconv", "HEAD", "--"]);
@@ -81,7 +92,7 @@ export class FactoryWorktrees {
     try {
       await git(parent, ["worktree", "add", "-b", record.branch, path, tip]);
       provisionSkills(path, run.provider, verifySkills(this.skillsPath()));
-      if (access) { writePrivateFile(join(path, ".saurons-eye-access.json"), JSON.stringify(access), { mode: 0o600, flag: "wx" }); writePrivateFile(join(path, ".saurons-eye-tracker.mjs"), factoryTrackerClient, { mode: 0o600, flag: "wx" }); }
+      if (access) { writePrivateFile(join(path, ".saurons-eye-access.json"), JSON.stringify({ ...access as object, worker_id: worker.id }), { mode: 0o600, flag: "wx" }); writePrivateFile(join(path, ".saurons-eye-tracker.mjs"), factoryTrackerClient, { mode: 0o600, flag: "wx" }); }
       const project = (run.manifest as { project: FactoryProject }).project;
       const environment = factoryEnvironment(root, id, project.environment, worker.id);
       Object.assign(environment, await this.accounts?.environment((run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot, true, path));
@@ -99,7 +110,7 @@ export class FactoryWorktrees {
       const selected = worker.role === "implementer" ? "tdd" : "code-review";
       provisionFactoryAgent(path, run.provider, selected, verifySkills(this.skillsPath()), worker.role !== "implementer", (run.manifest as { project?: FactoryProject }).project?.permission_mode, (run.manifest as { execution_preset?: import("../shared/agent-models.ts").AgentExecutionPreset }).execution_preset);
       const skillPrefix = `${run.provider === "codex" ? "$" : run.provider === "opencode" ? "@" : "/"}${selected}`;
-      const prompt = `${skillPrefix} Read .saurons-eye-context.json. ${worker.role === "implementer" ? "Implement only the accepted Ticket using its confirmed seams; the app's merger owns integration." : `Review only the ${worker.role === "standards" ? "Standards" : "Spec"} axis against the frozen scope. Keep this context independent of the other axis. Make no repository changes. End with FACTORY_REVIEW: PASS or FACTORY_REVIEW: FAIL and explain findings.`}${referenceContext ? ` ${referenceContext.prompt}` : ""}`;
+      const prompt = `${skillPrefix} Read .saurons-eye-context.json. ${worker.role === "implementer" ? (worker.rework_batch_id ? "Read context.review_batch, context.findings and any immutable original reports. Repair only findings relevant to the accepted Ticket within its frozen scope; retain original anchors and do not resolve or rewrite reports. " : "") + "Implement only the accepted Ticket using its confirmed seams; the app's merger owns integration." : `Review only the ${worker.role === "standards" ? "Standards" : "Spec"} axis against the frozen scope. The fixed point is ${run.base}; review git diff ${run.base}...HEAD at the checked candidate ${worker.base}. The accepted Specification and execution plan in context are the Spec source. When context.human_feedback is present, independently verify every submitted comment against the repaired candidate and report unaddressed feedback or scope conflicts as findings. This app already supplies the separate Standards and Spec contexts: override the skill’s ordinary subagent-dispatch and aggregation steps, review only this assigned axis, and never spawn children or ask for a new fixed point. Keep this context independent of the other axis. Make no repository changes. End with FACTORY_REVIEW: PASS or FACTORY_REVIEW: FAIL and explain findings.`}${referenceContext ? ` ${referenceContext.prompt}` : ""}`;
       const launchPrompt = prepareFactoryPrompt(path, prompt + projectWorkflowPrompt((run.manifest as { project?: FactoryProject }).project), skillPrefix);
       recordScaffolding(this.store, worker.id, path, run.provider, verifySkills(this.skillsPath()));
       const args = factoryAgentArguments(run.provider, path, launchPrompt, worker.role !== "implementer", Boolean((run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot?.profiles.some((entry) => entry.service === run.provider)), (run.manifest as { project?: import("../shared/factory.ts").FactoryProject }).project?.permission_mode, false, (run.manifest as { execution_preset?: import("../shared/agent-models.ts").AgentExecutionPreset }).execution_preset);
@@ -118,6 +129,27 @@ export class FactoryWorktrees {
     const workspace = snapshot.workspaces.find((entry) => entry.workspace_id === worker.workspace_id);
     const provider = this.store.get<Lease>("host_leases", worker.run_id)?.run.provider;
     if (!pane?.cwd || !provider || realpathSync(pane.cwd) !== worker.worktree || workspace?.label !== `saurons-eye-worker-${worker.id}` || !await factoryPaneResting(this.native, pane, provider)) throw new FactoryError("worker_busy", "Verify the worker is ready at its owned cwd before Git control", 409);
+  }
+  async send(id: string, workerId: string, text: string): Promise<void> {
+    const run = this.run(id, false);
+    const worker = this.store.get<FactoryWorker>("host_workers", workerId);
+    if (!worker || worker.run_id !== id || !["working", "ready", "needs_you", "blocked"].includes(worker.condition)) throw new FactoryError("run_unavailable", "Reconcile the owned child before resuming", 409);
+    await this.identity(run, worker);
+    await this.quiescent(worker);
+    if (run.provider === "claude") {
+      const before = (await paneRead({ paneId: worker.pane_id!, source: "detection", format: "text" })).text;
+      const scrollBefore = await paneScrollInfo(worker.pane_id!);
+      const shown = (await paneRead({ paneId: worker.pane_id!, source: "visible", format: "ansi" })).text;
+      const scrollAfter = await paneScrollInfo(worker.pane_id!);
+      const after = (await paneRead({ paneId: worker.pane_id!, source: "detection", format: "text" })).text;
+      if (before !== after || claudeInputDraft(after, viewportShowsLive(scrollBefore, scrollAfter, shown, before, after) ? shown : null)) throw new FactoryError("input_draft", "The native child input contains a draft; inspect it before resuming", 409);
+    }
+    await this.native.prompt(worker.pane_id!, text, undefined, () => {
+      const lease = this.store.get<Lease>("host_leases", id);
+      const current = this.store.get<FactoryWorker>("host_workers", workerId);
+      return !this.stopped && !!lease && !lease.closing && !!current && ["working", "ready", "needs_you", "blocked"].includes(current.condition);
+    });
+    noteSubmitted(worker.pane_id!, text);
   }
   async reconcile(id: string, workerId: string): Promise<FactoryWorker> {
     const run = this.store.get<Lease>("host_leases", id)?.run; const worker = this.store.get<FactoryWorker>("host_workers", workerId);
@@ -151,13 +183,17 @@ export class FactoryWorktrees {
     const path = await this.identity(run, worker); await this.quiescent(worker);
     if ((await git(path, ["diff", "--name-only", "HEAD", "--"])).trim()) throw new FactoryError("dirty_worker", "Commit or preserve the worker's changes before reconciliation", 409);
     const tip = (await git(run.worktree!, ["rev-parse", "HEAD"])).trim();
-    await git(path, ["merge", "--no-edit", tip]);
+    try { await git(path, ["merge", "--no-edit", tip]); }
+    catch { throw new FactoryError("integration_conflict", "The candidate could not merge the current integration tip; preserve the worktree and resolve its conflicts", 409); }
     const next: FactoryWorker = { ...worker, integration_tip: tip, head: (await git(path, ["rev-parse", "HEAD"])).trim(), condition: "ready", waiting_reason: "Run checks before integration", updated_at: new Date().toISOString() };
     this.store.put("host_workers", next, id); return next;
   }
   async check(id: string, workerId: string | null, check: FactoryCheck): Promise<FactoryCheck> {
     const previous = this.store.get<FactoryCheck>("host_checks", check.id);
     if (previous) return this.builds.get(check.id)?.promise ?? previous;
+    // Reject before saving a build intent: a Windows leader handle cannot prove
+    // its descendants stopped, including when this host is reached remotely.
+    assertFactoryBuildPlatform();
     this.store.put("host_checks", check, id);
     const controller = new AbortController();
     const promise = this.performCheck(id, workerId, check, controller.signal);
@@ -177,31 +213,37 @@ export class FactoryWorktrees {
     const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))), ...factoryEnvironment(root, id, project.environment, workerId ?? undefined) };
     Object.assign(env, await this.accounts?.environment((run.manifest as { account_snapshot?: AccountBindingSnapshot }).account_snapshot, true, path));
     const deadline = Date.now() + 300_000;
-    for (const args of [...project.setup ?? [], ...project.checks ?? []]) {
-      const result = await runFactoryCommand(args, path, env, signal, deadline - Date.now());
+    let pauseId: string | null = null;
+    const recipes = [...project.setup ?? [], ...project.checks ?? []];
+    for (const args of recipes) {
+      const { cancelled, ...result } = await runFactoryCommand(args, path, env, signal, deadline - Date.now());
+      if (cancelled && typeof signal.reason?.pause_id === "string") pauseId = signal.reason.pause_id;
       results.push(this.accounts?.sanitize({ args, ...result }) ?? { args, ...result }); if (result.exit_code || signal.aborted) break;
     }
+    // A Pause between commands has no live child left to kill, but its remaining
+    // recipes still have to run on Resume. A settled validation failure stays failed.
+    if (!pauseId && signal.aborted && typeof signal.reason?.pause_id === "string" && results.length < recipes.length && results.every(entry => entry.exit_code === 0)) pauseId = signal.reason.pause_id;
     const unchanged = head === (await git(path, ["rev-parse", "HEAD"])).trim() && before === await this.workspaceHash(path);
-    return { ...check, head, workspace_hash: before, commands: results, condition: unchanged && before === CLEAN_WORKSPACE_HASH && results.length > 0 && results.every((entry) => entry.exit_code === 0) ? "passed" : "failed", updated_at: new Date().toISOString() };
+    return { ...check, head, workspace_hash: before, commands: results, ...(pauseId ? { pause_id: pauseId } : {}), condition: pauseId ? "cancelled" : unchanged && before === CLEAN_WORKSPACE_HASH && results.length === recipes.length && results.length > 0 && results.every((entry) => entry.exit_code === 0) ? "passed" : "failed", updated_at: new Date().toISOString() };
   }
   reconcileCheck(id: string, checkId: string): FactoryCheck {
     const check = this.store.get<FactoryCheck>("host_checks", checkId);
     if (!check || check.run_id !== id) throw new FactoryError("not_found", "Owned check not found", 404);
     return check.condition === "working" && !this.builds.has(checkId) ? { ...check, condition: "interrupted" } : check;
   }
-  async stopChecks(id: string): Promise<void> {
+  async stopChecks(id: string, pauseId?: string): Promise<void> {
     const builds = [...this.builds.values()].filter((build) => build.run_id === id);
-    for (const build of builds) build.controller.abort();
+    for (const build of builds) build.controller.abort(pauseId ? { pause_id: pauseId } : undefined);
     await Promise.allSettled(builds.map((build) => build.promise));
+    const unknown = this.store.list<FactoryCheck>("host_checks", id).find(check => ["working", "interrupted"].includes(check.condition) && !this.builds.has(check.id));
+    if (unknown) throw new FactoryError("build_identity_uncertain", `Retained build ${unknown.id} has no live cancellation handle; its shutdown remains unconfirmed`, 409);
   }
-  shutdown(): void { for (const build of this.builds.values()) build.controller.abort(); }
+  shutdown(): void { this.stopped = true; for (const build of this.builds.values()) build.controller.abort(); }
   async stopWorkers(id: string): Promise<void> {
-    let failure: unknown;
-    for (const worker of this.store.list<FactoryWorker>("host_workers", id)) if (worker.condition !== "cancelled") {
-      if (worker.condition === "failed" && !worker.workspace_id && !worker.pane_id) continue;
-      try { await this.stop(id, worker.id); } catch (error) { failure = error; }
-    }
-    if (failure) throw failure;
+    const workers = this.store.list<FactoryWorker>("host_workers", id).filter(worker => worker.condition !== "cancelled" && (worker.workspace_id || !["completed", "failed"].includes(worker.condition)));
+    const results = await Promise.allSettled(workers.map(worker => this.stop(id, worker.id)));
+    const failed = results.findIndex(result => result.status === "rejected");
+    if (failed !== -1) throw new FactoryError("native_identity_uncertain", `Child ${workers[failed]!.id} shutdown is unconfirmed; its ownership is retained`, 409);
   }
   async integrate(id: string, workerId: string, expectedTip: string): Promise<FactoryWorker> {
     const run = this.run(id); const worker = this.store.get<FactoryWorker>("host_workers", workerId);
@@ -209,12 +251,14 @@ export class FactoryWorktrees {
     if (this.locks.has(id)) throw new FactoryError("integration_busy", "The merger currently owns the integration writer", 409);
     this.locks.add(id);
     try {
-      const parent = await this.identity(run); const path = await this.identity(run, worker); await this.quiescent(worker);
+      const parent = await this.identity(run); const path = await this.identity(run, worker);
       const tip = (await git(parent, ["rev-parse", "HEAD"])).trim(); const head = (await git(path, ["rev-parse", "HEAD"])).trim();
+      if (worker.condition !== "completed") await this.quiescent(worker);
       if (worker.head === head && (await git(parent, ["merge-base", tip, head])).trim() === head) {
         const integrated: FactoryWorker = { ...worker, condition: "completed", updated_at: new Date().toISOString() };
         this.store.put("host_workers", integrated, id); return integrated;
       }
+      if (worker.condition === "completed") throw new FactoryError("worker_stale", "The previously merged candidate changed; preserve its worktree for inspection", 409);
       if (tip !== expectedTip || tip !== worker.integration_tip || !worker.head || head !== worker.head || (await git(path, ["diff", "--name-only", "HEAD", "--"])).trim() || (await git(parent, ["diff", "--name-only", "HEAD", "--"])).trim()) throw new FactoryError("worker_stale", "Reconcile the worker against the current integration tip and rerun checks", 409);
       await git(path, ["merge-base", "--is-ancestor", tip, head]);
       const files = (await git(path, ["diff", "--name-only", tip, head, "--"])).trim().split("\n");
@@ -231,19 +275,22 @@ export class FactoryWorktrees {
     let worker = this.store.get<FactoryWorker>("host_workers", workerId);
     if (!worker || worker.run_id !== id) throw new FactoryError("invalid_worker", "Select this Run's worker");
     if (worker.condition === "cancelled") return;
-    const expected = worker;
+    if (!worker.workspace_id || !worker.pane_id) worker = await this.reconcile(id, workerId);
     const snapshot = await this.native.snapshot();
-    const label = `saurons-eye-worker-${worker.id}`;
-    const matches = snapshot.workspaces.filter(entry => entry.label === label);
-    const workspace = expected.workspace_id ? snapshot.workspaces.find(entry => entry.workspace_id === expected.workspace_id) : matches.length === 1 ? matches[0] : undefined;
-    const candidates = snapshot.panes.filter(entry => entry.workspace_id === workspace?.workspace_id && entry.cwd === expected.worktree);
-    const pane = expected.pane_id ? snapshot.panes.find(entry => entry.pane_id === expected.pane_id) : candidates.length === 1 ? candidates[0] : undefined;
-    if (!factoryWorkspaceGone(snapshot, worker, label)) {
-      if (!pane?.cwd || realpathSync(pane.cwd) !== worker.worktree || workspace?.label !== label || pane.workspace_id !== workspace.workspace_id) throw new FactoryError("native_identity_uncertain", "The worker's native identity is uncertain; preserve ownership", 409);
-      worker = { ...worker, workspace_id: workspace.workspace_id, pane_id: pane.pane_id };
-      await this.native.closeWorkspace(workspace.workspace_id);
-      if (!factoryWorkspaceGone(await this.native.snapshot(), worker, label)) throw new FactoryError("native_stop_uncertain", "The native worker has not been confirmed stopped; ownership is retained", 409);
+    const pane = snapshot.panes.find((entry) => entry.pane_id === worker.pane_id);
+    const workspace = snapshot.workspaces.find((entry) => entry.workspace_id === worker.workspace_id);
+    let unchanged = false;
+    try { unchanged = !!worker.worktree && realpathSync(worker.worktree) === worker.worktree; } catch { /* Unavailable work retains ownership. */ }
+    const couldOwn = (cwd: string | null | undefined): boolean => {
+      if (!cwd || !worker.worktree) return false;
+      try { const path = realpathSync(cwd); return path === worker.worktree || withinRoot(worker.worktree, path); } catch { return true; }
+    };
+    if (unchanged && worker.workspace_id && worker.pane_id && !workspace && !pane && !snapshot.workspaces.some(w => w.label === `saurons-eye-worker-${worker.id}`) && !snapshot.panes.some(p => !p.cwd && !p.foreground_cwd || couldOwn(p.cwd) || couldOwn(p.foreground_cwd))) {
+      this.store.put("host_workers", { ...worker, condition: worker.condition === "completed" ? "completed" : "cancelled" }, id); return;
     }
-    this.store.put("host_workers", { ...worker, condition: "cancelled" }, id);
+    if (!pane?.cwd || realpathSync(pane.cwd) !== worker.worktree || workspace?.label !== `saurons-eye-worker-${worker.id}`) throw new FactoryError("native_identity_uncertain", "The worker's native identity is uncertain; preserve ownership", 409);
+    await this.native.closeWorkspace(workspace.workspace_id);
+    if (!factoryWorkspaceGone(await this.native.snapshot(), worker, `saurons-eye-worker-${worker.id}`)) throw new FactoryError("native_stop_uncertain", "The native worker has not been confirmed stopped; ownership is retained", 409);
+    this.store.put("host_workers", { ...worker, condition: worker.condition === "completed" ? "completed" : "cancelled" }, id);
   }
 }

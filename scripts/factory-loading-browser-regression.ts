@@ -9,9 +9,11 @@ const fixture = factoryLoadingFixture();
 const workspace = await workspaceCreate({ label: "herdr-web-ui-test-loading", cwd: fixture.root });
 const pane = workspace.root_pane;
 assert(pane);
-const run = fixture.service.store.get<any>("runs", "run-0-3");
-fixture.service.store.put("runs", { ...run, pane_id: pane.pane_id, worktree: pane.cwd, workspace_id: workspace.workspace.workspace_id }, fixture.id);
-fixture.service.stop();
+fixture.restart(store => {
+  const run = store.get<any>("runs", "run-0-3");
+  store.put("runs", { ...run, pane_id: pane.pane_id, worktree: pane.cwd, workspace_id: workspace.workspace.workspace_id }, fixture.id);
+});
+fixture.stop();
 const app = createServer({ port: 0, token: "", stateDir: fixture.root, factory: { accountDiscoveryHome: fixture.root } });
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {

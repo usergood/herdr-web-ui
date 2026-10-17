@@ -14,12 +14,12 @@ export function readyIssuePlanningStep(run: FactoryRun | null | undefined): bool
 /** Automatic starts require explicit opt-in bound to a reviewed backlog. */
 export interface ProjectQueuePolicy {
   project_id: string; revision: string | null; automatic_implementation: boolean;
-  paused: boolean; max_implementations: number;
+  paused: boolean;
 }
 export interface QueueConfiguration {
   expected_revision: string | null; automatic_implementation: boolean;
   preview_revision?: string;
-  paused: boolean; max_implementations: number;
+  paused: boolean;
 }
 export interface IssueQueueEntry {
   source_id: string; implementation_id: string; number: number; title: string; position: number;
@@ -29,8 +29,8 @@ export interface IssueQueueEntry {
 }
 export interface IssueQueue {
   dispatch_problem?: { code: string; message: string; source_id: string | null } | null;
-  implementing_count: number; available_slots: number;
-  policy: ProjectQueuePolicy; global_limit: number; effective_limit: number; revision: string;
+  implementing_count: number;
+  policy: ProjectQueuePolicy; revision: string;
   eligible_count: number; entries: IssueQueueEntry[];
   preview: { revision: string; created_at: string; eligible_count: number } | null;
   preview_current: boolean;

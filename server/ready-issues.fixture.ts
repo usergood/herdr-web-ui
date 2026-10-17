@@ -40,6 +40,16 @@ export async function readyIssuesFixture(behavior: { reviewOutcome?: "passed" | 
   let uncertainDelivery = false;
   let reviewOutcome = behavior.reviewOutcome ?? "passed";
   let failLaunch = false, offline = false;
+  let nextHeadHold: { observed: () => void; released: Promise<void>; skip: number } | null = null;
+  const releaseHeads = new Set<() => void>();
+  const holdHeadResponse = (skip = 0) => {
+    if (nextHeadHold) throw new Error("An owned head response is already held");
+    let observed!: () => void, release!: () => void;
+    const received = new Promise<void>(resolve => { observed = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    nextHeadHold = { observed, released, skip }; releaseHeads.add(release);
+    return { received, release: () => { releaseHeads.delete(release); release(); } };
+  };
   const host = Bun.serve({ port: 0, async fetch(request) {
     const url = new URL(request.url);
     const body = request.method === "POST" ? await request.json() as any : {};
@@ -59,9 +69,13 @@ export async function readyIssuesFixture(behavior: { reviewOutcome?: "passed" | 
       const launched = { ...run, worktree, branch: `owned/${run.id}`, workspace_id: `owned-${run.id}`, pane_id: `owned-${run.id}:p1`, condition: "working" as const };
       runs.set(run.id, launched); return Response.json(launched);
     }
-    if (/\/runs\/[^/]+\/send$/.test(url.pathname)) {
+    const send = /\/runs\/([^/]+)\/send$/.exec(url.pathname);
+    if (send) {
       if (body.text.length > 250_000 || new TextEncoder().encode(JSON.stringify(body)).length > 512 * 1024) return Response.json({ error: { code: "invalid_input", message: "Owned remote send limit" } }, { status: 400 });
+      const run = runs.get(send[1]!);
+      if (!run || ["completed", "cancelled", "failed"].includes(run.condition)) return Response.json({ error: { code: "run_unavailable", message: "Owned native Run has ended" } }, { status: 409 });
       deliveries.push(body.text);
+      runs.set(run.id, { ...run, condition: "working", waiting_reason: null });
       return uncertainDelivery ? new Response(null, { status: 503 }) : Response.json({ ok: true });
     }
     const nativeOperation = /\/runs\/([^/]+)\/operations\/([^/]+)$/.exec(url.pathname);
@@ -69,8 +83,12 @@ export async function readyIssuesFixture(behavior: { reviewOutcome?: "passed" | 
       const run = runs.get(nativeOperation[1]!)!;
       const action = nativeOperation[2];
       const worker = workers.get(body.worker_id);
-      if (action === "head") return Response.json(head(run.worktree!));
-      if (action === "transcript") return Response.json({ source_id: `owned:${run.id}`, version: "1", cursor: null, turns: [] });
+      if (action === "head") {
+        const result = head(run.worktree!), held = nextHeadHold;
+        if (held && held.skip-- === 0) { nextHeadHold = null; held.observed(); await held.released; }
+        return Response.json(result);
+      }
+      if (action === "transcript") return Response.json({ ...(worker ? { worker_id: worker.id } : {}), source_id: `owned:${run.id}:${worker?.id ?? "parent"}`, version: body.before ? "earlier-v1" : "latest-v1", cursor: body.before ? null : "owned-earlier-page", turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: `${body.before ? "Earlier" : "Final"} owned ready-issue context retained before closure` }] }] });
       if (action === "worker") {
         if (new TextEncoder().encode(JSON.stringify(body)).length > 512 * 1024) return Response.json({ error: { code: "body_too_large", message: "Owned remote context limit" } }, { status: 413 });
         workerContexts.push(body.context);
@@ -136,16 +154,16 @@ export async function readyIssuesFixture(behavior: { reviewOutcome?: "passed" | 
   const plan = { acceptance_criteria: "Owner decisions survive automatic implementation", testing_seams: ["Public HTTP/API and browser journeys"], planning_decisions: ["One Assignment per deliverable"], dependencies: [] };
   const respond = (value: object) => writeFileSync(base.responses, JSON.stringify(value));
   return { ...base, origin, request, project, route, policy, issue, plan, respond, launches,
-    repo, agentContract: async (runId: string) => {
+    repo, holdHeadResponse, agentContract: async (runId: string) => {
       const access = accesses.get(runId)!;
       const response = await fetch(origin() + new URL(access.url).pathname + "/contract", { headers: { authorization: `Bearer ${access.token}` } });
       if (!response.ok) throw new Error(`Owned contract read failed: ${response.status}`);
       return response.json();
     }, setReviewOutcome: (value: "passed" | "failed") => { reviewOutcome = value; }, deliveries, workerContexts, uncertainDelivery: (value: boolean) => { uncertainDelivery = value; }, hostAccountId: base.policy.account_profile_id,
-    rest: (id: string) => { runs.set(id, { ...runs.get(id)!, condition: "ready" }); },
+    rest: (id: string) => { const run = runs.get(id)!; if (!["cancelled", "completed", "failed"].includes(run.condition)) runs.set(id, { ...run, condition: "ready" }); },
     restWorker: (id: string) => { const worker = workers.get(id)!; workers.set(id, { ...worker, ...head(worker.worktree!), condition: "ready" }); },
     tick: () => poll(), restart: () => { app.stop(); app = createServer(options); },
     failLaunch: (value: boolean) => { failLaunch = value; }, offline: (value: boolean) => { offline = value; },
-    close: () => { app.stop(); host.stop(); base.close(); },
+    close: () => { for (const release of releaseHeads) release(); releaseHeads.clear(); app.stop(); host.stop(); base.close(); },
   };
 }

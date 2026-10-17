@@ -44,7 +44,8 @@ describe("Project queue through the public API", () => {
         const worker = await f.request(`/runs/${run.id}/workers`, { role, idempotency_key: `queue-${role}` }).then(response => response.json());
         await f.request(`/runs/${run.id}/workers/${worker.id}/review-evidence`, {});
       }
-      expect((await f.request(`/runs/${run.id}/accept`, { head })).status).toBe(200);
+      const accepted = await f.request(`/runs/${run.id}/accept`, { head });
+      expect({ status: accepted.status, body: await accepted.json() }).toMatchObject({ status: 200, body: { condition: "completed" } });
       const queue = await f.request(`/projects/${f.project.id}/queue`).then(response => response.json());
       expect(queue.capacity.project_implementations).toBe(0);
       expect(queue.items[0].reasons).toContain("awaiting_delivery");
@@ -52,7 +53,7 @@ describe("Project queue through the public API", () => {
       expect((await f.request(`/implementations/${next.id}/runs`, { action: "work", idempotency_key: "independent" })).status).toBe(202);
     } finally { await f.close(); }
   }, 60_000);
-  it("continues accepted Assignments when their Project limit is tightened and paused", async () => {
+  it("continues accepted Assignments and children when their Project queue is paused", async () => {
     const owned: string[] = [];
     const f = await githubScheduleFixture({ native: {
       version: async () => "queue-native-fixture",
@@ -61,13 +62,13 @@ describe("Project queue through the public API", () => {
     } });
     try {
       const projectId = f.route.split("/")[2], route = `/projects/${projectId}/queue`;
-      let queue = (await f.request(route + "/configure", { expected_revision: null, max_implementations: 2, paused: false })).body;
+      let queue = (await f.request(route + "/configure", { expected_revision: null, paused: false })).body;
       const runs = [];
       for (const title of ["Accepted A", "Accepted B"]) {
         const idea = (await f.request("/implementations", { title, description: "", project_id: projectId })).body;
         runs.push((await f.request(`/implementations/${idea.id}/runs`, { action: "work", idempotency_key: title.replaceAll(" ", "-") })).body);
       }
-      queue = (await f.request(route + "/configure", { expected_revision: queue.revision, max_implementations: 1, paused: true })).body;
+      queue = (await f.request(route + "/configure", { expected_revision: queue.revision, paused: true })).body;
       expect(queue.capacity.project_implementations).toBe(2);
       expect(queue.next_implementation_id).toBeNull();
       const worker = (await f.request(`/runs/${runs[0].id}/workers`, { role: "standards", idempotency_key: "accepted-review" })).body;
@@ -166,6 +167,7 @@ describe("Project queue through the public API", () => {
     } });
     try {
       const projectId = f.route.split("/")[2];
+      expect((await f.request(`/projects/${projectId}/queue/configure`, { expected_revision: null, paused: false })).status).toBe(200);
       const a = (await f.request("/implementations", { title: "Queue A", description: "", project_id: projectId })).body;
       const b = (await f.request("/implementations", { title: "Queue B", description: "", project_id: projectId })).body;
       const start = (id: string, key: string) => f.request(`/implementations/${id}/runs`, { action: "work", idempotency_key: key });
@@ -174,18 +176,18 @@ describe("Project queue through the public API", () => {
       const queueRoute = `/projects/${projectId}/queue`;
       let queue = (await f.request(queueRoute)).body;
       expect(queue.capacity.project_implementations).toBe(1);
-      expect((await start(b.id, "b")).body.error.code).toBe("project_capacity_exhausted");
-      queue = (await f.request(queueRoute + "/configure", { expected_revision: queue.revision, max_implementations: 1, paused: true })).body;
+      queue = (await f.request(queueRoute + "/configure", { expected_revision: queue.revision, paused: true })).body;
       expect((await start(b.id, "b")).body.error.code).toBe("queue_paused");
       const worker = (await f.request(`/runs/${run.id}/workers`, { role: "standards", idempotency_key: "a-review" })).body;
       expect(worker.condition).toBe("working");
       expect(owned).toHaveLength(2);
+      await f.request("/settings", { max_agents: 1 });
       await herdrRpc("pane.report_agent", { pane_id: run.pane_id, source: "manual", agent: "codex", state: "idle" });
       await f.request(`/runs/${run.id}/reconcile`, {});
-      queue = (await f.request(queueRoute + "/configure", { expected_revision: queue.revision, max_implementations: 1, paused: false })).body;
+      queue = (await f.request(queueRoute + "/configure", { expected_revision: queue.revision, paused: false })).body;
       expect(queue.capacity.project_implementations).toBe(1);
       unavailable = true; f.restart();
-      expect((await start(b.id, "b")).body.error.code).toBe("project_capacity_exhausted");
+      expect((await start(b.id, "b-after-restart")).body).toMatchObject({ condition: "queued", reason: expect.stringContaining("agent capacity") });
       const retained = (await f.request(`/implementations/${a.id}`)).body;
       expect(retained.runs[0]).toMatchObject({ id: run.id, condition: "disconnected" });
       expect(retained.workers[0]).toMatchObject({ id: worker.id, condition: "disconnected" });
@@ -193,10 +195,10 @@ describe("Project queue through the public API", () => {
       unavailable = false;
       await f.request(`/runs/${run.id}/workers/${worker.id}/stop`, {});
       await f.request(`/runs/${run.id}/stop`, {});
-      expect((await start(b.id, "b")).body.condition).toBe("working");
+      expect((await start(b.id, "b-after-restart")).body.condition).toBe("working");
     } finally { f.close(); for (const id of owned) await workspaceClose(id).catch(() => {}); }
   }, 60_000);
-  it("selects board priority among eligible issues while dependencies and paused work stay held", async () => {
+  it("selects the oldest eligible issue automatically while dependencies and paused work stay held", async () => {
     const f = await githubScheduleFixture();
     try {
       const policy = (await f.request(f.route + "/configure", { ...f.policy, auto_implement: true })).body;
@@ -213,18 +215,18 @@ describe("Project queue through the public API", () => {
       expect(queue.next_implementation_id).toBe(id(2));
       expect(queue.items.find((item: { implementation_id: string }) => item.implementation_id === id(1)).reasons).toContain("dependency_unverified");
       expect(queue.items.find((item: { implementation_id: string }) => item.implementation_id === id(3)).reasons).toContain("start_planning");
-      await f.request(`/implementations/${id(4)}/order`, { before_id: id(1) });
+      expect((await f.request(`/implementations/${id(4)}/order`, { before_id: id(1) })).status).toBe(409);
       queue = (await f.request(queueRoute)).body;
-      expect(queue.next_implementation_id).toBe(id(4));
-      queue = (await f.request(queueRoute + "/configure", { expected_revision: queue.revision, max_implementations: 1, paused: true })).body;
+      expect(queue.next_implementation_id).toBe(id(2));
+      queue = (await f.request(queueRoute + "/configure", { expected_revision: queue.revision, paused: true })).body;
       expect(queue.next_implementation_id).toBeNull();
       expect(queue.items.find((item: { implementation_id: string }) => item.implementation_id === id(4)).reasons).toContain("queue_paused");
       expect((await f.request("/implementations/" + id(4))).body.runs).toEqual([]);
-      queue = (await f.request(queueRoute + "/configure", { expected_revision: queue.revision, max_implementations: 1, paused: false })).body;
-      expect(queue.next_implementation_id).toBe(id(4));
+      queue = (await f.request(queueRoute + "/configure", { expected_revision: queue.revision, paused: false })).body;
+      expect(queue.next_implementation_id).toBe(id(2));
     } finally { f.close(); }
   });
-  it("defaults to one Assignment and saves bounded capacity and pause controls across restart", async () => {
+  it("keeps global resource limits separate and saves revision-bound Project pause across restart", async () => {
     const root = mkdtempSync(join(tmpdir(), "saurons-queue-"));
     const repo = join(root, "repo");
     execFileSync("git", ["init", "-b", "main", repo], { stdio: "ignore" });
@@ -239,24 +241,29 @@ describe("Project queue through the public API", () => {
     try {
       const project = (await request("/projects", { name: "Queue fixture", path: repo, provider: "codex", machine_id: "local", tracker: "app" })).body;
       const route = `/projects/${project.id}/queue`;
+      expect((await request("/settings", { max_agents: 2, max_builds: 1 })).status).toBe(200);
       let queue = await request(route);
       expect(queue.status).toBe(200);
-      expect(queue.body).toMatchObject({ max_implementations: 1, effective_limit: 1, paused: false, next_implementation_id: null, items: [] });
+      expect(queue.body).toMatchObject({ paused: false, next_implementation_id: null, items: [] });
+      expect(queue.body).not.toHaveProperty("max_implementations");
+      expect(queue.body).not.toHaveProperty("effective_limit");
+      expect(queue.body.capacity).toMatchObject({ max_agents: 2, max_builds: 1 });
+      expect(queue.body.capacity).not.toHaveProperty("max_implementations");
       const save = (body: unknown) => request(route + "/configure", body);
-      expect((await save({ expected_revision: queue.body.revision, max_implementations: 3, paused: false })).status).toBe(400);
-      const saved = await save({ expected_revision: queue.body.revision, max_implementations: 2, paused: true });
+      expect((await save({ expected_revision: queue.body.revision, paused: false, max_implementations: 1 })).status).toBe(400);
+      const saved = await save({ expected_revision: queue.body.revision, paused: true });
       expect(saved.status).toBe(200);
-      expect(saved.body).toMatchObject({ max_implementations: 2, effective_limit: 2, paused: true });
-      expect((await save({ expected_revision: queue.body.revision, max_implementations: 1, paused: false })).body.error.code).toBe("queue_changed");
+      expect(saved.body).toMatchObject({ paused: true });
+      expect((await save({ expected_revision: queue.body.revision, paused: false })).body.error.code).toBe("queue_changed");
       app.stop(); app = createServer(options);
       queue = await request(route);
-      expect(queue.body).toMatchObject({ max_implementations: 2, paused: true, revision: saved.body.revision });
+      expect(queue.body).toMatchObject({ paused: true, revision: saved.body.revision });
       await request("/settings", { max_agents: 1 });
-      expect((await request(route)).body.effective_limit).toBe(1);
-      const resumed = await save({ expected_revision: saved.body.revision, max_implementations: 2, paused: false });
+      expect((await request(route)).body.capacity).toMatchObject({ max_agents: 1, max_builds: 1 });
+      const resumed = await save({ expected_revision: saved.body.revision, paused: false });
       expect(resumed.status).toBe(200);
-      expect(resumed.body).toMatchObject({ max_implementations: 2, effective_limit: 1, paused: false });
-      expect((await save({ expected_revision: resumed.body.revision, max_implementations: 1, paused: false })).body.max_implementations).toBe(1);
+      expect(resumed.body).toMatchObject({ paused: false });
+      expect((await save({ expected_revision: resumed.body.revision, paused: false, max_implementations: 1 })).status).toBe(400);
     } finally { app.stop(); rmSync(root, { recursive: true, force: true }); }
   });
 });

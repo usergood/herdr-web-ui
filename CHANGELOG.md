@@ -7,6 +7,236 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-16
+
+### Added
+- Agy panes now offer their commands and user, project, plugin and bundled skills in the slash
+  menu, with origin groups, one-line descriptions and skill chips in user messages.
+  ([#1245](https://github.com/devswha/herdr-web-ui/pull/1245))
+- Codex's command menu now includes shared and ancestor-project skills, system skills and enabled
+  plugin skills, grouped by origin. It honors the pane's `CODEX_HOME` and disabled skill paths,
+  offers saved prompts as `/prompts:name`, and inserts skills as `$name`.
+  ([#1245](https://github.com/devswha/herdr-web-ui/pull/1245))
+- Devin chat now lists local commands and skills with their source groups, imports enabled
+  skills from other agents, and shows skill chips instead of expanded prompts in your messages.
+  Cloud-only commands and skills, MCP prompts, and terminal-only pickers are excluded.
+  ([#1245](https://github.com/devswha/herdr-web-ui/pull/1245))
+- GJC chat now lists its commands, user and project skills, and four bundled workflows with
+  origin icons and one-line descriptions. Namespaced commands and skill calls keep their colons,
+  and invoked skills appear as chips in user messages. Discovery honors the pane's agent directory
+  and skill settings, including disabled user or untrusted project skills.
+  ([#1245](https://github.com/devswha/herdr-web-ui/pull/1245))
+- A Grok pane's `/` menu now lists Grok's slash commands and the skills Grok loads for that pane:
+  yours (`~/.grok/skills`, `~/.claude/skills`, `[skills] paths` in `config.toml`), this
+  project's (`.grok/skills` and `.claude/skills` in the folder and the repository root, left out
+  when `.gitignore` ignores them) and those of plugins. `$GROK_HOME` is honored, and typed
+  `/name` skill names should show as chips in your messages. This is built from Grok's published
+  README, not checked against a running Grok, which is not installed where this was written.
+  Grok's built-in skills, which live inside its binary, are not listed.
+  ([#1245](https://github.com/devswha/herdr-web-ui/pull/1245))
+- Hermes chat now lists its CLI commands, trusted project and personal skills, installed bundled
+  skills, skill bundles and quick commands, with origin groups and one-line descriptions.
+  Plugin skills are not listed because their enabled state lives in Hermes' Python plugin manager.
+  ([#1245](https://github.com/devswha/herdr-web-ui/pull/1245))
+- omp's chat menu lists its skills from native, plugin and compatible agent providers, with
+  profile-aware settings, origin groups and inline `/skill:` completion. File commands and prompt
+  templates respect command precedence; recorded skill invocations appear as user chips.
+  Invocation-only extension and plugin roots cannot be recovered from on-disk settings.
+  ([#1245](https://github.com/devswha/herdr-web-ui/pull/1245))
+- OpenCode chat now lists its commands and valid skills from user and project roots, with origin
+  groups and one-line descriptions. Pane-specific config directories and external-skill switches
+  are honored, and recorded skill expansions show the original invocation as a chip.
+  Commands whose recorded screens cannot be represented in chat are omitted.
+  ([#1245](https://github.com/devswha/herdr-web-ui/pull/1245))
+- The installers open the app in your browser after a new install on a PC with a desktop, where
+  the address bar's Install adds it. Over SSH they print the `ssh -L` tunnel to run instead, and
+  `HERDR_WEB_NO_OPEN=1` turns the opening off.
+  ([#1228](https://github.com/devswha/herdr-web-ui/pull/1228))
+- The installed desktop app can fold Chrome's title bar away (the chevron next to the window
+  controls): the header takes its place, drags the window and leaves room for the controls.
+  ([#1228](https://github.com/devswha/herdr-web-ui/pull/1228))
+- In an OmO chat, `/` at the start of a message and `$` anywhere in it list OmO's commands and the
+  skills it loads, and a skill named in the chat is drawn as a chip.
+  ([#1217](https://github.com/devswha/herdr-web-ui/pull/1217))
+- Add and manage subscription accounts from one provider picker in Settings, with official
+  local CLI sign-in in a new terminal tab and CLIProxyAPI hub sign-in for Claude and Codex.
+  All supported providers include installation or app sign-in guidance; single-home providers
+  ask before replacing a discovered account.
+  ([#1236](https://github.com/devswha/herdr-web-ui/pull/1236))
+- Connect a hub to import its Claude and Codex plan limits, edit the connection or remove
+  its saved key with confirmation. The management key stays on the server, OAuth tokens
+  are never refreshed here, and disabling plan limits stops provider usage requests.
+  ([#1236](https://github.com/devswha/herdr-web-ui/pull/1236))
+
+### Changed
+- Every agent's `/` menu (and Codex's `$`) now reads the way omo's does: each command's
+  description is one short line with the whole text in its tooltip, skills stand under where they
+  come from (yours, this project's, built in, from a plugin) with an icon for each, a namespaced
+  name such as `/skill:x`, `/plugin:x` or `/prompts:x` keeps the menu open past its `:`, and the
+  skill names in your own messages show as chips. A command's description is no longer cut at 120
+  characters, and a multi-line one in a skill's frontmatter arrives whole.
+  ([#1245](https://github.com/devswha/herdr-web-ui/pull/1245))
+- Codex's built-in commands now match its recorded palette, excluding screens the chat cannot
+  represent. Project `.codex/skills` remains excluded because Codex loading it is unconfirmed;
+  project skills come from `.agents/skills`.
+  ([#1245](https://github.com/devswha/herdr-web-ui/pull/1245))
+- Settings → Devices shows one red warning, not two, while nothing is paired and no token is
+  set: the note on what pairing turns on is a plain hint now, and it tells someone whose proxy
+  already signs people in to set `HERDR_WEB_TOKEN` and have the proxy send it. The guide's
+  **Behind a reverse proxy** shows the Caddy and nginx lines. Who gets in is unchanged.
+  ([#1242](https://github.com/devswha/herdr-web-ui/pull/1242))
+- A pi pane's `/` menu now lists the nested skills pi finds below its skills folder and the
+  skills listed in its settings, groups them under "Your skills", and, once pi trusts the
+  project, adds that project's `.pi/skills`, `.agents/skills` and `.pi/prompts`.
+  ([#1245](https://github.com/devswha/herdr-web-ui/pull/1245))
+- As in herdr's own sidebar, a top-level git workspace now shows its branch on a second line under
+  its name, while indented worktrees and folders outside git stay one line. A repository without
+  worktrees has its branch read too, so the strip under its message box names it as well.
+  ([#1244](https://github.com/devswha/herdr-web-ui/pull/1244))
+- A repository's worktrees hang from it on dim tree branches, as herdr draws them.
+  ([#1244](https://github.com/devswha/herdr-web-ui/pull/1244))
+- Merge the original repository through 95507e2e, including file diffs and browsing, account sign-in,
+  workspace favorites, mirrored split views, tabs and current agent compatibility fixes.
+  Original release notes and credits are retained in [upstream release history](docs/upstream-release-history.md).
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
+- On a window 980px wide or more, text, code, Markdown and HTML opened from the chat, terminal or
+  Files list show in a panel beside the pane, so the terminal stays usable. Media, PDFs, binaries
+  and folders keep the popup. A header button moves a file between the panel and popup, keeping
+  that choice across reload and Forward.
+  Drag the panel's left edge to resize it (double-click resets); the width is remembered on this
+  device. Phones keep the full-screen viewer.
+  ([#1224](https://github.com/devswha/herdr-web-ui/pull/1224))
+- Selecting another pane or PC closes a file opened from the previous one, beside the pane or in
+  the popup, and Back returns to that pane without the file.
+  ([#1224](https://github.com/devswha/herdr-web-ui/pull/1224))
+- The header is quieter on a computer: Chat and Terminal are two words with no box around them,
+  Files has its own button beside them (it leaves the More menu there), and with one PC its name
+  is no longer repeated next to the title. On a phone the header buttons are bigger to tap.
+  ([#1220](https://github.com/devswha/herdr-web-ui/pull/1220))
+- An omo pane's `/` and `$` menu shows each command's description as one short line, the whole
+  text in its tooltip, and lists your own skills apart from the ones omo ships, each with its
+  own icon.
+  ([#1221](https://github.com/devswha/herdr-web-ui/pull/1221))
+- On a phone the file viewer's header is one row, so the file keeps the screen: the name, Show
+  source and Copy, a More menu with Open in a new tab, Open raw file and Download, then Close. The
+  size and folder line is left out there unless it warns of a partial view.
+  ([#1231](https://github.com/devswha/herdr-web-ui/pull/1231))
+- The sidebar's rows are one line by default (Settings → Appearance → Sidebar rows), and on One
+  line an agent row is one line too, its place dim after its title. A browser that already saved
+  its settings keeps the rows it had.
+  ([#1223](https://github.com/devswha/herdr-web-ui/pull/1223))
+- The tab strip's **+** opens a shell tab at once in the workspace's folder, as herdr's own new tab
+  does, with no dialog. A tab with an agent comes from the tab's menu (a right-click, or the `⋯` on
+  touch screens): **New tab with agent…** opens the New tab dialog.
+  ([#1232](https://github.com/devswha/herdr-web-ui/pull/1232))
+- Subscription accounts show their source, plan and sign-in status in provider groups,
+  with existing ordering and visibility controls. Short setup copy is available in English,
+  Korean, Japanese, Chinese and Turkish.
+  ([#1236](https://github.com/devswha/herdr-web-ui/pull/1236))
+- Workspace pins are favorites: shortcuts appear in the pinned card while the full repository
+  tree below keeps every head and nested worktree in herdr's order. Reorder shortcuts with a
+  drag, touch long-press or Alt+Up/Down without moving the tree; unpinning removes only the shortcut.
+  ([#1237](https://github.com/devswha/herdr-web-ui/pull/1237))
+
+### Fixed
+- Claude's menu follows its personal, ancestor-project, synced and enabled plugin skills,
+  with origin groups, name precedence and linked-worktree fallback. Its command list follows
+  Claude Code 2.1.301's recorded palette and omits screens the chat cannot represent.
+  ([#1245](https://github.com/devswha/herdr-web-ui/pull/1245))
+- Explicit Claude skill invocations remain readable as skill chips instead of disappearing.
+  Binary-compiled skills, session-only added directories, and skills in subfolders that Claude
+  loads only after working there are not listed.
+  ([#1245](https://github.com/devswha/herdr-web-ui/pull/1245))
+- A browser that gets in with a token its proxy sends in an `Authorization` header no longer
+  offers **Sign out**, which cleared nothing: the proxy sent the token again with the next
+  request. `/api/health` marks such a sign-in with `auth.bearer`.
+  ([#1242](https://github.com/devswha/herdr-web-ui/pull/1242))
+- In omp, gjc and Hermes chats, a skill call now shows as the skill's name instead of the
+  skill's full instructions pasted into the conversation.
+  ([#1245](https://github.com/devswha/herdr-web-ui/pull/1245))
+- On a phone, a New worktree made with Shell opens its terminal: closing the sheet no longer sent
+  the app back to the pane it was opened on before the new pane was listed.
+  ([#1241](https://github.com/devswha/herdr-web-ui/pull/1241))
+- On a phone, a downward stroke on an open agent list scrolls the list instead of pulling down the
+  dialog under it.
+  ([#1241](https://github.com/devswha/herdr-web-ui/pull/1241))
+- Approve all saved Human Review comments together, repair and independently validate their exact lineage, then merge without another approval; retain authorization across restart and Pause while blocking unrelated changes and unsafe delivery.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
+- Approve checked Human Review candidates with an explicit, repeat-safe merge control, preserve stale/protected/denied outcomes, and verify merge or containing-release delivery before Done.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
+- Submit Human Review Decline with all saved comments, dispatch fresh repairs and independent validation, and return the updated PR to the same conversation awaiting explicit approval.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
+- Draft line and range comments directly in Human Review on desktop and mobile, retain saved drafts across reloads, and edit/remove drafts while preserving original revision anchors and visible staleness.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
+- Hand off checked PRs to Human Review with captured file navigation, bounded Git diffs and an assistant discussion that uses normal capacity only while executing.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
+- Permanently delete linked GitHub issues with safe pending recovery, and prevent deleted Assignments from returning through stale issue sync or retained PR automation, including app-published PRs with unconfirmed publication replies.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
+- Purge deleted Assignment records and exclusive blobs from app-managed backups and recovery copies while preserving shared Project evidence and unrelated recovery data.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
+- Continue checked factory work through independent Standards/Spec reviews, bounded automatic repairs and repeat-safe PR publication, with retained reports and desktop/mobile progress.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
+- Show named Ticket progress, concurrent workflow activities and blocking reasons across five Assignment board lanes; preserve paused progress and use automatic queue age instead of manual priority.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
+- Add permanent Assignment Delete with owned-resource cleanup, durable pending reasons and automatic Machine reconciliation; linked issues and app-managed recovery copies remain pending until their cleanup is confirmed.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
+- Execute accepted Ticket frontiers automatically with fresh workers, backend integration,
+  reserved checks and restart recovery. Show named workers, gates and check results in the Assignment.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
+- Pause and resume whole Assignments, preserving unfinished work and history across restart, with visible pending Machine shutdown and automatic queued continuation.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
+- Start internal Ticket and test planning automatically after Specification approval,
+  retaining an inspectable plan without repeated planning approvals.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
+- Let waiting factory conversations release execution capacity after verified native rest
+  and resume through the global queue, preserving history, exact answer revisions and
+  reservations for uncertain execution. Show waiting and resuming conversations in Inbox.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
+- Accept the presented Specification directly in Specifications with one button or an explicit owner reply. Retain revision and source evidence, reject stale decisions, and keep pending shared-understanding confirmations from blocking later attributable answers.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
+- Queue factory Start and child requests durably at capacity and dispatch eligible work
+  oldest-first automatically, with restart recovery and visible bounded Machine retries.
+  ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
+- Codex chat can read a short first exchange such as a greeting, including beside another Codex pane
+  in the same directory when their visible exchanges identify different conversations.
+  ([#1155](https://github.com/devswha/herdr-web-ui/pull/1155) by @christso)
+- Threads created during Codex startup are checked against a precise Linux process-start bound;
+  older tool-heavy transcripts no longer exhaust the short-conversation message budget.
+  ([#1155](https://github.com/devswha/herdr-web-ui/pull/1155) by @christso)
+- Install app no longer shows inside an installed app's window, in any display mode, nor in a
+  Chrome or Edge 140+ tab of an address whose app is installed.
+  ([#1228](https://github.com/devswha/herdr-web-ui/pull/1228))
+- OmO's bundled skills now appear in the chat command menu on Windows.
+  ([#1229](https://github.com/devswha/herdr-web-ui/pull/1229))
+- An OmO question asked while background tasks run shows its options card again, not a bare
+  Enter and Esc card.
+  ([#1226](https://github.com/devswha/herdr-web-ui/pull/1226))
+- OMP question cards recognize current and clipped key hints, keep wrapped labels and descriptions
+  with their choices, and support the final review step after multiple questions.
+  ([#1184](https://github.com/devswha/herdr-web-ui/pull/1184) by @christso)
+- Show Pi chat from sessions stored in the pane's own profile.
+  ([#1194](https://github.com/devswha/herdr-web-ui/pull/1194) by @christso)
+- Dialogs take keyboard focus before their first paint, falling back when the preferred control
+  is unavailable, so an immediate Escape closes the dialog instead of reaching the terminal.
+  New workspace and New tab reset failed agent launches before reopening their fields.
+  ([#1238](https://github.com/devswha/herdr-web-ui/pull/1238))
+- A web address clicked in the terminal opens in a new tab again, not in a new browser window.
+  ([#1234](https://github.com/devswha/herdr-web-ui/pull/1234))
+- A browser connecting through a TLS-terminating Traefik proxy no longer stays on Reconnecting
+  because its secure WebSocket upgrade was mistaken for a different origin.
+  ([#1206](https://github.com/devswha/herdr-web-ui/pull/1206) by @philipprass-prog)
+- A file whose name holds Korean, accented or similar letters stored in another Unicode form (as
+  files from a Mac, a zip or a sync tool often are) now opens in the file viewer and shows up in
+  file search, instead of failing with "no readable file at that path".
+  ([#1219](https://github.com/devswha/herdr-web-ui/pull/1219))
+- A damaged or unreadable hub configuration no longer prevents the web UI from starting.
+  The hub stays unconfigured, and the server logs the problem without exposing its saved key.
+  ([#1236](https://github.com/devswha/herdr-web-ui/pull/1236))
+- Failed local sign-in launches release an empty credential home so the same account name can be retried.
+  ([#1236](https://github.com/devswha/herdr-web-ui/pull/1236))
+- Closing account setup cancels a pending hub sign-in instead of leaving its session active.
+  ([#1236](https://github.com/devswha/herdr-web-ui/pull/1236))
+
 ## [0.6.0] - 2026-10-16
 
 ### Added
@@ -3384,7 +3614,8 @@ First public version.
 - Installable PWA, a mobile key bar, web push alerts and optional token auth.
 - Distribution as a herdr plugin.
 
-[Unreleased]: https://github.com/usergood/saurons-eye/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/usergood/saurons-eye/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/usergood/saurons-eye/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/usergood/saurons-eye/compare/v0.5.1...v0.6.0
 [0.4.8]: https://github.com/devswha/herdr-web-ui/compare/v0.4.7...v0.4.8
 [0.4.7]: https://github.com/devswha/herdr-web-ui/compare/v0.4.6...v0.4.7

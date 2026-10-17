@@ -1,9 +1,14 @@
+import { FactoryBoardProgress } from "./FactoryBoardProgress.tsx";
+import type { FactoryBoardLane } from "../../shared/factory.ts";
+import { FactoryCapacityPanel } from "./FactoryCapacityPanel.tsx";
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { ArrowDown, ArrowUp, ArrowLeft, Archive, MessageSquarePlus, Paperclip, Plus, RefreshCw, Settings } from "lucide-react";
-import type { FactoryBoardItem, FactoryBoardLane, FactoryCurrent, FactoryReviewDetail, FactoryOverview, FactoryProvider, FactoryStage, Implementation, RunCondition, SpecificationVersion } from "../../shared/protocol.ts";
+import { ArrowLeft, Archive, MessageSquarePlus, Paperclip, Plus, RefreshCw, Settings } from "lucide-react";
+import type { FactoryBoardItem, FactoryCurrent, FactoryReviewDetail, FactoryOverview, FactoryProvider, FactoryStage, Implementation, RunCondition, SpecificationVersion } from "../../shared/protocol.ts";
 import type { AgentModelSelection } from "../../shared/agent-models.ts";
 import type { Machine } from "../../shared/machines.ts";
 import { factoryCurrent, factoryRequest } from "../lib/factoryApi.ts";
+import { AssignmentDelete } from "./AssignmentDelete.tsx";
+import { ApiError } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { ProjectUpstreamStatus } from "./ProjectUpstreamStatus.tsx";
 import { OpenFileContext } from "../lib/filePaths.ts";
@@ -17,15 +22,19 @@ import { AssignmentIssueSource } from "./AssignmentIssueSource.tsx";
 import { IssueRunContract } from "./IssueRunContract.tsx";
 import { FactoryDetailSection } from "./FactoryDetailSection.tsx";
 import { FactoryReviewPanel } from "./FactoryReviewPanel.tsx";
+import { FactoryAutomaticExecution } from "./FactoryAutomaticExecution.tsx";
 import { FactoryExecutionPanel } from "./FactoryExecutionPanel.tsx";
 import { FactoryPublicationPanel } from "./FactoryPublicationPanel.tsx";
 import { FactoryRetrospectivePanel } from "./FactoryRetrospectivePanel.tsx";
 import { AssignmentActions } from "./AssignmentActions.tsx";
+import { AssignmentPause } from "./AssignmentPause.tsx";
 import { useFactoryCapabilities } from "../lib/useFactoryCapabilities.ts";
+import { WorkflowConversations } from "./WorkflowConversations.tsx";
+import { RetainedNativeTurn } from "./RetainedNativeTurn.tsx";
 import { FactoryBoardStatus } from "./FactoryBoardStatus.tsx";
 import { FactoryRunHistory } from "./FactoryRunHistory.tsx";
 import { FactoryIssueBatches } from "./FactoryIssueBatches.tsx";
-import { factoryConditionLabel } from "../lib/factoryPresentation.ts";
+import { factoryReasonRole, factoryConditionLabel } from "../lib/factoryPresentation.ts";
 import type { ProjectView } from "../lib/projectNavigation.ts";
 import "./FactoryPanel.css";
 
@@ -39,13 +48,15 @@ function stageLabel(stage: FactoryStage, t: ReturnType<typeof useT>): string {
 function selectedFromUrl(): string | null { const match = /^#factory\/([a-zA-Z0-9-]+)$/.exec(location.hash); return match?.[1] ?? null; }
 type PlannedTicket = { key: string; title: string; acceptance: string; dependencies: string[] };
 
-export function FactoryPanel({ overview, refreshOverview, machines, onOpenPane, selectedId, projectId = null, allAssignments = false, onChoose, onNavigate }: { overview: FactoryOverview | null; refreshOverview: () => Promise<void>; machines: Machine[]; onOpenPane: (machineId: string, paneId: string) => void; selectedId?: string | null; projectId?: string | null; allAssignments?: boolean; onChoose?: (id: string | null) => void; onNavigate?: (view: ProjectView) => void }) {
+export function FactoryPanel({ overview, refreshOverview, machines, onOpenPane, selectedId, projectId = null, allAssignments = false, onChoose, onNavigate, conversationId, onConversation }: { overview: FactoryOverview | null; refreshOverview: () => Promise<void>; machines: Machine[]; onOpenPane: (machineId: string, paneId: string) => void; selectedId?: string | null; projectId?: string | null; allAssignments?: boolean; onChoose?: (id: string | null) => void; onNavigate?: (view: ProjectView) => void; conversationId?: string; onConversation?: (id: string) => void }) {
   const t = useT();
   const [selected, setSelected] = useState<string | null>(() => selectedId === undefined ? selectedFromUrl() : selectedId);
   const [detail, setDetail] = useState<FactoryCurrent | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const busyRef = useRef(busy); busyRef.current = busy;
+  const [actionBusy, setBusy] = useState(false);
+  const [lifecycleBusy, setLifecycleBusy] = useState(false);
+  const lifecycleBusyRef = useRef(false);
+  const busy = actionBusy || lifecycleBusy;
   const [title, setTitle] = useState(""); const [notes, setNotes] = useState("");
   const [note, setNote] = useState("");
   const [projectFilter, setProjectFilter] = useState(projectId ?? "all");
@@ -58,6 +69,7 @@ export function FactoryPanel({ overview, refreshOverview, machines, onOpenPane, 
   const [testingSeams, setTestingSeams] = useState("Public API and real browser user journeys");
   const [tickets, setTickets] = useState<PlannedTicket[]>([{ key: "t1", title: "", acceptance: "", dependencies: [] }]);
   const [showArchived, setShowArchived] = useState(false);
+  const [expandedTickets, setExpandedTickets] = useState<Set<string>>(() => new Set());
   const [source, setSource] = useState<{ id: string; content: string } | null>(null);
   const selection = useRef(selected); selection.current = selected;
   const generation = useRef(0);
@@ -76,15 +88,16 @@ export function FactoryPanel({ overview, refreshOverview, machines, onOpenPane, 
 
   async function refresh(): Promise<void> {
     const current = ++generation.current; const id = selection.current;
-    const item = id ? await factoryCurrent(id) : null;
+    const item = id ? await factoryCurrent(id).catch(error => { if (error instanceof ApiError && error.status === 404) return null; throw error; }) : null;
     if (current !== generation.current || id !== selection.current) return;
     setDetail(item);
+    if (id && !item) { window.dispatchEvent(new Event("factory-changed")); choose(null); }
   }
   useEffect(() => {
     let live = true;
     let timer: ReturnType<typeof setTimeout>;
     const read = async () => {
-      try { if (document.visibilityState === "visible" && !busyRef.current) await refresh(); }
+      try { if (document.visibilityState === "visible") await refresh(); }
       catch (failure) { if (live) setError(failure instanceof Error ? failure.message : String(failure)); }
       finally { if (live) timer = setTimeout(() => void read(), 5000); }
     };
@@ -104,8 +117,17 @@ export function FactoryPanel({ overview, refreshOverview, machines, onOpenPane, 
     catch (failure) { setError(failure instanceof Error ? ("detail" in failure ? String(failure.detail) : failure.message) : String(failure)); await refresh().catch(() => {}); }
     finally { setBusy(false); }
   }
+  async function performLifecycle(action: () => Promise<void>): Promise<void> {
+    if (lifecycleBusyRef.current) return;
+    lifecycleBusyRef.current = true; setLifecycleBusy(true); setError(null);
+    const id = selection.current;
+    try { await action(); await refresh(); }
+    catch (failure) { if (id === selection.current) setError(failure instanceof Error ? failure.message : String(failure)); await refresh().catch(() => {}); }
+    finally { lifecycleBusyRef.current = false; setLifecycleBusy(false); }
+  }
   const prefix = selected ? `/implementations/${selected}` : "";
   const currentSpec: SpecificationVersion | undefined = detail?.specifications.at(-1);
+  const automatic = detail?.approvals.some(a => a.kind === "specification" && a.revision === currentSpec?.id && a.automatic_execution);
   const issueSource = detail?.github_sources?.find(source => source.kind === "issue" && source.current);
   const issueScope = issueSource ? { source_id: issueSource.id, source_revision: issueSource.revision } : undefined;
   const selectedProject = overview?.projects.find((project) => project.id === detail?.implementation.project_id);
@@ -144,11 +166,12 @@ export function FactoryPanel({ overview, refreshOverview, machines, onOpenPane, 
       {(selected || !allAssignments || !projectId) && <button className="btn factory-heading-button factory-button" onClick={() => selected ? choose(null) : onNavigate?.(projectId ? { kind: "project", id: projectId } : { kind: allAssignments ? "inbox" : "assignments" })}><ArrowLeft aria-hidden="true" />{selected || !allAssignments ? t("Assignments") : t("Inbox")}</button>}
       <button className="icon-button" aria-label={t("Refresh factory")} disabled={busy} onClick={() => void perform(refreshOverview)}><RefreshCw aria-hidden="true" /></button>
     </div></div>
+    {overview && <FactoryCapacityPanel capacity={overview.capacity} />}
     {error && <p role="alert" className="error-state">{error}</p>}
     {busy && <p role="status">{t("Saving…")}</p>}
     {!overview && <p role="status">{t("Loading…")}</p>}
     {!selected && overview && <>
-      <FactoryOperationsPanel overview={overview} busy={busy} perform={perform} />
+      <FactoryOperationsPanel overview={overview} busy={busy} perform={perform} showCapacity={false} />
       {allAssignments && boardProject && <ProjectUpstreamStatus key={boardProject.id} projectId={boardProject.id} />}
       {!allAssignments && <form className="factory-form factory-capture" onSubmit={(event) => void capture(event)}>
         <label>{t("Idea title")}<input className="input factory-input" value={title} onChange={(event) => setTitle(event.target.value)} required maxLength={200} /></label>
@@ -162,13 +185,17 @@ export function FactoryPanel({ overview, refreshOverview, machines, onOpenPane, 
         <label>{t("Provider")}<select className="select factory-input" value={providerFilter} onChange={(event) => setProviderFilter(event.target.value)}><option value="all">{t("All providers")}</option><option>codex</option><option>claude</option><option>opencode</option></select></label>
         <label>{t("Machine")}<select className="select factory-input" value={machineFilter} onChange={(event) => setMachineFilter(event.target.value)}><option value="all">{t("All Machines")}</option>{machines.map((machine) => <option key={machine.id} value={machine.id}>{machine.name}</option>)}</select></label>
       </div>
-      <div className={`factory-board${showArchived || allAssignments ? "" : " factory-inbox-board"}`}>{(showArchived || allAssignments ? lanes : ["inbox"] as FactoryBoardLane[]).map((lane) => <section className="factory-lane" key={lane} aria-label={laneLabel(lane, t)}><h2>{laneLabel(lane, t)}</h2>
-        {overview.implementations.filter((item) => boardLane(item) === lane && (showArchived ? !!item.archived_at : !item.archived_at) && (conditionFilter === "all" || boardItem(item).condition === conditionFilter) && (projectFilter === "all" || (item.project_id ?? "unassigned") === projectFilter) && (providerFilter === "all" || (item.provider ?? overview.projects.find((project) => project.id === item.project_id)?.provider ?? overview.settings.provider) === providerFilter) && (machineFilter === "all" || (item.machine_id ?? overview.projects.find((project) => project.id === item.project_id)?.machine_id ?? "local") === machineFilter)).map((item) => <article className="factory-card" key={item.id} draggable onDragStart={(event) => event.dataTransfer.setData("application/x-saurons-eye-card", item.id)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const id = event.dataTransfer.getData("application/x-saurons-eye-card"); if (overview.implementations.some((entry) => entry.id === id) && id !== item.id) void perform(async () => { await factoryRequest(`/implementations/${id}/order`, { before_id: item.id }); }); }}>
+      <div className={`factory-board${showArchived || allAssignments ? "" : " factory-inbox-board"}`}>{(showArchived || allAssignments ? lanes : ["inbox"] as FactoryBoardLane[]).map((stage) => <section className="factory-lane" key={stage} aria-label={laneLabel(stage, t)}><h2>{laneLabel(stage, t)}</h2>
+        {overview.implementations.filter((item) => boardLane(item) === stage && (showArchived ? !!item.archived_at : !item.archived_at) && (conditionFilter === "all" || overview.activity.some((activity) => activity.implementation_id === item.id && activity.condition === conditionFilter)) && (projectFilter === "all" || (item.project_id ?? "unassigned") === projectFilter) && (providerFilter === "all" || (item.provider ?? overview.projects.find((project) => project.id === item.project_id)?.provider ?? overview.settings.provider) === providerFilter) && (machineFilter === "all" || (item.machine_id ?? overview.projects.find((project) => project.id === item.project_id)?.machine_id ?? "local") === machineFilter)).map((item) => {
+          const progress = overview.progress?.find(progress => progress.implementation_id === item.id);
+          const state = boardItem(item);
+          const executionActivity = ["specifying", "implementing", "validating", "reviewing", "researching", "setting_up", "reflecting"].includes(state.activity ?? "");
+          return <article className="factory-card" key={item.id} aria-label={item.title}>
           <button className="factory-card-title" onClick={() => choose(item.id)}>{item.title}</button><p>{overview.projects.find((project) => project.id === item.project_id)?.name ?? t("Unassigned")}</p><small>{item.provider ?? overview.projects.find((project) => project.id === item.project_id)?.provider ?? overview.settings.provider} · {machines.find((machine) => machine.id === (item.machine_id ?? overview.projects.find((project) => project.id === item.project_id)?.machine_id))?.name ?? item.machine_id ?? overview.projects.find((project) => project.id === item.project_id)?.machine_id ?? t("Unassigned")}</small><time>{new Date(item.updated_at).toLocaleString()}</time>
-          <FactoryBoardStatus state={boardItem(item)} />
+          <FactoryBoardProgress idea={item} progress={progress} waitingReason={state.waiting_reason} waitingReasonRole={state.waiting_reason_is_error ? "alert" : factoryReasonRole(state.condition)} expanded={expandedTickets.has(item.id)} onExpandedChange={open => setExpandedTickets(current => { if (current.has(item.id) === open) return current; const next = new Set(current); if (open) next.add(item.id); else next.delete(item.id); return next; })} />
+          <FactoryBoardStatus state={state} showActivity={!executionActivity || (!progress?.activities.length && item.pause?.condition !== "paused")} showTicketProgress={!progress?.tickets.length} />
           {item.intake && <IssueQueueStatus entry={item.intake} />}
-          <div className="factory-card-order"><button className="icon-button" aria-label={t("Move earlier")} onClick={() => void perform(async () => { await factoryRequest(`/implementations/${item.id}/order`, { direction: -1 }); })}><ArrowUp /></button><button className="icon-button" aria-label={t("Move later")} onClick={() => void perform(async () => { await factoryRequest(`/implementations/${item.id}/order`, { direction: 1 }); })}><ArrowDown /></button></div>
-        </article>)}
+        </article>})}
       </section>)}</div>
     </>}
     {selected && detail && overview && <div className="factory-detail">
@@ -180,6 +207,10 @@ export function FactoryPanel({ overview, refreshOverview, machines, onOpenPane, 
       </section>
       <AssignmentIssueSource runs={detail.runs} events={detail.events} busy={busy} perform={perform} sources={detail.github_sources ?? []} problem={detail.github_sync?.problem ?? null} tickets={detail.tickets} graphHash={detail.graph_hash} questionRevision={detail.question_revision} preset={preset} />
       <AssignmentActions preset={preset} onPresetChange={setPreset} key={detail.implementation.id} detail={detail} project={selectedProject} machineId={effectiveMachine} machineName={machines.find(m=>m.id===effectiveMachine)?.name??effectiveMachine} provider={effectiveProvider??"codex"} busy={busy} perform={perform} onOpenPane={onOpenPane} capabilities={execution.capabilities} problem={execution.problem} onCapabilities={execution.apply} />
+      <AssignmentPause assignment={detail.implementation} busy={lifecycleBusy} perform={performLifecycle} />
+      <AssignmentDelete key={detail.implementation.id} assignment={detail.implementation} busy={lifecycleBusy} perform={performLifecycle} onDeleted={() => choose(null)} />
+      <WorkflowConversations detail={detail} machines={machines} selectedId={conversationId} onSelect={id => onConversation?.(id)} onOpenPane={onOpenPane} busy={busy} perform={perform} />
+      <FactoryAutomaticExecution detail={detail} onOpenPane={onOpenPane} />
       <FactoryPublicationPanel key={detail.implementation.id} detail={detail} busy={busy} perform={perform} />
       {detail.implementation.project_id && <FactoryIssueBatches key={detail.implementation.id} implementationId={detail.implementation.id} projectId={detail.implementation.project_id} busy={busy} perform={perform} />}
       <FactoryDetailSection<FactoryReviewDetail> view="review" key={`review-${detail.implementation.id}`} id={detail.implementation.id} revision={detail.revision} title={t("Review changes")}>{full => <FactoryReviewPanel detail={full} busy={busy} perform={perform} />}</FactoryDetailSection>
@@ -204,16 +235,16 @@ export function FactoryPanel({ overview, refreshOverview, machines, onOpenPane, 
           {source?.id === artifact.id && (artifact.media_type === "text/markdown" ? <Markdown>{source.content}</Markdown> : <pre>{source.content}</pre>)}
         </article>)}
       </section>
-      <section className="factory-section"><h3>{t("Specification")}</h3><label>{t("Testing seams")}<textarea className="input factory-input" value={testingSeams} onChange={(event) => setTestingSeams(event.target.value)} /></label>{currentSpec && <><p>{t("Revision {revision}", { revision: currentSpec.revision })}</p><Markdown>{currentSpec.content}</Markdown><div className="factory-actions"><button className="btn factory-button" disabled={busy || detail.approvals.some((approval) => approval.kind === "specification" && approval.revision === currentSpec.id)} onClick={() => void perform(async () => { await factoryRequest(`${prefix}/approvals`, { kind: "specification", revision: currentSpec.id, scope: `Specification ${currentSpec.id}, SHA-256 ${currentSpec.hash}`, issue_scope: issueScope }); })}>{t("Accept specification")}</button><button className="btn factory-button" disabled={busy} onClick={() => void perform(async () => { await factoryRequest(`${prefix}/approvals`, { kind: "testing_seams", revision: currentSpec.id, scope: testingSeams, issue_scope: issueScope }); })}>{t("Confirm testing seams")}</button></div></>}
+      <section className="factory-section"><h3>{t("Specification")}</h3>{!automatic && <label>{t("Testing seams")}<textarea className="input factory-input" value={testingSeams} onChange={(event) => setTestingSeams(event.target.value)} /></label>}{currentSpec && <><p>{t("Revision {revision}", { revision: currentSpec.revision })}</p><Markdown>{currentSpec.content}</Markdown><div className="factory-actions"><button className="btn factory-button" disabled={busy || detail.approvals.some((approval) => approval.kind === "specification" && approval.revision === currentSpec.id)} onClick={() => void perform(async () => { await factoryRequest(`${prefix}/specification-acceptance`, { specification_id: currentSpec.id, hash: currentSpec.hash, source: "button" }); })}>{t("Accept specification")}</button>{!automatic && <button className="btn factory-button" disabled={busy} onClick={() => void perform(async () => { await factoryRequest(`${prefix}/approvals`, { kind: "testing_seams", revision: currentSpec.id, scope: testingSeams, issue_scope: issueScope }); })}>{t("Confirm testing seams")}</button>}</div></>}
         <form className="factory-form" onSubmit={(event) => { event.preventDefault(); void perform(async () => { await factoryRequest(`${prefix}/specifications`, { content: specification }); setSpecification(""); }); }}><label>{t("Specification text")}<textarea className="input factory-input" value={specification} onChange={(event) => setSpecification(event.target.value)} required maxLength={250_000} /></label><button className="btn factory-button" disabled={busy}>{t("Save new revision")}</button></form>
       </section>
       <section className="factory-section"><h3>{t("Tickets")}</h3>{detail.tickets.map((ticket) => <article className="factory-message" key={ticket.id}><strong>{ticket.title}</strong><p>{ticket.acceptance}</p><small>{ticket.status} · {ticket.dependencies.length} {t("Dependencies")}</small></article>)}
-        {detail.tickets.length > 0 && <button className="btn factory-button" disabled={busy} onClick={() => void perform(async () => { await factoryRequest(`${prefix}/approvals`, { kind: "ticket_graph", revision: detail.graph_hash, scope: `Ticket graph ${detail.graph_hash}; ${detail.tickets.map((ticket) => ticket.id).join(", ")}`, issue_scope: issueScope }); })}>{t("Approve Ticket graph")}</button>}
-        {currentSpec && <form className="factory-form" onSubmit={(event) => { event.preventDefault(); void perform(async () => { await factoryRequest(`${prefix}/tickets`, { specification_id: currentSpec.id, tickets }); }); }}>{tickets.map((ticket, index) => <fieldset key={ticket.key}><legend>{ticket.key}</legend><label>{t("Ticket title")}<input className="input factory-input" value={ticket.title} required onChange={(event) => setTickets((rows) => rows.map((row, position) => position === index ? { ...row, title: event.target.value } : row))} /></label><label>{t("Acceptance criteria")}<textarea className="input factory-input" value={ticket.acceptance} required onChange={(event) => setTickets((rows) => rows.map((row, position) => position === index ? { ...row, acceptance: event.target.value } : row))} /></label><label>{t("Dependencies")}<select className="select factory-input" multiple value={ticket.dependencies} onChange={(event) => { const dependencies = Array.from(event.target.selectedOptions, (option) => option.value); setTickets((rows) => rows.map((row, position) => position === index ? { ...row, dependencies } : row)); }}>{tickets.filter((row) => row.key !== ticket.key).map((row) => <option key={row.key} value={row.key}>{row.key} · {row.title}</option>)}</select></label></fieldset>)}<div className="factory-actions"><button type="button" className="btn factory-button" onClick={() => setTickets((rows) => [...rows, { key: `t${rows.length + 1}`, title: "", acceptance: "", dependencies: [] }])}><Plus aria-hidden="true" />{t("Add Ticket")}</button><button className="btn factory-button" disabled={busy}>{t("Propose Tickets")}</button></div></form>}
+        {detail.tickets.length > 0 && !automatic && <button className="btn factory-button" disabled={busy} onClick={() => void perform(async () => { await factoryRequest(`${prefix}/approvals`, { kind: "ticket_graph", revision: detail.graph_hash, scope: `Ticket graph ${detail.graph_hash}; ${detail.tickets.map((ticket) => ticket.id).join(", ")}`, issue_scope: issueScope }); })}>{t("Approve Ticket graph")}</button>}
+        {currentSpec && !automatic && <form className="factory-form" onSubmit={(event) => { event.preventDefault(); void perform(async () => { await factoryRequest(`${prefix}/tickets`, { specification_id: currentSpec.id, tickets }); }); }}>{tickets.map((ticket, index) => <fieldset key={ticket.key}><legend>{ticket.key}</legend><label>{t("Ticket title")}<input className="input factory-input" value={ticket.title} required onChange={(event) => setTickets((rows) => rows.map((row, position) => position === index ? { ...row, title: event.target.value } : row))} /></label><label>{t("Acceptance criteria")}<textarea className="input factory-input" value={ticket.acceptance} required onChange={(event) => setTickets((rows) => rows.map((row, position) => position === index ? { ...row, acceptance: event.target.value } : row))} /></label><label>{t("Dependencies")}<select className="select factory-input" multiple value={ticket.dependencies} onChange={(event) => { const dependencies = Array.from(event.target.selectedOptions, (option) => option.value); setTickets((rows) => rows.map((row, position) => position === index ? { ...row, dependencies } : row)); }}>{tickets.filter((row) => row.key !== ticket.key).map((row) => <option key={row.key} value={row.key}>{row.key} · {row.title}</option>)}</select></label></fieldset>)}<div className="factory-actions"><button type="button" className="btn factory-button" onClick={() => setTickets((rows) => [...rows, { key: `t${rows.length + 1}`, title: "", acceptance: "", dependencies: [] }])}><Plus aria-hidden="true" />{t("Add Ticket")}</button><button className="btn factory-button" disabled={busy}>{t("Propose Tickets")}</button></div></form>}
       </section>
-      <section className="factory-section"><h3>{t("Run history")}</h3>{detail.runs.map((run) => <article className="factory-message" key={run.id}><strong>{run.action}</strong><p>{run.provider} · {run.machine_id} · {run.condition}</p>{run.waiting_reason && <p role="status">{run.waiting_reason}</p>}<div className="factory-actions">{run.pane_id && <button className="btn factory-button" onClick={() => onOpenPane(run.machine_id, run.pane_id!)}>{t("Open agent")}</button>}<button className="btn factory-button" disabled={busy} onClick={() => void perform(async () => { await factoryRequest(`/runs/${run.id}/reconcile`, {}); })}>{t("Reconcile Run")}</button><button className="btn factory-button" disabled={busy} onClick={() => void perform(async () => { await factoryRequest(`/runs/${run.id}/import-conversation`, {}); })}>{t("Retain native conversation")}</button><button className="btn factory-button" disabled={busy} onClick={() => void perform(async () => { await factoryRequest(`/runs/${run.id}/import-artifacts`, {}); })}>{t("Import research outputs")}</button><button className="btn factory-button" disabled={busy || ["cancelled", "completed"].includes(run.condition) && !(run.issue_pause && run.implementation_completion_pending)} onClick={() => void perform(async () => { await factoryRequest(`/runs/${run.id}/stop`, { summary: "Owner stopped this attempt" }); })}>{t("Stop Run")}</button><button className="btn factory-button" disabled={busy || !["completed", "cancelled", "failed"].includes(run.condition)} onClick={() => void perform(async () => { await factoryRequest(`/runs/${run.id}/cleanup`, {}); })}>{t("Remove clean checkout")}</button></div></article>)}</section>
+      <section className="factory-section"><h3>{t("Run history")}</h3>{detail.runs.map((run) => <article className="factory-message" key={run.id}><strong>{run.action}</strong><p>{run.provider} · {run.machine_id} · {run.condition}</p>{run.waiting_reason && <p role={factoryReasonRole(run.condition)}>{run.waiting_reason}</p>}<div className="factory-actions">{run.pane_id && <button className="btn factory-button" onClick={() => onOpenPane(run.machine_id, run.pane_id!)}>{t("Open agent")}</button>}<button className="btn factory-button" disabled={busy} onClick={() => void perform(async () => { await factoryRequest(`/runs/${run.id}/reconcile`, {}); })}>{t("Reconcile Run")}</button><button className="btn factory-button" disabled={busy} onClick={() => void perform(async () => { await factoryRequest(`/runs/${run.id}/import-conversation`, {}); })}>{t("Retain native conversation")}</button><button className="btn factory-button" disabled={busy} onClick={() => void perform(async () => { await factoryRequest(`/runs/${run.id}/import-artifacts`, {}); })}>{t("Import research outputs")}</button><button className="btn factory-button" disabled={busy || ["cancelled", "completed"].includes(run.condition) && !run.implementation_completion_pending} onClick={() => void perform(async () => { await factoryRequest(`/runs/${run.id}/stop`, { summary: "Owner stopped this attempt" }); })}>{t("Stop Run")}</button><button className="btn factory-button" disabled={busy || !["completed", "cancelled", "failed"].includes(run.condition)} onClick={() => void perform(async () => { await factoryRequest(`/runs/${run.id}/cleanup`, {}); })}>{t("Remove clean checkout")}</button></div></article>)}</section>
       <FactoryRetrospectivePanel preset={preset} detail={detail} busy={busy} perform={perform} />
-      <section className="factory-section"><h3>{t("Retained native conversations")}</h3>{detail.native_snapshots.map((snapshot) => <details key={snapshot.id}><summary>{snapshot.run_id} · {snapshot.sequence} · {new Date(snapshot.created_at).toLocaleString()}</summary>{snapshot.turns.map((turn, index) => <article className="factory-message" key={index}><small>{turn.role} · {turn.ts}</small>{turn.parts.map((part, index) => part.kind === "text" ? <Markdown key={index}>{part.text}</Markdown> : part.kind === "skill" ? <small key={index}>{part.skill.name} · {part.skill.status}</small> : part.kind === "tool" ? <details key={index}><summary>{part.name} · {part.summary}</summary><pre>{part.output}</pre></details> : null)}</article>)}{snapshot.cursor && <button className="btn factory-button" disabled={busy} onClick={() => void perform(async () => { await factoryRequest(`/runs/${snapshot.run_id}/import-conversation`, { before: snapshot.cursor ?? undefined }); })}>{t("Retain older native history")}</button>}</details>)}</section>
+      <section className="factory-section"><h3>{t("Retained native conversations")}</h3>{detail.native_snapshots.map((snapshot) => <details key={snapshot.id}><summary>{snapshot.run_id} · {snapshot.sequence} · {new Date(snapshot.created_at).toLocaleString()}</summary>{snapshot.turns.map((turn, index) => <RetainedNativeTurn key={index} turn={turn} />)}{snapshot.cursor && <button className="btn factory-button" disabled={busy} onClick={() => void perform(async () => { await factoryRequest(`/runs/${snapshot.run_id}/import-conversation`, { before: snapshot.cursor ?? undefined }); })}>{t("Retain older native history")}</button>}</details>)}</section>
       <section className="factory-section"><h3>{t("History")}</h3>{detail.events.map((event) => <p key={event.id}><time>{new Date(event.created_at).toLocaleString()}</time> · {event.kind}</p>)}</section>
       </>; }}</FactoryDetailSection>
     </div>}

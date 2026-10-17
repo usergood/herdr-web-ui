@@ -1,7 +1,7 @@
 /** Shared native-record rules keep paging, rendering and on-demand results consistent. */
 import type { ConversationPart, ConversationTurn, OmoTaskResult } from "../shared/protocol.ts";
 import type { SubagentDetail, TaskNotification } from "./claude-subagents.ts";
-import { skillInvocationPrompt } from "./skill-activity.ts";
+import { skillInvocationPrompt, skillPromptMessage } from "./skill-activity.ts";
 import { trimOutput } from "./tool-output.ts";
 
 type Row = Record<string, unknown>;
@@ -215,6 +215,11 @@ export function toolSummary(name: string, input: Record<string, unknown>): strin
     const titles = items.map((item) => label(item["task_summary"]) ?? label(item["description"])).filter((title) => title !== null);
     if (titles.length > 0) return titles.join(" · ").slice(0, 120);
   }
+  // what the agent itself said the call is for: OmO's eval `summary`, the `description` Claude
+  // gives a Bash command or a subagent's prompt. Another tool's `description` is its own data.
+  const said = typeof input["code"] === "string" ? label(input["summary"])
+    : typeof input["command"] === "string" || typeof input["prompt"] === "string" ? label(input["description"]) : null;
+  if (said !== null) return said.slice(0, 120);
   // pi names a file `path` where Claude names it `file_path`, and a notebook `notebook_path`.
   const first = input["command"] ?? input["file_path"] ?? input["notebook_path"] ?? input["path"] ?? input["pattern"] ?? input["description"] ?? input["url"];
   return typeof first === "string" ? first.slice(0, 120) : name;
@@ -261,6 +266,11 @@ export function parseOmpTranscript(text: string, maxTurns = MAX_TURNS, options: 
     if (entry === null || typeof entry !== "object") continue;
     if (isContextClear(entry, "omp-transcript")) { turns.length = 0; pending.clear(); continue; }
     const timestamp = (entry as { timestamp?: string }).timestamp;
+    const skillPrompt = skillPromptMessage(entry);
+    if (skillPrompt !== null) {
+      turns.push({ role: "user", ts: timestamp ?? null, parts: [{ kind: "text", text: skillPrompt.request }, ...skillPrompt.skills.map((skill) => ({ kind: "skill" as const, skill }))] });
+      continue;
+    }
     const notice = piNotice(entry);
     if (notice !== null) {
       turns.push({ role: "user", ts: timestamp ?? null, parts: [notice] });

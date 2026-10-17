@@ -3,16 +3,20 @@ import type { FactoryOverview, FactoryPaneLink } from "../../shared/factory.ts";
 import type { HerdrPane } from "../../shared/protocol.ts";
 import { paneStorageId, type Machine } from "../../shared/machines.ts";
 
-export type ProjectView = { kind: "projects" | "assignments" } | { kind: "project" | "project-inbox" | "project-settings" | "assignment"; id: string } | { kind: "inbox" };
+export type ProjectView = { kind: "projects" | "assignments" } | { kind: "project" | "project-inbox" | "project-settings"; id: string } | { kind: "assignment"; id: string; conversationId?: string } | { kind: "inbox" };
 export function projectView(hash: string): ProjectView {
   if (hash === "#assignments") return { kind: "assignments" };
   const project = /^#projects(?:\/([a-zA-Z0-9-]+)(\/(?:inbox|settings))?)?$/.exec(hash);
   if (project) return project[1] ? { kind: project[2] === "/settings" ? "project-settings" : project[2] ? "project-inbox" : "project", id: project[1] } : { kind: "projects" };
-  const assignment = /^#factory\/([a-zA-Z0-9-]+)$/.exec(hash);
-  return assignment ? { kind: "assignment", id: assignment[1]! } : { kind: "inbox" };
+  const assignment = /^#factory\/([a-zA-Z0-9-]+)(?:\?conversation=([^&]+))?$/.exec(hash);
+  if (assignment) {
+    try { return { kind: "assignment", id: assignment[1]!, ...(assignment[2] ? { conversationId: decodeURIComponent(assignment[2]) } : {}) }; }
+    catch { return { kind: "assignment", id: assignment[1]! }; }
+  }
+  return { kind: "inbox" };
 }
 export function projectHash(view: ProjectView): string {
-  return view.kind === "assignments" ? "#assignments" : view.kind === "projects" ? "#projects" : view.kind === "project-settings" ? `#projects/${view.id}/settings` : view.kind === "project" ? `#projects/${view.id}` : view.kind === "project-inbox" ? `#projects/${view.id}/inbox` : view.kind === "assignment" ? `#factory/${view.id}` : "#factory";
+  return view.kind === "assignments" ? "#assignments" : view.kind === "projects" ? "#projects" : view.kind === "project-settings" ? `#projects/${view.id}/settings` : view.kind === "project" ? `#projects/${view.id}` : view.kind === "project-inbox" ? `#projects/${view.id}/inbox` : view.kind === "assignment" ? `#factory/${view.id}${view.conversationId ? `?conversation=${encodeURIComponent(view.conversationId)}` : ""}` : "#factory";
 }
 function normalized(path: string): string {
   const value = path.replaceAll("\\", "/").replace(/\/+$/, "") || "/";

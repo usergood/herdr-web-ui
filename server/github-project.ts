@@ -10,11 +10,12 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { githubDirectory } from "./project-discovery.ts";
 import type { AccountBindingSnapshot } from "../shared/accounts.ts";
-import type { FactoryChat, FactoryMessage, FactoryProject, Implementation, ProjectCheckout } from "../shared/factory.ts";
+import type { FactoryChat, FactoryMessage, FactoryProject, FactoryPullRequest, FactoryRun, Implementation, ProjectCheckout } from "../shared/factory.ts";
 import type { GitHubIssueDependency, GitHubDependencyEdge, ProjectGitHubIssueRevision, ProjectGitHubConfiguration, ProjectGitHubFiles, ProjectGitHubMutation, ProjectGitHubOverview, ProjectGitHubPolicy, ProjectGitHubPull, ProjectGitHubSource, ProjectPullRequest, ProjectIssueExecutionScope, ProjectIssueReadiness } from "../shared/github-project.ts";
 import { FactoryStore } from "./factory-store.ts";
 import { FactoryError, hash } from "./factory-host.ts";
 import { MachineAccounts } from "./accounts.ts";
+import { githubSuppressed } from "./github-deletion.ts";
 
 import { issueReadiness, labelAttestsObservedScope, TRIAGE_ROLES, type ProjectReadinessPolicy, type ReadinessConfiguration, type TriageLabels } from "../shared/github-readiness.ts";
 
@@ -95,19 +96,20 @@ export class ProjectGitHub {
   }
   queue(id: string, retryRunId?: string, planningRunId?: string): import("../shared/issue-queue.ts").IssueQueue {
     this.project(id);
-    const policy = this.store.get<import("../shared/issue-queue.ts").ProjectQueuePolicy & { id: string }>("github_queue_policies", id) ?? { project_id: id, revision: null, automatic_implementation: false, paused: false, max_implementations: 1 };
-    const globalLimit = this.store.get<{ value: { max_implementations: number } }>("settings", "default")?.value.max_implementations ?? 6;
+    const saved = this.store.get<import("../shared/issue-queue.ts").ProjectQueuePolicy>("github_queue_policies", id);
+    const policy = { project_id: id, revision: saved?.revision ?? null, automatic_implementation: saved?.automatic_implementation ?? false, paused: saved?.paused ?? false };
     const githubPolicy = this.store.get<ProjectGitHubPolicy>("github_policies", id);
     const readinessPolicy = this.store.get<ProjectReadinessPolicy>("github_readiness_policies", id);
     const profiles = this.accounts.overview().profiles.filter(profile => profile.id === githubPolicy?.account_profile_id || profile.id === readinessPolicy?.account_profile_id);
     const accountReady = !!githubPolicy && !!readinessPolicy && [githubPolicy.account_profile_id, readinessPolicy.account_profile_id].every(id => profiles.some(profile => profile.id === id && profile.service === "github" && profile.state === "ready" && profile.verified_identity)) && profiles.some(profile => profile.id === readinessPolicy.account_profile_id && profile.verified_identity?.account_id === readinessPolicy.owner.account_id && profile.verified_identity?.login.toLowerCase() === readinessPolicy.owner.login.toLowerCase());
     const sources = this.sources(id).filter(source => source.kind === "issue").map(source => this.describeSource(source));
-    const entries = sources.map(source => issueQueueEntry(this.store, source, policy, accountReady, retryRunId, planningRunId)).sort((a, b) => a.position - b.position || a.source_id.localeCompare(b.source_id));
-    const revision = hash(JSON.stringify({ policy, global_limit: globalLimit, github_policy: githubPolicy, readiness_policy: readinessPolicy, profiles: profiles.map(profile => [profile.id, profile.revision, profile.state, profile.verified_identity]), scope: this.projectScope(id), sources, entries, contracts: entries.map(entry => [this.workflowScope(entry.implementation_id)]) }));
+    const creation = new Map(this.store.list<Implementation>("implementations").map(idea => [idea.id, idea.created_at]));
+    const entries = sources.map(source => issueQueueEntry(this.store, source, policy, accountReady, retryRunId, planningRunId)).sort((a, b) => (creation.get(a.implementation_id) ?? "").localeCompare(creation.get(b.implementation_id) ?? "") || a.implementation_id.localeCompare(b.implementation_id));
+    const revision = hash(JSON.stringify({ policy, github_policy: githubPolicy, readiness_policy: readinessPolicy, profiles: profiles.map(profile => [profile.id, profile.revision, profile.state, profile.verified_identity]), scope: this.projectScope(id), sources, entries, contracts: entries.map(entry => [this.workflowScope(entry.implementation_id)]) }));
     const preview = this.store.get<{ id: string; revision: string; created_at: string; eligible_count: number }>("github_queue_previews", id);
     const implementingCount = implementingAssignments(this.store, this.store.list<import("../shared/factory.ts").FactoryRun>("runs").filter(run => run.action === "implement-spec" && (run.manifest as { project?: FactoryProject }).project?.id === id)).size;
     const dispatchProblem = this.store.get<{ code: string; message: string; source_id: string | null }>("github_queue_problems", id);
-    return { policy, dispatch_problem: dispatchProblem ? { code: dispatchProblem.code, message: dispatchProblem.message, source_id: dispatchProblem.source_id } : null, global_limit: globalLimit, effective_limit: Math.min(policy.max_implementations, globalLimit), implementing_count: implementingCount, available_slots: Math.max(0, Math.min(policy.max_implementations, globalLimit) - implementingCount), revision, eligible_count: entries.filter(entry => entry.eligible).length, entries, preview: preview ? { revision: preview.revision, created_at: preview.created_at, eligible_count: preview.eligible_count } : null, preview_current: preview?.revision === revision };
+    return { policy, dispatch_problem: dispatchProblem ? { code: dispatchProblem.code, message: dispatchProblem.message, source_id: dispatchProblem.source_id } : null, implementing_count: implementingCount, revision, eligible_count: entries.filter(entry => entry.eligible).length, entries, preview: preview ? { revision: preview.revision, created_at: preview.created_at, eligible_count: preview.eligible_count } : null, preview_current: preview?.revision === revision };
   }
   private workflowScope(id: string): unknown {
     const workflow = new FactoryWorkflow(this.store);
@@ -139,10 +141,7 @@ export class ProjectGitHub {
     if (queue.policy.paused) throw new FactoryError("queue_paused", "Queue paused. Admitted work continues.", 409);
     const entry = queue.entries.find(entry => entry.source_id === source.id);
     if (!entry?.eligible || source.planning?.condition !== "prepared") throw new FactoryError("issue_not_eligible", "Resolve current issue eligibility before starting", 409);
-    if (queue.entries.find(entry => entry.eligible)?.source_id !== source.id) throw new FactoryError("queue_priority_changed", "Start the first eligible issue in board order", 409);
-    const runs = this.store.list<import("../shared/factory.ts").FactoryRun>("runs").filter(run => run.action === "implement-spec" && (run.manifest as { project?: FactoryProject }).project?.id === idea.project_id);
-    const owners = implementingAssignments(this.store, runs);
-    if (owners.size >= queue.effective_limit) throw new FactoryError("project_capacity_exhausted", "Project implementation capacity is reserved; reconcile active and uncertain work", 409);
+    if (queue.entries.find(entry => entry.eligible)?.source_id !== source.id) throw new FactoryError("queue_priority_changed", "Start the oldest eligible issue in creation order", 409);
     return { source, planning: source.planning, github_policy: this.store.get<ProjectGitHubPolicy>("github_policies", idea.project_id)!, readiness_policy: this.store.get<ProjectReadinessPolicy>("github_readiness_policies", idea.project_id)!, queue_policy: queue.policy, queue_revision: queue.revision };
   }
 
@@ -178,7 +177,7 @@ export class ProjectGitHub {
     await this.locked(id, async () => {
       const current = this.queue(id);
       if (body.expected_revision !== current.policy.revision) throw new FactoryError("queue_policy_changed", "Refresh the Project queue settings", 409);
-      if (Object.keys(body).some(key => !["expected_revision", "automatic_implementation", "preview_revision", "paused", "max_implementations"].includes(key)) || typeof body.automatic_implementation !== "boolean" || typeof body.paused !== "boolean" || !Number.isInteger(body.max_implementations) || (body.max_implementations as number) < 1 || (body.max_implementations as number) > current.global_limit) throw new FactoryError("invalid_queue_policy", "Select pause and an implementing Assignment limit within the global limit");
+      if (Object.keys(body).some(key => !["expected_revision", "automatic_implementation", "preview_revision", "paused"].includes(key)) || typeof body.automatic_implementation !== "boolean" || typeof body.paused !== "boolean") throw new FactoryError("invalid_queue_policy", "Configure only automatic implementation and the explicit queue pause setting");
       if (body.automatic_implementation && !current.policy.automatic_implementation) {
         if (!current.preview_current || body.preview_revision !== current.revision) throw new FactoryError("queue_preview_required", "Review the current eligible backlog before enabling automatic implementation", 409);
         const github = this.store.get<ProjectGitHubPolicy>("github_policies", id);
@@ -189,7 +188,7 @@ export class ProjectGitHub {
         if (owner.account_id !== readiness.owner.account_id || owner.login.toLowerCase() !== readiness.owner.login.toLowerCase()) throw new FactoryError("readiness_changed", "Verify the selected readiness identity again", 409);
         if (this.queue(id).revision !== current.revision) throw new FactoryError("queue_preview_required", "Review the current eligible backlog before enabling automatic implementation", 409);
       }
-      const policy = { id, project_id: id, revision: randomUUID(), automatic_implementation: body.automatic_implementation, paused: body.paused, max_implementations: body.max_implementations as number };
+      const policy = { id, project_id: id, revision: randomUUID(), automatic_implementation: body.automatic_implementation, paused: body.paused };
       this.store.put("github_queue_policies", policy, id);
       this.store.remove("github_queue_problems", id);
       this.store.event(null, "github_queue_configured", { project_id: id, revision: policy.revision });
@@ -462,9 +461,9 @@ export class ProjectGitHub {
     if (this.stopped || this.store.get<ProjectGitHubPolicy>("github_policies", policy.id)?.revision !== policy.revision) throw new FactoryError("github_policy_changed", "The GitHub operation scope changed", 409);
     if (this.projectScope(policy.id) !== policy.project_scope) throw new FactoryError("account_scope_changed", "The Project checkout or account scope changed; save GitHub settings again", 409);
   }
-  private async api(policy: ProjectGitHubPolicy, scope: AccountBindingSnapshot, path: string, extra: string[] = []): Promise<unknown> {
+  private async api(policy: ProjectGitHubPolicy, scope: AccountBindingSnapshot, path: string, extra: string[] = [], authorize: () => void = () => {}): Promise<unknown> {
     this.current(policy);
-    const value = await this.accounts.github(scope, ["api", path, "-H", "X-GitHub-Api-Version: 2026-03-10", ...extra], () => this.current(policy));
+    const value = await this.accounts.github(scope, ["api", path, "-H", "X-GitHub-Api-Version: 2026-03-10", ...extra], () => { this.current(policy); authorize(); });
     this.current(policy); this.accounts.assertPublic(JSON.stringify(value)); return value;
   }
   /** A validated row can prove drift even when the remaining inventory is unavailable. */
@@ -900,7 +899,15 @@ export class ProjectGitHub {
     if (result.errors || !pull || pull.number !== number || !/^[a-f0-9]{40}$/.test(pull.headRefOid) || !/^[a-f0-9]{40}$/.test(pull.baseRefOid) || !this.complete(pull)) throw new FactoryError("github_snapshot_incomplete", "Collect a complete current PR snapshot before changing GitHub", 409);
     return pull;
   }
-  private async mutate(policy: ProjectGitHubPolicy, scope: AccountBindingSnapshot, number: number, action: ProjectGitHubMutation["action"], proof: { head?: unknown; base?: unknown; policy_revision?: unknown }): Promise<void> {
+  private factoryPull(repository: string, pull: ProjectPullRequest): boolean {
+    const sameRepository = (value: string | undefined) => value?.toLowerCase() === repository.toLowerCase();
+    const ownedBranch = sameRepository(pull.headRepository?.nameWithOwner);
+    // A publication can reach GitHub before its receipt reaches this bridge.
+    // The frozen Run branch fences that interval, across Projects sharing a repo.
+    return this.store.list<FactoryRun>("runs").some(run => ownedBranch && run.action === "implement-spec" && run.branch === pull.headRefName && sameRepository((run.manifest as { project?: FactoryProject }).project?.pull_request?.repository))
+      || ["pull_requests", "host_publications"].some(kind => this.store.list<FactoryPullRequest>(kind).some(pr => sameRepository(pr.repository) && (pr.number === pull.number || ownedBranch && pr.branch === pull.headRefName)));
+  }
+  private async mutate(policy: ProjectGitHubPolicy, scope: AccountBindingSnapshot, number: number, action: ProjectGitHubMutation["action"], proof: { head?: unknown; base?: unknown; policy_revision?: unknown }, automatic = false): Promise<void> {
     if (proof.policy_revision !== policy.revision) throw new FactoryError("github_policy_changed", "Refresh the Project policy before changing GitHub", 409);
     const prior = this.store.list<ProjectGitHubMutation>("github_mutations", policy.id).find((item) => item.repository === policy.repository && item.number === number && item.action === action && item.head === proof.head && (item.condition !== "confirmed" || action !== "update" || item.base === proof.base));
     if (prior) {
@@ -911,6 +918,7 @@ export class ProjectGitHub {
     if (pull.headRefOid !== proof.head || pull.baseRefOid !== proof.base) throw new FactoryError("github_head_changed", "The PR head or target changed; inspect it again", 409);
     if (pull.state !== "OPEN" || pull.isDraft) throw new FactoryError("github_pr_unready", "Select an open non-draft PR", 409);
     if (action === "merge") {
+      if (this.factoryPull(policy.repository, pull)) throw new FactoryError("human_review_required", "Factory PRs merge only through revision-bound Human Review approval", 409);
       const blockers = this.blockers(pull, policy);
       if (blockers.length) throw new FactoryError("github_merge_blocked", blockers.join("; "), 409);
     } else if (!pull.viewerCanUpdate || pull.author?.login.toLowerCase() !== scope.profiles[0]!.identity.login?.toLowerCase()) throw new FactoryError("github_pr_not_owned", "Branch updates and re-review require the selected account's PR", 409);
@@ -922,7 +930,10 @@ export class ProjectGitHub {
     this.store.put("github_mutations", receipt, policy.id);
     try {
       const path = `repos/${policy.repository}/pulls/${number}`;
-      const result = await this.api(policy, scope, path + (action === "merge" ? "/merge" : action === "update" ? "/update-branch" : "/requested_reviewers/rerequest"), action === "merge" ? ["--method", "PUT", "-f", "sha=" + pull.headRefOid, "-f", "merge_method=squash"] : action === "update" ? ["--method", "PUT", "-f", "expected_head_sha=" + pull.headRefOid] : ["--method", "POST", ...reviewers.flatMap((login) => ["-f", "reviewers[]=" + login])]) as { merged?: boolean; message?: string; url?: string; requested_reviewers?: unknown[] };
+      const result = await this.api(policy, scope, path + (action === "merge" ? "/merge" : action === "update" ? "/update-branch" : "/requested_reviewers/rerequest"), action === "merge" ? ["--method", "PUT", "-f", "sha=" + pull.headRefOid, "-f", "merge_method=squash"] : action === "update" ? ["--method", "PUT", "-f", "expected_head_sha=" + pull.headRefOid] : ["--method", "POST", ...reviewers.flatMap((login) => ["-f", "reviewers[]=" + login])], () => {
+        if (action === "merge" && this.factoryPull(policy.repository, pull)) throw new FactoryError("human_review_required", "Factory PRs merge only through revision-bound Human Review approval", 409);
+        if (automatic && githubSuppressed(this.store, policy.repository, pull.id, pull.number, "fix", pull.headRefName)) throw new FactoryError("github_source_deleted", "Delete disabled automation for this retained PR", 409);
+      }) as { merged?: boolean; message?: string; url?: string; requested_reviewers?: unknown[] };
       if (action === "merge" && result.merged !== true || action === "update" && typeof result.message !== "string" || action === "rerequest" && !Array.isArray(result.requested_reviewers)) throw new FactoryError("github_mutation_unconfirmed", "GitHub did not confirm the mutation receipt", 409);
       receipt.condition = "confirmed"; this.store.event(null, "github_mutation_confirmed", { project_id: policy.id, number, action, head: pull.headRefOid });
     } catch (error) { receipt.condition = "uncertain"; receipt.problem = error instanceof FactoryError ? error.message : "Inspect GitHub before retrying this mutation"; throw error; }
@@ -1001,6 +1012,7 @@ export class ProjectGitHub {
         if ((await this.repository(id))?.toLowerCase() !== policy.repository.toLowerCase()) throw new FactoryError("github_repository_mismatch", "The Project GitHub repository changed; verify its settings again", 409);
         this.current(policy);
         for (const issue of pending) {
+          if (githubSuppressed(this.store, policy.repository, issue.node_id, issue.number, "issue")) continue;
           const content = { title: issue.title, body: issue.body ?? "", labels: issue.labels.map((label) => label.name).sort(), state: issue.state, source_updated_at: issue.updated_at, repository: policy.repository, url: issue.html_url, native_dependencies: dependencies.get(issue.node_id)!.map(({ external_id, repository, number, url }) => ({ external_id, repository, number, url })) };
           const { source_updated_at, ...scopeContent } = content;
           const revision = hash(JSON.stringify(scopeContent));
@@ -1124,6 +1136,10 @@ export class ProjectGitHub {
         if (verificationScope !== coverageRevision(this.store, id)) throw new FactoryError("dependency_scope_changed", "The approved dependency scope changed during verification; sync GitHub again", 409);
         for (const pull of pulls) {
           const previous = this.store.list<ProjectGitHubPull>("github_pulls", id).find((item) => item.pull.id === pull.id);
+          if (githubSuppressed(this.store, policy.repository, pull.id, pull.number, "fix", pull.headRefName)) {
+            this.store.put<ProjectGitHubPull>("github_pulls", { ...(previous ?? this.store.record()), project_id: id, pull, blockers: this.blockers(pull, policy), observed_at: new Date().toISOString(), fix_implementation_id: null }, id);
+            continue;
+          }
           const fix = this.fix(pull, policy, scope.profiles[0]!.identity.login);
           this.store.put<ProjectGitHubPull>("github_pulls", { ...(previous ?? this.store.record()), project_id: id, pull, blockers: this.blockers(pull, policy), observed_at: new Date().toISOString(), fix_implementation_id: fix?.implementation_id ?? previous?.fix_implementation_id ?? null }, id);
           const proof = { head: pull.headRefOid, base: pull.baseRefOid, policy_revision: policy.revision };
@@ -1131,9 +1147,9 @@ export class ProjectGitHub {
           const deliveryLinked = this.store.list<Implementation>("implementations").some(idea => idea.project_id === id && idea.delivery?.repository.toLowerCase() === policy.repository.toLowerCase() && idea.delivery.pull_numbers.includes(pull.number));
           const implementationPublication = this.store.list<import("../shared/factory-publication.ts").ImplementationPublication>("pr_publications").some(publication => publication.repository.toLowerCase() === policy.repository.toLowerCase() && (pull.body.includes(`<!-- saurons-eye-pr:${publication.id} -->`) || pull.headRefName === publication.branch && pull.headRepository?.nameWithOwner.toLowerCase() === publication.repository.toLowerCase()));
           if (readOnly || deliveryLinked || implementationPublication) continue;
-          if (policy.auto_update && own && pull.mergeStateStatus === "BEHIND") await this.mutate(policy, scope, pull.number, "update", proof);
-          else if (policy.auto_merge && !this.blockers(pull, policy).length) await this.mutate(policy, scope, pull.number, "merge", proof);
-          else if (own && previous?.fix_implementation_id && previous.pull.headRefOid !== pull.headRefOid && this.store.get<Implementation>("implementations", previous.fix_implementation_id)?.outcome === "implementation_complete" && this.opinions(pull).some((review) => review.state === "CHANGES_REQUESTED" && review.commit?.oid !== pull.headRefOid) && !pull.reviewRequests.nodes.length) await this.mutate(policy, scope, pull.number, "rerequest", proof);
+          if (policy.auto_update && own && pull.mergeStateStatus === "BEHIND") await this.mutate(policy, scope, pull.number, "update", proof, true);
+          else if (policy.auto_merge && !this.factoryPull(policy.repository, pull) && !this.blockers(pull, policy).length) await this.mutate(policy, scope, pull.number, "merge", proof, true);
+          else if (own && previous?.fix_implementation_id && previous.pull.headRefOid !== pull.headRefOid && this.store.get<Implementation>("implementations", previous.fix_implementation_id)?.outcome === "implementation_complete" && this.opinions(pull).some((review) => review.state === "CHANGES_REQUESTED" && review.commit?.oid !== pull.headRefOid) && !pull.reviewRequests.nodes.length) await this.mutate(policy, scope, pull.number, "rerequest", proof, true);
         }
         for (const item of this.store.list<ProjectGitHubPull>("github_pulls", id)) if (!pulls.some((pull) => pull.id === item.pull.id)) this.store.remove("github_pulls", item.id);
         this.current(policy);
@@ -1221,12 +1237,17 @@ export class ProjectGitHub {
         const pulls = await this.pulls(policy, scope); this.current(policy);
         for (const issue of issues) {
           this.validateIssue(issue);
+          if (githubSuppressed(this.store, policy.repository, issue.node_id, issue.number, "issue")) continue;
           if (issue.state !== "open" && !this.store.list<ProjectGitHubSource>("github_sources", id).some((source) => source.external_id === issue.node_id && source.kind === "issue")) continue;
           const source = await this.importIssue(policy, issue);
           await this.trustedReadiness(policy, scope, source);
         }
         for (const pull of pulls) {
           const previous = this.store.list<ProjectGitHubPull>("github_pulls", id).find((item) => item.pull.id === pull.id);
+          if (githubSuppressed(this.store, policy.repository, pull.id, pull.number, "fix", pull.headRefName)) {
+            this.store.put<ProjectGitHubPull>("github_pulls", { ...(previous ?? this.store.record()), project_id: id, pull, blockers: this.blockers(pull, policy), observed_at: new Date().toISOString(), fix_implementation_id: null }, id);
+            continue;
+          }
           const fix = this.fix(pull, policy, scope.profiles[0]!.identity.login);
           this.store.put<ProjectGitHubPull>("github_pulls", { ...(previous ?? this.store.record()), project_id: id, pull, blockers: this.blockers(pull, policy), observed_at: new Date().toISOString(), fix_implementation_id: fix?.implementation_id ?? previous?.fix_implementation_id ?? null }, id);
           const proof = { head: pull.headRefOid, base: pull.baseRefOid, policy_revision: policy.revision };
@@ -1234,9 +1255,9 @@ export class ProjectGitHub {
           const deliveryLinked = this.store.list<Implementation>("implementations").some(idea => idea.project_id === id && idea.delivery?.repository.toLowerCase() === policy.repository.toLowerCase() && idea.delivery.pull_numbers.includes(pull.number));
           const implementationPublication = this.store.list<import("../shared/factory-publication.ts").ImplementationPublication>("pr_publications").some(publication => publication.repository.toLowerCase() === policy.repository.toLowerCase() && (pull.body.includes(`<!-- saurons-eye-pr:${publication.id} -->`) || pull.headRefName === publication.branch && pull.headRepository?.nameWithOwner.toLowerCase() === publication.repository.toLowerCase()));
           if (readOnly || deliveryLinked || implementationPublication) continue;
-          if (policy.auto_update && own && pull.mergeStateStatus === "BEHIND") await this.mutate(policy, scope, pull.number, "update", proof);
-          else if (policy.auto_merge && !this.blockers(pull, policy).length) await this.mutate(policy, scope, pull.number, "merge", proof);
-          else if (own && previous?.fix_implementation_id && previous.pull.headRefOid !== pull.headRefOid && this.store.get<Implementation>("implementations", previous.fix_implementation_id)?.outcome === "implementation_complete" && this.opinions(pull).some((review) => review.state === "CHANGES_REQUESTED" && review.commit?.oid !== pull.headRefOid) && !pull.reviewRequests.nodes.length) await this.mutate(policy, scope, pull.number, "rerequest", proof);
+          if (policy.auto_update && own && pull.mergeStateStatus === "BEHIND") await this.mutate(policy, scope, pull.number, "update", proof, true);
+          else if (policy.auto_merge && !this.factoryPull(policy.repository, pull) && !this.blockers(pull, policy).length) await this.mutate(policy, scope, pull.number, "merge", proof, true);
+          else if (own && previous?.fix_implementation_id && previous.pull.headRefOid !== pull.headRefOid && this.store.get<Implementation>("implementations", previous.fix_implementation_id)?.outcome === "implementation_complete" && this.opinions(pull).some((review) => review.state === "CHANGES_REQUESTED" && review.commit?.oid !== pull.headRefOid) && !pull.reviewRequests.nodes.length) await this.mutate(policy, scope, pull.number, "rerequest", proof, true);
         }
         for (const item of this.store.list<ProjectGitHubPull>("github_pulls", id)) if (!pulls.some((pull) => pull.id === item.pull.id)) this.store.remove("github_pulls", item.id);
         await this.observeDelivery?.(id);
