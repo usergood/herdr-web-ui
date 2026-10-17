@@ -39,17 +39,29 @@ describe("continuing approved workflow steps", () => {
     let armed = false; let release!: () => void; let entered!: () => void;
     const waiting = new Promise<void>(resolve => entered = resolve), gate = new Promise<void>(resolve => release = resolve);
     const launches: string[] = [];
+    const callbacks = new Map<string, { url: string; token: string }>();
     const proxy = Bun.serve({ port: 0, async fetch(request) {
       const url = new URL(request.url);
       if (url.pathname.endsWith("/inspect") && armed && (await request.clone().json()).path === host.repo) { armed = false; entered(); await gate; }
-      if (url.pathname.endsWith("/launch")) launches.push((await request.clone().json()).run.idempotency_key);
+      if (url.pathname.endsWith("/launch")) {
+        const launch = await request.clone().json(); launches.push(launch.run.idempotency_key);
+        callbacks.set(launch.run.id, launch.access);
+      }
       const response = await fetch(`http://localhost:${host.app.port}${url.pathname}${url.search}`, request);
       const headers = new Headers(response.headers); headers.delete("content-encoding"); headers.delete("content-length");
       return new Response(response.body, { status: response.status, headers });
     } });
-    const options = { port: 0, stateDir: state, token: "", machines: false as const, factory: { accountDiscoveryHome: state, native: { version: async () => null }, machineEndpoint: (id: string) => id === "fifo-host" ? { url: `http://localhost:${proxy.port}`, token: "owned-fifo-host" } : undefined } };
-    let app = createServer(options);
-    const api = (path: string, body?: unknown) => fetch(`http://localhost:${app.port}/api/factory${path}`, { method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    let app: ReturnType<typeof createServer>;
+    // Keep native tracker callbacks stable while every connection backend selects a fresh port.
+    const connection = Bun.serve({ port: 0, async fetch(request) {
+      const url = new URL(request.url);
+      const response = await fetch(`http://localhost:${app.port}${url.pathname}${url.search}`, request);
+      const headers = new Headers(response.headers); headers.delete("content-encoding"); headers.delete("content-length");
+      return new Response(response.body, { status: response.status, headers });
+    } });
+    const options = { port: 0, stateDir: state, token: "", machines: false as const, factory: { publicUrl: `http://localhost:${connection.port}`, accountDiscoveryHome: state, native: { version: async () => null }, machineEndpoint: (id: string) => id === "fifo-host" ? { url: `http://localhost:${proxy.port}`, token: "owned-fifo-host" } : undefined } };
+    app = createServer(options);
+    const api = (path: string, body?: unknown) => fetch(`http://localhost:${connection.port}/api/factory${path}`, { method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     const json = async (path: string, body?: unknown) => { const response = await api(path, body); const value = await response.json(); if (!response.ok) throw new Error(JSON.stringify(value)); return value; };
     try {
       await json("/settings", { max_agents: 1 });
@@ -89,10 +101,15 @@ describe("continuing approved workflow steps", () => {
       const before = await json("");
       const wait = before.capacity.waiting.find((entry: { implementation_id: string }) => entry.implementation_id === newer.id);
       expect(wait).toMatchObject({ condition: "queued", idempotency_key: "fifo-newer" });
-      const port = app.port; app.stop(); app = createServer({ ...options, port });
+      app.stop(); app = createServer(options);
       expect((await json("")).capacity.waiting.find((entry: { implementation_id: string }) => entry.implementation_id === newer.id)).toMatchObject({ id: wait.id, created_at: wait.created_at });
       const restored = await json(`/implementations/${older.id}`);
       expect(restored.runs[0]).toMatchObject({ id: prior.runs[0].id, pane_id: prior.runs[0].pane_id, workspace_id: prior.runs[0].workspace_id });
+      const access = callbacks.get(prior.runs[0].id)!;
+      expect(new URL(access.url).origin).toBe(`http://localhost:${connection.port}`);
+      const contract = await fetch(`${access.url}/contract`, { headers: { authorization: `Bearer ${access.token}`, "x-herdr-factory": "1" } });
+      expect(contract.status).toBe(200);
+      expect((await contract.json()).run.id).toBe(prior.runs[0].id);
       const stopped = await api(`/runs/${prior.runs[0].id}/stop`, {});
       expect({ status: stopped.status, body: await stopped.json() }).toMatchObject({ status: 200, body: { id: prior.runs[0].id, condition: "cancelled" } });
       let next = await json(`/implementations/${newer.id}`);
@@ -102,7 +119,7 @@ describe("continuing approved workflow steps", () => {
       expect(next.runs[0]).toMatchObject({ action: continuation.action, idempotency_key: "fifo-newer" });
       expect((await json(`/implementations/${newer.id}/continue`, continuation)).id).toBe(next.runs[0].id);
       expect(launches).toEqual(["fifo-holder", ...(planning ? ["fifo-extra-holder"] : []), "fifo-older", "fifo-newer"]);
-    } finally { release(); app.stop(); await proxy.stop(true); await host.close(); rmSync(state, { recursive: true, force: true }); }
+    } finally { release(); app.stop(); await connection.stop(true); await proxy.stop(true); await host.close(); rmSync(state, { recursive: true, force: true }); }
   }, 30_000);
 
   it("pauses native owned execution while keeping its dirty worktree and retained Run available", async () => {
