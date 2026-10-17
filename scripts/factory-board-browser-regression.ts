@@ -343,6 +343,7 @@ const state = mkdtempSync(join(tmpdir(), "saurons-eye-board-browser-"));
 const app = createServer({ port: 0, token: "", stateDir: state, machines: false, factory: { accountDiscoveryHome: state, native: { version: async () => null } } });
 const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
 const errors: string[] = [];
+const drainRoutes: (() => Promise<void>)[] = [];
 try {
   page.setDefaultTimeout(10_000);
   page.on("pageerror", error => errors.push(error.message));
@@ -361,12 +362,12 @@ try {
   }
   // API contracts separately exercise the real native records. These owned responses
   // verify presentation without launching a paid provider from a browser test.
-  await page.route("**/api/factory?navigation=1", async route => {
+  drainRoutes.push(await routeDrained(page, "**/api/factory?navigation=1", async route => {
     const response = await route.fetch(); const overview: FactoryOverview = await response.json();
     overview.board = [...(overview.board ?? []).filter(entry => !board.some(fixture => fixture.implementation_id === entry.implementation_id)), ...board];
     overview.activity = [...overview.activity.filter(entry => !board.some(fixture => fixture.implementation_id === entry.implementation_id)), ...board.flatMap((entry): FactoryOverview["activity"] => entry.run_id && entry.condition ? [{ implementation_id: entry.implementation_id, run_id: entry.run_id, condition: entry.condition, action: entry.activity === "specifying" ? "to-spec" : "work", waiting_reason: entry.waiting_reason, completed_tickets: entry.ticket_progress?.completed ?? 0, total_tickets: entry.ticket_progress?.total ?? 0 }] : [])];
     await route.fulfill({ response, json: overview });
-  });
+  }));
   await page.reload();
   for (const [activity, label] of activities) {
     const lane = page.getByRole("region", { name: activity === "reviewing" ? "Needs you" : "Running", exact: true });
@@ -410,13 +411,13 @@ try {
   await page.getByRole("heading", { name: "History", exact: true }).waitFor();
   await page.getByText("implementation_created", { exact: false }).waitFor();
   const review = board.find(entry => entry.activity === "reviewing")!;
-  await page.route(new RegExp(`/api/factory/implementations/${review.implementation_id}(?:\\?.*)?$`), async route => {
+  drainRoutes.push(await routeDrained(page, new RegExp(`/api/factory/implementations/${review.implementation_id}(?:\\?.*)?$`), async route => {
     const response = await route.fetch(); const detail: FactoryDetail = await response.json();
     const old: FactoryRun = { id: "owned-past-attempt", implementation_id: review.implementation_id, created_at: "2026-01-01T10:00:00Z", updated_at: "2026-01-01T10:05:00Z", action: "to-spec", provider: "codex", machine_id: "local", condition: "completed", waiting_reason: null, idempotency_key: "owned-past", specification_id: null, graph_hash: null, base: null, checkout: null, worktree: null, branch: null, workspace_id: null, pane_id: null, manifest: {} };
     detail.runs = [old, { ...old, id: "owned-current-attempt", action: "work", condition: "needs_you", created_at: "2026-01-02T10:00:00Z", updated_at: "2026-01-02T10:05:00Z" }];
     detail.board = review;
     await route.fulfill({ response, json: detail });
-  });
+  }));
   await page.goto(`http://localhost:${app.port}/#assignments`);
   const reviewTitle = page.getByRole("button", { name: "Browser Reviewing", exact: true });
   await reviewTitle.focus(); await reviewTitle.press("Enter");
@@ -434,7 +435,20 @@ try {
   console.error("Board browser location:", page.url());
   console.error(await page.locator(".factory-panel").innerText().catch(() => "Factory panel unavailable"));
   throw error;
-} finally { app.stop(); rmSync(state, { recursive: true, force: true }); }
+} finally {
+  // Poll routes and their page must finish while their owned server is still available.
+  try {
+    const drained = await Promise.allSettled(drainRoutes.map(drain => drain()));
+    const failures = drained.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+    if (failures.length) throw new AggregateError(failures, "Board fixture routes failed while draining");
+  } finally {
+    try { await page.close(); }
+    finally {
+      try { app.stop(); }
+      finally { rmSync(state, { recursive: true, force: true }); }
+    }
+  }
+}
 }
 
 try {

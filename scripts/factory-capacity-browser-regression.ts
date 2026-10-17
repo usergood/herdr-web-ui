@@ -44,7 +44,10 @@ try {
       await capacity.getByRole("link", { name: "Waiting work", exact: true }).waitFor({ state: "detached" });
       await capacity.getByText("Waiting work", { exact: true }).waitFor();
       await capacity.getByText("Agent contexts: 1/1", { exact: true }).waitFor();
-      assert.match(await capacity.innerText(), /working/);
+      const running = capacity.getByRole("listitem").filter({ has: page.getByText("Waiting work", { exact: true }) });
+      assert.match(await running.innerText(), / · Running · /);
+      const started = await fixture.api(`/implementations/${waitingId}`).then(response => response.json());
+      assert.equal(started.runs.at(-1).condition, "working");
       assert.equal(fixture.launches.length, 2);
       assert.deepEqual(errors, []);
     } finally { await context.close(); fixture.close(); }
