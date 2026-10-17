@@ -13,10 +13,11 @@ const app = mkdtempSync(join(tmpdir(), "herdr-palette-machines-"));
 const patch = `(() => {
   const fetchDemo = window.fetch.bind(window), EventSourceDemo = window.EventSource;
   const detachedRemote = new URLSearchParams(location.search).has("detached");
-  const calls = window.paletteMachineCalls = { branches: [], plugins: [], focus: [], runs: [], closes: [] };
-  let last = null, offline = false, missing = false;
+  const calls = window.paletteMachineCalls = { branches: [], plugins: [], focus: [], runs: [], closes: [], folders: [] };
+  let last = null, offline = false, missing = false, releaseFolder = null;
+  window.releasePaletteFolders = () => releaseFolder?.();
   const sources = new Set();
-  const json = (value) => new Response(JSON.stringify(value), { headers: { "content-type": "application/json" } });
+  const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
   const roster = (original) => ["local", "remote", "offline"].map((id) => {
     const machine = structuredClone(original.find((item) => item.id === "local"));
     machine.id = id; machine.kind = id === "local" ? "local" : "ssh";
@@ -51,6 +52,16 @@ const patch = `(() => {
     const match = url.pathname.match(/^\\/api\\/machines\\/([^/]+)(\\/.*)$/);
     const machine = match ? decodeURIComponent(match[1]) : "local";
     const path = match ? "/api" + match[2] : url.pathname;
+    if (path === "/api/workspace/directories") {
+      const directory = url.searchParams.get("path");
+      calls.folders.push({ machine, directory });
+      if (directory === "/owned-palette-invalid") return json({ error: { code: "invalid_cwd", message: "Owned folder is unavailable" } }, 400);
+      if (directory === "/owned-palette-failed") return json({ error: { code: "disconnected", message: "Owned folder listing failed" } }, 503);
+      if (directory === "/owned-palette-loading") {
+        await new Promise(resolve => { releaseFolder = resolve; }); releaseFolder = null;
+        return json({ path: directory, parent: null, home: "/home/demo", directories: ["ready"], truncated: false, files: [] });
+      }
+    }
     if (path === "/api/worktree/list") {
       calls.branches.push(machine);
       const id = url.searchParams.get("workspace_id");
@@ -102,6 +113,42 @@ try {
           assert.equal(await page.getByRole("alert").filter({ hasText: /can't be shown|Something went wrong/ }).count(), 0);
           assert.deepEqual(renderErrors, [], "caught render errors must fail the browser check too");
           console.log(`PASS ${phone ? "phone" : "desktop"} sidebar and detached branch render when the remote API omits branch`);
+          // The actual bound directory API supplies faults; empty/loading lists stay ordinary statuses.
+          await page.keyboard.press("ControlOrMeta+Shift+K");
+          const palette = page.getByRole("dialog", { name: "Command palette", exact: true });
+          const search = palette.getByRole("searchbox", { name: "Search panes and actions", exact: true });
+          await search.fill("no-pane-or-action-matches-this-owned-fixture");
+          await palette.getByRole("status").filter({ hasText: "No matching panes or actions" }).waitFor();
+          assert.equal(await palette.getByRole("alert").count(), 0);
+          await search.fill("/owned-palette-loading/missing");
+          try {
+            await palette.getByRole("status").filter({ hasText: "Loading…" }).waitFor();
+            await page.waitForFunction(() => (window as any).paletteMachineCalls.folders.some((call: { directory: string }) => call.directory === "/owned-palette-loading"));
+            assert.equal(await palette.getByRole("alert").count(), 0);
+          } finally { await page.evaluate(() => (window as any).releasePaletteFolders()); }
+          await palette.getByRole("status").filter({ hasText: "No matching folders" }).waitFor();
+          assert.equal(await palette.getByRole("alert").count(), 0);
+          await search.fill("/owned-palette-loading/re");
+          await palette.getByRole("option", { name: "ready", exact: true }).waitFor();
+          for (const [path, message] of [["invalid", "This folder cannot be opened."], ["failed", "Folders could not be loaded."]]) {
+            await search.fill(`/owned-palette-${path}/missing`);
+            const error = palette.getByText(message!, { exact: true }); await error.waitFor();
+            assert.equal(await error.getAttribute("role"), "alert", `The actual ${path} directory error must be announced`);
+            assert.equal(await palette.getByRole("status").filter({ hasText: message! }).count(), 0);
+          }
+          const calls = await page.evaluate(() => (window as any).paletteMachineCalls.folders);
+          assert(calls.filter((call: { directory: string }) => call.directory.startsWith("/owned-palette-")).every((call: { machine: string }) => call.machine === "remote"), "Directory requests keep the selected PC owner");
+          await page.evaluate(() => (window as any).setPaletteRemoteState(true));
+          await search.fill("/owned-palette-offline/missing");
+          await palette.getByRole("alert").filter({ hasText: "Folders could not be loaded." }).waitFor();
+          assert.equal(await palette.getByRole("status").filter({ hasText: "Folders could not be loaded." }).count(), 0);
+          await page.evaluate(() => (window as any).setPaletteRemoteState(false));
+          await search.fill("/home/demo/no-owned-folder-matches");
+          await palette.getByRole("status").filter({ hasText: "No matching folders" }).waitFor();
+          assert.equal(await palette.getByRole("alert").count(), 0, "A successful listing clears the earlier directory fault");
+          assert.deepEqual(renderErrors, []);
+          console.log(`PASS ${phone ? "phone" : "desktop"} directory invalid/API/offline failures alert; loading, empty lists and recovery remain statuses`);
+
         } finally { await detachedContext.close(); }
       }
       const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
