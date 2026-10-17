@@ -187,7 +187,6 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, excludedPan
   const twoLine = settings.sidebarRows === "two";
   const machineId = useMachineId();
   const activity = useSidebarActivity();
-  const { branches, rememberOpened } = useWorktreeBranches(snapshot, online, true);
   const { closeWorkspace, listWorktrees, moveWorkspace, removeWorktree, renameWorkspace } = useMachineApi();
   // herdr marks only a workspace it opened as a worktree. One made on a repository's folder has no
   // `worktree`, and it is where the first worktree starts: each is asked once whether git answers
@@ -210,6 +209,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, excludedPan
     ))).then(publish);
     return () => { live = false; };
   }, [listWorktrees, unmarked, online]);
+  const { branches, rememberOpened } = useWorktreeBranches(snapshot, online, true, repositoryWorkspaces);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
   const [worktreeDialog, setWorktreeDialog] = useState<{ mode: WorktreeDialogMode; workspace: WorkspaceInfo } | null>(null);
