@@ -481,6 +481,7 @@ for (const lost of [false, true]) it(`waits for a retained Orchestrator continua
     const ready = await until(detail, current => current.human_reviews?.[0]?.condition === "ready");
     const oldWorkers = new Set(ready.workers.map((worker: any) => worker.id));
     const oldChecks = [...f.executedChecks];
+    expect((await f.api("/settings", { max_agents: 3 })).status).toBe(200);
     f.runs.get(run.id)!.condition = "working";
     const question = await f.agent(run.id, "question", { question: "Retain this accepted behavior after the owner decision?" }).then(response => response.json());
     checkGate = f.holdNextCheck("integration"); sendGate = f.holdNextSend();
@@ -492,17 +493,22 @@ for (const lost of [false, true]) it(`waits for a retained Orchestrator continua
     f.runs.get(run.id)!.condition = "ready";
     expect((await f.api(`/runs/${run.id}/reconcile`, {})).status).toBe(200);
     await sendGate.started;
+    // Observe the native turn after delivery starts, while its reply is held.
+    expect((await f.api(`/runs/${run.id}/reconcile`, {})).status).toBe(200);
     const sending = await detail(); const retained = sending.runs.find((current: any) => current.id === run.id);
-    expect(retained).toMatchObject({ condition: "accepted", continuation: { kind: "owner", condition: "sending", question_revision: sending.question_revision } });
+    expect(sending.events.some((event: any) => event.kind === "conversation_resumed" && event.data.continuation_id === retained.continuation.id)).toBe(false);
+    expect(retained).toMatchObject({ condition: "working", continuation: { kind: "owner", condition: "sending", question_revision: sending.question_revision } });
     expect(f.runs.get(run.id)!.condition).toBe("working");
     checkGate.release();
-    const waiting = await until(detail, current => current.automatic_review[0]?.check_id === current.checks.at(-1)?.id && ["reviewing", "waiting", "blocked"].includes(current.automatic_review[0]?.condition));
-    expect(["reviewing", "waiting"]).toContain(waiting.automatic_review[0].condition);
+    const waiting = await until(detail, current => current.automatic_review[0]?.check_id === current.checks.at(-1)?.id && (current.automatic_review[0]?.condition === "waiting" || current.workers.some((worker: any) => !oldWorkers.has(worker.id))));
+    expect(waiting.automatic_review[0].condition).toBe("waiting");
     expect(waiting.automatic_review[0].reason_is_error).toBe(false);
-    if (waiting.automatic_review[0].condition === "waiting") expect(waiting.automatic_review[0].reason).toContain("continuation");
+    expect(waiting.automatic_review[0].reason).toContain("continuation");
     expect(waiting.runs.find((current: any) => current.id === run.id)).toMatchObject({ worktree: retained.worktree, continuation: { id: retained.continuation.id, condition: "sending", question_revision: sending.question_revision } });
     const reserved = (await f.api("").then(response => response.json())).capacity;
     expect(reserved.contexts).toContainEqual(expect.objectContaining({ id: run.id, pool: "normal" }));
+    expect(reserved.normal).toEqual({ limit: 3, used: 1 });
+    console.log("PASS pending continuation fences fresh review despite spare capacity", JSON.stringify({ lost, run_id: run.id, continuation: retained.continuation, native_condition: f.runs.get(run.id)!.condition, normal: reserved.normal, review: waiting.automatic_review[0] }));
     expect(waiting.workers.map((worker: any) => worker.id)).toEqual(ready.workers.map((worker: any) => worker.id));
     expect(waiting.checks.at(-1).condition).toBe("passed");
     expect(f.executedChecks).toHaveLength(oldChecks.length + 1);
@@ -512,7 +518,10 @@ for (const lost of [false, true]) it(`waits for a retained Orchestrator continua
       await until(detail, current => current.runs.find((candidate: any) => candidate.id === run.id)?.continuation?.condition === "uncertain");
       f.restart();
       expect((await f.api(`/runs/${run.id}/reconcile`, {})).status).toBe(200);
-      const uncertain = await detail();
+      // Require a fresh post-restart review observation, so a sending-only fence
+      // cannot hide an uncertain-delivery allocation behind the next timer tick.
+      const uncertain = await until(detail, current => current.automatic_review[0]?.reason?.includes("continuation outcome is uncertain") || current.workers.some((worker: any) => !oldWorkers.has(worker.id)));
+      expect(uncertain.automatic_review[0]).toMatchObject({ condition: "waiting", reason: expect.stringContaining("continuation outcome is uncertain"), reason_is_error: false });
       expect(uncertain.runs.find((candidate: any) => candidate.id === run.id).continuation).toMatchObject({ id: retained.continuation.id, condition: "uncertain", question_revision: sending.question_revision });
       const capacity = (await f.api("").then(response => response.json())).capacity;
       expect(capacity.contexts).toContainEqual(expect.objectContaining({ id: run.id, pool: "normal", uncertain: true }));
