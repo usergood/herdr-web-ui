@@ -34,7 +34,7 @@ function ProviderAccounts({ id, providers }: { readonly id: UsageProviderId; rea
           <span className="usage-accounts-account" title={usage.account ?? undefined}>{usage.account ?? PROVIDER_NAME[id]}</span>
           <span className="usage-account-meta">
             <span>{usage.key.startsWith(`${id}:cliproxy:`) ? t("Hub") : t("This PC")}{usage.plan ? ` · ${usage.plan}` : ""}</span>
-            <span className={`usage-account-status${usage.problem ? " has-problem" : ""}`}>{status}</span>
+            <span role={usage.problem ? "alert" : "status"} className={`usage-account-status${usage.problem ? " has-problem" : ""}`}>{status}</span>
           </span>
         </div>
         <span className="usage-accounts-actions">

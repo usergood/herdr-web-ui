@@ -34,13 +34,13 @@ const report = (): UsageReport => ({
 /** a header the check puts on every request of the page it reloads: what that page asked for, whenever it is counted */
 const RELOADED = "x-usage-qa-reloaded";
 
-async function staged(context: BrowserContext): Promise<{ asked: string[]; afterReload: string[] }> {
+async function staged(context: BrowserContext, makeReport: () => UsageReport = report): Promise<{ asked: string[]; afterReload: string[] }> {
   const asked: string[] = [];
   const afterReload: string[] = [];
   await context.route("**/api/usage*", (route) => {
     asked.push(new URL(route.request().url()).search);
     if (route.request().headers()[RELOADED]) afterReload.push(route.request().url());
-    return route.fulfill({ json: report() });
+    return route.fulfill({ json: makeReport() });
   });
   return { asked, afterReload };
 }
@@ -199,6 +199,35 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
     }
   } finally {
     await phone.close();
+  }
+  // Owned provider outcomes cross the same HTTP report seam as the meters.
+  // Each account's error must be announced without making a healthy sign-in assertive.
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    const accounts = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640, locale: "en-US" });
+    try {
+      const problems = ["expired", "failed", "rate_limited", "locked", null] as const;
+      await staged(accounts, () => ({ providers: problems.map(problem => ({
+        id: "claude" as const, key: `claude:owned-${problem ?? "healthy"}`,
+        account: `${problem ?? "healthy"}@example.test`, plan: "owned", problem, checked_at: at(0), windows: [],
+      })) }));
+      await accounts.addInitScript(() => localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en", showUsage: true })));
+      const page = await accounts.newPage(); page.setDefaultTimeout(10_000);
+      const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
+      await page.goto(`${origin}/?settings=usage`);
+      await openSettingsPage(page, "Subscription usage");
+      for (const problem of problems) {
+        const account = `${problem ?? "healthy"}@example.test`;
+        const row = page.locator(".usage-accounts-row").filter({ has: page.getByText(account, { exact: true }) });
+        const status = problem === null ? "Signed in" : problem === "expired" ? "Expired" : "Failed";
+        await row.getByText(status, { exact: true }).waitFor();
+        console.log(JSON.stringify({ viewport: viewport.width, problem, account, status, role: await row.locator(".usage-account-status").getAttribute("role") }));
+        await row.getByRole(problem === null ? "status" : "alert").filter({ hasText: status }).waitFor();
+        assert.equal(await row.getByRole(problem === null ? "alert" : "status").count(), 0);
+      }
+      assert.equal(await page.locator(".usage-accounts-row").count(), 5);
+      assert.equal(await page.locator(".usage-accounts-row").evaluateAll(rows => rows.every(row => row.scrollWidth <= row.clientWidth)), true);
+      assert.deepEqual(errors, []);
+    } finally { await accounts.close(); }
   }
   console.log("PASS plan meters beside Settings: accounts, order, hiding, used or left, overflow, popover, refresh, Escape, off switch and phone fit");
 }

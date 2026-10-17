@@ -141,6 +141,31 @@ try {
     if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "claude-hook-separate-replies.png") });
     console.log("PASS Claude hook replies stay separately visible outside folded work; narration and tool remain grouped");
   }
+  // A native provider may use an unfamiliar fence label. This ordinary JSONL input
+  // currently reaches a highlighter failure; exercise the actual row boundary, never React state.
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    const transcript = (language: string) => parseClaudeTranscript(jsonl(
+      { type: "assistant", timestamp: "2026-01-01T12:00:00Z", message: { content: [{ type: "text", text: "The surrounding owned reply remains readable." }], stop_reason: "end_turn" } },
+      { type: "user", message: { role: "user", content: "Show the fictional constructor example." } },
+      { type: "assistant", timestamp: "2026-01-01T12:01:00Z", message: { content: [{ type: "text", text: `\`\`\`${language}\nconst owned = true;\n\`\`\`` }], stop_reason: "end_turn" } },
+    ));
+    turns = transcript("constructor");
+    assert.equal(turns.at(-1)?.parts[0]?.kind, "text");
+    await page.evaluate(() => window.chatFallbackQA.refresh());
+    const renderFailure = page.getByText("This message can't be shown here. The terminal has it.", { exact: true });
+    await renderFailure.waitFor();
+    console.log(JSON.stringify({ viewport: viewport.width, native_fence: "constructor", fallback: await renderFailure.innerText(), role: await renderFailure.getAttribute("role") }));
+    assert.equal(await renderFailure.getAttribute("role"), "alert", "a real failed message render is announced as an error");
+    await page.getByText("The surrounding owned reply remains readable.", { exact: true }).waitFor();
+    assert.equal(await page.getByRole("alert").filter({ hasText: "The surrounding owned reply remains readable." }).count(), 0);
+    turns = transcript("typescript");
+    await page.evaluate(() => window.chatFallbackQA.refresh());
+    await page.locator(".chat-turn-agent pre").getByText("const owned = true;", { exact: true }).waitFor();
+    await renderFailure.waitFor({ state: "detached" });
+    assert.equal(await page.getByRole("alert").count(), 0, "a corrected transcript resets the boundary and removes the error");
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  }
   assert.deepEqual(errors, []);
   console.log("chat fallback: browser OK (no hidden terminal reads, opened stalled output cannot block structured refresh, late cleanup, non-agent inline output, fallback error announcement and accurate empty state)");
 
