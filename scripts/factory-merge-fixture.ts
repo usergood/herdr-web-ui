@@ -39,7 +39,12 @@ const sha=git(['commit-tree',git(['rev-parse',${JSON.stringify(head + "^{tree}")
 else if(path?.includes('/compare/')){ const range=decodeURIComponent(path.split('/compare/')[1]);const [base,head]=range.split('...');try{git(['merge-base','--is-ancestor',base,head]);out={status:base===head?'identical':'ahead',merge_base_commit:{sha:base}};}catch{out={status:'diverged'};} }
 else if(path?.includes('/git/trees/'))out={truncated:state.truncated_tree??false,tree:git(['ls-tree','-r','-z',decodeURIComponent(path.split('/git/trees/')[1].split('?')[0])]).split('\\0').filter(Boolean).map(row=>{const match=/^(\\d+) (\\w+) ([a-f0-9]+)\\t([\\s\\S]+)$/.exec(row);return{mode:state.tree_mode??match[1],type:match[2],sha:match[3],path:match[4]};})};
 else if(path?.includes('/git/blobs/')){ const sha=path.split('/git/blobs/')[1];const bytes=execFileSync('git',['-C',${JSON.stringify(repo)},'cat-file','blob',sha]);out={sha,encoding:'base64',size:bytes.length,content:bytes.toString('base64'),...state.blob_patch}; }
-else if(path?.endsWith('/releases'))out=state.release?[{draft:false,prerelease:false,tag_name:state.release}]:[];
+else if(/^repos\\/[^/]+\\/[^/]+\\/releases(?:\\?|$)/.test(path??'')){
+ const page=Number(new URL(path,'https://api.github.invalid/').searchParams.get('page')??1);
+ if(state.release_page_error===page)process.exit(1);
+ out=state.release_pages?state.release_pages[page]??[]:state.release?[{id:1,draft:false,prerelease:false,tag_name:state.release}]:[];
+ if(state.release_pages&&Object.hasOwn(state.release_pages,page))out=state.release_pages[page];
+}
 else if(path?.includes('/commits/')){const ref=decodeURIComponent(path.split('/commits/')[1]);out={sha:git(['rev-parse',ref+'^{commit}'])};if(state.move_tag_after_lookup&&ref==='tags/'+state.release){git(['update-ref','refs/tags/'+state.release,state.move_tag_after_lookup]);state.move_tag_after_lookup=null;writeFileSync(file,JSON.stringify(state));}}
 else out={}; console.log(JSON.stringify(out));`);
   const pane = { pane_id: "owned:p1", workspace_id: "owned", terminal_id: "owned-terminal", cwd: repo, agent: "codex", agent_status: "idle" };

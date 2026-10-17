@@ -1,13 +1,32 @@
 import { expect, it } from "bun:test";
 import { mergeFixture } from "../scripts/factory-merge-fixture.ts";
 
+it("Human Review discovers a valid containing release on page two after restart", async () => {
+  const f = await mergeFixture({ milestone: "release" });
+  try {
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "awaiting_release" });
+    const merge = f.git(["rev-parse", "main"]);
+    f.git(["tag", "draft-containing", merge]); f.git(["tag", "prerelease-containing", merge]); f.git(["tag", "older-release", f.base]);
+    f.git(["tag", "page-two-release", f.descendant("after\nIndependent release addition\n")]);
+    const first = Array.from({ length: 98 }, (_, index) => ({ id: index + 1, draft: true, prerelease: false, tag_name: "draft-containing" }));
+    const pages = { 1: [...first, { id: 99, draft: false, prerelease: true, tag_name: "prerelease-containing" }, { id: 100, draft: false, prerelease: false, tag_name: "older-release" }], 2: [{ id: 101, draft: false, prerelease: false, tag_name: "page-two-release" }] };
+    f.change({ release_pages: pages }); f.restart();
+    const response = await f.post(f.route + "merge", f.body); expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ condition: "released", head: f.head, merge_sha: merge, release_tag: "page-two-release" });
+    expect(f.calls().some(args => args[1] === "repos/fictional/project/releases?per_page=100&page=2")).toBe(true);
+    expect(f.calls().some(args => args[1]?.includes("page=3"))).toBe(false);
+    f.restart(); expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "released", merge_sha: merge, release_tag: "page-two-release" });
+    expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { f.close(); }
+}, 20000);
+
 it("Human Review preserves the Assignment release milestone when a later Run captures merge policy", async () => {
   const f = await mergeFixture({ milestone: "merge", assignmentMilestone: "release" });
   try {
     const merged = await f.post(f.route + "merge", f.body);
     expect(merged.status).toBe(200);
     expect(await merged.json()).toMatchObject({ condition: "awaiting_release", head: f.head, release_tag: null });
-    expect(f.calls().some(args => args[1]?.endsWith("/releases"))).toBe(true);
+    expect(f.calls().some(args => /\/releases(?:\?|$)/.test(args[1] ?? ""))).toBe(true);
     f.restart();
     expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "awaiting_release" });
     f.git(["tag", "frozen-milestone-release", "main"]); f.change({ release: "frozen-milestone-release" });
