@@ -13,20 +13,25 @@ export class FactoryParking {
   constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly queue: FactoryDispatch, private readonly reserve: (planning: boolean, requestId: string) => "normal" | "planning", private readonly deliver: (run: FactoryRun, text: string, signal: AbortSignal, worker?: FactoryWorker) => Promise<void>) {
     queue.resume = (id, body) => this.resume(id, body);
   }
+  trackDelivery(id: string): () => void {
+    this.sending.add(id);
+    return () => { this.sending.delete(id); };
+  }
   observe(run: FactoryRun, resting: boolean): FactoryRun {
+    let park = run.continuation;
+    // Delivery ownership precedes Human Review's ordinary resting shortcut.
+    if (park?.condition === "sending" || park?.condition === "uncertain") {
+      if (this.sending.has(run.id)) return run;
+      return { ...run, continuation: { ...park, condition: "uncertain", reason: "Continuation delivery could not be confirmed; inspect the native conversation before sending again" } };
+    }
     if ((run.conversation_kind === "human_review" || this.store.get("human_reviews", run.id)) && run.continuation?.kind !== "owner") {
       return { ...run, continuation: { ...(run.continuation ?? this.store.record()), kind: "children", condition: resting ? "parked" : "parking", question_revision: null, reason: resting ? "Human Review owns the captured result; Orchestrator capacity released" : "Waiting for verified native rest before Human Review" } };
     }
     const workers = this.store.list<FactoryWorker & { key: string }>("workers", run.id);
     const waits = this.store.list<FactoryCapacityWait>("capacity_waits", run.implementation_id).filter(wait => wait.run_id === run.id && !wait.continuation);
     const keys = [...new Set([...waits.map(wait => wait.idempotency_key), ...workers.filter(worker => !["ready", "completed", "cancelled", "failed"].includes(worker.condition)).map(worker => worker.key)])];
-    let park = run.continuation;
     if (keys.length && (!park || park.condition === "resumed")) park = { ...this.store.record(), kind: "children", condition: "parking", reason: "Waiting for verified native rest before releasing capacity", question_revision: null, worker_keys: keys };
     if (!park || park.condition === "resumed" || park.condition === "blocked") return run;
-    if (park.condition === "sending" || park.condition === "uncertain") {
-      if (this.sending.has(run.id)) return run;
-      return { ...run, continuation: { ...park, condition: "uncertain", reason: "Continuation delivery could not be confirmed; inspect the native conversation before sending again" } };
-    }
     const waitId = `resume:${park.id}`;
     if (!resting) {
       this.store.remove("capacity_waits", waitId);

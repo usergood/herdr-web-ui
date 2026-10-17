@@ -984,6 +984,7 @@ export class FactoryRuntime {
     const settle = (condition: FactoryRun["condition"], reason: string | null): void => {
       if (reservation && JSON.stringify(this.store.get("runs", run.id)) === JSON.stringify(reservation)) this.store.put("runs", { ...reservation, condition, waiting_reason: reason, updated_at: new Date().toISOString() }, run.implementation_id);
     };
+    const finishDelivery = reservation?.continuation ? this.parking.trackDelivery(run.id) : () => {};
     try {
       await this.deliver(run, text, signal);
       settle("working", null);
@@ -999,7 +1000,7 @@ export class FactoryRuntime {
       const current = this.store.get<FactoryRun>("runs", run.id);
       if (current?.continuation && current.continuation.id === reservation?.continuation?.id && current.continuation.condition === "sending") this.store.put("runs", { ...current, continuation: { ...current.continuation, condition: busy || unsent ? "parking" : "uncertain", reason: error instanceof Error ? error.message : "Answer delivery is uncertain; inspect the conversation" } }, run.implementation_id);
       throw error;
-    }
+    } finally { finishDelivery(); }
   }
   private async deliver(run: FactoryRun, text: string, signal: AbortSignal): Promise<void> {
     if (run.machine_id === "local") await this.host.send(run.id, text, signal);

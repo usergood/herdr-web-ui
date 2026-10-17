@@ -481,6 +481,7 @@ for (const lost of [false, true]) it(`waits for a retained Orchestrator continua
     const ready = await until(detail, current => current.human_reviews?.[0]?.condition === "ready");
     const oldWorkers = new Set(ready.workers.map((worker: any) => worker.id));
     const oldChecks = [...f.executedChecks];
+    expect((await f.api("/settings", { max_agents: 3 })).status).toBe(200);
     f.runs.get(run.id)!.condition = "working";
     const question = await f.agent(run.id, "question", { question: "Retain this accepted behavior after the owner decision?" }).then(response => response.json());
     checkGate = f.holdNextCheck("integration"); sendGate = f.holdNextSend();
@@ -492,17 +493,22 @@ for (const lost of [false, true]) it(`waits for a retained Orchestrator continua
     f.runs.get(run.id)!.condition = "ready";
     expect((await f.api(`/runs/${run.id}/reconcile`, {})).status).toBe(200);
     await sendGate.started;
+    // Observe the native turn after delivery starts, while its reply is held.
+    expect((await f.api(`/runs/${run.id}/reconcile`, {})).status).toBe(200);
     const sending = await detail(); const retained = sending.runs.find((current: any) => current.id === run.id);
-    expect(retained).toMatchObject({ condition: "accepted", continuation: { kind: "owner", condition: "sending", question_revision: sending.question_revision } });
+    expect(sending.events.some((event: any) => event.kind === "conversation_resumed" && event.data.continuation_id === retained.continuation.id)).toBe(false);
+    expect(retained).toMatchObject({ condition: "working", continuation: { kind: "owner", condition: "sending", question_revision: sending.question_revision } });
     expect(f.runs.get(run.id)!.condition).toBe("working");
     checkGate.release();
-    const waiting = await until(detail, current => current.automatic_review[0]?.check_id === current.checks.at(-1)?.id && ["reviewing", "waiting", "blocked"].includes(current.automatic_review[0]?.condition));
-    expect(["reviewing", "waiting"]).toContain(waiting.automatic_review[0].condition);
+    const waiting = await until(detail, current => current.automatic_review[0]?.check_id === current.checks.at(-1)?.id && (current.automatic_review[0]?.condition === "waiting" || current.workers.some((worker: any) => !oldWorkers.has(worker.id))));
+    expect(waiting.automatic_review[0].condition).toBe("waiting");
     expect(waiting.automatic_review[0].reason_is_error).toBe(false);
-    if (waiting.automatic_review[0].condition === "waiting") expect(waiting.automatic_review[0].reason).toContain("continuation");
+    expect(waiting.automatic_review[0].reason).toContain("continuation");
     expect(waiting.runs.find((current: any) => current.id === run.id)).toMatchObject({ worktree: retained.worktree, continuation: { id: retained.continuation.id, condition: "sending", question_revision: sending.question_revision } });
     const reserved = (await f.api("").then(response => response.json())).capacity;
     expect(reserved.contexts).toContainEqual(expect.objectContaining({ id: run.id, pool: "normal" }));
+    expect(reserved.normal).toEqual({ limit: 3, used: 1 });
+    console.log("PASS pending continuation fences fresh review despite spare capacity", JSON.stringify({ lost, run_id: run.id, continuation: retained.continuation, native_condition: f.runs.get(run.id)!.condition, normal: reserved.normal, review: waiting.automatic_review[0] }));
     expect(waiting.workers.map((worker: any) => worker.id)).toEqual(ready.workers.map((worker: any) => worker.id));
     expect(waiting.checks.at(-1).condition).toBe("passed");
     expect(f.executedChecks).toHaveLength(oldChecks.length + 1);
@@ -512,7 +518,10 @@ for (const lost of [false, true]) it(`waits for a retained Orchestrator continua
       await until(detail, current => current.runs.find((candidate: any) => candidate.id === run.id)?.continuation?.condition === "uncertain");
       f.restart();
       expect((await f.api(`/runs/${run.id}/reconcile`, {})).status).toBe(200);
-      const uncertain = await detail();
+      // Require a fresh post-restart review observation, so a sending-only fence
+      // cannot hide an uncertain-delivery allocation behind the next timer tick.
+      const uncertain = await until(detail, current => current.automatic_review[0]?.reason?.includes("continuation outcome is uncertain") || current.workers.some((worker: any) => !oldWorkers.has(worker.id)));
+      expect(uncertain.automatic_review[0]).toMatchObject({ condition: "waiting", reason: expect.stringContaining("continuation outcome is uncertain"), reason_is_error: false });
       expect(uncertain.runs.find((candidate: any) => candidate.id === run.id).continuation).toMatchObject({ id: retained.continuation.id, condition: "uncertain", question_revision: sending.question_revision });
       const capacity = (await f.api("").then(response => response.json())).capacity;
       expect(capacity.contexts).toContainEqual(expect.objectContaining({ id: run.id, pool: "normal", uncertain: true }));
@@ -575,6 +584,104 @@ it("keeps a working Orchestrator handoff wait non-error and clears it after nati
     f.runs.get(run.id)!.condition = "ready";
     const ready = await until(detail, current => current.human_reviews[0]?.condition === "ready");
     expect(ready.human_reviews[0]).toMatchObject({ id: waiting.human_reviews[0].id, reason: null, reason_is_error: false });
+    expect(f.mergeEffects).toHaveLength(0);
+  } finally { f.close(); }
+}, 20000);
+
+for (const lost of [false, true]) it(`retains Human Review discussion delivery ownership through native rest with ${lost ? "lost" : "confirmed"} acknowledgment`, async () => {
+  const f = await capacityFixture({ advancingHeads: true });
+  let gate: ReturnType<typeof f.holdNextSend> | undefined;
+  try {
+    const { prefix, detail } = await published(f);
+    const original = await until(detail, current => current.human_reviews?.[0]?.condition === "ready");
+    const review = original.human_reviews[0];
+    await f.api(`${prefix}/human-review/messages`, { review_id: review.id, content: "Open the captured review discussion", idempotency_key: "open-discussion" });
+    const started = await until(detail, current => current.runs.some((run: any) => run.conversation_kind === "human_review" && run.condition === "working"));
+    const assistant = started.runs.find((run: any) => run.conversation_kind === "human_review");
+    f.runs.get(assistant.id)!.condition = "ready";
+    expect((await f.api(`/runs/${assistant.id}/reconcile`, {})).status).toBe(200);
+    const parked = await until(detail, current => current.runs.find((run: any) => run.id === assistant.id)?.continuation?.condition === "parked");
+    const continuation = parked.runs.find((run: any) => run.id === assistant.id).continuation;
+    expect((await f.api("").then(response => response.json())).capacity.normal.used).toBe(0);
+    gate = f.holdNextSend();
+    if (lost) f.loseNextSend();
+    const body = { review_id: review.id, content: "Discuss this exact candidate without authorizing changes", idempotency_key: "held-discussion" };
+    const message = await f.api(`${prefix}/human-review/messages`, body).then(response => response.json());
+    await gate.started;
+    const otherId = await f.assignment("Waiting behind discussion delivery");
+    const otherDetail = () => f.api(`/implementations/${otherId}`).then(response => response.json());
+    await f.api(`/projects/${(await otherDetail()).implementation.project_id}/configure`, { checks: [["bun", "test"]], permissions: "Owned fixtures only" });
+    const otherSpec = await f.api(`/implementations/${otherId}/specifications`, { content: "Retain this independently accepted work" }).then(response => response.json());
+    expect((await f.api(`/implementations/${otherId}/specification-acceptance`, { source: "button", specification_id: otherSpec.id, hash: otherSpec.hash })).status).toBe(201);
+    expect((await otherDetail()).runs).toHaveLength(0);
+    // Native rest can be observed before the Machine's send reply arrives.
+    f.runs.get(assistant.id)!.condition = "ready";
+    expect((await f.api(`/runs/${assistant.id}/reconcile`, {})).status).toBe(200);
+    const pending = await detail(); const held = pending.runs.find((run: any) => run.id === assistant.id);
+    const capacity = (await f.api("").then(response => response.json())).capacity;
+    console.log("CAUSAL Human Review native rest before discussion acknowledgment", JSON.stringify({ lost, assistant_id: assistant.id, continuation: held.continuation, condition: held.condition, delivery: pending.human_review_deliveries.find((entry: any) => entry.id === message.id), normal: capacity.normal, contexts: capacity.contexts, prompts: f.prompts.length }));
+    expect(capacity.contexts).toContainEqual(expect.objectContaining({ id: assistant.id, pool: "normal" }));
+    expect(held.continuation).toMatchObject({ id: continuation.id, kind: "children", condition: "sending" });
+    expect(pending.human_review_deliveries.find((entry: any) => entry.id === message.id).condition).toBe("sending");
+    expect(f.prompts).toHaveLength(1);
+    expect((await otherDetail()).runs).toHaveLength(0);
+    if (!lost) f.runs.get(assistant.id)!.condition = "working";
+    gate.release();
+    await until(detail, current => current.human_review_deliveries.find((entry: any) => entry.id === message.id)?.condition === (lost ? "uncertain" : "sent"));
+    if (lost) {
+      f.restart();
+      expect((await f.api(`/runs/${assistant.id}/reconcile`, {})).status).toBe(200);
+      const uncertain = await detail(); const retained = uncertain.runs.find((run: any) => run.id === assistant.id);
+      expect(retained.continuation).toMatchObject({ id: continuation.id, kind: "children", condition: "uncertain" });
+      expect((await f.api("").then(response => response.json())).capacity.contexts).toContainEqual(expect.objectContaining({ id: assistant.id, pool: "normal", uncertain: true }));
+      expect((await f.api(`${prefix}/human-review/messages`, body).then(response => response.json())).id).toBe(message.id);
+      const queued = await until(otherDetail, current => current.capacity_waiting.length || current.runs.length);
+      expect(queued.runs).toHaveLength(0);
+    } else {
+      // A post-ACK observation of actual working keeps the original slot. Only
+      // a genuinely later resting observation may admit the waiting Assignment.
+      expect((await f.api(`/runs/${assistant.id}/reconcile`, {})).status).toBe(200);
+      expect((await f.api("").then(response => response.json())).capacity.contexts).toContainEqual(expect.objectContaining({ id: assistant.id, pool: "normal", condition: "working" }));
+      const queued = await until(otherDetail, current => current.capacity_waiting.length || current.runs.length);
+      expect(queued.runs).toHaveLength(0);
+      f.runs.get(assistant.id)!.condition = "ready";
+      expect((await f.api(`/runs/${assistant.id}/reconcile`, {})).status).toBe(200);
+      await until(detail, current => current.runs.find((run: any) => run.id === assistant.id)?.continuation?.condition === "parked");
+      const admitted = await until(otherDetail, current => current.runs.some((run: any) => run.condition === "working"));
+      expect(admitted.runs).toHaveLength(1);
+      expect((await f.api("").then(response => response.json())).capacity.contexts.some((context: any) => context.id === assistant.id)).toBe(false);
+    }
+    const retained = await detail();
+    expect(retained.human_reviews[0]).toMatchObject({ id: review.id, snapshot_id: review.snapshot_id, head: review.head, assistant_run_id: assistant.id });
+    expect(retained.runs).toHaveLength(2);
+    expect(retained.workers.map((worker: any) => worker.id)).toEqual(original.workers.map((worker: any) => worker.id));
+    expect(retained.checks).toEqual(original.checks);
+    expect(retained.human_review_approvals).toHaveLength(0);
+    expect(f.prompts).toHaveLength(1);
+    expect(f.mergeEffects).toHaveLength(0);
+  } finally { gate?.release(); f.close(); }
+}, 25000);
+
+
+it("queues a Human Review message while its existing assistant works even with spare capacity", async () => {
+  const f = await capacityFixture({ advancingHeads: true });
+  try {
+    const { prefix, detail } = await published(f);
+    const ready = await until(detail, current => current.human_reviews?.[0]?.condition === "ready");
+    const review = ready.human_reviews[0];
+    await f.api(`${prefix}/human-review/messages`, { review_id: review.id, content: "Open an owned discussion", idempotency_key: "working-open" });
+    const started = await until(detail, current => current.runs.some((run: any) => run.conversation_kind === "human_review" && run.condition === "working"));
+    const assistant = started.runs.find((run: any) => run.conversation_kind === "human_review");
+    expect((await f.api("/settings", { max_agents: 3 })).status).toBe(200);
+    expect((await f.api(`/runs/${assistant.id}/reconcile`, {})).status).toBe(200);
+    const message = await f.api(`${prefix}/human-review/messages`, { review_id: review.id, content: "Wait for the existing native turn", idempotency_key: "working-wait" }).then(response => response.json());
+    const queued = await until(detail, current => current.capacity_waiting.some((request: any) => request.id === `discussion:${message.id}` && request.reason.includes("finish its current turn")));
+    expect(queued.human_review_deliveries.find((entry: any) => entry.id === message.id).condition).toBe("queued");
+    expect(queued.runs.find((run: any) => run.id === assistant.id).condition).toBe("working");
+    expect((await f.api("").then(response => response.json())).capacity.contexts).toContainEqual(expect.objectContaining({ id: assistant.id, pool: "normal" }));
+    expect(f.prompts).toHaveLength(0);
+    expect(queued.runs).toHaveLength(2);
+    expect(queued.human_review_approvals).toHaveLength(0);
     expect(f.mergeEffects).toHaveLength(0);
   } finally { f.close(); }
 }, 20000);
