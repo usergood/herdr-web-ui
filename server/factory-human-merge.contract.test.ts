@@ -246,16 +246,115 @@ it("a frozen release milestone remains incomplete until a published tag contains
   } finally { f.close(); }
 }, 20000);
 
-it("retains a concrete repository refusal and never reports a permission denial as merged", async () => {
+it("retries a confirmed repository refusal after correction and never reports denial as merged", async () => {
   const f = await mergeFixture();
   try {
     f.change({ deny: "Protected branch or permission refused" });
     const response = await f.post(f.route + "merge", f.body);
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ error: { code: "merge_denied", message: "GitHub refused this merge under its repository permissions, protection or conflict rules; inspect the PR before further action" } });
-    f.restart();
-    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "uncertain" });
     expect(f.git(["rev-parse", "main"])).toBe(f.base);
+    f.change({ deny: null }); f.restart();
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "merged", head: f.head });
+    expect(f.git(["show", "main:result.txt"])).toBe("after");
+    f.restart();
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "merged", head: f.head });
+    expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(2);
+  } finally { f.close(); }
+}, 20000);
+
+it.each(["local", "remote"] as const)("the %s owner can explicitly retry a confirmed GitHub denial under unchanged checked authority", async machine => {
+  const f = await releaseBrowserFixture({ milestone: "merge", ...(machine === "local" ? { machineId: "local" as const } : {}) });
+  try {
+    const body = await contextApproval(f, `confirmed-denial-${machine}`); const ready = await f.detail();
+    f.core.change({ deny: "Owned permission refusal" });
+    const response = await contextPost(f, f.prefix + "/human-review/approve", body); expect(response.status).toBe(200); const denied = await response.json();
+    expect(denied).toMatchObject({ condition: "blocked", head: f.core.head, merge_sha: null, reason: expect.stringContaining("GitHub refused") });
+    expect(f.core.git(["rev-parse", "main"])).toBe(f.core.base);
+    expect(f.core.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+    f.core.change({ deny: null }); await f.restart();
+    expect((await f.detail()).human_review_approvals[0]).toMatchObject({ id: denied.id, condition: "blocked" });
+    expect(f.core.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+    const retry = await contextPost(f, f.prefix + "/human-review/approve", body); expect(retry.status).toBe(200);
+    expect(await retry.json()).toMatchObject({ id: denied.id, condition: "merged", head: denied.head, context_revision: denied.context_revision, idempotency_key: denied.idempotency_key });
+    const done = await f.detail(); expect(done.implementation).toMatchObject({ stage: "done", outcome: "merged" });
+    expect(done.checks).toEqual(ready.checks); expect(done.review_evidence).toEqual(ready.review_evidence);
+    expect(done.human_review_approvals).toHaveLength(1);
+    expect(done.events.filter((event: any) => event.kind === "human_review_merge_authorized")).toHaveLength(1);
+    expect(f.core.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(2);
+    await f.restart();
+    expect(await contextPost(f, f.prefix + "/human-review/approve", body).then(r => r.json())).toMatchObject({ id: denied.id, condition: "merged" });
+    expect(f.core.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(2);
+  } finally { await f.close(); }
+}, 20000);
+
+
+it.each([null, {}, { merged: "false" }])("an ambiguous merge reply never becomes a retryable denial: %j", async reply => {
+  const f = await mergeFixture();
+  try {
+    f.change({ merge_reply: reply });
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "uncertain" });
+    f.change({ merge_reply: undefined }); f.restart();
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "uncertain" });
+    const replacement = structuredClone(f.body); replacement.approval.id = crypto.randomUUID(); replacement.approval.idempotency_key = "replacement-unknown";
+    expect(await f.post(f.route + "merge", replacement).then(r => r.json())).toMatchObject({ error: { code: "merge_authority_changed" } });
+    expect(f.git(["rev-parse", "main"])).toBe(f.base);
+    expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { f.close(); }
+}, 20000);
+
+it("a denied intent accepts a replacement approval only after validating its evidence", async () => {
+  const f = await mergeFixture();
+  try {
+    f.change({ deny: "Owned refusal" });
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ error: { code: "merge_denied" } });
+    f.change({ deny: null }); f.restart();
+    const replacement = structuredClone(f.body); replacement.approval.id = crypto.randomUUID(); replacement.approval.idempotency_key = "replacement-denied";
+    const stale = structuredClone(replacement); stale.reports[0]!.source_id = "untrusted-source";
+    expect(await f.post(f.route + "merge", stale).then(r => r.json())).toMatchObject({ error: { code: "fresh_evidence_required" } });
+    expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+    expect(await f.post(f.route + "merge", replacement).then(r => r.json())).toMatchObject({ condition: "merged", head: f.head });
+    expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(2);
+  } finally { f.close(); }
+}, 20000);
+
+it("a confirmed denial observes a later external merge without another mutation", async () => {
+  const f = await mergeFixture();
+  try {
+    f.change({ deny: "Owned refusal" });
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ error: { code: "merge_denied" } });
+    const sha = f.git(["commit-tree", f.git(["rev-parse", `${f.head}^{tree}`]), "-p", f.base, "-m", "Owned external squash"]);
+    f.git(["update-ref", "refs/heads/main", sha]); f.pull({ merged: true, state: "MERGED", mergeCommit: { oid: sha } }); f.change({ deny: null }); f.restart();
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "merged", merge_sha: sha });
+    expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { f.close(); }
+}, 20000);
+
+it("a denied owner approval cannot inherit a changed owner context", async () => {
+  const f = await releaseBrowserFixture({ milestone: "merge" });
+  try {
+    const body = await contextApproval(f, "denied-then-new-context");
+    f.core.change({ deny: "Owned refusal" });
+    const receipt = await contextPost(f, f.prefix + "/human-review/approve", body).then(r => r.json());
+    expect(receipt.condition).toBe("blocked"); f.core.change({ deny: null });
+    expect((await contextPost(f, f.prefix + "/questions", { question: "New owner scope after a definite denial" })).status).toBe(201);
+    const retry = await contextPost(f, f.prefix + "/human-review/approve", body).then(r => r.json());
+    expect(retry).toMatchObject({ id: receipt.id, condition: "blocked", context_revision: receipt.context_revision, reason: expect.stringContaining("pending owner questions") });
+    expect(f.core.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+    expect(f.core.git(["rev-parse", "main"])).toBe(f.core.base);
+  } finally { await f.close(); }
+}, 20000);
+
+it("an unknown sent merge remains observation-only while GitHub temporarily reports it open", async () => {
+  const f = await mergeFixture();
+  try {
+    f.change({ lose: true });
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "uncertain" });
+    const sha = f.git(["rev-parse", "main"]); f.pull({ merged: false, state: "OPEN", mergeCommit: null }); f.restart();
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "uncertain" });
+    expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+    f.pull({ merged: true, state: "MERGED", mergeCommit: { oid: sha } });
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "merged", merge_sha: sha });
     expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
   } finally { f.close(); }
 }, 20000);

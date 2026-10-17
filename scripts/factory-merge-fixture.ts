@@ -35,7 +35,14 @@ else if(path==='graphql'){
  out={data:{repository:{pullRequest:selected}}};
 }
 else if(path?.endsWith('/merge')){ if(state.deny) { console.log(JSON.stringify({merged:false,message:state.deny}));process.exit(0); }
-const sha=git(['commit-tree',git(['rev-parse',${JSON.stringify(head + "^{tree}")}]),'-p',git(['rev-parse','main']),'-m','Owned squash merge']); git(['update-ref','refs/heads/main',sha]); state.pull.state='MERGED';state.pull.merged=true;state.pull.mergeCommit={oid:sha};writeFileSync(file,JSON.stringify(state));if(state.lose)process.exit(1);out={merged:true,sha};}
+if(Object.hasOwn(state,'merge_reply')){console.log(JSON.stringify(state.merge_reply));process.exit(0);}
+let tree=git(['rev-parse',${JSON.stringify(head + "^{tree}")}]);
+if(typeof state.merge_content==='string'){
+ const blob=execFileSync('git',['-C',${JSON.stringify(repo)},'hash-object','-w','--stdin'],{input:state.merge_content,encoding:'utf8'}).trim();
+ const entries=git(['ls-tree',tree]).split('\\n').map(row=>row.endsWith('\\tresult.txt')?'100644 blob '+blob+'\\tresult.txt':row).join('\\n')+'\\n';
+ tree=execFileSync('git',['-C',${JSON.stringify(repo)},'mktree'],{input:entries,encoding:'utf8'}).trim();
+}
+const sha=git(['commit-tree',tree,'-p',git(['rev-parse','main']),'-m','Owned squash merge']); git(['update-ref','refs/heads/main',sha]); state.pull.state='MERGED';state.pull.merged=true;state.pull.mergeCommit={oid:sha};writeFileSync(file,JSON.stringify(state));if(state.lose)process.exit(1);out={merged:true,sha};}
 else if(path?.includes('/compare/')){ const range=decodeURIComponent(path.split('/compare/')[1]);const [base,head]=range.split('...');try{git(['merge-base','--is-ancestor',base,head]);out={status:base===head?'identical':'ahead',merge_base_commit:{sha:base}};}catch{out={status:'diverged'};} }
 else if(path?.includes('/git/trees/'))out={truncated:state.truncated_tree??false,tree:git(['ls-tree','-r','-z',decodeURIComponent(path.split('/git/trees/')[1].split('?')[0])]).split('\\0').filter(Boolean).map(row=>{const match=/^(\\d+) (\\w+) ([a-f0-9]+)\\t([\\s\\S]+)$/.exec(row);return{mode:state.tree_mode??match[1],type:match[2],sha:match[3],path:match[4]};})};
 else if(path?.includes('/git/blobs/')){ const sha=path.split('/git/blobs/')[1];const bytes=execFileSync('git',['-C',${JSON.stringify(repo)},'cat-file','blob',sha]);out={sha,encoding:'base64',size:bytes.length,content:bytes.toString('base64'),...state.blob_patch}; }

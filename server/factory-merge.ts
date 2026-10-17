@@ -19,7 +19,7 @@ interface Pull {
   commits: Connection<{ commit: { statusCheckRollup: { contexts: Connection<{ name?: string; context?: string; state?: string; status?: string; conclusion?: string }> } | null } }>;
   baseRef?: { branchProtectionRule?: { isAdminEnforced: boolean; requiredApprovingReviewCount: number; requiredStatusCheckContexts?: string[] } | null };
 }
-interface Intent { id: string; approval: FactoryHumanApproval; pr: FactoryPullRequest; condition: "prepared" | "sending" | "verified"; merge_sha?: string }
+interface Intent { id: string; approval: FactoryHumanApproval; pr: FactoryPullRequest; condition: "prepared" | "sending" | "denied" | "verified"; merge_sha?: string; denied_at?: string }
 const fields = `author { login } number url state isDraft headRefOid headRefName baseRefName headRepository { nameWithOwner } baseRepository { nameWithOwner } merged mergeCommit { oid } mergeStateStatus reviewDecision baseRef { branchProtectionRule { isAdminEnforced requiredApprovingReviewCount requiredStatusCheckContexts } }
 reviews(first:100) { nodes { state author { login } commit { oid } submittedAt } pageInfo { hasNextPage } }
 reviewThreads(first:100) { nodes { isResolved } pageInfo { hasNextPage } }
@@ -84,11 +84,19 @@ function retainsApprovedText(approved: string, observed: string, diff: string): 
   const located = blocks.every(block => {
     // Whole-file additions have no old location anchors; the additive proof below applies.
     if (block.start === 0 && block.end === all.length) return true;
-    if (block.start === 0) return actual.slice(0, block.end).join("") === all.slice(0, block.end).join("");
-    if (block.end === all.length) return actual.slice(-all.length + block.start).join("") === all.slice(block.start).join("");
     let before = block.start - 1, after = block.end;
     while (before >= 0 && !stable(before)) before--;
     while (after < all.length && !stable(after)) after++;
+    if (block.start === 0) {
+      if (after === all.length) return actual.slice(0, block.end).join("") === all.slice(0, block.end).join("");
+      const right = actual.indexOf(all[after]!);
+      return right >= after && actual.slice(right - after, right + 1).join("") === all.slice(0, after + 1).join("");
+    }
+    if (block.end === all.length) {
+      if (before < 0) return actual.slice(-all.length + block.start).join("") === all.slice(block.start).join("");
+      const left = actual.indexOf(all[before]!);
+      return actual.slice(left, left + all.length - before).join("") === all.slice(before).join("");
+    }
     if (before < 0 || after === all.length) return false;
     const left = actual.indexOf(all[before]!), right = actual.indexOf(all[after]!);
     // Exact literal neighborhoods prevent an added block moving across retained
@@ -109,7 +117,7 @@ function retainsApprovedText(approved: string, observed: string, diff: string): 
   return next === requiredContext.length;
 }
 
-/** A sent merge is observed after restart; its mutation is never replayed. */
+/** Unknown sends are observed after restart; only confirmed denials can be retried. */
 export class FactoryMerge {
   private stopped = false;
   stop(): void { this.stopped = true; }
@@ -177,12 +185,15 @@ export class FactoryMerge {
     const key = `${id}:${pr.head}`;
     let intent = retained ?? this.store.get<Intent>("host_merges", key);
     if (intent && (intent.approval.id !== approval.id || JSON.stringify(intent.pr) !== JSON.stringify(pr))) {
-      if (intent.condition !== "prepared") throw new FactoryError("merge_authority_changed", "A different retained approval owns this merge", 409);
+      if (!["prepared", "denied"].includes(intent.condition)) throw new FactoryError("merge_authority_changed", "A different retained approval owns this merge", 409);
       // A checked no-op repair may retain the head while explicit owner authority
-      // changes. Only a positively unsent intent can adopt the validated request.
-      intent = { id: key, approval, pr, condition: "prepared" };
+      // changes. Only a positively unsent or denied intent can adopt the validated request.
+      intent = { ...intent, approval, pr, condition: "prepared" };
     }
     intent ??= { id: key, approval, pr, condition: "prepared" };
+    // Only GitHub's positive no-merge receipt permits another validated attempt.
+    // Unknown sends remain sending and can only be observed, never replayed.
+    if (intent.condition === "denied") intent = { ...intent, condition: "prepared" };
     this.store.put("host_merges", intent, id);
     const api = async (path: string, args: string[] = [], guard = assertLive) => { const value = await this.accounts!.github(frozen.account_snapshot!, ["api", path, ...args], guard); assertLive(); return value; };
     const texts = new Map<string, string | null>();
@@ -239,7 +250,10 @@ export class FactoryMerge {
       try {
         mutation = await api(`repos/${pr.repository}/pulls/${pr.number}/merge`, ["--method", "PUT", "-f", `sha=${pr.head}`, "-f", "merge_method=squash"], () => { assertLive(); this.store.put("host_merges", intent!, id); });
       } catch { return { run_id: id, head: pr.head, repository: pr.repository, base_branch: pr.base_branch, number: pr.number, condition: "uncertain", merge_sha: null, release_tag: null, reason: "Merge acknowledgment was lost or permission was denied; observe this PR before further action" }; }
-      if ((mutation as { merged?: boolean } | null)?.merged === false) throw new FactoryError("merge_denied", "GitHub refused this merge under its repository permissions, protection or conflict rules; inspect the PR before further action", 409);
+      if ((mutation as { merged?: boolean } | null)?.merged === false) {
+        this.store.put("host_merges", { ...intent, condition: "denied", denied_at: intent.denied_at ?? new Date().toISOString() }, id);
+        throw new FactoryError("merge_denied", "GitHub refused this merge under its repository permissions, protection or conflict rules; inspect the PR before further action", 409);
+      }
       pull = await readPull();
     }
     const result: FactoryMergeResult = { run_id: id, head: pr.head, repository: pr.repository, base_branch: pr.base_branch, number: pr.number, condition: "uncertain", merge_sha: null, release_tag: null, reason: "GitHub has not confirmed this merge; the sent operation will not be replayed" };
@@ -251,7 +265,7 @@ export class FactoryMerge {
       return ["identical", "ahead"].includes(compare.status) && compare.merge_base_commit?.sha === sha;
     };
     const target = await api(`repos/${pr.repository}/commits/${encodeURIComponent(`heads/${pr.base_branch}`)}`) as { sha: string };
-    if (!/^[a-f0-9]{40}$/.test(target.sha) || !await contains(target.sha) || !await containsChanges(sha) || !await containsChanges(target.sha, true)) throw new FactoryError("merge_coverage_unverified", "The confirmed merge and authorized target do not contain all approved changes", 409);
+    if (!/^[a-f0-9]{40}$/.test(target.sha) || !await contains(target.sha) || !await containsChanges(sha, true) || !await containsChanges(target.sha, true)) throw new FactoryError("merge_coverage_unverified", "The confirmed merge and authorized target do not contain all approved changes", 409);
     const latestTarget = await api(`repos/${pr.repository}/commits/${encodeURIComponent(`heads/${pr.base_branch}`)}`) as { sha: string };
     if (latestTarget.sha !== target.sha) throw new FactoryError("merge_coverage_unverified", "The delivery branch changed during verification; observe its current content again", 409);
     this.store.put("host_merges", { ...intent, condition: "verified", merge_sha: sha }, id);

@@ -75,6 +75,67 @@ it("Human Review permits an independent context edit outside preserved function 
   } finally { f.close(); }
 }, 20000);
 
+
+it.each([
+  { name: "whole-file change", baseline: "before\n", candidate: "after\n" },
+  { name: "edge change with unchanged context", baseline: "config=base\nfeature=off\n", candidate: "config=base\nfeature=on\n" },
+  { name: "interior anchored change", baseline: "function checked() {\n  run();\n}\n", candidate: "function checked() {\n  validate();\n  run();\n}\n" },
+])("the Machine verifies an actual squash containing independent same-file additions: $name", async ({ baseline, candidate }) => {
+  const f = await mergeFixture({ baselineContent: baseline, candidateContent: candidate });
+  try {
+    const content = candidate + "Independent note\n"; f.change({ merge_content: content });
+    const response = await f.post(f.route + "merge", f.body); const result = await response.json();
+    expect(f.git(["show", "main:result.txt"])).toBe(content.trim());
+    expect(f.git(["rev-parse", "main:result.txt"])).not.toBe(f.git(["rev-parse", `${f.head}:result.txt`]));
+    expect(response.status).toBe(200);
+    expect(result).toMatchObject({ condition: "merged", head: f.head, merge_sha: f.git(["rev-parse", "main"]) });
+    f.restart();
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "merged", merge_sha: result.merge_sha });
+    expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { f.close(); }
+}, 20000);
+
+it("owner approval completes a valid combined squash without changing checked candidate authority", async () => {
+  const candidate = "config=base\nfeature=on\n";
+  const f = await releaseBrowserFixture({ milestone: "merge", baselineContent: "config=base\nfeature=off\n", candidateContent: candidate });
+  const post = (body: unknown) => fetch(`http://localhost:${f.app.port}${f.prefix}/human-review/approve`, { method: "POST", headers: { authorization: `Bearer ${f.token}`, "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+  try {
+    const ready = await f.detail(); const review = ready.human_reviews[0];
+    f.core.change({ merge_content: candidate + "Independent note\n" });
+    const body = { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, idempotency_key: "valid-combined-squash" };
+    const response = await post(body); expect(response.status).toBe(200); const receipt = await response.json();
+    expect(f.core.git(["show", "main:result.txt"])).toBe((candidate + "Independent note\n").trim());
+    expect(receipt).toMatchObject({ condition: "merged", head: f.core.head, snapshot_id: review.snapshot_id, context_revision: ready.question_revision, merge_sha: f.core.git(["rev-parse", "main"]) });
+    const done = await until(f.detail, d => d.runs.find((run: any) => run.id === f.core.id)?.condition === "completed");
+    expect(done.implementation).toMatchObject({ stage: "done", outcome: "merged" });
+    expect(done.checks).toEqual(ready.checks); expect(done.review_evidence).toEqual(ready.review_evidence);
+    await f.restart();
+    expect(await post(body).then(r => r.json())).toMatchObject({ id: receipt.id, condition: "merged" });
+    expect((await f.detail()).human_review_approvals).toHaveLength(1);
+    expect(f.core.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { await f.close(); }
+}, 20000);
+
+
+it.each([
+  { name: "relocated EOF edit", baseline: "config=base\nfeature=off\n", candidate: "config=base\nfeature=on\n", observed: "feature=on\nconfig=base\nIndependent note\n" },
+  { name: "inserted context before EOF edit", baseline: "config=base\nfeature=off\n", candidate: "config=base\nfeature=on\n", observed: "config=base\nif (false)\nfeature=on\nIndependent note\n" },
+  { name: "relocated BOF edit", baseline: "feature=off\nconfig=base\n", candidate: "feature=on\nconfig=base\n", observed: "config=base\nfeature=on\nIndependent note\n" },
+  { name: "relocated interior edit", baseline: "function checked() {\n  run();\n}\nfunction other() {\n  noop();\n}\n", candidate: "function checked() {\n  validate();\n  run();\n}\nfunction other() {\n  noop();\n}\n", observed: "function checked() {\n  run();\n}\nfunction other() {\n  validate();\n  noop();\n}\n" },
+])("a squash cannot verify additions outside their reviewed literal context: $name", async ({ baseline, candidate, observed }) => {
+  const f = await mergeFixture({ baselineContent: baseline, candidateContent: candidate });
+  try {
+    f.change({ merge_content: observed });
+    const response = await f.post(f.route + "merge", f.body);
+    expect(f.git(["show", "main:result.txt"])).toBe(observed.trim());
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: "merge_coverage_unverified" } });
+    f.restart();
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ error: { code: "merge_coverage_unverified" } });
+    expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { f.close(); }
+}, 20000);
+
 it("Human Review refuses a release deleted after inventory even while its containing tag remains", async () => {
   const f = await mergeFixture({ milestone: "release" });
   try {
