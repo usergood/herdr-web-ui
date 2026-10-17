@@ -1,9 +1,74 @@
 /** Human Review is usable without an agent slot on desktop and mobile. */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
-import { chromium } from "playwright-core";
+import { chromium, type Browser } from "playwright-core";
+import { releaseBrowserFixture } from "./factory-release-browser-fixture.ts";
 import { capacityFixture } from "./factory-capacity-fixture.ts";
 import { published, until } from "./factory-human-review-fixture.ts";
+
+export async function forcedColorLineJourney(browser: Browser, viewport: { width: number; height: number }) {
+  const f = await releaseBrowserFixture({ milestone: "merge", forcedDiffColors: true,
+    baselineContent: "unchanged header\nold first\nold second\nunchanged footer\n",
+    candidateContent: "unchanged header\nnew first\nnew second\nunchanged footer\n" });
+  const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
+  try {
+    assert.equal(f.core.git(["config", "--get", "color.ui"]), "always"); assert.equal(f.core.git(["config", "--get", "color.diff"]), "always");
+    const origin = `http://localhost:${f.app.port}`;
+    assert.equal((await context.request.post(`${origin}/api/auth`, { data: { token: f.token } })).status(), 204);
+    const before = await f.detail(); assert.equal(before.human_review_approvals.length, 0); assert.equal(before.comments.length, 0);
+    const page = await context.newPage(); page.setDefaultTimeout(10000);
+    const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
+    await page.goto(`${origin}/#factory/${f.id}`);
+    await page.getByRole("navigation", { name: "Workflow history", exact: true }).getByRole("button", { name: "Human Review", exact: true }).click();
+    const review = page.getByRole("region", { name: "Human Review", exact: true });
+    await review.getByRole("button", { name: "result.txt · branch:M", exact: true }).click();
+    await review.getByRole("status").filter({ hasText: "Review the captured result and discuss it with the assistant." }).waitFor();
+    assert.equal(await review.getByRole("alert").count(), 0);
+    assert.equal(await review.getByRole("button", { name: "Approve and merge", exact: true }).isDisabled(), false);
+    const file = f.snapshot.files.find((entry: { path: string }) => entry.path === "result.txt"); assert(file);
+    const apiBody = { snapshot_id: f.snapshot.id, path: "result.txt", change: "branch:M", side: "old", line_start: 2, line_end: 3, content: "HTTP old range under forced Git colors" };
+    const saved = await context.request.post(`${origin}${f.prefix}/comments`, { data: apiBody, headers: { origin, "x-herdr-factory": "1" } });
+    const apiComment = await saved.json();
+    console.log(JSON.stringify({ viewport: viewport.width, forced_colors: { ansi_in_capture: file.diff.includes("\u001b["), old_buttons: await review.getByRole("button", { name: "Before 2", exact: true }).count(), new_buttons: await review.getByRole("button", { name: "After 2", exact: true }).count(), comment_status: saved.status(), comment: apiComment } }));
+    assert.equal(saved.status(), 201, "A real forced-color Git capture must support its valid old-side range anchor");
+    assert.equal(file.diff.includes("\u001b["), false, "Capture must retain plain patch data despite forced Git colors");
+    assert.match(file.diff, /^@@ -1,4 \+1,4 @@/m); assert(file.diff.includes("-old first\n-old second\n+new first\n+new second\n"));
+    assert.equal(apiComment.snapshot_id, f.snapshot.id); assert.equal(apiComment.context, file.diff);
+    const expected: [string, "old" | "new", number, number][] = [[apiBody.content, "old", 2, 3]];
+    const drafts = review.getByRole("region", { name: "Draft comments", exact: true });
+    for (const [side, label] of [["old", "Before"], ["new", "After"]] as const) {
+      for (const range of [false, true]) {
+        const first = review.getByRole("button", { name: `${label} 2`, exact: true });
+        if (viewport.width < 640) await first.tap(); else { await first.focus(); await first.press("Enter"); }
+        if (range) {
+          await review.getByRole("button", { name: "Select range end", exact: true }).click();
+          const last = review.getByRole("button", { name: `${label} 3`, exact: true });
+          if (viewport.width < 640) await last.tap(); else { await last.focus(); await last.press("Enter"); }
+        }
+        const end = range ? 3 : 2; const content = `${label} ${range ? "range" : "line"} under forced Git colors`;
+        await review.getByRole("status").filter({ hasText: `result.txt · ${label} 2–${end}` }).waitFor();
+        await review.getByRole("textbox", { name: "Review finding", exact: true }).fill(content);
+        const response = page.waitForResponse(response => response.url().endsWith(`${f.prefix}/comments`) && response.request().method() === "POST");
+        await review.getByRole("button", { name: "Save draft finding", exact: true }).click();
+        const posted = await response; const comment = await posted.json(); assert.equal(posted.status(), 201, JSON.stringify(comment));
+        assert.deepEqual(posted.request().postDataJSON(), { snapshot_id: f.snapshot.id, path: "result.txt", change: "branch:M", side, line_start: 2, line_end: end, content });
+        await drafts.getByText(content, { exact: true }).waitFor(); expected.push([content, side, 2, end]);
+      }
+    }
+    await page.reload();
+    for (const [content] of expected) await drafts.getByText(content, { exact: true }).waitFor();
+    const retained = await f.detail();
+    assert.deepEqual(retained.comments.map((comment: { content: string; side: string; line_start: number; line_end: number }) => [comment.content, comment.side, comment.line_start, comment.line_end]), expected);
+    for (const comment of retained.comments) { assert.equal(comment.snapshot_id, f.snapshot.id); assert.equal(comment.path, "result.txt"); assert.equal(comment.change, "branch:M"); assert.equal(comment.context, file.diff); assert.equal(comment.status, "draft"); assert.equal(comment.batch_id, null); }
+    assert.equal(retained.human_reviews[0].snapshot_id, f.snapshot.id); assert.equal(retained.human_reviews[0].head, f.core.head);
+    assert.equal(retained.human_review_approvals.length, 0); assert.equal(f.mergeRequests.length, 0); assert.equal(retained.workers.length, 0);
+    assert.equal(f.core.calls().filter(args => args[1]?.endsWith("/merge")).length, 0);
+    assert(await review.getByRole("button", { name: "Approve and merge", exact: true }).isDisabled(), "Saved findings grant no merge authority");
+    assert.equal(await review.getByRole("alert").count(), 0);
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)); assert.deepEqual(errors, []);
+    console.log(`PASS real forced-color capture preserves old/new single-line and range drafts through public API/UI and reload (${viewport.width})`);
+  } finally { await context.close(); await f.close(); }
+}
 
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
@@ -227,5 +292,6 @@ try {
       assert.deepEqual(errors, []);
     } finally { await context.close(); f.close(); }
   }
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) await forcedColorLineJourney(browser, viewport);
   console.log("PASS Human Review captured files, discussion, capacity and retained history on desktop/mobile");
 } finally { await browser.close(); }

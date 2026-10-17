@@ -8,8 +8,9 @@ import type { NativeConversationSnapshot } from "../shared/factory.ts";
 import { FactoryStore } from "../server/factory-store.ts";
 import { mergeFixture } from "./factory-merge-fixture.ts";
 
-export async function releaseBrowserFixture(options: { milestone?: "merge" | "release" } = {}) {
-  const core = await mergeFixture({ milestone: options.milestone ?? "release", machineId: "owned-release", native: { version: async () => "owned-release", modelCatalog: async provider => ({ protocol: 1, provider, models: [{ id: "owned-release-model", name: "Owned release model", reasoning: [], default_reasoning: null }], problem: null }) } });
+export async function releaseBrowserFixture(options: { milestone?: "merge" | "release"; baselineContent?: string; candidateContent?: string; forcedDiffColors?: boolean } = {}) {
+  const core = await mergeFixture({ milestone: options.milestone ?? "release", baselineContent: options.baselineContent, candidateContent: options.candidateContent, machineId: "owned-release", native: { version: async () => "owned-release", modelCatalog: async provider => ({ protocol: 1, provider, models: [{ id: "owned-release-model", name: "Owned release model", reasoning: [], default_reasoning: null }], problem: null }) } });
+  if (options.forcedDiffColors) { core.git(["config", "color.ui", "always"]); core.git(["config", "color.diff", "always"]); }
   const stateDir = mkdtempSync(join(tmpdir(), "release-browser-"));
   const token = "owned-release-browser";
   const mergeRequests: Record<string, any>[] = [];
