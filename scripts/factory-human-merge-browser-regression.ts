@@ -318,6 +318,98 @@ export async function releasePagesJourney(browser: Browser, viewport: { width: n
   } finally { await context.close(); await f.close(); }
 }
 
+/** A containing release preserves the approved change, rather than every unchanged file line. */
+export async function releaseScopeJourney(browser: Browser, viewport: { width: number; height: number }, scenario: "independent-context" | "deleted-release") {
+  const baseline = "configuration=base\nfeature=off\n";
+  const candidate = "configuration=base\nfeature=on\n";
+  const f = await releaseBrowserFixture({ baselineContent: baseline, candidateContent: candidate });
+  const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
+  try {
+    const origin = () => `http://localhost:${f.app.port}`;
+    assert.equal((await context.request.post(`${origin()}/api/auth`, { data: { token: f.token } })).status(), 204);
+    assert.equal((await f.detail()).human_review_approvals.length, 0);
+    let page = await context.newPage(); page.setDefaultTimeout(10000);
+    const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
+    const openReview = async () => {
+      await page.goto(`${origin()}/#factory/${f.id}`);
+      await page.getByRole("navigation", { name: "Workflow history", exact: true }).getByRole("button", { name: "Human Review", exact: true }).click();
+    };
+    await openReview();
+    let review = page.getByRole("region", { name: "Human Review", exact: true });
+    await review.getByRole("button", { name: "result.txt · branch:M", exact: true }).waitFor();
+    const response = page.waitForResponse(response => response.url().endsWith(`${f.prefix}/human-review/approve`) && response.request().method() === "POST");
+    await review.getByRole("button", { name: "Approve and merge", exact: true }).click();
+    const approved = await response; const receipt = await approved.json(); assert.equal(approved.status(), 200, JSON.stringify(receipt));
+    const waiting = await until(f.detail, d => d.human_review_approvals[0]?.condition === "awaiting_release");
+    const authority = waiting.human_review_approvals[0]; const merge = authority.merge_sha;
+    assert.equal(authority.id, receipt.id); assert.equal(authority.idempotency_key, approved.request().postDataJSON().idempotency_key);
+    assert.equal(authority.head, f.core.head); assert.equal(authority.snapshot_id, f.snapshot.id);
+    assert.notEqual(authority.id, f.core.body.approval.id, "The UI creates the only authority used by this journey");
+    assert.equal(f.core.git(["rev-parse", "main"]), merge); assert.equal(waiting.implementation.stage, "review");
+    const effects = () => f.core.calls().filter(args => args[1]?.endsWith("/merge") && args.includes("PUT")).length;
+    assert.equal(effects(), 1); assert.equal(f.mergeRequests.length, 1);
+    const request = f.mergeRequests[0]!; assert.equal(request.approval.id, authority.id);
+    await review.getByRole("status").filter({ hasText: "Merge verified; waiting for a published release containing it" }).waitFor();
+    assert.equal(await review.getByRole("alert").count(), 0);
+    const tag = scenario === "independent-context" ? "independent-context-release" : "disappearing-release";
+    const releasedContent = scenario === "independent-context" ? "configuration=independent\nfeature=on\n" : candidate;
+    const commit = f.core.descendant(releasedContent);
+    f.core.git(["tag", tag, commit]); f.core.git(["merge-base", "--is-ancestor", merge, commit]);
+    assert.equal(f.core.git(["show", `${tag}:result.txt`]), releasedContent.trim());
+    f.core.change({ release: tag, ...(scenario === "deleted-release" ? { release_after_inventory_patch: { release: null } } : {}) });
+    const observed = await f.core.post(f.core.route + "merge", request); const result = await observed.json();
+    console.log(JSON.stringify({ viewport: viewport.width, scenario, original_authority: authority, machine_observation: { status: observed.status, result }, published_state: f.core.githubState(), merge_effects: effects() }));
+    if (scenario === "independent-context") {
+      assert.equal(observed.status, 200, JSON.stringify(result));
+      assert.equal(result.condition, "released", "An independent edit to an unchanged configuration line must preserve the approved feature change's delivery");
+    } else {
+      assert.equal(f.core.git(["rev-parse", tag]), commit, "The Git tag remains after its published release disappears");
+      assert.equal(observed.status, 409, "A release removed after inventory cannot satisfy the delivery milestone merely because its tag remains");
+      assert.equal(typeof result.error?.message, "string");
+      assert.equal(f.core.githubState().release, null, "The published release was actually removed after its inventory row was returned");
+      // Retain an eventually consistent inventory while the current publication lookup
+      // is still unavailable, so automatic observation and reload see the same fault.
+      f.core.change({ release_pages: { 1: [{ id: 1, draft: false, prerelease: false, tag_name: tag }] }, release_lookup_missing: true });
+    }
+    assert.equal(effects(), 1);
+    await page.close(); await f.restart();
+    assert.equal((await context.request.post(`${origin()}/api/auth`, { data: { token: f.token } })).status(), 204);
+    page = await context.newPage(); page.setDefaultTimeout(10000); page.on("pageerror", error => errors.push(error.message));
+    await openReview(); review = page.getByRole("region", { name: "Human Review", exact: true });
+    if (scenario === "deleted-release") {
+      const pending = await until(f.detail, d => d.human_review_approvals[0]?.reason_is_error === true, 45000);
+      const fault = pending.human_review_approvals[0];
+      assert.equal(pending.implementation.stage, "review"); assert.equal(fault.condition, "awaiting_release");
+      assert.equal(fault.id, authority.id); assert.equal(fault.merge_sha, merge); assert.equal(fault.release_tag, null);
+      assert.equal(pending.human_review_approvals.length, 1); assert.equal(effects(), 1);
+      assert.equal(typeof fault.reason, "string"); assert(fault.reason);
+      await review.getByRole("alert").filter({ hasText: fault.reason }).waitFor();
+      assert.equal(await review.getByRole("status").filter({ hasText: fault.reason }).count(), 0);
+      await page.reload(); await review.getByRole("alert").filter({ hasText: fault.reason }).waitFor();
+      f.core.change({ release: tag, release_pages: null, release_after_inventory_patch: null, release_lookup_missing: false, release_lookup_patch: null });
+    }
+    const done = await until(f.detail, d => d.runs.find((run: { id: string }) => run.id === f.core.id)?.condition === "completed", 45000);
+    const delivered = done.human_review_approvals[0];
+    assert.equal(done.implementation.stage, "done"); assert.equal(done.implementation.outcome, "released");
+    assert.equal(done.human_review_approvals.length, 1); assert.equal(delivered.condition, "released");
+    assert.equal(delivered.id, authority.id); assert.equal(delivered.idempotency_key, authority.idempotency_key);
+    assert.equal(delivered.context_revision, authority.context_revision); assert.equal(delivered.head, authority.head);
+    assert.equal(delivered.snapshot_id, authority.snapshot_id); assert.equal(delivered.merge_sha, merge); assert.equal(delivered.release_tag, tag);
+    assert.equal(delivered.reason_is_error, false); assert.equal(delivered.reason, null); assert.equal(effects(), 1);
+    for (const observation of f.mergeRequests) {
+      assert.equal(observation.approval.id, authority.id); assert.equal(observation.approval.idempotency_key, authority.idempotency_key);
+      assert.equal(observation.approval.context_revision, authority.context_revision); assert.equal(observation.head, authority.head);
+    }
+    await review.getByRole("status").filter({ hasText: "Release verified" }).waitFor();
+    assert.equal(await review.getByRole("alert").count(), 0);
+    await page.reload(); await review.getByRole("status").filter({ hasText: "Release verified" }).waitFor();
+    assert.equal(await review.getByRole("alert").count(), 0); assert.deepEqual(errors, []);
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    console.log(`PASS real Git release ${scenario}, original UI authority and single merge, automatic delivery/recovery on ${viewport.width}`);
+  } finally { await context.close(); await f.close(); }
+}
+
+if (import.meta.main) {
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
@@ -645,5 +737,7 @@ try {
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) await contextSendJourney(browser, viewport);
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) { await postmergeHistoryJourney(browser, viewport); await postmergeQuestionReleaseJourney(browser, viewport); }
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) await releasePagesJourney(browser, viewport);
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) for (const scenario of ["independent-context", "deleted-release"] as const) await releaseScopeJourney(browser, viewport, scenario);
   console.log("PASS Human Review merge authority, stale/protected/denied targets, lost replies, retained CI waits, frozen release authority despite newer Project/old Machine policy, release completion, delivery archive and postdelivery discussion on desktop/mobile");
 } finally { await browser.close(); }
+}
