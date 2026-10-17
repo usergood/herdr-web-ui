@@ -141,7 +141,8 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; work
       }
       if (action === "operations/check-reconcile") {
         if (unavailableCheckObservation) return Response.json({ error: { code: "disconnected", message: "Owned check observation is unavailable" } }, { status: 503 });
-        return Response.json(checks.get(body.check_id));
+        const check = checks.get(body.check_id);
+        return check && check.run_id === run.id ? Response.json(check) : Response.json({ error: { code: "not_found", message: "Owned check not found" } }, { status: 404 });
       }
       if (action === "operations/head") {
         if (headGate) { const gate = headGate; headGate = null; gate.entered(); await gate.wait; }
