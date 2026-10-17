@@ -8,6 +8,77 @@ import { published, until } from "./factory-human-review-fixture.ts";
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    for (const handoff of ["snapshot", "machine", "rest"] as const) {
+      const f = await capacityFixture({ advancingHeads: true });
+      const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
+      const publication = f.holdNextPublication();
+      try {
+        const candidate = published(f);
+        await publication.started;
+        if (handoff === "rest") f.runs.get(f.launches[0]!)!.condition = "working";
+        else f.reviewUnavailable(true);
+        publication.release();
+        const { id, detail, run } = await candidate;
+        let waiting = await until(detail, d => d.human_reviews?.[0]?.condition === "waiting");
+        if (handoff === "machine") {
+          f.reviewUnavailable(false); f.offline(true);
+          waiting = await until(detail, d => d.runs.find((entry: { id: string }) => entry.id === run.id)?.condition === "disconnected" && d.human_reviews[0]?.condition === "waiting");
+        }
+        const retained = waiting.human_reviews[0];
+        assert(retained.reason);
+        assert.equal(retained.snapshot_id, null);
+        assert.equal(waiting.human_review_approvals.length, 0);
+        let origin = `http://localhost:${f.app.port}`;
+        assert.equal((await context.request.post(`${origin}/api/auth`, { data: { token: f.token } })).status(), 204);
+        const page = await context.newPage(); page.setDefaultTimeout(10000);
+        const openReview = async () => {
+          await page.goto(`${origin}/#factory/${id}`);
+          await page.getByRole("navigation", { name: "Workflow history", exact: true }).getByRole("button", { name: "Human Review", exact: true }).click();
+        };
+        await openReview();
+        const review = page.getByRole("region", { name: "Human Review", exact: true });
+        const role = handoff === "rest" ? "status" : "alert";
+        await review.getByText(retained.reason, { exact: true }).waitFor();
+        await review.getByRole(role).filter({ hasText: retained.reason }).waitFor();
+        assert.equal(await review.getByRole(role === "alert" ? "status" : "alert").filter({ hasText: retained.reason }).count(), 0);
+        assert(await review.getByRole("button", { name: "Approve and merge", exact: true }).isDisabled());
+        await page.reload();
+        await review.getByRole(role).filter({ hasText: retained.reason }).waitFor();
+        f.restart(); origin = `http://localhost:${f.app.port}`;
+        assert.equal((await context.request.post(`${origin}/api/auth`, { data: { token: f.token } })).status(), 204);
+        await openReview();
+        await review.getByRole(role).filter({ hasText: retained.reason }).waitFor();
+        assert.equal((await detail()).human_reviews[0].id, retained.id);
+        if (handoff === "rest") {
+          const native = f.runs.get(run.id)!;
+          native.condition = "blocked"; native.waiting_reason = "Owned native permission required";
+          const blocked = await until(detail, d => d.runs.find((entry: { id: string }) => entry.id === run.id)?.condition === "blocked" && d.human_reviews[0]?.reason_is_error === true);
+          assert.equal(blocked.human_reviews[0].reason, native.waiting_reason);
+          await review.getByRole("alert").filter({ hasText: native.waiting_reason }).waitFor();
+          assert.equal(await review.getByRole("status").filter({ hasText: native.waiting_reason }).count(), 0);
+          await page.reload();
+          await review.getByRole("alert").filter({ hasText: native.waiting_reason }).waitFor();
+          native.condition = "needs_you";
+          const permission = await until(detail, d => d.runs.find((entry: { id: string }) => entry.id === run.id)?.condition === "needs_you" && d.human_reviews[0]?.reason_is_error === false);
+          assert.equal(permission.human_reviews[0].reason, native.waiting_reason);
+          await review.getByRole("status").filter({ hasText: native.waiting_reason }).waitFor();
+          assert.equal(await review.getByRole("alert").filter({ hasText: native.waiting_reason }).count(), 0);
+          console.log(`PASS blocked handoff alert to canonical permission status with identical reason ${viewport.width}x${viewport.height}`);
+        }
+        f.reviewUnavailable(false); f.offline(false); Object.assign(f.runs.get(run.id)!, { condition: "ready", waiting_reason: null });
+        const recovered = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
+        assert.equal(recovered.human_reviews[0].id, retained.id);
+        assert.equal(recovered.human_reviews[0].reason, null);
+        assert.equal(recovered.human_reviews[0].reason_is_error, false);
+        assert(recovered.human_reviews[0].snapshot_id);
+        await review.getByRole("status").filter({ hasText: "Review the captured result and discuss it with the assistant." }).waitFor();
+        assert.equal(await review.getByRole("alert").count(), 0);
+        assert.equal(recovered.human_review_approvals.length, 0);
+        assert.equal(f.mergeEffects.length, 0);
+        assert.equal(recovered.events.filter((event: { kind: string }) => event.kind === "human_review_handoff").length, 1);
+        console.log(`PASS ${handoff} handoff ${role}, retained reload/restart and recovery ${viewport.width}x${viewport.height}`);
+      } finally { publication.release(); await context.close(); f.close(); }
+    }
     // The owned Machine returns a different captured head from the checked PR. The public
     // handoff must retain that mismatch as blocked, and both layouts must announce the error.
     const blockedFixture = await capacityFixture({ advancingHeads: true });

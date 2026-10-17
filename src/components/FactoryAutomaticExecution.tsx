@@ -21,7 +21,7 @@ export function FactoryAutomaticExecution({ detail, onOpenPane }: { detail: Fact
   return <section className="factory-section" aria-label={t("Automatic execution")}>
     <h3>{t("Automatic execution")}</h3>
     {!pause && <p>{t("Tickets, checks, reviews, repairs and PR publication continue automatically.")}</p>}
-    {progress && <p role={!pause && progress.condition === "blocked" ? "alert" : "status"}><strong>{pause ? pause.condition === "paused" ? t("Paused") : t("Pause pending") : progress.condition}</strong>{!pause && progress.reason && <> · {progress.reason}</>}</p>}
+    {progress && <p role={!pause && (progress.condition === "blocked" || progress.reason_is_error) ? "alert" : "status"}><strong>{pause ? pause.condition === "paused" ? t("Paused") : t("Pause pending") : progress.condition}</strong>{!pause && progress.reason && <> · {progress.reason}</>}</p>}
     {workers.map(worker => <article className="factory-message" key={worker.id}>
       <strong>{worker.role === "standards" ? t("Standards") : worker.role === "spec" ? t("Spec") : worker.rework_batch_id ? `${t("Review-fixes")} · ${title(worker.ticket_id)}` : title(worker.ticket_id)}</strong><p>{worker.role} · {worker.suspension?.condition === "stopped" ? t("Paused") : worker.condition}</p>
       {worker.waiting_reason && <p role={factoryReasonRole(worker.condition)}>{worker.waiting_reason}</p>}
@@ -32,7 +32,7 @@ export function FactoryAutomaticExecution({ detail, onOpenPane }: { detail: Fact
     </FactoryDetailSection>)}
     {review && <section className="factory-section" aria-label={t("Automatic review and PR")}>
       <h3>{t("Automatic review and PR")}</h3>
-      <p role={!pause && review.condition === "blocked" ? "alert" : "status"}><strong>{pause ? pause.condition === "paused" ? t("Paused") : t("Pause pending") : review.condition === "published" ? t("PR published") : review.condition === "publishing" ? t("Publishing PR") : review.condition === "repairing" ? t("Fixing") : review.condition === "blocked" ? t("Blocked") : review.condition === "waiting" ? t("Waiting") : t("Reviewing")}</strong>{!pause && review.reason && <> · {review.reason}</>}</p>
+      <p role={!pause && (review.condition === "blocked" || review.reason_is_error) ? "alert" : "status"}><strong>{pause ? pause.condition === "paused" ? t("Paused") : t("Pause pending") : review.condition === "published" ? t("PR published") : review.condition === "publishing" ? t("Publishing PR") : review.condition === "repairing" ? t("Fixing") : review.condition === "blocked" ? t("Blocked") : review.condition === "waiting" ? t("Waiting") : t("Reviewing")}</strong>{!pause && review.reason && <> · {review.reason}</>}</p>
       {pr && <p><a href={pr.url} target="_blank" rel="noopener noreferrer">{t("Open PR")}</a> · #{pr.number}</p>}
       {reports.map(report => <details className="factory-message" key={report.id}>
         <summary>{report.axis === "standards" ? t("Standards") : t("Spec")} · {report.outcome} · {report.head.slice(0, 12)}</summary>

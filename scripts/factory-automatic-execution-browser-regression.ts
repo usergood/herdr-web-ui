@@ -3,6 +3,7 @@ import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
 import { capacityFixture } from "./factory-capacity-fixture.ts";
+import { until } from "./factory-human-review-fixture.ts";
 
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
@@ -40,6 +41,13 @@ try {
       const worker = (await detail()).workers[0];
       const controls = page.getByRole("region", { name: "Assignment execution", exact: true });
       f.offline(true);
+      const retrying = await until(detail, d => d.automatic_execution[0]?.condition === "waiting" && !!d.automatic_execution[0].reason);
+      const failure = retrying.automatic_execution[0].reason;
+      await progress.getByText(failure, { exact: false }).first().waitFor();
+      await progress.getByRole("alert").filter({ hasText: failure }).waitFor();
+      assert.equal(await progress.getByRole("status").filter({ hasText: failure }).count(), 0);
+      await page.reload();
+      await progress.getByRole("alert").filter({ hasText: failure }).waitFor();
       await progress.getByRole("alert").filter({ hasText: "automatic recovery exhausted after six observations" }).waitFor({ timeout: 45_000 });
       const exhausted = (await detail()).automatic_execution[0];
       assert.equal(exhausted.attempts, 6);
@@ -60,6 +68,8 @@ try {
       f.workers.get(worker.id)!.condition = "needs_you";
       f.workers.get(worker.id)!.waiting_reason = "Owned native permission required";
       await progress.getByText("Owned native permission required", { exact: true }).first().waitFor();
+      await progress.getByRole("status").filter({ hasText: "Owned native permission required" }).first().waitFor();
+      assert.equal(await progress.getByRole("alert").filter({ hasText: "Owned native permission required" }).count(), 0);
       const checkGate = f.holdNextCheck("integration");
       f.workers.get(worker.id)!.condition = "ready";
       f.workers.get(worker.id)!.waiting_reason = null;
@@ -82,6 +92,7 @@ try {
       await checks.first().getByText("Owned checks passed", { exact: true }).waitFor();
       await page.reload();
       await progress.getByText("checked", { exact: true }).waitFor();
+      assert.equal(await progress.getByRole("alert").filter({ hasText: failure }).count(), 0);
       await progress.getByText("Implement the accepted result", { exact: true }).waitFor();
       assert.equal((await detail()).workers.filter((w: { role: string }) => w.role === "implementer").length, 1);
       assert.equal((await detail()).approvals.length, 1);

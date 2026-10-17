@@ -91,8 +91,37 @@ try {
         }
         const fixing = await until(detail, d => d.workers.some((w: any) => w.review_origin === "human" && w.condition === "working"));
         const fix = fixing.workers.find((w: any) => w.review_origin === "human" && w.condition === "working");
-        if (round === 0) f.workers.get(fix.id)!.head = previous.head; // Owned Machine reports a completed no-op repair.
+        let retryReason: string | null = null;
+        if (round === 0) {
+          f.workers.get(fix.id)!.head = previous.head; // Owned Machine reports a completed no-op repair.
+          f.workers.get(fix.id)!.condition = "needs_you";
+          f.workers.get(fix.id)!.waiting_reason = "Owned native permission required";
+          await until(detail, d => d.automatic_review[0]?.condition === "waiting" && d.automatic_review[0].reason === "Owned native permission required");
+          const automaticReview = page.getByRole("region", { name: "Automatic review and PR", exact: true });
+          for (const surface of [review, automaticReview]) {
+            await surface.getByRole("status").filter({ hasText: "Owned native permission required" }).waitFor();
+            assert.equal(await surface.getByRole("alert").filter({ hasText: "Owned native permission required" }).count(), 0);
+          }
+          f.loseNextCheck(); f.unavailableCheckObservation(true);
+        }
+        f.workers.get(fix.id)!.waiting_reason = null;
         f.workers.get(fix.id)!.condition = "ready";
+        if (round === 0) {
+          const retrying = await until(detail, d => d.automatic_review[0]?.condition === "waiting" && d.automatic_review[0].attempts > 0 && !!d.automatic_review[0].reason);
+          retryReason = retrying.automatic_review[0].reason;
+          const interrupted = retrying.checks.find((check: { worker_id: string; condition: string }) => check.worker_id === fix.id && check.condition === "interrupted");
+          assert(interrupted);
+          assert.equal(retryReason, "The selected Machine rejected this factory operation; verify its bridge, native tools and checkout");
+          const automaticReview = page.getByRole("region", { name: "Automatic review and PR", exact: true });
+          for (const surface of [review, automaticReview]) {
+            await surface.getByText(retryReason!, { exact: false }).first().waitFor();
+            await surface.getByRole("alert").filter({ hasText: retryReason! }).waitFor();
+            assert.equal(await surface.getByRole("status").filter({ hasText: retryReason! }).count(), 0);
+          }
+          await page.reload();
+          await review.getByRole("alert").filter({ hasText: retryReason! }).waitFor();
+          f.unavailableCheckObservation(false);
+        }
         for (const axis of ["standards", "spec"]) {
           const d = await until(detail, d => d.workers.some((w: any) => w.role === axis && w.condition === "working"));
           f.workers.get(d.workers.find((w: any) => w.role === axis && w.condition === "working").id)!.condition = "ready";
@@ -102,6 +131,10 @@ try {
         assert.notEqual(returned.human_reviews[0].snapshot_id, previous.snapshot_id);
         assert.equal(returned.human_reviews[0].id, previous.id);
         await review.getByText("Fixes passed checks and independent reviews. Awaiting your approval.", { exact: true }).waitFor();
+        if (retryReason) {
+          assert.equal(await review.getByRole("alert").filter({ hasText: retryReason }).count(), 0);
+          assert.equal(await page.getByRole("region", { name: "Automatic review and PR", exact: true }).getByRole("alert").filter({ hasText: retryReason }).count(), 0);
+        }
         await page.reload();
         await review.getByText("Fixes passed checks and independent reviews. Awaiting your approval.", { exact: true }).waitFor();
         if (round === 1) await review.getByText("Explain while I submit these fixes", { exact: true }).waitFor();
