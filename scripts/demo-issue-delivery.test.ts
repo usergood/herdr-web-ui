@@ -29,6 +29,7 @@ test("the demo preserves typed workflow faults through current reads and board p
     const saved = JSON.parse(storage.get("saurons-eye:demo-factory")!);
     const detail = saved.details.find(([id]: [string]) => id === idea.id)[1];
     const run = { id: "owned-demo-reason-run", implementation_id: idea.id, action: "implement-spec", condition: "ready", manifest: {}, machine_id: "local", provider: "codex", checkout: "/fictional/project", worktree: "/fictional/project/run", created_at: idea.created_at, updated_at: idea.updated_at };
+    detail.implementation.completion_evidence = { repository_changes: "unknown", quiescent: false, reason: "Fictional completion observation unavailable", reason_is_error: true, checked_at: idea.created_at };
     detail.runs = [{ ...run, delivery_completion_error: "Fictional verified-delivery history unavailable" }];
     detail.human_review_approvals = [{ run_id: run.id, condition: "awaiting_release", reason: "Fictional release observation unavailable", reason_is_error: true }];
     detail.human_reviews = [{ id: run.id, run_id: run.id, implementation_id: idea.id, condition: "waiting", reason: "Fictional snapshot unavailable", reason_is_error: true }];
@@ -39,6 +40,9 @@ test("the demo preserves typed workflow faults through current reads and board p
     const read = (await import(readModule)).factoryDemo;
     const current = await (await read(new URL(`${route}/${idea.id}?view=current`), "GET", {}, [])).json();
     const full = await (await read(new URL(`${route}/${idea.id}`), "GET", {}, [])).json();
+    expect(full.implementation.completion_evidence.reason_is_error).toBe(true);
+    expect(current.implementation.completion_evidence.reason_is_error).toBe(true);
+    expect(current.board.waiting_reason_is_error).toBe(true);
     expect(full.human_review_approvals[0].reason_is_error).toBe(true);
     expect(current.runs[0].delivery_completion_error).toBe("Fictional verified-delivery history unavailable");
     expect(current.board.delivery_completion_error).toBe("Fictional verified-delivery history unavailable");
@@ -46,7 +50,7 @@ test("the demo preserves typed workflow faults through current reads and board p
     expect(current.automatic_review[0].reason_is_error).toBe(true);
     expect(current.automatic_execution[0].reason_is_error).toBe(false);
     const overview = await (await read(new URL("https://demo.invalid/api/factory"), "GET", {}, [])).json();
-    expect(overview.progress.find((progress: any) => progress.implementation_id === idea.id).error_reasons).toEqual(["Fictional verified-delivery history unavailable", "Fictional review observation failed", "Fictional snapshot unavailable"]);
+    expect(overview.progress.find((progress: any) => progress.implementation_id === idea.id).error_reasons).toEqual(["Fictional completion observation unavailable", "Fictional verified-delivery history unavailable", "Fictional review observation failed", "Fictional snapshot unavailable"]);
   } finally {
     if (descriptor) Object.defineProperty(globalThis, "localStorage", descriptor);
     else delete (globalThis as any).localStorage;

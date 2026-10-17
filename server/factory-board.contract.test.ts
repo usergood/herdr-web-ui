@@ -1,9 +1,98 @@
 import { describe, expect, it } from "bun:test";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { factoryDeliveryFixture } from "./factory-delivery.fixture.ts";
+import { factoryMergeFixture } from "./factory-merge.fixture.ts";
+import { factoryHistoryFixture } from "./factory-history.fixture.ts";
 import { boardRepair, boardScenario } from "../scripts/factory-board-fixture.ts";
 import { capacityFixture } from "../scripts/factory-capacity-fixture.ts";
 import { published, until } from "../scripts/factory-human-review-fixture.ts";
 
 describe("Assignment board through authenticated HTTP", () => {
+  it("retains completion faults through delivery verification and keeps ordinary waits as status", async () => {
+    const f = await factoryMergeFixture(true, "release");
+    try {
+      const linked = await f.request(f.prefix + "/delivery", f.links).then(r => r.json());
+      const sync = () => f.request(f.prefix + "/delivery/sync", { expected_revision: linked.revision }).then(r => r.json());
+      const error = "Repository change evidence is unavailable. Reconnect the Machine and inspect the retained work before accepting research.";
+      expect((await f.request(`${f.prefix}/snapshots`, { run_id: f.run.id, mode: "branch" })).status).toBe(201);
+      expect((await f.request(`/runs/${f.run.id}/stop`, {})).status).toBe(200);
+      f.disconnect(); await sync();
+      expect((await f.request(f.prefix).then(r => r.json())).implementation.completion_evidence).toMatchObject({ reason: error, reason_is_error: true });
+      f.reconnect(); f.pull.merged = false; f.respond();
+      const ordinary = await sync();
+      expect(ordinary.problem).toContain("is not verified merged");
+      expect((await f.request(f.prefix).then(r => r.json())).board).toMatchObject({ waiting_reason: ordinary.problem, waiting_reason_is_error: false });
+      f.pull.merged = true; f.respond();
+      expect((await sync()).condition).toBe("merged");
+      const waiting = await f.request(f.prefix).then(r => r.json());
+      expect(waiting.board).toMatchObject({ lane: "running", activity: "awaiting_release", waiting_reason: null, waiting_reason_is_error: false });
+      expect(waiting.implementation.completion_evidence.reason_is_error).toBe(false);
+      f.data["repos/fictional/project/releases?per_page=100&page=1"] = null; f.respond();
+      const failed = await sync();
+      expect(failed.problem).toBe("GitHub release evidence is incomplete; sync again when it is available");
+      for (const suffix of ["", "?navigation=1"]) {
+        const overview = await f.request(suffix).then(r => r.json());
+        expect(overview.board.find((item: any) => item.implementation_id === f.run.implementation_id)).toMatchObject({ activity: "awaiting_release", waiting_reason: failed.problem, waiting_reason_is_error: true });
+        expect(overview.progress.find((item: any) => item.implementation_id === f.run.implementation_id).error_reasons).toContain(failed.problem);
+      }
+      for (const suffix of ["", "?view=current"]) expect((await f.request(f.prefix + suffix).then(r => r.json())).board.waiting_reason_is_error).toBe(true);
+      f.restart();
+      expect((await f.request(f.prefix).then(r => r.json())).implementation.completion_evidence.reason_is_error).toBe(true);
+      f.data["repos/fictional/project/releases?per_page=100&page=1"] = []; f.respond(); await sync();
+      const recovered = await f.request("").then(r => r.json());
+      expect(recovered.board.find((item: any) => item.implementation_id === f.run.implementation_id)).toMatchObject({ lane: "running", activity: "awaiting_release", waiting_reason: null, waiting_reason_is_error: false });
+      expect(recovered.progress.find((item: any) => item.implementation_id === f.run.implementation_id).error_reasons).toEqual([]);
+    } finally { await f.close(); }
+  }, 30000);
+
+  it("keeps historical missing completion proof distinct from a failed observation", async () => {
+    const f = factoryHistoryFixture();
+    try {
+      for (const suffix of ["", "?navigation=1"]) {
+        const overview = await f.request(suffix).then(r => r.json());
+        expect(overview.implementations[0].completion_evidence.repository_changes).toBe("unknown");
+        expect(overview.board[0].waiting_reason_is_error).toBe(false);
+        expect(overview.progress[0].error_reasons).toEqual([]);
+      }
+    } finally { f.close(); }
+  });
+
+  it.each([false, true])("announces unavailable completion evidence with retained changes=%s and clears it after inspection", async retainedChanges => {
+    const f = await factoryDeliveryFixture(true);
+    try {
+      const run = await f.start();
+      if (retainedChanges) {
+        writeFileSync(join(run.worktree!, "findings.md"), "Owned retained findings\n");
+        expect((await f.request(`${f.prefix}/snapshots`, { run_id: run.id, mode: "workspace" })).status).toBe(201);
+        expect((await f.request(`/runs/${run.id}/stop`, {})).status).toBe(200);
+      }
+      f.disconnect();
+      const error = "Repository change evidence is unavailable. Reconnect the Machine and inspect the retained work before accepting research.";
+      const inspection = await f.request(`${f.prefix}/completion-evidence`).then(r => r.json());
+      const observe = async () => {
+        for (const suffix of ["", "?navigation=1"]) {
+          const overview = await f.request(suffix).then(r => r.json());
+          expect(overview.board.find((item: any) => item.implementation_id === run.implementation_id)).toMatchObject({ lane: "needs_you", activity: retainedChanges ? "awaiting_merge" : "implementing", busy: !retainedChanges, waiting_reason: error, waiting_reason_is_error: true });
+          expect(overview.progress.find((item: any) => item.implementation_id === run.implementation_id).error_reasons).toContain(error);
+        }
+        for (const suffix of ["", "?view=current"]) expect((await f.request(f.prefix + suffix).then(r => r.json())).board).toMatchObject({ waiting_reason: error, waiting_reason_is_error: true });
+      };
+      await observe();
+      expect(inspection).toMatchObject({ repository_changes: retainedChanges ? "changes" : "unknown", quiescent: false, reason: error, reason_is_error: true });
+      f.restart(); await observe();
+      f.reconnect();
+      const recovered = await f.request(`${f.prefix}/completion-evidence`).then(r => r.json());
+      expect(recovered.reason_is_error).toBe(false);
+      if (retainedChanges) expect(recovered.reason).toBe("Repository changes require verified PR delivery. Link the delivery evidence before completing this Assignment.");
+      for (const suffix of ["", "?navigation=1"]) {
+        const overview = await f.request(suffix).then(r => r.json());
+        expect(overview.board.find((item: any) => item.implementation_id === run.implementation_id).waiting_reason_is_error ?? false).toBe(false);
+        expect(overview.progress.find((item: any) => item.implementation_id === run.implementation_id).error_reasons).not.toContain(error);
+      }
+    } finally { await f.close(); }
+  }, 30000);
+
   it("keeps Running as the displayed lifecycle lane through Pause and restart", async () => {
     const f = await capacityFixture();
     try {

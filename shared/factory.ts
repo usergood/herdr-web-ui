@@ -36,7 +36,7 @@ export interface Implementation extends FactoryRecord {
   discard_requested_at?: string | null;
   /** Fixed at the first accepted Run, including its committed repository baseline. */
   delivery_scope?: { milestone: "merge" | "release"; repository: string | null; branch: string | null; base: string | null; github_repository?: string | null };
-  completion_evidence?: { repository_changes: "none" | "changes" | "unknown"; quiescent: boolean; reason: string | null; checked_at: string };
+  completion_evidence?: { repository_changes: "none" | "changes" | "unknown"; quiescent: boolean; reason: string | null; reason_is_error?: boolean; checked_at: string };
   delivery?: AssignmentDelivery;
   upstream_update?: import("./upstream-releases.ts").UpstreamRelease;
 }

@@ -96,8 +96,9 @@ export class FactoryMergeDelivery {
       idea = this.idea(id);
       const scope = this.scope(id);
       const delivery: AssignmentDelivery = { ...linked, changes: [], pulls: [], release: undefined, condition: "needs_you", problem: null, checked_at: new Date().toISOString() };
+      let reasonIsError = false;
       try {
-        if (!evidence.quiescent) throw new FactoryError("delivery_active", evidence.repository_changes === "unknown" ? evidence.reason! : "Stop and reconcile owned work before verifying delivery", 409);
+        if (!evidence.quiescent) throw new FactoryError("delivery_active", evidence.reason_is_error ? evidence.reason! : "Stop and reconcile owned work before verifying delivery", 409);
         const project = idea.project_id ? this.store.get<FactoryProject>("projects", idea.project_id) : null;
         const selected = project?.account_bindings?.[linked.machine_id]?.github;
         if (selected && selected !== linked.account_profile_id) throw new FactoryError("account_scope_changed", "Correct delivery links to use the Project's selected GitHub account", 409);
@@ -202,6 +203,9 @@ export class FactoryMergeDelivery {
         }
       } catch (error) {
         if (delivery.condition === "released") { delivery.condition = "needs_you"; delivery.release = undefined; }
+        // Ordinary delivery/owner waits are not failed observations. An inspection
+        // failure remains a fault even when retained changes are already known.
+        reasonIsError = evidence.reason_is_error === true || !(error instanceof FactoryError && ["delivery_active", "delivery_unmerged", "delivery_owner_action"].includes(error.code));
         delivery.problem = error instanceof FactoryError ? error.message : "Delivery evidence is unavailable. Reconnect the Machine or verify the selected GitHub account, then sync again.";
       }
       if (this.scope(id) !== scope) throw new FactoryError("delivery_changed", "The Assignment changed during delivery verification; refresh before continuing", 409);
@@ -209,7 +213,7 @@ export class FactoryMergeDelivery {
       this.store.db.transaction(() => {
         const pending = this.store.list<FactoryQuestion>("questions", id).some(question => question.answer === null && (!question.run_id || this.store.get<FactoryRun>("runs", question.run_id)?.action !== "verify-provider"));
         const done = !pending && (delivery.condition === "released" || delivery.condition === "merged" && current.delivery_scope?.milestone === "merge");
-        this.store.put("implementations", { ...current, delivery, completion_evidence: { ...evidence, reason: delivery.problem }, ...(done ? { stage: "done", outcome: delivery.condition === "released" ? "released" as const : "merged" as const } : {}) });
+        this.store.put("implementations", { ...current, delivery, completion_evidence: { ...evidence, reason: delivery.problem, reason_is_error: reasonIsError }, ...(done ? { stage: "done", outcome: delivery.condition === "released" ? "released" as const : "merged" as const } : {}) });
         const previous = current.delivery;
         if (previous?.condition !== delivery.condition || previous.problem !== delivery.problem || JSON.stringify(previous.changes) !== JSON.stringify(delivery.changes) || JSON.stringify(previous.pulls) !== JSON.stringify(delivery.pulls) || JSON.stringify(previous.release) !== JSON.stringify(delivery.release)) this.store.event(id, done ? "assignment_delivered" : "delivery_observed", { revision: delivery.revision, condition: delivery.condition, problem: delivery.problem, release: delivery.release });
       })();

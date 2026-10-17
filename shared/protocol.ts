@@ -1394,13 +1394,17 @@ export const DEFAULT_PORT = 7317;
  * POST /api/factory/settings (settings) -> FactorySettings; global agent/build limits and future defaults.
  * The removed max_implementations setting is rejected; saved agent/build limits migrate unchanged.
  * GET .../completion-evidence -> Implementation["completion_evidence"]; freshly checks all
- * retained Run/worker repositories and ownership. Unavailable Machine evidence stays unknown.
+ * retained Run/worker repositories and ownership. Failed observations retain known changes and
+ * reason_is_error; a successful fresh inspection clears the fault. Ordinary completion waits
+ * and historical missing-proof gates remain status reasons.
  * POST .../complete-work (complete_work) -> Implementation; accepts no-change research only
  * after fresh repository and quiescence evidence; repository changes require PR delivery.
  * GET .../delivery -> AssignmentDelivery | null; owner-linked repository, branch and PR evidence.
  * POST .../delivery (AssignmentDeliveryConfiguration) -> AssignmentDelivery; revision-bound correction.
  * POST .../delivery/sync ({expected_revision}) -> AssignmentDelivery; read-only GitHub verification;
  * all intended committed changes and linked merges must be covered before merge-based completion.
+ * Completion evidence retains typed verification faults; successful sync clears them while
+ * unmerged PRs, owner questions and a complete inventory without a release remain ordinary waits.
  * Release milestones additionally verify a published release tag contains every linked merge;
  * retained release ID, URL, tag commit and publication time are inspectable. No release writes.
  * POST /api/factory-host/delivery-read (DeliveryReadRequest) -> bounded read-only GitHub resource;

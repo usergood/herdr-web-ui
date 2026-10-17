@@ -57,7 +57,9 @@ export function assignmentProgress(idea: Implementation, tickets: FactoryTicket[
   const scopedRuns = runs.filter(run => !ended(run.condition) || run === current);
   const failed = (context: FactoryRun | FactoryWorker) => ["failed", "interrupted", "disconnected", "blocked"].includes(context.condition);
   const workflowFaults = workflowReasons.filter(record => record.reason_is_error && record.reason && scopedRuns.some(run => run.id === record.run_id)).map(record => record.reason!);
+  const completionError = idea.completion_evidence?.reason_is_error ? idea.completion_evidence.reason : null;
   const errorReasons = [...new Set([
+    ...(completionError ? [completionError] : []),
     ...scopedRuns.filter(run => !ended(run.condition)).flatMap(run => run.delivery_completion_error ? [run.delivery_completion_error] : []),
     ...workflowFaults,
     ...(idea.deletion?.reasons ?? []), ...(idea.pause?.reasons ?? []),
@@ -66,6 +68,7 @@ export function assignmentProgress(idea: Implementation, tickets: FactoryTicket[
     ...latestChecks.filter(check => ["failed", "interrupted"].includes(check.condition)).map(checkReason),
   ])];
   const reasons = [...new Set([
+    ...(completionError ? [completionError] : []),
     ...workflowFaults,
     ...(idea.deletion?.reasons ?? []), ...(idea.pause?.reasons ?? []),
     ...waits.map(wait => wait.reason),
@@ -141,10 +144,10 @@ function projectNativeBoard(implementation: Implementation, context: BoardContex
   const validating = !!check && ["working", "failed", "interrupted"].includes(check.condition);
   const proposal = !run && ["specifying", "review"].includes(implementation.stage);
   const reviewing = workers.some(worker => worker.role !== "implementer" && !["completed", "cancelled"].includes(worker.condition));
-  if (implementation.stage !== "done" && implementation.delivery_scope?.milestone === "release" && implementation.delivery?.condition === "merged" && implementation.completion_evidence?.quiescent && !busy) return { implementation_id: implementation.id, lane: attention || implementation.delivery.problem ? "needs_you" : "running", activity: "awaiting_release", condition: attention?.condition ?? (implementation.delivery.problem ? "needs_you" : "ready"), run_id: run?.id ?? null, busy: false, waiting_reason: attention?.waiting_reason ?? implementation.delivery.problem, ticket_progress: tickets.length ? { completed: tickets.filter(ticket => ticket.status === "done").length, total: tickets.length } : null };
+  if (implementation.stage !== "done" && implementation.delivery_scope?.milestone === "release" && implementation.delivery?.condition === "merged" && implementation.completion_evidence?.quiescent && !busy) return { implementation_id: implementation.id, lane: attention || implementation.delivery.problem ? "needs_you" : "running", activity: "awaiting_release", condition: attention?.condition ?? (implementation.delivery.problem ? "needs_you" : "ready"), run_id: run?.id ?? null, busy: false, waiting_reason: attention?.waiting_reason ?? implementation.delivery.problem, waiting_reason_is_error: !attention?.waiting_reason && implementation.completion_evidence.reason_is_error === true, ticket_progress: tickets.length ? { completed: tickets.filter(ticket => ticket.status === "done").length, total: tickets.length } : null };
   if (implementation.stage !== "done" && implementation.activity === "awaiting_merge" && !busy && !attention) return { implementation_id: implementation.id, lane: "needs_you", activity: "awaiting_merge", condition: "needs_you", run_id: run?.id ?? null, busy: false, waiting_reason: null, ticket_progress: tickets.length ? { completed: tickets.filter(ticket => ticket.status === "done").length, total: tickets.length } : null };
   if (implementation.stage !== "done" && !attention && !busy && run && implementation.completion_evidence?.repository_changes === "none" && implementation.completion_evidence.quiescent) return { implementation_id: implementation.id, lane: "needs_you", activity: "researching", condition: "needs_you", run_id: run.id, busy: false, waiting_reason: "Accept the retained research to finish this Assignment; no repository changes were found.", ticket_progress: tickets.length ? { completed: tickets.filter(ticket => ticket.status === "done").length, total: tickets.length } : null };
-  if (implementation.stage !== "done" && !run?.scope_pause && implementation.completion_evidence?.reason && (!busy || implementation.completion_evidence.repository_changes === "unknown")) return { implementation_id: implementation.id, lane: "needs_you", activity: implementation.completion_evidence.repository_changes === "changes" ? "awaiting_merge" : run ? factoryRunActivity(run.action) : null, condition: attention?.condition ?? "needs_you", run_id: run?.id ?? null, busy, waiting_reason: implementation.completion_evidence.reason, ticket_progress: tickets.length ? { completed: tickets.filter(ticket => ticket.status === "done").length, total: tickets.length } : null };
+  if (implementation.stage !== "done" && !run?.scope_pause && implementation.completion_evidence?.reason && (!busy || implementation.completion_evidence.repository_changes === "unknown")) return { implementation_id: implementation.id, lane: "needs_you", activity: implementation.completion_evidence.repository_changes === "changes" ? "awaiting_merge" : run ? factoryRunActivity(run.action) : null, condition: attention?.condition ?? "needs_you", run_id: run?.id ?? null, busy, waiting_reason: implementation.completion_evidence.reason, waiting_reason_is_error: implementation.completion_evidence.reason_is_error === true, ticket_progress: tickets.length ? { completed: tickets.filter(ticket => ticket.status === "done").length, total: tickets.length } : null };
   // Native rest after Pause and a later discussion do not replace the Assignment's phase.
   // Keep explicit delivery/research waits and guarded Discard above; reuse retained progress
   // for ordinary suspension and delivered work without changing activity or sidebar ownership.
