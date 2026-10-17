@@ -2,6 +2,111 @@ import { expect, it } from "bun:test";
 import { mergeFixture } from "../scripts/factory-merge-fixture.ts";
 import { releaseBrowserFixture } from "../scripts/factory-release-browser-fixture.ts";
 
+it("Human Review releases intended changes despite an independent unchanged context edit", async () => {
+  const f = await mergeFixture({ milestone: "release", baselineContent: "config=old\nfeature=disabled\n", candidateContent: "config=old\nfeature=enabled\n" });
+  try {
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "awaiting_release" });
+    f.git(["tag", "independent-context", f.descendant("config=new\nfeature=enabled\n")]); f.change({ release: "independent-context" }); f.restart();
+    const response = await f.post(f.route + "merge", f.body);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ condition: "released", release_tag: "independent-context", head: f.head });
+    expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { f.close(); }
+}, 20000);
+
+it("Human Review refuses a release deleted after inventory even while its containing tag remains", async () => {
+  const f = await mergeFixture({ milestone: "release" });
+  try {
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "awaiting_release" });
+    f.git(["tag", "deleted-publication", "main"]); f.change({ release: "deleted-publication", release_after_inventory_patch: { release: null } });
+    const response = await f.post(f.route + "merge", f.body);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: "release_inventory_unavailable" } });
+    expect(f.git(["rev-parse", "deleted-publication"])).toBe(f.git(["rev-parse", "main"]));
+    expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { f.close(); }
+}, 20000);
+
+it.each([
+  { name: "context following the feature", base: "feature=off\nconfig=old\n", approved: "feature=on\nconfig=old\n", released: "feature=on\nconfig=new\n", valid: true },
+  { name: "deletion with independently changed context", base: "config=old\nremoved feature\nretained\n", approved: "config=old\nretained\n", released: "config=new\nretained\n", valid: true },
+  { name: "no-final-newline feature", base: "config=old\nfeature=off", approved: "config=old\nfeature=on", released: "config=new\nfeature=on", valid: true },
+  { name: "missing reviewed feature", base: "config=old\nfeature=off\n", approved: "config=old\nfeature=on\n", released: "config=new\nfeature=off\n", valid: false },
+  { name: "unchanged duplicate substituting for an added occurrence", base: "feature=on\nfeature=off\n", approved: "feature=on\nfeature=on\n", released: "feature=on\nindependent config\n", valid: false },
+  { name: "removed reviewed final newline", base: "feature=off\n", approved: "feature=on\n", released: "independent config\nfeature=on", valid: false },
+  { name: "reversed reviewed additions", base: "old feature\n", approved: "first feature\nsecond feature\n", released: "second feature\nfirst feature\n", valid: false },
+  { name: "additive release retaining an ambiguous removed duplicate", base: "duplicate\nremoved feature\nduplicate\n", approved: "duplicate\n", released: "duplicate\nindependent config\n", valid: true },
+  { name: "additive release retaining a removed blank token", base: "\nremoved feature\n\n", approved: "\n", released: "\nindependent config\n", valid: true },
+  { name: "ambiguous removal with rewritten context", base: "duplicate\nremoved feature\nduplicate\nconfig=old\n", approved: "duplicate\nconfig=old\n", released: "duplicate\nconfig=new\n", valid: false },
+])("Human Review verifies intended diff scope: $name", async ({ base, approved, released, valid }) => {
+  const f = await mergeFixture({ milestone: "release", baselineContent: base, candidateContent: approved });
+  try {
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "awaiting_release" });
+    f.git(["tag", "scoped-release", f.descendant(released)]); f.change({ release: "scoped-release" }); f.restart();
+    const response = await f.post(f.route + "merge", f.body); expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ condition: valid ? "released" : "awaiting_release", release_tag: valid ? "scoped-release" : null });
+    expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { f.close(); }
+}, 20000);
+
+it.each([
+  { name: "draft", patch: { draft: true } },
+  { name: "prerelease", patch: { prerelease: true } },
+  { name: "changed immutable ID", patch: { id: 2 } },
+  { name: "changed tag", patch: { tag_name: "another-tag" } },
+  { name: "changed target", patch: { target_commitish: "another-branch" } },
+  { name: "unpublished", patch: { published_at: null } },
+  { name: "republished", patch: { published_at: "2026-10-18T00:00:00Z" } },
+])("Human Review refuses a containing release changed after inventory: $name", async ({ patch }) => {
+  const f = await mergeFixture({ milestone: "release" });
+  try {
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "awaiting_release" });
+    f.git(["tag", "changed-publication", "main"]);
+    f.change({ release: "changed-publication", release_after_inventory_patch: { release_lookup_patch: patch } });
+    const rejected = await f.post(f.route + "merge", f.body); expect(rejected.status).toBe(409);
+    expect(await rejected.json()).toMatchObject({ error: { code: "release_inventory_unavailable" } });
+    expect(f.calls().some(args => args[1] === "repos/fictional/project/releases/1")).toBe(true);
+    f.change({ release_lookup_patch: null }); f.restart();
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "released", release_tag: "changed-publication" });
+    expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { f.close(); }
+}, 20000);
+
+it.each(["independent context", "deleted publication"])("the connection automatically verifies %s under its original owner authority", async scenario => {
+  const f = await releaseBrowserFixture({ baselineContent: "config=old\nfeature=off\n", candidateContent: "config=old\nfeature=on\n" });
+  const post = (path: string, body: unknown) => fetch(`http://localhost:${f.app.port}${f.prefix}${path}`, { method: "POST", headers: { authorization: `Bearer ${f.token}`, "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+  try {
+    const ready = await f.detail(); const review = ready.human_reviews[0]; expect(ready.human_review_approvals).toEqual([]);
+    const body = { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, idempotency_key: `scoped-release-${scenario.replaceAll(" ", "-")}` };
+    const approved = await post("/human-review/approve", body); expect(approved.status).toBe(200);
+    const receipt = await approved.json(); expect(receipt.condition).toBe("awaiting_release");
+    const merge = f.core.githubState().pull.mergeCommit.oid;
+    f.core.git(["tag", "scoped-owner-release", f.core.descendant("config=new\nfeature=on\n")]);
+    f.core.change({ release: "scoped-owner-release", ...(scenario === "deleted publication" ? { release_after_inventory_patch: { release: null } } : {}) });
+    if (scenario === "deleted publication") {
+      const rejected = await post("/human-review/approve", body); expect(rejected.status).toBe(200);
+      expect(await rejected.json()).toMatchObject({ id: receipt.id, condition: "awaiting_release", reason_is_error: true, merge_sha: merge });
+      expect((await f.detail()).implementation.stage).not.toBe("done");
+      f.core.change({ release: "scoped-owner-release" });
+    } else {
+      // Establish actual recoverable observation backoff; ordinary release polls are thirty seconds apart.
+      f.core.change({ release_lookup_missing: true });
+      const unavailable = await post("/human-review/approve", body); expect(unavailable.status).toBe(200);
+      expect(await unavailable.json()).toMatchObject({ id: receipt.id, condition: "awaiting_release", reason_is_error: true, merge_sha: merge });
+      f.core.change({ release_lookup_missing: false });
+    }
+    await f.restart();
+    const completed = await until(f.detail, d => d.human_review_approvals[0]?.condition === "released" && d.runs.find((run: any) => run.id === f.core.id)?.condition === "completed");
+    expect(completed.human_review_approvals).toHaveLength(1);
+    expect(completed.human_review_approvals[0]).toMatchObject({ id: receipt.id, idempotency_key: receipt.idempotency_key, context_revision: receipt.context_revision, head: receipt.head, merge_sha: merge, condition: "released", release_tag: "scoped-owner-release", reason: null });
+    expect(completed.human_review_approvals[0].reason_is_error ?? false).toBe(false);
+    expect(completed.implementation).toMatchObject({ stage: "done", outcome: "released" });
+    expect(completed.events.filter((event: any) => event.kind === "human_review_merge_authorized")).toHaveLength(1);
+    for (const request of f.mergeRequests) expect(request.approval).toMatchObject({ id: receipt.id, idempotency_key: receipt.idempotency_key, context_revision: receipt.context_revision, head: receipt.head });
+    expect(f.core.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { await f.close(); }
+}, 20000);
+
 it("Human Review discovers a valid containing release on page two after restart", async () => {
   const f = await mergeFixture({ milestone: "release" });
   try {

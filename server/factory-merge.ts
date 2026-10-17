@@ -39,22 +39,42 @@ function deliveryText(value: unknown, oid: string): string | null {
   return Buffer.from(text, "utf8").equals(bytes) ? text : null;
 }
 
-/** A descendant may add text without undoing reviewed lines or restoring removed content.
- * Independent replacements, binaries, empty files and renames still need exact blob evidence. */
+/** Preserve reviewed additions/replacements and deletions, rather than unchanged context.
+ * Ambiguous removals require exact blobs or the full-candidate additive proof. */
 function retainsApprovedText(approved: string, observed: string, diff: string): boolean {
   if (!approved || approved.includes("\0")) return false;
-  const removed = new Set<string>(); let hunk = false;
+  const edits: { kind: "+" | "-"; text: string }[] = [];
+  let hunk = false, previous: typeof edits[number] | undefined;
   for (const line of diff.split("\n")) {
-    if (line.startsWith("@@ ")) hunk = true;
-    else if (hunk && line.startsWith("-")) removed.add(line.slice(1));
+    if (line.startsWith("@@ ")) { hunk = true; previous = undefined; }
+    else if (hunk && (line.startsWith("+") || line.startsWith("-"))) {
+      previous = { kind: line[0] as "+" | "-", text: line.slice(1) + "\n" }; edits.push(previous);
+    } else {
+      if (line === "\\ No newline at end of file" && previous) previous.text = previous.text.slice(0, -1);
+      previous = undefined;
+    }
   }
-  const lines = approved.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+  if (!edits.length) return false;
+  const lines = (value: string) => value.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+  const count = (tokens: string[]) => {
+    const result = new Map<string, number>();
+    for (const token of tokens) result.set(token, (result.get(token) ?? 0) + 1);
+    return result;
+  };
+  const required = edits.filter(edit => edit.kind === "+").map(edit => edit.text);
+  const actual = lines(observed), approvedCounts = count(lines(approved)), actualCounts = count(actual);
+  // An unchanged duplicate cannot stand in for an omitted reviewed addition.
+  if (required.some(token => (actualCounts.get(token) ?? 0) < (approvedCounts.get(token) ?? 1))) return false;
+  const withoutNewline = (token: string) => token.endsWith("\n") ? token.slice(0, -1) : token;
+  const retained = count(lines(approved).map(withoutNewline)), current = count(actual.map(withoutNewline));
+  // Preserve the earlier additive proof even when removed text also occurs in retained context.
+  const all = lines(approved); let matched = 0;
+  for (const token of actual) if (token === all[matched]) matched++;
+  if (matched === all.length && edits.every(edit => edit.kind !== "-" || (current.get(withoutNewline(edit.text)) ?? 0) <= (retained.get(withoutNewline(edit.text)) ?? 0))) return true;
+  if (edits.some(edit => edit.kind === "-" && (retained.has(withoutNewline(edit.text)) || current.has(withoutNewline(edit.text))))) return false;
   let next = 0;
-  for (const line of observed.match(/[^\n]*\n|[^\n]+$/g) ?? []) {
-    if (line === lines[next]) next++;
-    else if (removed.has(line.endsWith("\n") ? line.slice(0, -1) : line)) return false;
-  }
-  return next === lines.length;
+  for (const token of actual) if (token === required[next]) next++;
+  return next === required.length;
 }
 
 /** A sent merge is observed after restart; its mutation is never replayed. */
@@ -208,7 +228,7 @@ export class FactoryMerge {
       result.condition = "awaiting_release"; result.reason = "Merge verified; waiting for a published release containing it";
       const seen = new Set<number>();
       for (let page = 1; page <= 10; page++) {
-        let releases: { id: number; draft: boolean; prerelease: boolean; tag_name: string }[];
+        let releases: { id: number; draft: boolean; prerelease: boolean; tag_name: string; target_commitish: string; published_at: string }[];
         try { releases = await api(`repos/${pr.repository}/releases?per_page=100&page=${page}`) as typeof releases; }
         catch (error) {
           if (error instanceof FactoryError && error.code !== "account_login_unavailable") throw error;
@@ -216,12 +236,19 @@ export class FactoryMerge {
         }
         if (!Array.isArray(releases) || releases.length > 100) throw new FactoryError("release_inventory_unavailable", "The published release inventory is incomplete; retain the verified merge and observe again", 409);
         for (const release of releases) {
-          if (!release || !Number.isSafeInteger(release.id) || release.id < 1 || seen.has(release.id) || typeof release.draft !== "boolean" || typeof release.prerelease !== "boolean" || typeof release.tag_name !== "string" || !release.tag_name.trim()) throw new FactoryError("release_inventory_unavailable", "The published release inventory is incomplete or changed during pagination; observe it again", 409);
+          if (!release || !Number.isSafeInteger(release.id) || release.id < 1 || seen.has(release.id) || typeof release.draft !== "boolean" || typeof release.prerelease !== "boolean" || typeof release.tag_name !== "string" || !release.tag_name.trim() || typeof release.target_commitish !== "string" || !release.target_commitish.trim() || !release.draft && (typeof release.published_at !== "string" || !release.published_at.trim())) throw new FactoryError("release_inventory_unavailable", "The published release inventory is incomplete or changed during pagination; observe it again", 409);
           seen.add(release.id);
         }
         for (const release of releases) if (!release.draft && !release.prerelease) {
           const commit = await api(`repos/${pr.repository}/commits/${encodeURIComponent(`tags/${release.tag_name}`)}`) as { sha: string };
           if (/^[a-f0-9]{40}$/.test(commit.sha) && await contains(commit.sha) && await containsChanges(commit.sha, true)) {
+            let current: typeof release;
+            try { current = await api(`repos/${pr.repository}/releases/${release.id}`) as typeof release; }
+            catch (error) {
+              if (error instanceof FactoryError && error.code !== "account_login_unavailable") throw error;
+              throw new FactoryError("release_inventory_unavailable", "The containing release is no longer available; retain the verified merge and observe again", 409);
+            }
+            if (!current || current.id !== release.id || current.draft !== false || current.prerelease !== false || current.tag_name !== release.tag_name || current.target_commitish !== release.target_commitish || current.published_at !== release.published_at) throw new FactoryError("release_inventory_unavailable", "The containing release publication changed during verification; retain the verified merge and observe again", 409);
             const latest = await api(`repos/${pr.repository}/commits/${encodeURIComponent(`tags/${release.tag_name}`)}`) as { sha: string };
             if (latest.sha !== commit.sha) throw new FactoryError("merge_coverage_unverified", "The release tag changed during delivery verification; observe it again", 409);
             result.condition = "released"; result.release_tag = release.tag_name; result.reason = null; return result;
