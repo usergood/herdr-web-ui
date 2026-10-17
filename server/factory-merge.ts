@@ -40,22 +40,28 @@ function deliveryText(value: unknown, oid: string): string | null {
 }
 
 /** Preserve reviewed additions/replacements and deletions, rather than unchanged context.
- * Ambiguous removals require exact blobs or the full-candidate additive proof. */
+ * Ambiguous locations or removals require exact blobs or a bounded additive proof. */
 function retainsApprovedText(approved: string, observed: string, diff: string): boolean {
   if (!approved || approved.includes("\0")) return false;
-  const edits: { kind: "+" | "-"; text: string }[] = [];
+  const edits: { kind: "+" | "-"; text: string; index: number }[] = [];
+  let index = -1;
   let hunk = false, previous: typeof edits[number] | undefined;
   for (const line of diff.split("\n")) {
-    if (line.startsWith("@@ ")) { hunk = true; previous = undefined; }
-    else if (hunk && (line.startsWith("+") || line.startsWith("-"))) {
-      previous = { kind: line[0] as "+" | "-", text: line.slice(1) + "\n" }; edits.push(previous);
+    if (line.startsWith("@@ ")) {
+      const start = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+      if (!start) return false;
+      index = Math.max(0, Number(start[1]) - 1); hunk = true; previous = undefined;
+    } else if (hunk && (line.startsWith("+") || line.startsWith("-"))) {
+      previous = { kind: line[0] as "+" | "-", text: line.slice(1) + "\n", index }; edits.push(previous);
+      if (previous.kind === "+") index++;
     } else {
       if (line === "\\ No newline at end of file" && previous) previous.text = previous.text.slice(0, -1);
+      if (hunk && line.startsWith(" ")) index++;
       previous = undefined;
     }
   }
   if (!edits.length) return false;
-  const lines = (value: string) => value.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+  const lines = (value: string): string[] => value.match(/[^\n]*\n|[^\n]+$/g) ?? [];
   const count = (tokens: string[]) => {
     const result = new Map<string, number>();
     for (const token of tokens) result.set(token, (result.get(token) ?? 0) + 1);
@@ -67,14 +73,40 @@ function retainsApprovedText(approved: string, observed: string, diff: string): 
   if (required.some(token => (actualCounts.get(token) ?? 0) < (approvedCounts.get(token) ?? 1))) return false;
   const withoutNewline = (token: string) => token.endsWith("\n") ? token.slice(0, -1) : token;
   const retained = count(lines(approved).map(withoutNewline)), current = count(actual.map(withoutNewline));
-  // Preserve the earlier additive proof even when removed text also occurs in retained context.
-  const all = lines(approved); let matched = 0;
+  const all = lines(approved), added = new Set(edits.filter(edit => edit.kind === "+").map(edit => edit.index));
+  if (edits.some(edit => edit.kind === "+" && all[edit.index] !== edit.text)) return false;
+  const blocks: { start: number; end: number }[] = [];
+  for (const position of added) {
+    const last = blocks.at(-1);
+    if (last?.end === position) last.end++; else blocks.push({ start: position, end: position + 1 });
+  }
+  const stable = (position: number) => !added.has(position) && approvedCounts.get(all[position]!) === 1 && actualCounts.get(all[position]!) === 1;
+  const located = blocks.every(block => {
+    // Whole-file additions have no old location anchors; the additive proof below applies.
+    if (block.start === 0 && block.end === all.length) return true;
+    if (block.start === 0) return actual.slice(0, block.end).join("") === all.slice(0, block.end).join("");
+    if (block.end === all.length) return actual.slice(-all.length + block.start).join("") === all.slice(block.start).join("");
+    let before = block.start - 1, after = block.end;
+    while (before >= 0 && !stable(before)) before--;
+    while (after < all.length && !stable(after)) after++;
+    if (before < 0 || after === all.length) return false;
+    const left = actual.indexOf(all[before]!), right = actual.indexOf(all[after]!);
+    // Exact literal neighborhoods prevent an added block moving across retained
+    // context or acquiring an unreviewed wrapper while anchors still match.
+    return left < right && actual.slice(left, right + 1).join("") === all.slice(before, after + 1).join("");
+  });
+  if (!located) return false;
+  // The located or context-free literal additive proof also preserves ambiguous deletions.
+  let matched = 0;
   for (const token of actual) if (token === all[matched]) matched++;
   if (matched === all.length && edits.every(edit => edit.kind !== "-" || (current.get(withoutNewline(edit.text)) ?? 0) <= (retained.get(withoutNewline(edit.text)) ?? 0))) return true;
   if (edits.some(edit => edit.kind === "-" && (retained.has(withoutNewline(edit.text)) || current.has(withoutNewline(edit.text))))) return false;
+  // Repeated unchanged context cannot be remapped to a different occurrence.
+  if (all.some((token, position) => !added.has(position) && approvedCounts.get(token)! > 1 && actualCounts.get(token) !== approvedCounts.get(token))) return false;
+  const requiredContext = all.filter((token, position) => added.has(position) || actualCounts.has(token));
   let next = 0;
-  for (const token of actual) if (token === required[next]) next++;
-  return next === required.length;
+  for (const token of actual) if (token === requiredContext[next]) next++;
+  return next === requiredContext.length;
 }
 
 /** A sent merge is observed after restart; its mutation is never replayed. */

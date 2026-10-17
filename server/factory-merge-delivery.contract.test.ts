@@ -14,6 +14,67 @@ it("Human Review releases intended changes despite an independent unchanged cont
   } finally { f.close(); }
 }, 20000);
 
+
+it("Human Review keeps relocated reviewed additions unverified and recovers a covering release under the original approval", async () => {
+  const baseline = "function checked() {\n  run();\n}\nfunction other() {\n  noop();\n}\n";
+  const candidate = "function checked() {\n  validate();\n  run();\n}\nfunction other() {\n  noop();\n}\n";
+  const moved = "function checked() {\n  run();\n}\nfunction other() {\n  validate();\n  noop();\n}\n";
+  const f = await releaseBrowserFixture({ baselineContent: baseline, candidateContent: candidate });
+  const post = (body: unknown) => fetch(`http://localhost:${f.app.port}${f.prefix}/human-review/approve`, { method: "POST", headers: { authorization: `Bearer ${f.token}`, "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+  try {
+    const ready = await f.detail(); const review = ready.human_reviews[0];
+    const body = { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, idempotency_key: "location-bound-release" };
+    const approved = await post(body); expect(approved.status).toBe(200); const receipt = await approved.json();
+    expect(receipt.condition).toBe("awaiting_release");
+    const merge = f.core.githubState().pull.mergeCommit.oid;
+    f.core.git(["tag", "relocated-release", f.core.descendant(moved)]); f.core.change({ release: "relocated-release" });
+    const machine = await f.core.post(f.core.route + "merge", { ...f.mergeRequests[0], approval: receipt });
+    expect(machine.status).toBe(200);
+    expect(await machine.json()).toMatchObject({ condition: "awaiting_release", release_tag: null, merge_sha: merge });
+    const observed = await post(body); expect(observed.status).toBe(200);
+    expect(await observed.json()).toMatchObject({ id: receipt.id, condition: "awaiting_release", release_tag: null });
+    expect((await f.detail()).implementation.stage).toBe("review");
+    f.core.git(["tag", "location-covering-release", f.core.descendant(candidate + "\n// Independent later note\n")]);
+    f.core.change({ release: "location-covering-release", release_lookup_missing: true });
+    expect(await post(body).then(r => r.json())).toMatchObject({ id: receipt.id, condition: "awaiting_release", reason_is_error: true });
+    f.core.change({ release_lookup_missing: false }); await f.restart();
+    const completed = await until(f.detail, d => d.human_review_approvals[0]?.condition === "released");
+    expect(completed.implementation).toMatchObject({ stage: "done", outcome: "released" });
+    expect(completed.human_review_approvals).toHaveLength(1);
+    expect(completed.human_review_approvals[0]).toMatchObject({ id: receipt.id, head: receipt.head, snapshot_id: receipt.snapshot_id, context_revision: receipt.context_revision, idempotency_key: receipt.idempotency_key, merge_sha: merge, release_tag: "location-covering-release" });
+    expect(completed.events.filter((event: any) => event.kind === "human_review_merge_authorized")).toHaveLength(1);
+    expect(f.core.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { await f.close(); }
+}, 25000);
+
+
+it.each([
+  { name: "long moved block", baseline: "function checked() {\n  run();\n}\nfunction other() {\n  noop();\n}\n", approved: "function checked() {\n  validate();\n  verify();\n  audit();\n  persist();\n  run();\n}\nfunction other() {\n  noop();\n}\n", observed: "function checked() {\n  run();\n}\nfunction other() {\n  validate();\n  verify();\n  audit();\n  persist();\n  noop();\n}\n" },
+  { name: "new conditional around a retained call", baseline: "function checked() {\n  run();\n}\n", approved: "function checked() {\n  validate();\n  run();\n}\n", observed: "function checked() {\n  if (false)\n  validate();\n  run();\n}\n" },
+  { name: "duplicate context anchors", baseline: "entry\nrepeat\nfinish\nentry\nrepeat\nfinish\n", approved: "entry\n  validate();\nrepeat\nfinish\nentry\nrepeat\nfinish\n", observed: "entry\nrepeat\nfinish\nentry\n  validate();\nrepeat\nfinish\n" },
+])("Human Review keeps ambiguous location evidence unverified: $name", async ({ baseline, approved, observed }) => {
+  const f = await mergeFixture({ milestone: "release", baselineContent: baseline, candidateContent: approved });
+  try {
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "awaiting_release" });
+    f.git(["tag", "ambiguous-location", f.descendant(observed)]); f.change({ release: "ambiguous-location" }); f.restart();
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "awaiting_release", release_tag: null });
+    expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { f.close(); }
+}, 20000);
+
+
+it("Human Review permits an independent context edit outside preserved function anchors", async () => {
+  const baseline = "config=old\nfunction checked() {\n  run();\n}\n";
+  const candidate = "config=old\nfunction checked() {\n  validate();\n  run();\n}\n";
+  const f = await mergeFixture({ milestone: "release", baselineContent: baseline, candidateContent: candidate });
+  try {
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "awaiting_release" });
+    f.git(["tag", "anchored-context-edit", f.descendant(candidate.replace("config=old", "config=new"))]); f.change({ release: "anchored-context-edit" });
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "released", release_tag: "anchored-context-edit" });
+    expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { f.close(); }
+}, 20000);
+
 it("Human Review refuses a release deleted after inventory even while its containing tag remains", async () => {
   const f = await mergeFixture({ milestone: "release" });
   try {

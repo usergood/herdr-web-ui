@@ -469,6 +469,68 @@ export async function localReleaseInventoryJourney(browser: Browser, viewport: {
   } finally { await context.close(); await f.close(); }
 }
 
+/** Identical added tokens in another function do not preserve the approved behavior. */
+export async function releaseLocationJourney(browser: Browser, viewport: { width: number; height: number }) {
+  const baseline = "function checked() {\n  run();\n}\nfunction other() {\n  noop();\n}\n";
+  const candidate = "function checked() {\n  validate();\n  run();\n}\nfunction other() {\n  noop();\n}\n";
+  const moved = "function checked() {\n  run();\n}\nfunction other() {\n  validate();\n  noop();\n}\n";
+  const f = await releaseBrowserFixture({ baselineContent: baseline, candidateContent: candidate });
+  const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
+  try {
+    const origin = `http://localhost:${f.app.port}`;
+    assert.equal((await context.request.post(`${origin}/api/auth`, { data: { token: f.token } })).status(), 204);
+    const before = await f.detail(); assert.equal(before.human_review_approvals.length, 0);
+    const page = await context.newPage(); page.setDefaultTimeout(10000);
+    const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
+    await page.goto(`${origin}/#factory/${f.id}`);
+    await page.getByRole("navigation", { name: "Workflow history", exact: true }).getByRole("button", { name: "Human Review", exact: true }).click();
+    const review = page.getByRole("region", { name: "Human Review", exact: true });
+    const response = page.waitForResponse(response => response.url().endsWith(`${f.prefix}/human-review/approve`) && response.request().method() === "POST");
+    await review.getByRole("button", { name: "Approve and merge", exact: true }).click();
+    const approved = await response; const receipt = await approved.json(); assert.equal(approved.status(), 200, JSON.stringify(receipt));
+    const waiting = await until(f.detail, d => d.human_review_approvals[0]?.condition === "awaiting_release");
+    const authority = waiting.human_review_approvals[0]; const merge = authority.merge_sha;
+    const effects = () => f.core.calls().filter(args => args[1]?.endsWith("/merge") && args.includes("PUT")).length;
+    assert.equal(authority.id, receipt.id); assert.equal(authority.idempotency_key, approved.request().postDataJSON().idempotency_key);
+    assert.equal(authority.head, f.core.head); assert.equal(authority.snapshot_id, f.snapshot.id); assert.equal(authority.context_revision, before.question_revision);
+    assert.notEqual(authority.id, f.core.body.approval.id, "Only the actual owner UI creates authority");
+    assert.equal(effects(), 1); assert.equal(f.mergeRequests.length, 1); assert.equal(f.core.git(["rev-parse", "main"]), merge);
+    const invalid = f.core.descendant(moved); f.core.git(["tag", "moved-validation-release", invalid]);
+    f.core.git(["merge-base", "--is-ancestor", merge, invalid]); assert.equal(f.core.git(["show", "moved-validation-release:result.txt"]), moved.trim());
+    f.core.change({ release: "moved-validation-release" });
+    // Use the actual retained merge receipt solely to observe its already verified intent.
+    const observed = await f.core.post(f.core.route + "merge", { ...f.mergeRequests[0], approval: authority });
+    const result = await observed.json(); assert.equal(observed.status, 200, JSON.stringify(result)); assert.equal(effects(), 1);
+    const checked = await until(f.detail, d => d.human_review_approvals[0]?.next_observation_at > authority.next_observation_at, 45000);
+    const retained = checked.human_review_approvals[0];
+    assert(f.mergeRequests.length > 1, "The owner receipt must follow a real scheduled Machine observation");
+    console.log(JSON.stringify({ viewport: viewport.width, moved_release_observation: { owner_response: { status: approved.status(), receipt }, original_authority: authority, invalid_tag_sha: invalid, invalid_content: moved, machine_response: { status: observed.status, result }, owner_approval: retained, owner_stage: checked.implementation.stage, scheduled_machine_requests: f.mergeRequests.length, merge_effects: effects() } }));
+    assert.equal(result.condition, "awaiting_release", "Moving validate() from checked() to other() cannot satisfy the approved behavior");
+    assert.equal(retained.condition, "awaiting_release"); assert.equal(checked.implementation.stage, "review"); assert.notEqual(checked.implementation.outcome, "released");
+    assert.equal(retained.release_tag, null); assert.notEqual(retained.reason_is_error, true); assert.equal(retained.id, authority.id); assert.equal(effects(), 1);
+    await review.getByRole("status").filter({ hasText: "Merge verified; waiting for a published release containing it" }).waitFor();
+    assert.equal(await review.getByRole("alert").count(), 0);
+    await page.reload(); await review.getByRole("status").filter({ hasText: "Merge verified; waiting for a published release containing it" }).waitFor();
+    assert.equal((await f.detail()).implementation.stage, "review"); assert.equal(effects(), 1);
+    const covering = f.core.descendant(`${candidate}\n// Independent later note\n`);
+    f.core.git(["tag", "located-validation-release", covering]); f.core.git(["merge-base", "--is-ancestor", merge, covering]);
+    assert.equal(f.core.git(["rev-parse", "located-validation-release"]), covering); f.core.change({ release: "located-validation-release" });
+    const done = await until(f.detail, d => d.implementation.stage === "done", 45000); const delivered = done.human_review_approvals[0];
+    console.log(JSON.stringify({ viewport: viewport.width, covering_release_observation: { tag_sha: covering, approval: delivered, stage: done.implementation.stage, outcome: done.implementation.outcome, merge_effects: effects() } }));
+    assert.equal(done.implementation.outcome, "released"); assert.equal(delivered.condition, "released"); assert.equal(delivered.release_tag, "located-validation-release");
+    assert.equal(done.human_review_approvals.length, 1); assert.equal(delivered.id, authority.id); assert.equal(delivered.idempotency_key, authority.idempotency_key);
+    assert.equal(delivered.context_revision, authority.context_revision); assert.equal(delivered.head, authority.head); assert.equal(delivered.snapshot_id, authority.snapshot_id); assert.equal(delivered.merge_sha, merge);
+    assert.deepEqual(done.checks, before.checks); assert.deepEqual(done.review_evidence, before.review_evidence); assert.deepEqual(done.pull_requests, before.pull_requests);
+    assert.deepEqual(done.implementation.delivery_scope, before.implementation.delivery_scope); assert.equal(done.question_revision, before.question_revision); assert.equal(effects(), 1);
+    for (const request of f.mergeRequests) { assert.equal(request.approval.id, authority.id); assert.equal(request.approval.idempotency_key, authority.idempotency_key); assert.equal(request.approval.context_revision, authority.context_revision); assert.equal(request.head, authority.head); }
+    await review.getByRole("status").filter({ hasText: "Release verified" }).waitFor();
+    await page.reload(); await review.getByRole("status").filter({ hasText: "Release verified" }).waitFor();
+    assert.equal(await review.getByRole("alert").count(), 0); assert.equal(effects(), 1); assert.deepEqual(errors, []);
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    console.log(`PASS moved approved addition remains an ordinary release wait, covering release automatically delivers under original UI authority and single merge (${viewport.width})`);
+  } finally { await context.close(); await f.close(); }
+}
+
 if (import.meta.main) {
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
@@ -799,6 +861,7 @@ try {
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) await releasePagesJourney(browser, viewport);
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) for (const scenario of ["independent-context", "deleted-release"] as const) await releaseScopeJourney(browser, viewport, scenario);
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) await localReleaseInventoryJourney(browser, viewport);
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) await releaseLocationJourney(browser, viewport);
   console.log("PASS Human Review merge authority, stale/protected/denied targets, lost replies, retained CI waits, frozen release authority despite newer Project/old Machine policy, release completion, delivery archive and postdelivery discussion on desktop/mobile");
 } finally { await browser.close(); }
 }
