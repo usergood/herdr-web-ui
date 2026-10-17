@@ -13,14 +13,16 @@ function activityLabel(activity: FactoryActivity, t: ReturnType<typeof useT>): s
 }
 export function FactoryBoardProgress({ idea, progress, expanded, onExpandedChange, waitingReason }: { waitingReason?: string | null; idea: Pick<Implementation, "id" | "pause" | "deletion">; progress?: FactoryAssignmentProgress; expanded: boolean; onExpandedChange: (open: boolean) => void }) {
   const t = useT();
+  const cleanupReasons = [...new Set([...(idea.pause?.reasons ?? []), ...(idea.deletion?.reasons ?? [])])];
   return <div className="factory-progress">
     {idea.deletion && <p role="status">{t("Delete pending")}</p>}
     {idea.pause && <p role="status">{idea.pause.condition === "pending" ? t("Pause pending") : idea.pause.condition === "resuming" ? t("Resume pending") : t("Paused")}</p>}
+    {cleanupReasons.map(reason => <p role="alert" key={reason}>{reason}</p>)}
     {progress && <>
       <div className="factory-activities" role="status">{progress.activities.map(activity => <span className={`factory-activity factory-activity-${activity}`} key={activity}>{activityLabel(activity, t)}</span>)}</div>
       {progress.tickets.length > 0 && <p className="factory-progress-counts" aria-live="polite">{t("{waiting} waiting · {running} running · {completed} completed", progress.counts)}</p>}
       {progress.tickets.some(ticket => ticket.state === "running") && <ul aria-label={t("Active Tickets")}>{progress.tickets.filter(ticket => ticket.state === "running").map(ticket => <li key={ticket.ticket_id}>{ticket.title}</li>)}</ul>}
-      {progress.reasons.filter(reason => reason !== waitingReason).filter(reason => idea.pause?.reasons.includes(reason) || idea.deletion?.reasons.includes(reason) || !progress.tickets.some(ticket => ticket.reason === reason)).map(reason => <p key={reason}>{reason}</p>)}
+      {progress.reasons.filter(reason => reason !== waitingReason && !cleanupReasons.includes(reason) && !progress.tickets.some(ticket => ticket.reason === reason)).map(reason => <p role="status" key={reason}>{reason}</p>)}
       {progress.tickets.length > 0 && <details open={expanded} onToggle={event => onExpandedChange(event.currentTarget.open)}>
         <summary>{t("All Tickets ({count})", { count: progress.tickets.length })}</summary>
         <ul>{progress.tickets.map(ticket => <li key={ticket.ticket_id}>

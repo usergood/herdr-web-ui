@@ -9,11 +9,20 @@ import { createServer } from "../server/index.ts";
 import type { FactoryActivity, FactoryBoardItem, FactoryDetail, FactoryOverview, FactoryRun } from "../shared/protocol.ts";
 import { capacityFixture } from "./factory-capacity-fixture.ts";
 import { boardRepair, boardScenario } from "./factory-board-fixture.ts";
+import { routeDrained } from "./drained-route.ts";
 
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 
 async function ticketProgressBoard(): Promise<void> {
-  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+  const cleanupFailures: string[] = [];
+  const cleanupAlert = async (card: import("playwright-core").Locator, reason: string, label: string): Promise<void> => {
+    console.log("Owned cleanup role observation", JSON.stringify({ label, reason, alerts: await card.locator('.factory-progress > [role="alert"]').filter({ hasText: reason }).count(), ordinary: await card.locator('.factory-progress > p:not([role="alert"])').filter({ hasText: reason }).count() }));
+    await card.getByText(reason, { exact: true }).first().waitFor();
+    const alerts = await card.locator('.factory-progress > [role="alert"]').filter({ hasText: reason }).count();
+    const ordinary = await card.locator('.factory-progress > p:not([role="alert"])').filter({ hasText: reason }).count();
+    if (alerts !== 1 || ordinary !== 0) cleanupFailures.push(`${label}: expected one cleanup alert and no ordinary duplicate; got ${alerts} alerts and ${ordinary} ordinary reasons`);
+  };
+  for (const viewport of [{ width: 390, height: 844 }, { width: 1440, height: 1000 }]) {
     const f = await capacityFixture();
     const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
     const gate = f.holdNextCheck(); let check: Promise<Response> | undefined;
@@ -49,8 +58,8 @@ async function ticketProgressBoard(): Promise<void> {
       assert.deepEqual(await page.locator(".factory-lane h2").allTextContents(), ["Inbox", "Queued", "Running", "Needs you", "Done"]);
       assert.equal(await page.getByRole("article", { name: "Unstarted idea", exact: true }).getByText("0 waiting · 0 running · 0 completed", { exact: true }).count(), 0);
       const card = page.getByRole("article", { name: "Named child progress", exact: true });
-      await card.getByText("Implementing", { exact: true }).waitFor();
-      await card.getByText("Testing", { exact: true }).waitFor();
+      await card.getByRole("status").filter({ hasText: "Implementing" }).waitFor();
+      await card.getByRole("status").filter({ hasText: "Testing" }).waitFor();
       await card.getByRole("list", { name: "Active Tickets", exact: true }).getByText("Transport progress", { exact: true }).waitFor();
       await card.getByText("1 waiting · 1 running · 0 completed", { exact: true }).waitFor();
       await page.getByRole("article", { name: "Specification interview", exact: true }).getByText("Specifying", { exact: true }).waitFor();
@@ -61,6 +70,9 @@ async function ticketProgressBoard(): Promise<void> {
       await card.getByText("Waiting for dependencies: Transport progress", { exact: true }).waitFor();
       await page.getByRole("region", { name: "Inbox", exact: true }).getByRole("button", { name: "Unstarted idea", exact: true }).waitFor();
       await page.getByRole("region", { name: "Queued", exact: true }).getByRole("button", { name: "Queued for capacity", exact: true }).waitFor();
+      const queuedCard = page.getByRole("article", { name: "Queued for capacity", exact: true });
+      await queuedCard.getByRole("status").filter({ hasText: "capacity" }).first().waitFor();
+      assert.equal(await queuedCard.getByRole("alert").count(), 0, "Ordinary capacity waits stay polite");
       await page.getByRole("region", { name: "Done", exact: true }).getByRole("button", { name: "Finished research", exact: true }).waitFor();
       await page.getByRole("region", { name: "Needs you", exact: true }).getByRole("button", { name: "Failed work needs you", exact: true }).waitFor();
       const failedCard = page.getByRole("article", { name: "Failed work needs you", exact: true });
@@ -94,18 +106,39 @@ async function ticketProgressBoard(): Promise<void> {
       f.offline(true);
       const pause = await f.api(`/implementations/${id}/pause`, {}).then(r => r.json());
       await page.reload();
-      await card.getByText("Pause pending", { exact: true }).waitFor();
-      await card.getByText(pause.pause.reasons[0], { exact: true }).first().waitFor();
+      assert.equal(pause.pause.condition, "pending");
+      assert.ok(pause.pause.reasons.length > 0, "The owned offline Machine retains an actual Pause failure");
+      await card.getByRole("status").filter({ hasText: /^Pause pending$/ }).waitFor();
+      for (const reason of new Set<string>(pause.pause.reasons)) await cleanupAlert(card, reason, `${viewport.width} Pause`);
       f.offline(false);
       await page.getByRole("button", { name: "Refresh factory", exact: true }).click();
-      await card.getByText("Paused", { exact: true }).waitFor();
+      await card.getByRole("status").filter({ hasText: /^Paused$/ }).waitFor();
       assert.equal(await card.locator(".factory-activity").count(), 0);
       await summary.focus(); await page.keyboard.press("Enter");
       await card.getByText("Assignment is paused", { exact: true }).first().waitFor();
       assert.equal(await page.locator(".factory-card").count(), 6);
+      f.offline(true);
+      const deleted = await f.api(`/implementations/${id}/delete`, {}).then(r => r.json());
+      assert.equal(deleted.condition, "pending");
+      assert.ok(deleted.reasons.length > 0, "The owned offline Machine retains an actual Delete failure");
+      await page.reload();
+      await card.getByRole("status").filter({ hasText: /^Delete pending$/ }).waitFor();
+      for (const reason of new Set<string>(deleted.reasons)) await cleanupAlert(card, reason, `${viewport.width} Delete`);
+      // Cleanup authority and errors survive even when the optional progress projection is absent.
+      const restore = await routeDrained(page, "**/api/factory?navigation=1", async route => {
+        const response = await route.fetch(); const overview: FactoryOverview = await response.json();
+        overview.progress = overview.progress?.filter(progress => progress.implementation_id !== id);
+        await route.fulfill({ response, json: overview });
+      });
+      try {
+        await page.reload();
+        await card.getByRole("status").filter({ hasText: /^Delete pending$/ }).waitFor();
+        for (const reason of new Set<string>(deleted.reasons)) await cleanupAlert(card, reason, `${viewport.width} Delete without progress`);
+      } finally { await restore(); }
       assert.deepEqual(errors, []);
     } finally { gate.release(); await check; await context.close(); f.close(); }
   }
+  assert.deepEqual(cleanupFailures, [], "Pause/Delete failures are announced once as alerts on desktop/mobile");
   console.log("PASS named Ticket progress, live activity changes with unchanged counts, all activity tags, five populated lanes, keyboard expansion and pending/verified Pause on desktop/mobile");
 }
 
