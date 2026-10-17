@@ -125,3 +125,31 @@ test("late retirement observation preserves a newer owner context and the accept
     expectPreserved(fresh.body);
   } finally { f.close(); }
 }, 30_000);
+
+test("native reconciliation preserves accepted evidence while a later owner question remains pending", async () => {
+  const f = await reviewReworkFixture();
+  try {
+    f.setReviewOutcome("passed");
+    for (const role of ["standards", "spec"]) {
+      const reviewer = (await f.request(f.workerRoute, { role, idempotency_key: "observed-" + role })).body;
+      expect(await f.request(`${f.workerRoute}/${reviewer.id}/review-evidence`, {})).toMatchObject({ status: 200, body: { head: f.head, outcome: "passed", axis: role } });
+    }
+    await f.restRun();
+    const accepted = await f.request(`/runs/${f.run.id}/accept`, { head: f.head });
+    expect(accepted).toMatchObject({ status: 200, body: { condition: "completed" } });
+    const question = await f.request(f.prefix + "/questions", { run_id: f.run.id, question: "Keep the accepted candidate while this later decision is pending?" });
+    expect(question.status).toBe(201);
+    const before = (await f.request(f.prefix)).body.runs.find((run: { id: string }) => run.id === f.run.id);
+    expect(before).toMatchObject({ condition: "needs_you", accepted_result: accepted.body.accepted_result, continuation: { kind: "owner" } });
+    const observed = await f.request(`/runs/${f.run.id}/reconcile`, {});
+    expect(observed.status).toBe(200);
+    const preserved = { id: f.run.id, machine_id: f.run.machine_id, worktree: f.run.worktree, branch: f.run.branch, pane_id: f.run.pane_id, workspace_id: f.run.workspace_id, accepted_result: accepted.body.accepted_result, continuation: { id: before.continuation.id, kind: "owner" } };
+    expect(observed.body.accepted_result).toEqual(accepted.body.accepted_result);
+    expect(observed.body).toMatchObject(preserved);
+    const retained = (await f.request(f.prefix)).body;
+    expect(retained.runs.find((run: { id: string }) => run.id === f.run.id)).toMatchObject(preserved);
+    expect(retained.questions.find((entry: { id: string }) => entry.id === question.body.id)).toMatchObject({ answer: null, revision: question.body.revision });
+    expect(retained.board).toMatchObject({ lane: "needs_you" });
+    expect(retained.board.sidebar_hidden).not.toBe(true);
+  } finally { f.close(); }
+}, 30_000);
