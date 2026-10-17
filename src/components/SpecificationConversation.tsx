@@ -10,7 +10,7 @@ export function SpecificationConversation({ detail, specification, busy, perform
   const [reply, setReply] = useState("");
   const replyIdentity = useRef(crypto.randomUUID());
   const prefix = `/implementations/${detail.implementation.id}/specification-acceptance`;
-  const accepted = detail.approvals.some(a => a.kind === "specification" && a.revision === specification.id);
+  const accepted = detail.approvals.some(a => a.kind === "specification" && a.revision === specification.id && a.automatic_execution === true);
   const chatIds = new Set(detail.chats.filter(c => c.title === "Specifications").map(c => c.id));
   const replies: FactoryMessage[] = detail.messages.filter(m => chatIds.has(m.chat_id));
   return <div className="specification-conversation">

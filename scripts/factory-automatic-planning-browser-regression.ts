@@ -4,9 +4,11 @@ import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
 import { capacityFixture } from "./factory-capacity-fixture.ts";
 import type { FactoryDetail } from "../shared/factory.ts";
+import { checkHistoricalSpecificationAcceptance } from "./factory-specification-upgrade-browser.ts";
 
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
+  await checkHistoricalSpecificationAcceptance(browser);
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
     for (const source of ["button", "owner_chat"]) {
       const f = await capacityFixture();
