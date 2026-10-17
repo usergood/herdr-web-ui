@@ -105,10 +105,10 @@ test("an explicit Continue from the ready verification prerequisite reuses displ
   } finally { fixture.close(); }
 }, 15_000);
 
-test.each(["scope", "readiness", "policy", "pause", "outage", "dependencies", "global_limit"])("%s changed while verifying blocks the retained issue intent before implementation admission", async blocker => {
+test.each(["scope", "readiness", "policy", "pause", "outage", "dependencies"])("%s changed while verifying blocks the retained issue intent before implementation admission", async blocker => {
   const fixture = issueContinuationFixture();
   try {
-    const { path, body, route, readiness, project } = await fixture.preparedPlanning("to-spec");
+    const { path, body, route, readiness } = await fixture.preparedPlanning("to-spec");
     fixture.setFactoryReady(false);
     const probe = await fixture.json(path + "/continue", body);
     const question = await fixture.agent(probe.id, "question", { question: "Confirm the fictional verification round?" }).then(response => response.json());
@@ -123,10 +123,6 @@ test.each(["scope", "readiness", "policy", "pause", "outage", "dependencies", "g
       if (blocker === "scope") fixture.issue.body += "\nA new greeting requirement.";
       fixture.save([fixture.issue], blocker === "outage", blocker === "dependencies" ? { 1: [{ ...fixture.issue, number: 42, node_id: "undelivered-verification-dependency", html_url: "https://github.com/fictional/project/issues/42" }] } : {});
       expect((await fixture.post(route + "/sync", {})).status).toBe(blocker === "outage" ? 409 : 200);
-    } else {
-      const other = await fixture.json("/implementations", { title: "Other owned execution", project_id: project.id, description: "Unrelated fixture" });
-      await fixture.json(`/implementations/${other.id}/runs`, { action: "work", idempotency_key: "global-verification-blocker" });
-      await fixture.json("/settings", { max_agents: 1 });
     }
     fixture.setVerificationAvailable(); fixture.setRunCondition(probe.id, "ready");
     const contract = await fixture.agent(probe.id, "contract").then(response => response.json());
@@ -139,11 +135,67 @@ test.each(["scope", "readiness", "policy", "pause", "outage", "dependencies", "g
       await Bun.sleep(25);
     } while (Date.now() < deadline);
     expect(detail.events.some((event: any) => event.kind === "continuation_waiting" && event.data.run_id === probe.id)).toBe(true);
-    expect(detail.runs.map((run: any) => [run.action, run.condition])).toEqual([["to-spec", "completed"], ["verify-provider", blocker === "global_limit" ? "completed" : "ready"]]);
+    expect(detail.runs.map((run: any) => [run.action, run.condition])).toEqual([["to-spec", "completed"], ["verify-provider", "ready"]]);
     fixture.restart();
     expect((await fixture.json(path)).runs).toHaveLength(2);
     const replay = await fixture.json(path + "/continue", body);
     expect(replay.id).toBe(probe.id);
+  } finally { fixture.close(); }
+}, 15_000);
+
+test("capacity filled during verification retains one queued successor across restart and admits it once capacity is released", async () => {
+  const fixture = issueContinuationFixture();
+  try {
+    const { path, planning, body, project } = await fixture.preparedPlanning("to-spec");
+    fixture.setFactoryReady(false);
+    const probe = await fixture.json(path + "/continue", body);
+    const question = await fixture.agent(probe.id, "question", { question: "Confirm the fictional verification round?" }).then(response => response.json());
+    await fixture.json(path + `/questions/${question.id}/answer`, { revision: question.revision, answer: "Owned fixture answer" });
+    const other = await fixture.json("/implementations", { title: "Other owned execution", project_id: project.id, description: "Unrelated fixture" });
+    const occupied = await fixture.json(`/implementations/${other.id}/runs`, { action: "work", idempotency_key: "global-verification-blocker" });
+    expect(occupied.condition).toBe("working");
+    await fixture.json("/settings", { max_agents: 1 });
+    fixture.setVerificationAvailable(); fixture.setRunCondition(probe.id, "ready");
+    const contract = await fixture.agent(probe.id, "contract").then(response => response.json());
+    expect((await fixture.agent(probe.id, "consume", { revision: contract.question_revision })).status).toBe(200);
+    const deadline = Date.now() + 5000;
+    let detail;
+    do {
+      detail = await fixture.json(path);
+      // Observe the dispatcher's capacity decision before restarting its transport.
+      if (detail.capacity_waiting.some((wait: any) => wait.action === "implement-spec" && wait.condition === "queued" && wait.reason.includes("1/1"))) break;
+      await Bun.sleep(25);
+    } while (Date.now() < deadline);
+    expect(detail.runs).toMatchObject([{ id: planning.id, condition: "completed" }, { id: probe.id, action: "verify-provider", condition: "completed" }]);
+    expect(detail.runs).toHaveLength(2);
+    expect(detail.capacity_waiting).toHaveLength(1);
+    const queued = detail.capacity_waiting[0];
+    expect(queued).toMatchObject({ action: "implement-spec", condition: "queued", idempotency_key: `${body.idempotency_key}-verified`, reason: expect.stringContaining("1/1") });
+    expect((await fixture.json("")).capacity).toMatchObject({ normal: { used: 1, limit: 1 }, contexts: [expect.objectContaining({ run_id: occupied.id })] });
+    fixture.restart();
+    expect((await fixture.json(path + "/continue", body)).id).toBe(probe.id);
+    const retained = await fixture.json(path);
+    expect(retained.runs).toHaveLength(2);
+    expect(retained.capacity_waiting).toContainEqual(expect.objectContaining({ id: queued.id, created_at: queued.created_at, idempotency_key: queued.idempotency_key, condition: "queued" }));
+    // The owned Machine now observes the unrelated context at rest; the public
+    // reconciliation releases its slot without replaying the retained Continue.
+    fixture.setRunCondition(occupied.id, "ready");
+    await fixture.json(`/runs/${occupied.id}/reconcile`, {});
+    const resumedDeadline = Date.now() + 5000;
+    do {
+      detail = await fixture.json(path);
+      if (detail.runs.some((run: any) => run.action === "implement-spec" && run.condition === "working")) break;
+      await Bun.sleep(25);
+    } while (Date.now() < resumedDeadline);
+    expect(detail.runs).toHaveLength(3);
+    const successor = detail.runs[2];
+    expect(successor).toMatchObject({ action: "implement-spec", condition: "working", idempotency_key: queued.idempotency_key, graph_hash: body.issue_scope.graph_hash, manifest: { issue_admission: { source: { id: body.issue_scope.source_id, revision: body.issue_scope.source_revision } } } });
+    expect(detail.capacity_waiting).toEqual([]);
+    expect((await fixture.json(path + "/continue", body)).id).toBe(successor.id);
+    fixture.restart();
+    await fixture.json(`/runs/${successor.id}/reconcile`, {});
+    expect((await fixture.json(path + "/continue", body)).id).toBe(successor.id);
+    expect((await fixture.json(path)).runs.map((run: any) => run.id)).toEqual([planning.id, probe.id, successor.id]);
   } finally { fixture.close(); }
 }, 15_000);
 

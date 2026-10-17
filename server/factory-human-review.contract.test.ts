@@ -233,11 +233,38 @@ describe("Human Review through authenticated HTTP", () => {
       expect(parked.runs.find((r: any) => r.id === assistant.id).continuation.kind).toBe("owner");
       expect((await f.api("").then(r => r.json())).capacity.normal.used).toBe(0);
       expect((await f.api(`${prefix}/questions/${question.id}/answer`, { revision: question.revision, answer: "The progress file" })).status).toBe(200);
-      const resumed = await until(detail, d => d.runs.find((r: any) => r.id === assistant.id)?.continuation?.condition === "resumed");
+      const previousWorkers = new Set(d.workers.map((worker: any) => worker.id));
+      const consumedReviewers = new Set<string>();
+      // Changed owner context also schedules fresh independent review on the
+      // same normal pool. Let those owned reviewers genuinely consume and rest.
+      const observeReviews = async () => {
+        const current = await detail();
+        for (const worker of current.workers.filter((worker: any) => !previousWorkers.has(worker.id) && ["standards", "spec"].includes(worker.role) && worker.condition === "working" && !consumedReviewers.has(worker.id))) {
+          const contract = await f.agent(d.human_reviews[0].run_id, "contract").then(response => response.json());
+          expect(contract.question_revision).toBe(current.question_revision);
+          expect((await f.agent(d.human_reviews[0].run_id, "consume", { revision: contract.question_revision, worker_id: worker.id })).status).toBe(200);
+          consumedReviewers.add(worker.id);
+          f.workers.get(worker.id)!.condition = "ready";
+        }
+        return current;
+      };
+      const resumed = await until(observeReviews, d => d.runs.find((r: any) => r.id === assistant.id)?.continuation?.condition === "resumed");
+      expect(resumed.runs.find((r: any) => r.id === assistant.id).continuation.id).toBe(parked.runs.find((r: any) => r.id === assistant.id).continuation.id);
+      const capacity = (await f.api("").then(response => response.json())).capacity;
+      expect(capacity.contexts.filter((context: any) => context.pool === "normal")).toEqual([expect.objectContaining({ id: assistant.id, pool: "normal" })]);
       expect(resumed.runs.find((r: any) => r.id === assistant.id).continuation.question_revision).toBe(resumed.question_revision);
       const receipt = await f.agent(assistant.id, "consume", { revision: resumed.question_revision }).then(r => r.json());
       expect(receipt.receipt.revision).toBe(resumed.question_revision);
       expect(resumed.runs).toHaveLength(2);
+      f.runs.get(assistant.id)!.condition = "ready";
+      expect((await f.api(`/runs/${assistant.id}/reconcile`, {})).status).toBe(200);
+      const refreshed = await until(observeReviews, current => current.automatic_review[0]?.condition === "published" && current.automatic_review[0]?.context_revision === resumed.question_revision);
+      expect(consumedReviewers.size).toBe(2);
+      expect(refreshed.pull_requests[0].check_id).not.toBe(d.pull_requests[0].check_id);
+      expect(refreshed.pull_requests[0].evidence_ids.every((id: string) => !d.pull_requests[0].evidence_ids.includes(id))).toBe(true);
+      expect(refreshed.human_reviews[0].snapshot_id).toBe(d.human_reviews[0].snapshot_id);
+      expect(refreshed.human_review_approvals).toHaveLength(0);
+      expect(f.mergeEffects).toHaveLength(0);
     } finally { f.close(); }
   }, 20000);
   it("rejects direct-work completion of the Human Review assistant without stopping its discussion", async () => {
