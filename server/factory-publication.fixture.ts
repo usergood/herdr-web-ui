@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { factoryDeliveryFixture } from "./factory-delivery.fixture.ts";
 import { approveUpstreamPreparation } from "./upstream-preparation.fixture.ts";
+import type { FactoryNative } from "./factory-native.ts";
 import type { FactoryRun, FactoryWorker } from "../shared/factory.ts";
 
 import { createServer } from "./index.ts";
@@ -109,7 +110,7 @@ else if (args.includes("POST")) {
 
 
 /** Owned GitHub and Git upload effects, observed through public requests. */
-export async function factoryPublicationFixture(options: { checks?: string[][]; upstream?: boolean; deferPreparation?: boolean } = {}) {
+export async function factoryPublicationFixture(options: { checks?: string[][]; upstream?: boolean; deferPreparation?: boolean; coordinatorNative?: Partial<FactoryNative>; coordinatorToken?: string } = {}) {
   const root = mkdtempSync(join(tmpdir(), "saurons-pr-"));
   const state = join(root, "github.json"), log = join(root, "calls.jsonl"), tool = join(root, "gh.mjs");
   writeFileSync(state, JSON.stringify({ pulls: [], head: null, lose_receipt: false }));
@@ -141,6 +142,7 @@ process.stdout.write(JSON.stringify(value));
   let parentPane: string | null = null;
   let parentPrompt: (() => Promise<void>) | null = null;
   const f = await factoryDeliveryFixture(true, true, { ...{
+    ...(options.coordinatorNative?.modelCatalog ? { modelCatalog: options.coordinatorNative.modelCatalog } : {}),
     prompt: async paneId => { if (paneId === parentPane) await parentPrompt?.(); },
     pushBranch: async (upload: typeof uploads[number]) => {
       uploads.push(upload);
@@ -148,7 +150,7 @@ process.stdout.write(JSON.stringify(value));
       writeFileSync(state, JSON.stringify(data));
       await uploadEffect();
     },
-  } }, { githubRepository: "fictional/project", accountTools: { github: { executable: process.execPath, args: [tool] } } });
+  } }, { githubRepository: "fictional/project", accountTools: { github: { executable: process.execPath, args: [tool] } }, coordinatorNative: options.coordinatorNative, coordinatorToken: options.coordinatorToken });
   const profile = await f.request("/machines/delivery-host/accounts", { name: "Publication fixture", service: "github", expected_login: "fictional-owner" }).then(r => r.json());
   if (!(await f.request(`/machines/delivery-host/accounts/${profile.id}/verify`, { expected_revision: profile.revision })).ok) throw new Error("Owned publication account verification failed");
   await f.request(`/projects/${f.project.id}/configure`, { account_bindings: { "delivery-host": { github: profile.id } }, checks: options.checks ?? [["git", "status", "--porcelain"]], ...(options.upstream ? { permissions: "Owned upstream fixture and isolated workspaces only" } : {}) });

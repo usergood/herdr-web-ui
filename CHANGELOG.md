@@ -139,6 +139,8 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   ([#1237](https://github.com/devswha/herdr-web-ui/pull/1237))
 
 ### Fixed
+- Deleting an Assignment keeps published local branches, including after an interrupted push.
+  ([#35](https://github.com/usergood/saurons-eye/pull/35) by @usergood)
 - Keep Human Review discussion slots reserved while message delivery is pending or uncertain.
   ([#34](https://github.com/usergood/saurons-eye/pull/34) by @usergood)
 - Keep fresh reviews waiting while an owner reply’s delivery remains uncertain after reconnect.

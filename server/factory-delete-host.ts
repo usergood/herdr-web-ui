@@ -25,6 +25,9 @@ export async function deleteHostFiles(store: FactoryStore, native: FactoryNative
   const snapshot = await native.snapshot();
   if (snapshot.panes.some(p => !p.cwd && !p.foreground_cwd || [p.cwd, p.foreground_cwd].some(cwd => cwd && (cwd === root || withinRoot(root, cwd))))) throw new FactoryError("delete_execution_uncertain", "A native pane may still use owned deletion data", 409);
   const children = store.list<FactoryWorker>("host_workers", run.id);
+  // Literal-URL publication leaves no Git tracking ref. Prepared receipts count too:
+  // the push can have succeeded before an interrupted reply or PR creation.
+  const publishedBranch = (branch: string) => store.list<{ run_id: string; branch: string }>("host_publications", run.id).some(publication => publication.run_id === run.id && publication.branch === branch);
   if (!intent) {
     const candidates: Candidate[] = [];
     for (const target of [...children, run]) {
@@ -34,12 +37,12 @@ export async function deleteHostFiles(store: FactoryStore, native: FactoryNative
       if (target.worktree && target.worktree !== path || target.branch && target.branch !== branch) throw new FactoryError("delete_identity_changed", "Recorded worktree or branch is outside this attempt's ownership", 409);
       if (!target.worktree && existsSync(path)) throw new FactoryError("delete_identity_changed", "An unrecorded checkout exists at the cleanup path; preserve it", 409);
       assertDirectory(path);
-      let head: string | null = null; let preserveBranch = false;
+      let head: string | null = null; let preserveBranch = branch !== null && publishedBranch(branch);
       if (run.checkout && branch) {
         const refs = (await git(run.checkout, ["for-each-ref", "--format=%(refname) %(objectname)", `refs/heads/${branch}`, "refs/remotes/"])).trim().split("\n");
         head = refs.find(ref => ref.startsWith(`refs/heads/${branch} `))?.split(" ")[1] ?? null;
         if (head && !target.branch) throw new FactoryError("delete_identity_changed", "An unrecorded branch exists at the cleanup identity; preserve it", 409);
-        preserveBranch = refs.some(ref => ref.split(" ")[0]!.endsWith(`/${branch}`) && ref.startsWith("refs/remotes/"));
+        preserveBranch ||= refs.some(ref => ref.split(" ")[0]!.endsWith(`/${branch}`) && ref.startsWith("refs/remotes/"));
         if ((await git(run.checkout, ["config", "--get-regexp", `^branch\\.${branch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.`]).catch(() => "")).trim()) preserveBranch = true;
       }
       candidates.push({ id: target.id, path, branch, head, preserve_branch: preserveBranch, removed: false, branch_done: false });
@@ -59,7 +62,7 @@ export async function deleteHostFiles(store: FactoryStore, native: FactoryNative
   for (const candidate of intent.candidates) {
     assertDirectory(candidate.path);
     if (candidate.removed && existsSync(candidate.path)) throw new FactoryError("delete_identity_changed", "A removed checkout path was reused; preserve the replacement", 409);
-    if (candidate.branch && worktrees.some(w => w.branch === candidate.branch && w.path !== candidate.path)) candidate.preserve_branch = true;
+    if (candidate.branch && (publishedBranch(candidate.branch) || worktrees.some(w => w.branch === candidate.branch && w.path !== candidate.path))) candidate.preserve_branch = true;
     if (existsSync(candidate.path) && run.checkout) {
       const listed = worktrees.find(w => w.path === candidate.path);
       if (!listed || listed.locked || listed.branch !== candidate.branch || (await git(candidate.path, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim() !== (await git(run.checkout, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim()) throw new FactoryError("delete_identity_changed", "Worktree registration, lock or repository changed; preserve it", 409);
@@ -78,6 +81,8 @@ export async function deleteHostFiles(store: FactoryStore, native: FactoryNative
       candidate.removed = true; store.put("host_deletions", intent);
     }
     if (!candidate.branch_done && candidate.branch && run.checkout) {
+      // Refresh monotonically for retained plans, including plans frozen by older bridges.
+      if (publishedBranch(candidate.branch)) candidate.preserve_branch = true;
       const current = (await git(run.checkout, ["for-each-ref", "--format=%(objectname)", `refs/heads/${candidate.branch}`])).trim();
       if (!candidate.preserve_branch && current) {
         if (current !== candidate.head || (await git(run.checkout, ["worktree", "list", "--porcelain"])).includes(`branch refs/heads/${candidate.branch}\n`)) throw new FactoryError("delete_branch_changed", "The local branch changed or is independently checked out; preserve it", 409);

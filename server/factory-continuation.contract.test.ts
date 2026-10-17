@@ -392,7 +392,8 @@ describe("continuing approved workflow steps", () => {
 
   it("retains execution capacity when native background work appears before answer delivery", async () => {
     let background = false;
-    const f = await fixture("", { paneState: async id => { const pane = (await sessionSnapshot()).panes.find(pane => pane.pane_id === id); return pane ? { ...pane, background_tasks: background ? 1 : 0 } : null; } });
+    let prompted = 0;
+    const f = await fixture("owned-background-capacity-race", { paneState: async id => { const pane = (await sessionSnapshot()).panes.find(pane => pane.pane_id === id); return pane ? { ...pane, agent_status: "done", background_tasks: background ? 1 : 0 } : null; }, prompt: async () => { prompted++; } });
     try {
       await f.request("/settings", { max_agents: 1 });
       const run = await f.start("work", "background-capacity-race");
@@ -400,12 +401,16 @@ describe("continuing approved workflow steps", () => {
       await f.request(`${f.prefix}/questions/${question.id}/answer`, { revision: question.revision, answer: "The accepted capacity behavior" });
       expect((await f.request(`/runs/${run.id}/reconcile`, {}).then(r => r.json())).condition).toBe("ready");
       background = true;
+      // Keep the collector's native status consistent with the injected background work.
+      await herdrRpc("pane.report_agent", { pane_id: run.pane_id!, source: "manual", agent: "codex", state: "working" });
+      expect((await f.request(`/runs/${run.id}/reconcile`, {}).then(r => r.json())).condition).toBe("working");
       const detail = await f.request(f.prefix).then(r => r.json());
       const delivery = await f.request(`/runs/${run.id}/send-answers`, { revision: detail.question_revision, idempotency_key: "background-send" }).then(r => r.json());
       expect(delivery.condition).toBe("blocked");
       const overview = await f.request("").then(r => r.json());
       expect(overview.capacity.normal.used).toBe(1);
       expect(overview.capacity.contexts[0].condition).toBe("working");
+      expect(prompted).toBe(0);
     } finally { await f.close(); }
   }, 60_000);
 
