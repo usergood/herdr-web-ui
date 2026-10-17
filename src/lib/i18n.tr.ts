@@ -7,6 +7,9 @@
  * keep their English names.
  */
 export const TR: Record<string, string> = {
+  "Checks passed": "Kontroller geçti",
+  "Passed": "Geçti",
+  "Implementer": "Uygulayıcı",
   "Automatic review and PR": "Otomatik inceleme ve PR",
   "Reviewing": "İnceleniyor",
   "Fixing": "Düzeltiliyor",

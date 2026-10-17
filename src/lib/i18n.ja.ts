@@ -8,6 +8,9 @@
  * in English. Placeholders in braces keep their English names.
  */
 export const JA: Record<string, string> = {
+  "Checks passed": "チェック合格",
+  "Passed": "合格",
+  "Implementer": "実装担当",
   "Automatic review and PR": "自動レビューとPR",
   "Reviewing": "レビュー中",
   "Fixing": "修正中",

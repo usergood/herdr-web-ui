@@ -1,4 +1,4 @@
-import { factoryReasonRole } from "../lib/factoryPresentation.ts";
+import { factoryCheckConditionLabel, factoryConditionLabel, factoryExecutionConditionLabel, factoryReasonRole, factoryReportOutcomeLabel, factoryWorkerRoleLabel } from "../lib/factoryPresentation.ts";
 import type { FactoryCurrent } from "../../shared/factory.ts";
 import { FactoryDetailSection } from "./FactoryDetailSection.tsx";
 import { FactoryReport } from "./FactoryReport.tsx";
@@ -21,13 +21,13 @@ export function FactoryAutomaticExecution({ detail, onOpenPane }: { detail: Fact
   return <section className="factory-section" aria-label={t("Automatic execution")}>
     <h3>{t("Automatic execution")}</h3>
     {!pause && <p>{t("Tickets, checks, reviews, repairs and PR publication continue automatically.")}</p>}
-    {progress && <p role={!pause && (progress.condition === "blocked" || progress.reason_is_error) ? "alert" : "status"}><strong>{pause ? pause.condition === "paused" ? t("Paused") : t("Pause pending") : progress.condition}</strong>{!pause && progress.reason && <> · {progress.reason}</>}</p>}
+    {progress && <p role={!pause && (progress.condition === "blocked" || progress.reason_is_error) ? "alert" : "status"}><strong>{pause ? pause.condition === "paused" ? t("Paused") : t("Pause pending") : factoryExecutionConditionLabel(progress.condition)}</strong>{!pause && progress.reason && <> · {progress.reason}</>}</p>}
     {workers.map(worker => <article className="factory-message" key={worker.id}>
-      <strong>{worker.role === "standards" ? t("Standards") : worker.role === "spec" ? t("Spec") : worker.rework_batch_id ? `${t("Review-fixes")} · ${title(worker.ticket_id)}` : title(worker.ticket_id)}</strong><p>{worker.role} · {worker.suspension?.condition === "stopped" ? t("Paused") : worker.condition}</p>
+      <strong>{worker.role === "standards" ? t("Standards") : worker.role === "spec" ? t("Spec") : worker.rework_batch_id ? `${t("Review-fixes")} · ${title(worker.ticket_id)}` : title(worker.ticket_id)}</strong><p>{factoryWorkerRoleLabel(worker.role)} · {worker.suspension?.condition === "stopped" ? t("Paused") : factoryConditionLabel(worker.condition, t)}</p>
       {worker.waiting_reason && <p role={factoryReasonRole(worker.condition)}>{worker.waiting_reason}</p>}
       {worker.pane_id && <button className="btn factory-button" onClick={() => onOpenPane(run.machine_id, worker.pane_id!)}>{t("Open agent")}</button>}
     </article>)}
-    {checks.map(check => <FactoryDetailSection key={check.id} id={detail.implementation.id} revision={detail.revision} title={`${t("Checks")} · ${check.condition} · ${check.head.slice(0, 12)} · ${check.worker_id ? title(workers.find(w => w.id === check.worker_id)?.ticket_id ?? "") : run.branch}`}>
+    {checks.map(check => <FactoryDetailSection key={check.id} id={detail.implementation.id} revision={detail.revision} title={`${t("Checks")} · ${factoryCheckConditionLabel(check.condition)} · ${check.head.slice(0, 12)} · ${check.worker_id ? title(workers.find(w => w.id === check.worker_id)?.ticket_id ?? "") : run.branch}`}>
       {full => full.checks.find(entry => entry.id === check.id)?.commands.map((command, index) => <div key={index}><p>{command.args.join(" ")} · {command.exit_code}</p><pre>{command.output}</pre></div>)}
     </FactoryDetailSection>)}
     {review && <section className="factory-section" aria-label={t("Automatic review and PR")}>
@@ -35,7 +35,7 @@ export function FactoryAutomaticExecution({ detail, onOpenPane }: { detail: Fact
       <p role={!pause && (review.condition === "blocked" || review.reason_is_error) ? "alert" : "status"}><strong>{pause ? pause.condition === "paused" ? t("Paused") : t("Pause pending") : review.condition === "published" ? t("PR published") : review.condition === "publishing" ? t("Publishing PR") : review.condition === "repairing" ? t("Fixing") : review.condition === "blocked" ? t("Blocked") : review.condition === "waiting" ? t("Waiting") : t("Reviewing")}</strong>{!pause && review.reason && <> · {review.reason}</>}</p>
       {pr && <p><a href={pr.url} target="_blank" rel="noopener noreferrer">{t("Open PR")}</a> · #{pr.number}</p>}
       {reports.map(report => <details className="factory-message" key={report.id}>
-        <summary>{report.axis === "standards" ? t("Standards") : t("Spec")} · {report.outcome} · {report.head.slice(0, 12)}</summary>
+        <summary>{report.axis === "standards" ? t("Standards") : t("Spec")} · {factoryReportOutcomeLabel(report.outcome)} · {report.head.slice(0, 12)}</summary>
         <FactoryReport assignmentId={detail.implementation.id} reportId={report.id} />
       </details>)}
     </section>}

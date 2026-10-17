@@ -1,4 +1,4 @@
-import { factoryReasonRole } from "../lib/factoryPresentation.ts";
+import { factoryReasonRole, factoryReservationConditionLabel } from "../lib/factoryPresentation.ts";
 import type { FactoryCapacity } from "../../shared/factory.ts";
 import { useT } from "../lib/i18n.ts";
 import "./FactoryCapacityPanel.css";
@@ -15,12 +15,12 @@ export function FactoryCapacityPanel({ capacity }: { capacity: FactoryCapacity }
     <p className="field-hint">{t("Only app-managed agents count. Ordinary terminals and independently launched agents are excluded.")} {t("Viewing and approval use no agent capacity.")}</p>
     <ul className="factory-capacity-reservations">
       {capacity.contexts.map(context => <li key={context.id}>
-        <strong>{context.assignment_title}</strong> · {context.label} · {context.machine_id} · {context.provider} · {context.condition} · {context.pool === "planning" ? t("Extra planning capacity") : t("Normal capacity")}
+        <strong>{context.assignment_title}</strong> · {context.label} · {context.machine_id} · {context.provider} · {factoryReservationConditionLabel(context.condition)} · {context.pool === "planning" ? t("Extra planning capacity") : t("Normal capacity")}
         {context.uncertain && <p role={context.reason && factoryReasonRole(context.condition) === "alert" ? undefined : factoryReasonRole(context.condition)} className="factory-capacity-uncertain">{t("Execution uncertain; reservation retained")}</p>}
         {context.reason && <p role={factoryReasonRole(context.condition)}>{context.reason}</p>}
       </li>)}
       {capacity.build_reservations.map(build => <li key={build.id}><div role={factoryReasonRole(build.condition)}>
-        <strong>{build.assignment_title}</strong> · {t("Build limit")} · {build.machine_id} · {build.condition}
+        <strong>{build.assignment_title}</strong> · {t("Build limit")} · {build.machine_id} · {factoryReservationConditionLabel(build.condition)}
         {build.uncertain && <p className="factory-capacity-uncertain">{t("Execution uncertain; reservation retained")}</p>}
       </div></li>)}
       {capacity.waiting.map(wait => <li key={wait.id}>

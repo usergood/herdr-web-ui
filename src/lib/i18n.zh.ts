@@ -10,6 +10,9 @@
  * Placeholders in braces keep their English names.
  */
 export const ZH: Record<string, string> = {
+  "Checks passed": "检查通过",
+  "Passed": "通过",
+  "Implementer": "实现者",
   "Automatic review and PR": "自动审查和PR",
   "Reviewing": "审查中",
   "Fixing": "修复中",

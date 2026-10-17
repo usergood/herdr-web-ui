@@ -6,6 +6,9 @@
  * braces keep their English names.
  */
 export const KO: Record<string, string> = {
+  "Checks passed": "검사 통과",
+  "Passed": "통과",
+  "Implementer": "구현 담당",
   "Automatic review and PR": "자동 검토 및 PR",
   "Reviewing": "검토 중",
   "Fixing": "수정 중",

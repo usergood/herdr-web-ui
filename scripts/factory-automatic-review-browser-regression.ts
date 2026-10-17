@@ -150,7 +150,7 @@ try {
       f.workers.get(spec.id)!.condition = "ready";
       const repair = (await until(d => d.workers.some((w: any) => w.rework_batch_id && w.condition === "working"))).workers.find((w: any) => w.rework_batch_id);
       await review.getByText("Fixing", { exact: true }).waitFor();
-      await review.getByRole("group").filter({ hasText: "failed" }).locator("summary").click();
+      await review.getByRole("group").filter({ hasText: "Failed" }).locator("summary").click();
       await review.locator("pre").filter({ hasText: "The accepted result loses the owner's draft on reload" }).waitFor();
       await page.reload(); await review.getByText("Fixing", { exact: true }).waitFor();
       f.workers.get(repair.id)!.condition = "ready";
