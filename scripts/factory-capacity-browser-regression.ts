@@ -4,9 +4,11 @@ import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
 import { capacityFixture } from "./factory-capacity-fixture.ts";
 import { until } from "./factory-human-review-fixture.ts";
+import { checkQueuedMachineErrors } from "./factory-capacity-error-browser.ts";
 
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
+  await checkQueuedMachineErrors(browser);
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
     const fixture = await capacityFixture();
     const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });

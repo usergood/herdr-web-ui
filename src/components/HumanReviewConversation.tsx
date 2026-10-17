@@ -53,7 +53,7 @@ export function HumanReviewConversation({ detail, busy, perform, history }: { de
       })}>{t("Approve and merge")}</button>
       {assistant?.waiting_reason && <p role={factoryReasonRole(assistant.condition)}>{assistant.waiting_reason}</p>}
       {detail.human_review_deliveries?.filter(d => d.reason).map(d => <p role={d.condition === "uncertain" ? "alert" : "status"} key={d.id}>{d.reason}</p>)}
-      {waiting?.map(w => <p role={factoryReasonRole(w.condition)} key={w.id}>{w.reason}</p>)}
+      {waiting?.map(w => <p role={w.reason_is_error ? "alert" : factoryReasonRole(w.condition)} key={w.id}>{w.reason}</p>)}
       <div className="human-review-layout"><div className="human-review-candidate">{snapshot && <>
         <details className="human-review-provenance"><summary>{t("Review snapshot")}</summary><dl><dt>{t("Review snapshot")}</dt><dd>{snapshot.id}</dd><dt>{t("Before")}</dt><dd>{snapshot.base}</dd><dt>{t("After")}</dt><dd>{snapshot.head}</dd><dt>{t("Captured workspace")}</dt><dd>{snapshot.machine_id} · {snapshot.mode} · {snapshot.hash}</dd></dl></details>
         <div className="human-review-changes"><nav aria-label={t("Changed files")}><ChangedFiles files={snapshot.files} selected={fileIndex} choose={setFileIndex} /></nav>

@@ -25,7 +25,7 @@ export function FactoryCapacityPanel({ capacity }: { capacity: FactoryCapacity }
       </div></li>)}
       {capacity.waiting.map(wait => <li key={wait.id}>
         <a href={`#factory/${wait.implementation_id}`}>{wait.assignment_title}</a> · {wait.condition === "blocked" ? t("Needs you") : t("Waiting for agent capacity")} · {wait.machine_id} · {wait.provider}
-        <p role={wait.condition === "blocked" ? "alert" : "status"}>{wait.reason}</p>
+        <p role={wait.condition === "blocked" || wait.reason_is_error ? "alert" : "status"}>{wait.reason}</p>
       </li>)}
     </ul>
     {!!capacity.continuations?.length && <section aria-label={t("Waiting conversations")}>

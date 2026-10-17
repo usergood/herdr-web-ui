@@ -25,6 +25,6 @@ export function FactoryBoardStatus({ state, showActivity = true, showTicketProgr
     {state.lane === "needs_you" && <p className="factory-attention" role={state.condition === "failed" ? "alert" : "status"}><CircleAlert aria-hidden="true" />{state.condition === "failed" ? t("Failed") : t("Needs you")}</p>}
     {showTicketProgress && state.ticket_progress && <p>{t("Tickets: {completed}/{total}", state.ticket_progress)}</p>}
     {state.delivery_completion_error && <p role="alert">{state.delivery_completion_error}</p>}
-    {state.waiting_reason && state.waiting_reason !== state.delivery_completion_error && <p role={factoryReasonRole(state.condition)}>{state.waiting_reason}</p>}
+    {state.waiting_reason && state.waiting_reason !== state.delivery_completion_error && <p role={state.waiting_reason_is_error ? "alert" : factoryReasonRole(state.condition)}>{state.waiting_reason}</p>}
   </div>;
 }

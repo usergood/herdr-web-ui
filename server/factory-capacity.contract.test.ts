@@ -397,4 +397,35 @@ describe("global factory capacity through authenticated HTTP", () => {
     } finally { f.close(); }
   });
 
+  it("retains retryable Machine fault metadata independently of queued capacity state", async () => {
+    const f = await capacityFixture();
+    try {
+      await f.api("/settings", { max_agents: 1 });
+      const holderId = await f.assignment("Healthy occupied capacity");
+      const holder = await f.api(`/implementations/${holderId}/runs`, { action: "work", idempotency_key: "holder" }).then(r => r.json());
+      const id = await f.assignment("Retrying Machine error"); f.offline(true);
+      const response = await f.api(`/implementations/${id}/runs`, { action: "work", idempotency_key: "retry-error" });
+      expect(response.status).toBe(202);
+      const wait = await response.json();
+      expect(wait).toMatchObject({ condition: "queued", reason_is_error: true });
+      const overview = await f.api("").then(r => r.json());
+      expect(overview.capacity.waiting.find((entry: any) => entry.id === wait.id)).toMatchObject({ condition: "queued", reason_is_error: true, reason: wait.reason });
+      expect(overview.board.find((entry: any) => entry.implementation_id === id)).toMatchObject({ lane: "queued", waiting_reason_is_error: true, waiting_reason: wait.reason });
+      expect(overview.progress.find((entry: any) => entry.implementation_id === id).error_reasons).toContain(wait.reason);
+      const current = await f.api(`/implementations/${id}?view=current`).then(r => r.json());
+      expect(current.capacity_waiting.find((entry: any) => entry.id === wait.id)).toMatchObject({ reason_is_error: true });
+      expect(current.board.waiting_reason_is_error).toBe(true);
+      f.restart();
+      expect((await f.api("").then(r => r.json())).capacity.waiting.find((entry: any) => entry.id === wait.id)).toMatchObject({ reason_is_error: true, created_at: wait.created_at });
+      f.offline(false);
+      const ordinary = await eventually(() => f.api("").then(r => r.json()), o => o.capacity.waiting.some((entry: any) => entry.id === wait.id && entry.reason_is_error === false), 10_000);
+      expect(ordinary.capacity.waiting.find((entry: any) => entry.id === wait.id)).toMatchObject({ condition: "queued", created_at: wait.created_at, reason_is_error: false });
+      expect(ordinary.board.find((entry: any) => entry.implementation_id === id).waiting_reason_is_error).toBe(false);
+      expect(ordinary.progress.find((entry: any) => entry.implementation_id === id).error_reasons).not.toContain(wait.reason);
+      await f.api(`/runs/${holder.id}/stop`, {});
+      await eventually(() => f.api(`/implementations/${id}`).then(r => r.json()), d => d.runs.some((run: any) => run.condition === "working"));
+      expect(f.launches).toHaveLength(2);
+    } finally { f.close(); }
+  }, 20_000);
+
 });

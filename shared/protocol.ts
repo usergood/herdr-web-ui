@@ -1431,6 +1431,8 @@ export const DEFAULT_PORT = 7317;
  * POST /api/factory/implementations/:id/runs (start) -> FactoryRun | FactoryCapacityWait, 202;
  * durably queues at capacity. Queued requests retain identity/age across restart and dispatch
  * oldest eligible first. GET /api/factory exposes public capacity.waiting, including blocked reasons.
+ * Optional reason_is_error keeps retryable Machine faults distinct from ordinary queued waits;
+ * current/overview boards preserve it as waiting_reason_is_error and progress.error_reasons.
  * Optional issue_scope: IssueStartScope reuses a prepared trusted plan after fresh eligibility
  * revalidation; manifest.issue_admission freezes its source, plan, provenance and policies.
  * Known active changes retain issue_pause and Needs you; outage alone preserves admitted work.

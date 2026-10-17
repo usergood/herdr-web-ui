@@ -9,6 +9,7 @@ export type FactoryActivity = "specifying" | "implementing" | "validating" | "re
 export interface FactoryBoardItem {
   implementation_id: string; lane: FactoryBoardLane; activity: FactoryActivity | null;
   condition: RunCondition | null; run_id: string | null; busy: boolean; waiting_reason: string | null;
+  waiting_reason_is_error?: boolean;
   delivery_completion_error?: string;
   ticket_progress: { completed: number; total: number } | null;
   /** Hide finished sidebar entries only after all owned work is reconciled. */
@@ -224,7 +225,7 @@ export interface FactoryCapacityReservation {
 export interface FactoryCapacityWait extends FactoryRecord {
   continuation?: boolean;
   implementation_id: string; assignment_title: string; action: FactoryAction;
-  machine_id: string; provider: FactoryProvider; idempotency_key: string; reason: string;
+  machine_id: string; provider: FactoryProvider; idempotency_key: string; reason: string; reason_is_error?: boolean;
   condition: "queued" | "blocked";
   purpose: "planning" | "execution";
   run_id: string | null;

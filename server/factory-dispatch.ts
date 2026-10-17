@@ -136,7 +136,7 @@ export class FactoryDispatch {
           const attempts = request.attempts + (retry ? 1 : 0);
           const blocked = !capacity && !ineligible && (!retry || attempts >= 6);
           const reason = error instanceof FactoryError ? error.message : "Dispatch could not be verified";
-          this.store.put("capacity_waits", { ...request, condition: blocked ? "blocked" : "queued", attempts, next_attempt_at: retry ? Date.now() + Math.min(30_000, 1000 * 2 ** (attempts - 1)) : 0, reason: blocked ? `${reason}${retry ? `; recovery stopped after ${attempts} attempts` : ""}. Inspect the request and Machine before submitting a new Start request` : reason }, request.implementation_id);
+          this.store.put("capacity_waits", { ...request, condition: blocked ? "blocked" : "queued", reason_is_error: blocked || retry, attempts, next_attempt_at: retry ? Date.now() + Math.min(30_000, 1000 * 2 ** (attempts - 1)) : 0, reason: blocked ? `${reason}${retry ? `; recovery stopped after ${attempts} attempts` : ""}. Inspect the request and Machine before submitting a new Start request` : reason }, request.implementation_id);
           if (!capacity && !retry && !ineligible) failures.set(request.id, error);
         }
       }
