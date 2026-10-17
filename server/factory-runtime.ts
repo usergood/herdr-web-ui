@@ -184,15 +184,11 @@ export class FactoryRuntime {
     await this.reconcilePause(id);
     return this.store.get<Implementation>("implementations", id)!;
   }
-  private planning(run: Pick<FactoryRun, "action" | "implementation_id">): boolean {
-    const specification = this.workflow.specification(run.implementation_id);
-    return ["grill-me", "grill-with-docs"].includes(run.action) || run.action === "to-spec" && (!specification || !this.workflow.approved(run.implementation_id, "specification", specification.id));
-  }
   private enqueueSuspension(idea: Implementation, run: FactoryRun, target: FactoryRun | import("../shared/factory.ts").FactoryWorker): void {
     const suspension = target.suspension!;
     const queuedAt = suspension.queued_at ?? new Date().toISOString();
     this.store.put(target.id === run.id ? "runs" : "workers", { ...target, suspension: { ...suspension, queued_at: queuedAt } }, target.id === run.id ? idea.id : run.id);
-    this.queue.enqueueContinuation({ ...this.store.record(), created_at: queuedAt, id: `suspension:${suspension.pause_id}:${target.id}`, implementation_id: idea.id, assignment_title: idea.title, action: run.action, machine_id: run.machine_id, provider: run.provider, idempotency_key: suspension.pause_id, reason: "Waiting for capacity to continue unfinished work", purpose: target.id === run.id && this.planning(run) ? "planning" : "execution", condition: "queued", run_id: run.id, continuation: true }, { suspension: true, pause_id: suspension.pause_id, ...(target.id !== run.id ? { worker_id: target.id } : {}) });
+    this.queue.enqueueContinuation({ ...this.store.record(), created_at: queuedAt, id: `suspension:${suspension.pause_id}:${target.id}`, implementation_id: idea.id, assignment_title: idea.title, action: run.action, machine_id: run.machine_id, provider: run.provider, idempotency_key: suspension.pause_id, reason: "Waiting for capacity to continue unfinished work", purpose: target.id === run.id && this.workflow.planningCapacityEligible(run) ? "planning" : "execution", condition: "queued", run_id: run.id, continuation: true }, { suspension: true, pause_id: suspension.pause_id, ...(target.id !== run.id ? { worker_id: target.id } : {}) });
   }
   async resumeSuspension(id: string, body: Record<string, unknown>): Promise<void> {
     const run = this.store.get<FactoryRun>("runs", id);
@@ -208,7 +204,7 @@ export class FactoryRuntime {
     if (this.workflow.questions(run.implementation_id, run.id).some(q => q.answer === null)) throw new FactoryError("answers_unready", "Answer pending owner questions before continuing", 409);
     const reserved = this.store.db.transaction(() => {
       this.assertExecuting(run.implementation_id);
-      const pool = this.queue.reserve(this.settings(), !workerId && this.planning(run), `suspension:${body.pause_id}:${target.id}`);
+      const pool = this.queue.reserve(this.settings(), !workerId && this.workflow.planningCapacityEligible(run), `suspension:${body.pause_id}:${target.id}`);
       const reservation = { ...target, condition: "accepted" as const, ...(!workerId ? { capacity_pool: pool } : {}), suspension: { ...target.suspension!, condition: "resuming" as const } };
       this.store.put(kind, reservation, workerId ? id : run.implementation_id);
       return reservation;
@@ -890,6 +886,7 @@ export class FactoryRuntime {
       this.store.db.transaction(() => {
         this.store.put("implementation_retirement", { ...retirement, rework_requested: true }, run.implementation_id);
         this.store.put("runs", stopped, run.implementation_id);
+        this.workflow.releaseStoppedMergeContexts(id);
         const implementation = this.store.get<Implementation>("implementations", run.implementation_id)!;
         if (implementation.outcome === "implementation_complete") this.store.put("implementations", { ...implementation, stage: "review", outcome: "none", activity: undefined });
         this.store.event(run.implementation_id, "run_stopped", { run_id: id, summary: body.summary ?? "Owner stopped retired work for explicit recovery", worktree_retained: true, rework_requested: true, prior_outcome: implementation.outcome });
@@ -926,6 +923,7 @@ export class FactoryRuntime {
     this.store.db.transaction(() => {
       if (retainRework) this.store.put("implementation_retirement", { ...this.store.get<{ id: string; rework_requested?: boolean }>("implementation_retirement", id), id, rework_requested: true }, run.implementation_id);
       this.store.put("runs", stopped, run.implementation_id);
+      if (["cancelled", "completed"].includes(native.condition)) this.workflow.releaseStoppedMergeContexts(id);
       this.store.event(run.implementation_id, "run_stopped", { run_id: id, summary: body.summary ?? "Owner stopped this attempt", worktree_retained: true });
     })();
     return stopped;

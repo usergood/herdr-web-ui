@@ -84,6 +84,71 @@ export async function containingReleaseJourney(browser: Browser, viewport: { wid
   } finally { await context.close(); await f.close(); }
 }
 
+export async function contextSendJourney(browser: Browser, viewport: { width: number; height: number }) {
+  const f = await releaseBrowserFixture({ milestone: "merge" });
+  const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
+  try {
+    const origin = `http://localhost:${f.app.port}`;
+    assert.equal((await context.request.post(`${origin}/api/auth`, { data: { token: f.token } })).status(), 204);
+    const before = await f.detail(); assert.equal(before.human_review_approvals.length, 0);
+    const page = await context.newPage(); page.setDefaultTimeout(10000);
+    const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
+    await page.goto(`${origin}/#factory/${f.id}`);
+    await page.getByRole("navigation", { name: "Workflow history", exact: true }).getByRole("button", { name: "Human Review", exact: true }).click();
+    const review = page.getByRole("region", { name: "Human Review", exact: true });
+    f.core.change({ hold_graphql: true, graphql_waiting: false });
+    const response = page.waitForResponse(response => response.url().endsWith(`${f.prefix}/human-review/approve`) && response.request().method() === "POST");
+    await review.getByRole("button", { name: "Approve and merge", exact: true }).click();
+    let authority: { id: string; context_revision: string; idempotency_key: string; head: string; snapshot_id: string } | undefined;
+    const question = { question: "Should this merge add an external delivery target?" };
+    const ask = () => context.request.post(`${origin}${f.prefix}/questions`, { data: question, headers: { origin, "x-herdr-factory": "1" } });
+    const effects = () => f.core.calls().filter(args => args[1]?.endsWith("/merge") && args.includes("PUT")).length;
+    try {
+      await until(async () => f.core.githubState(), state => state.graphql_waiting === true);
+      const retained = await f.detail(); authority = retained.human_review_approvals[0];
+      assert(authority); assert.equal(retained.human_review_approvals.length, 1);
+      assert.equal(authority.context_revision, before.question_revision);
+      assert.equal(authority.head, f.core.head); assert.equal(authority.snapshot_id, f.snapshot.id);
+      assert.equal(f.mergeRequests.length, 1); assert.equal(f.mergeRequests[0]!.approval.id, authority.id);
+      assert.equal(f.mergeRequests[0]!.approval.idempotency_key, authority.idempotency_key);
+      assert.notEqual(authority.id, f.core.body.approval.id);
+      await page.getByRole("status").filter({ hasText: "Saving…" }).waitFor();
+      assert.equal(await review.getByRole("alert").count(), 0);
+      assert.equal(effects(), 0, "GitHub validation is still held before the irreversible merge");
+      const attempted = await ask(); const result = await attempted.json();
+      const after = await f.detail();
+      console.log(JSON.stringify({ viewport: viewport.width, merge_context_attempt: { status: attempted.status(), result, before_revision: before.question_revision, after_revision: after.question_revision, approval: after.human_review_approvals[0], questions: after.questions } }));
+      assert.equal(attempted.status(), 409, "A new product scope question cannot change authority while Machine merge validation is in flight");
+      assert.equal(result.error.code, "merge_context_busy");
+      assert.deepEqual(after.questions, before.questions, "The rejected question writes no owner context");
+      assert.equal(after.question_revision, before.question_revision);
+      assert.deepEqual(after.events.filter((event: { kind: string }) => ["question_asked", "owner_answered"].includes(event.kind)), before.events.filter((event: { kind: string }) => ["question_asked", "owner_answered"].includes(event.kind)));
+      assert.equal(after.human_review_approvals.length, 1); assert.equal(after.human_review_approvals[0].id, authority.id);
+      assert.equal(after.human_review_approvals[0].context_revision, authority.context_revision);
+      assert.equal(after.human_review_approvals[0].idempotency_key, authority.idempotency_key);
+      assert.equal(after.human_review_approvals[0].condition, "pending"); assert.equal(effects(), 0);
+    } finally { f.core.change({ hold_graphql: false }); await response; }
+    const approved = await response; const receipt = await approved.json(); assert.equal(approved.status(), 200, JSON.stringify(receipt));
+    await review.getByRole("status").filter({ hasText: "Merge verified" }).waitFor();
+    const delivered = await until(f.detail, d => d.runs.find((run: { id: string }) => run.id === f.core.id)?.condition === "completed");
+    assert.equal(delivered.implementation.stage, "done"); assert.equal(delivered.implementation.outcome, "merged");
+    assert.equal(delivered.human_review_approvals.length, 1); assert.equal(delivered.human_review_approvals[0].id, authority!.id);
+    assert.equal(delivered.human_review_approvals[0].context_revision, authority!.context_revision);
+    assert.equal(delivered.human_review_approvals[0].condition, "merged"); assert.equal(effects(), 1);
+    await page.reload(); await review.getByRole("status").filter({ hasText: "Merge verified" }).waitFor();
+    assert.equal(await review.getByRole("alert").count(), 0);
+    const permitted = await ask(); const followup = await permitted.json(); assert.equal(permitted.status(), 201, JSON.stringify(followup));
+    const completed = await f.detail();
+    assert.equal(completed.questions.length, before.questions.length + 1); assert.equal(followup.question, question.question);
+    assert.notEqual(completed.question_revision, before.question_revision, "Verified merge releases the context fence for a genuine later owner question");
+    assert.equal(completed.human_review_approvals.length, 1); assert.equal(completed.human_review_approvals[0].id, authority!.id);
+    assert.equal(completed.human_review_approvals[0].condition, "merged"); assert.equal(completed.implementation.stage, "done");
+    assert.equal(completed.runs.find((run: { id: string }) => run.id === f.core.id).condition, "completed");
+    assert.equal(effects(), 1); assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)); assert.deepEqual(errors, []);
+    console.log(`PASS actual UI approval fences owner context during held Machine validation, keeps authority unchanged, and permits later questions after verified merge (${viewport.width})`);
+  } finally { f.core.change({ hold_graphql: false }); await context.close(); await f.close(); }
+}
+
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
@@ -408,5 +473,6 @@ try {
     }
   }
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) await containingReleaseJourney(browser, viewport);
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) await contextSendJourney(browser, viewport);
   console.log("PASS Human Review merge authority, stale/protected/denied targets, lost replies, retained CI waits, frozen release authority despite newer Project/old Machine policy, release completion, delivery archive and postdelivery discussion on desktop/mobile");
 } finally { await browser.close(); }

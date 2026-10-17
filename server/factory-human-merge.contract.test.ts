@@ -1,5 +1,6 @@
 import { expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
+import { FactoryStore } from "./factory-store.ts";
 import { join } from "node:path";
 import { capacityFixture } from "../scripts/factory-capacity-fixture.ts";
 import { published, until } from "../scripts/factory-human-review-fixture.ts";
@@ -25,6 +26,173 @@ it("approves and verifies one checked Human Review merge without a spare agent s
 }, 20000);
 
 import { mergeFixture } from "../scripts/factory-merge-fixture.ts";
+import { releaseBrowserFixture } from "../scripts/factory-release-browser-fixture.ts";
+
+it("fences owner context while the remote Machine validates an approved merge", async () => {
+  const f = await releaseBrowserFixture(); let pending: Promise<Response> | undefined;
+  const post = (suffix: string, body: unknown) => fetch(`http://localhost:${f.app.port}${f.prefix}${suffix}`, { method: "POST", headers: { authorization: `Bearer ${f.token}`, "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+  try {
+    const ready = await f.detail(); const review = ready.human_reviews[0];
+    expect(ready.human_review_approvals).toEqual([]);
+    f.core.change({ hold_graphql: true });
+    pending = post("/human-review/approve", { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, idempotency_key: "context-during-remote-validation" });
+    await until(async () => f.core.githubState(), state => state.graphql_waiting === true);
+    const question = await post("/questions", { question: "Should this scope also publish private credentials?" });
+    const response = await question.json();
+    expect(question.status).toBe(409);
+    expect(response).toMatchObject({ error: { code: "merge_context_busy" } });
+    const held = await f.detail();
+    expect(held.question_revision).toBe(ready.question_revision);
+    expect(held.questions).toEqual(ready.questions);
+    expect(f.core.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(0);
+    f.core.change({ hold_graphql: false });
+    expect((await pending).status).toBe(200);
+    const merged = await until(f.detail, d => d.human_review_approvals[0]?.condition === "awaiting_release");
+    expect(merged.human_review_approvals).toHaveLength(1);
+    expect(f.core.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+    const after = await post("/questions", { question: "Should this scope also publish private credentials?" });
+    expect(after.status).toBe(201);
+    expect(await after.json()).toMatchObject({ answer: null, question: "Should this scope also publish private credentials?" });
+  } finally { f.core.change({ hold_graphql: false }); await pending?.catch(() => {}); await f.close(); }
+}, 20000);
+
+type ContextFixture = Awaited<ReturnType<typeof releaseBrowserFixture>>;
+const contextPost = (f: ContextFixture, path: string, body: unknown) => fetch(`http://localhost:${f.app.port}${path}`, { method: "POST", headers: { authorization: `Bearer ${f.token}`, "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+const retainRestartOutcome = (request: Promise<Response>) => request.then(response => ({ response, error: null }), error => ({ response: null, error }));
+const assertRestartOutcome = (outcome: Awaited<ReturnType<typeof retainRestartOutcome>>) => {
+  if (outcome.error) expect(outcome.error.code).toBe("ECONNRESET");
+  else expect(outcome.response!.status).toBe(409);
+};
+const contextApproval = async (f: ContextFixture, key: string) => {
+  const review = (await f.detail()).human_reviews[0];
+  return { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, idempotency_key: key };
+};
+
+it.each(["restart", "lost_ack", "retained_wait"])("retains the exact merge-context fence through %s without replaying a merge", async scenario => {
+  const f = await releaseBrowserFixture(); let pending: ReturnType<typeof retainRestartOutcome> | undefined;
+  try {
+    const body = await contextApproval(f, `durable-context-${scenario}`);
+    const ready = await f.detail(); expect(ready.human_review_approvals).toEqual([]);
+    if (scenario === "lost_ack") {
+      f.core.change({ lose: true });
+      const uncertain = await contextPost(f, f.prefix + "/human-review/approve", body);
+      expect(uncertain.status).toBe(200);
+      expect(await uncertain.json()).toMatchObject({ condition: "uncertain", head: f.core.head });
+      expect(f.core.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+      f.core.change({ hold_graphql: true, graphql_waiting: false });
+    } else {
+      f.core.change({ hold_graphql: true });
+      if (scenario === "retained_wait") f.core.pull({ mergeStateStatus: "BLOCKED", reviewDecision: "REVIEW_REQUIRED" });
+      pending = retainRestartOutcome(contextPost(f, f.prefix + "/human-review/approve", body));
+      await until(async () => f.core.githubState(), state => state.graphql_waiting === true);
+    }
+    const retained = (await f.detail()).human_review_approvals[0];
+    f.restartConnection();
+    const blocked = await contextPost(f, f.prefix + "/questions", { question: "Retain this proposed scope until the remote merge settles" });
+    expect(blocked.status).toBe(409);
+    expect(await blocked.json()).toMatchObject({ error: { code: "merge_context_busy" } });
+    expect((await f.detail()).question_revision).toBe(ready.question_revision);
+    f.core.change({ hold_graphql: false }); if (pending) assertRestartOutcome(await pending);
+    if (scenario === "retained_wait") {
+      await until(f.detail, d => d.human_review_approvals[0]?.condition === "pending" && d.human_review_approvals[0]?.reason?.includes("required GitHub"));
+      const waiting = await contextPost(f, f.prefix + "/human-review/approve", body);
+      expect(waiting.status).toBe(200); expect(await waiting.json()).toMatchObject({ condition: "pending", id: retained.id });
+      expect((await contextPost(f, f.prefix + "/questions", { question: "Still retain scope while the older request was unknown" })).status).toBe(409);
+      expect(f.core.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(0);
+      f.core.pull({ mergeStateStatus: "CLEAN", reviewDecision: "APPROVED" });
+    }
+    await contextPost(f, f.prefix + "/human-review/approve", body);
+    const delivered = await until(f.detail, d => d.human_review_approvals[0]?.condition === "awaiting_release");
+    expect(delivered.human_review_approvals).toHaveLength(1);
+    expect(delivered.human_review_approvals[0]).toMatchObject({ id: retained.id, idempotency_key: body.idempotency_key, head: f.core.head, context_revision: ready.question_revision });
+    expect(f.core.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+    for (const request of f.mergeRequests) expect(request.approval).toMatchObject({ id: retained.id, idempotency_key: body.idempotency_key, context_revision: ready.question_revision });
+    expect((await contextPost(f, f.prefix + "/questions", { question: "A subsequent owner decision after confirmed merge" })).status).toBe(201);
+  } finally { f.core.change({ hold_graphql: false }); if (pending) assertRestartOutcome(await pending); await f.close(); }
+}, 20000);
+
+it("a confirmed Stop cannot recreate a context fence for a prior unsent CI wait", async () => {
+  const f = await releaseBrowserFixture();
+  try {
+    const body = await contextApproval(f, "ci-wait-then-stop");
+    f.core.pull({ mergeStateStatus: "BLOCKED", reviewDecision: "REVIEW_REQUIRED" });
+    const approval = await contextPost(f, f.prefix + "/human-review/approve", body);
+    expect(approval.status).toBe(200); const receipt = await approval.json(); expect(receipt.condition).toBe("pending");
+    const stopped = await contextPost(f, `/api/factory/runs/${f.core.id}/stop`, {});
+    expect(stopped.status).toBe(200); expect(await stopped.json()).toMatchObject({ id: f.core.id, condition: "cancelled" });
+    f.restartConnection();
+    const observed = await contextPost(f, f.prefix + "/human-review/approve", body);
+    expect(observed.status).toBe(200); expect(await observed.json()).toMatchObject({ id: receipt.id, condition: "blocked" });
+    const question = await contextPost(f, f.prefix + "/questions", { question: "Retained scope after verified Stop" });
+    expect(question.status).toBe(201);
+    const detail = await f.detail(); expect(detail.human_review_approvals).toHaveLength(1);
+    expect(detail.human_review_approvals[0]).toMatchObject({ id: receipt.id, idempotency_key: receipt.idempotency_key, provenance: receipt.provenance, head: receipt.head });
+    expect(f.core.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(0);
+  } finally { await f.close(); }
+}, 20000);
+
+it("a positively denied fresh merge remains context-mutable across restart", async () => {
+  const f = await releaseBrowserFixture();
+  try {
+    const body = await contextApproval(f, "denied-context-recovery");
+    f.core.change({ deny: "Owned repository permission denial" });
+    const response = await contextPost(f, f.prefix + "/human-review/approve", body);
+    expect(response.status).toBe(200); const denied = await response.json();
+    expect(denied).toMatchObject({ condition: "blocked", head: f.core.head });
+    expect(f.core.git(["rev-parse", "main"])).toBe(f.core.base);
+    expect((await contextPost(f, f.prefix + "/questions", { question: "Retained question after positive denial" })).status).toBe(201);
+    f.restartConnection();
+    expect((await contextPost(f, f.prefix + "/questions", { question: "Further context after restart of denied merge" })).status).toBe(201);
+    const current = await f.detail(); expect(current.human_review_approvals).toHaveLength(1);
+    expect(current.human_review_approvals[0]).toMatchObject({ id: denied.id, idempotency_key: denied.idempotency_key, head: denied.head, provenance: denied.provenance });
+    expect(f.core.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+    expect(f.core.git(["rev-parse", "main"])).toBe(f.core.base);
+  } finally { await f.close(); }
+}, 20000);
+
+it.each(["text", "confirmation"])("restored legacy %s answers cannot mutate context during an unknown remote merge", async answerKind => {
+  const f = await releaseBrowserFixture(); let pending: ReturnType<typeof retainRestartOutcome> | undefined; let stopping: Promise<Response> | undefined;
+  try {
+    const body = await contextApproval(f, `legacy-context-${answerKind}`);
+    f.core.change({ hold_graphql: true });
+    pending = retainRestartOutcome(contextPost(f, f.prefix + "/human-review/approve", body));
+    await until(async () => f.core.githubState(), state => state.graphql_waiting === true);
+    const retained = (await f.detail()).human_review_approvals[0];
+    f.restartConnection();
+    // Historical fixture restoration only: authority above was created by the real public button API.
+    const store = new FactoryStore(f.stateDir); const created = new Date(Date.now() - 60000).toISOString();
+    const question = { ...store.record(), created_at: created, updated_at: created, implementation_id: f.id, run_id: f.core.id, question: "An unanswered question retained by an older bridge", answer_kind: answerKind, answer: null, revision: crypto.randomUUID() };
+    store.put("questions", question, f.id); store.close();
+    const before = await f.detail();
+    const answered = await contextPost(f, `${f.prefix}/questions/${question.id}/answer`, { revision: question.revision, answer: "Retained caller answer" });
+    expect(answered.status).toBe(409); expect(await answered.json()).toMatchObject({ error: { code: "merge_context_busy" } });
+    if (answerKind === "text") {
+      f.setTranscript({ source_id: "owned-release-history", version: "owner-reply", cursor: null, turns: [{ role: "user", ts: new Date(Date.parse(created) + 1000).toISOString(), parts: [{ kind: "text", text: "A genuine retained native owner reply" }] }] });
+      const sync = await contextPost(f, `/api/factory/runs/${f.core.id}/import-conversation`, {});
+      expect(sync.status).toBe(409); expect(await sync.json()).toMatchObject({ error: { code: "merge_context_busy" } });
+    } else {
+      const shared = await contextPost(f, f.prefix + "/approvals", { kind: "shared_understanding", revision: before.question_revision, scope: "Confirm this exact retained shared understanding" });
+      expect(shared.status).toBe(409); expect(await shared.json()).toMatchObject({ error: { code: "merge_context_busy" } });
+    }
+    const unchanged = await f.detail();
+    expect(unchanged.question_revision).toBe(before.question_revision);
+    expect(unchanged.questions).toEqual(before.questions); expect(unchanged.approvals).toEqual(before.approvals);
+    expect(unchanged.events.filter((event: any) => ["owner_answered", "owner_approved", "native_question_answered"].includes(event.kind))).toEqual(before.events.filter((event: any) => ["owner_answered", "owner_approved", "native_question_answered"].includes(event.kind)));
+    const oldRequest = f.mergeRequests[0];
+    stopping = contextPost(f, `/api/factory/runs/${f.core.id}/stop`, {});
+    await until(async () => f.core.post(`factory-host/runs/${f.core.id}/reconcile`, {}).then(r => r.json()), d => d.condition === "disconnected");
+    f.core.change({ hold_graphql: false }); assertRestartOutcome(await pending);
+    const stopped = await stopping; expect(stopped.status).toBe(200); expect(await stopped.json()).toMatchObject({ condition: "cancelled", id: f.core.id });
+    expect((await f.core.post(f.core.route + "merge", oldRequest)).status).toBe(409);
+    await f.restart();
+    expect((await f.core.post(f.core.route + "merge", oldRequest)).status).toBe(409);
+    const after = await contextPost(f, `${f.prefix}/questions/${question.id}/answer`, { revision: question.revision, answer: "Retained caller answer" });
+    expect(after.status).toBe(200);
+    const final = await f.detail(); expect(final.human_review_approvals).toHaveLength(1);
+    expect(final.human_review_approvals[0]).toMatchObject({ id: retained.id, head: retained.head, idempotency_key: retained.idempotency_key, provenance: retained.provenance });
+    expect(f.core.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(0);
+  } finally { f.core.change({ hold_graphql: false }); if (pending) assertRestartOutcome(await pending); await stopping?.catch(() => {}); await f.close(); }
+}, 20000);
 
 it("the Machine replaces only a positively unsent intent for fresh approval at an unchanged repaired head", async () => {
   for (const sent of [false, true]) {

@@ -56,7 +56,7 @@ export class FactoryParking {
     if (park.kind === "owner" && this.consumed(run, revision, null)) { this.store.remove("capacity_waits", waitId); return { ...run, continuation: { ...park, condition: "resumed", question_revision: revision, reason: "The native conversation consumed the current answered context" } }; }
     park = { ...park, queued_at: park.queued_at ?? new Date().toISOString(), condition: "queued", question_revision: revision, reason: "Waiting for agent capacity to resume this conversation" };
     const idea = this.store.get<Implementation>("implementations", run.implementation_id)!;
-    this.queue.enqueueContinuation({ ...park, created_at: park.queued_at!, id: waitId, implementation_id: run.implementation_id, assignment_title: idea.title, action: run.action, machine_id: run.machine_id, provider: run.provider, idempotency_key: park.id, purpose: this.planning(run) ? "planning" : "execution", condition: "queued", run_id: run.id, continuation: true }, { park_id: park.id, revision });
+    this.queue.enqueueContinuation({ ...park, created_at: park.queued_at!, id: waitId, implementation_id: run.implementation_id, assignment_title: idea.title, action: run.action, machine_id: run.machine_id, provider: run.provider, idempotency_key: park.id, purpose: this.workflow.planningCapacityEligible(run) ? "planning" : "execution", condition: "queued", run_id: run.id, continuation: true }, { park_id: park.id, revision });
     return { ...run, continuation: park };
   }
   observeWorker(run: FactoryRun, worker: FactoryWorker, resting: boolean): FactoryWorker {
@@ -83,10 +83,6 @@ export class FactoryParking {
   private consumed(run: FactoryRun, revision: string, workerId: string | null): boolean {
     return this.store.list<{ revision: string; worker_id: string | null }>("answer_consumption", run.id).some(receipt => receipt.revision === revision && receipt.worker_id === workerId);
   }
-  private planning(run: FactoryRun): boolean {
-    const specification = this.workflow.specification(run.implementation_id);
-    return ["grill-me", "grill-with-docs"].includes(run.action) || run.action === "to-spec" && (!specification || !this.workflow.approved(run.implementation_id, "specification", specification.id));
-  }
   private async resume(id: string, body: Record<string, unknown>): Promise<void> {
     const parent = this.store.get<FactoryRun>("runs", id);
     if (!parent || ["completed", "cancelled", "failed"].includes(parent.condition)) return;
@@ -99,7 +95,7 @@ export class FactoryParking {
       if (current.suspension || this.store.get<Implementation>("implementations", parent.implementation_id)?.pause) throw new FactoryError("continuation_waiting", "Owner suspension must be resumed before scheduler delivery", 409);
       if (current.continuation.condition !== "queued") throw new FactoryError("continuation_waiting", current.continuation.reason, 409);
       if (this.workflow.questionRevision(parent.implementation_id, id) !== body.revision || this.workflow.questions(parent.implementation_id, id).some(question => question.answer === null)) throw new FactoryError("continuation_waiting", "Waiting for the current answered revision", 409);
-      const pool = this.reserve(!workerId && this.planning(parent), `resume:${current.continuation.id}`);
+      const pool = this.reserve(!workerId && this.workflow.planningCapacityEligible(parent), `resume:${current.continuation.id}`);
       const reserved: FactoryRun | FactoryWorker = { ...current, ...(!workerId ? { capacity_pool: pool } : {}), condition: "accepted", continuation: { ...current.continuation, condition: "sending", reason: "Resuming the retained conversation" } };
       this.store.put(collection, reserved, workerId ? id : parent.implementation_id);
       return reserved;

@@ -4,20 +4,22 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "../server/index.ts";
+import type { NativeConversationSnapshot } from "../shared/factory.ts";
 import { FactoryStore } from "../server/factory-store.ts";
 import { mergeFixture } from "./factory-merge-fixture.ts";
 
-export async function releaseBrowserFixture() {
-  const core = await mergeFixture({ milestone: "release", machineId: "owned-release", native: { version: async () => "owned-release", modelCatalog: async provider => ({ protocol: 1, provider, models: [{ id: "owned-release-model", name: "Owned release model", reasoning: [], default_reasoning: null }], problem: null }) } });
+export async function releaseBrowserFixture(options: { milestone?: "merge" | "release" } = {}) {
+  const core = await mergeFixture({ milestone: options.milestone ?? "release", machineId: "owned-release", native: { version: async () => "owned-release", modelCatalog: async provider => ({ protocol: 1, provider, models: [{ id: "owned-release-model", name: "Owned release model", reasoning: [], default_reasoning: null }], problem: null }) } });
   const stateDir = mkdtempSync(join(tmpdir(), "release-browser-"));
   const token = "owned-release-browser";
   const mergeRequests: Record<string, any>[] = [];
+  let transcript: Pick<NativeConversationSnapshot, "source_id" | "version" | "cursor" | "turns"> = { source_id: "owned-release-history", version: "one", cursor: null, turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: "Retained containing release history." }] }] };
   const pending = new Set<Promise<Response>>();
   const forward = async (request: Request) => {
     if (request.headers.get("authorization") !== "Bearer owned-merge") return new Response(null, { status: 401 });
     const path = new URL(request.url).pathname.replace(/^\/api\/factory-host/, "");
     const body = request.method === "POST" ? await request.json() as Record<string, any> : {};
-    if (path === `/runs/${core.id}/operations/transcript`) return Response.json({ source_id: "owned-release-history", version: "one", cursor: null, turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: "Retained containing release history." }] }] });
+    if (path === `/runs/${core.id}/operations/transcript`) return Response.json(transcript);
     if (path === `/runs/${core.id}/operations/merge`) mergeRequests.push(structuredClone(body));
     const response = await core.post(`factory-host${path}`, body);
     return Response.json(await response.json(), { status: response.status });
@@ -35,7 +37,7 @@ export async function releaseBrowserFixture() {
       ]);
     } finally { clearTimeout(timer); }
   };
-  const options = { port: 0, token, stateDir, machines: false as const, factory: { accountDiscoveryHome: stateDir, native: { version: async () => null }, machineEndpoint: (id: string) => id === "owned-release" ? { url: `http://localhost:${machine.port}`, token: "owned-merge" } : undefined } };
+  const serverOptions = { port: 0, token, stateDir, machines: false as const, factory: { accountDiscoveryHome: stateDir, native: { version: async () => null }, machineEndpoint: (id: string) => id === "owned-release" ? { url: `http://localhost:${machine.port}`, token: "owned-merge" } : undefined } };
   const store = new FactoryStore(stateDir); const record = store.record();
   const id = core.run.implementation_id;
   const manifest = core.run.manifest;
@@ -47,7 +49,7 @@ export async function releaseBrowserFixture() {
   for (const axis of ["standards", "spec"]) store.put("review_evidence", { ...record, id: `owned-${axis}`, worker_id: `owned-${axis}`, run_id: core.id, axis, head: core.head, outcome: "passed", source_id: `owned-source-${axis}`, content: "FACTORY_REVIEW: PASS" }, core.id);
   store.put("pull_requests", { ...core.body.pull_request, id: core.id }, core.id);
   store.close();
-  let app = createServer(options);
+  let app = createServer(serverOptions);
   const prefix = `/api/factory/implementations/${id}`;
   const headers = { authorization: `Bearer ${token}`, "content-type": "application/json", "x-herdr-factory": "1" };
   const detail = () => fetch(`http://localhost:${app.port}${prefix}`, { headers }).then(response => response.json());
@@ -60,10 +62,12 @@ export async function releaseBrowserFixture() {
   retained.put("human_reviews", { ...record, id: core.id, implementation_id: id, run_id: core.id, conversation_id: `${id}:human_review`, head: core.head, snapshot_id: snapshot.id, assistant_run_id: null, condition: "ready", reason: null }, id);
   retained.put("automatic_review", { ...record, id: core.id, run_id: core.id, head: core.head, round: 0, condition: "published", reason: null, attempts: 0, next_attempt_at: 0, check_id: core.check.id, evidence_ids: core.body.evidence_ids, batch_id: null, context_revision: current.question_revision }, id);
   retained.close();
-  app = createServer(options);
-  return { core, id, prefix, token, detail, mergeRequests, snapshot,
+  app = createServer(serverOptions);
+  return { core, id, prefix, token, detail, mergeRequests, snapshot, stateDir,
+    setTranscript: (value: typeof transcript) => { transcript = value; },
+    restartConnection: () => { app.stop(); app = createServer(serverOptions); },
     get app() { return app; },
-    restart: async () => { app.stop(); await drain(); core.restart(); app = createServer(options); },
+    restart: async () => { app.stop(); await drain(); core.restart(); app = createServer(serverOptions); },
     close: async () => { app.stop(); try { await drain(); } finally { machine.stop(); core.close(); rmSync(stateDir, { recursive: true, force: true }); } },
   };
 }

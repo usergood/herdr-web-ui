@@ -3,12 +3,44 @@ import { isSpecificationAcceptance } from "../shared/specification-acceptance.ts
 import { isJsonObject } from "./http.ts";
 import { FactoryError, hash } from "./factory-host.ts";
 import { FactoryStore } from "./factory-store.ts";
-import type { FactoryExecutionPlan, FactoryPlanningRequest, FactoryProject } from "../shared/factory.ts";
+import type { FactoryHumanApproval, FactoryExecutionPlan, FactoryPlanningRequest, FactoryProject } from "../shared/factory.ts";
+
+type MergeContextFence = { id: string; implementation_id: string; run_id: string; context_revision: string | null; stopped?: true; settled?: true };
 
 /** Revision-scoped decisions. A new proposal never changes the contract of an existing Run. */
 export class FactoryWorkflow {
   constructor(private readonly store: FactoryStore) {}
+  /** A remote merge may still send after a lost reply or a connection-server restart. */
+  retainMergeContext(approval: FactoryHumanApproval, restoring = false): boolean {
+    const prior = this.store.get<MergeContextFence>("merge_context_fences", approval.id);
+    const run = this.store.get<FactoryRun>("runs", approval.run_id);
+    if (!restoring && run && ["completed", "cancelled", "failed"].includes(run.condition)) throw new FactoryError("run_stopping", "This Run ended before merge dispatch", 409);
+    if (prior?.stopped) {
+      if (restoring) return false;
+      throw new FactoryError("run_stopping", "A confirmed Stop retired this merge authority", 409);
+    }
+    if (prior?.settled && restoring) return false;
+    if (!prior || prior.settled) this.store.put("merge_context_fences", { id: approval.id, implementation_id: approval.implementation_id, run_id: approval.run_id, context_revision: approval.context_revision ?? null }, approval.implementation_id);
+    return !prior || prior.settled === true;
+  }
+  releaseMergeContext(approvalId: string): void {
+    const fence = this.store.get<MergeContextFence>("merge_context_fences", approvalId);
+    if (fence && !fence.stopped) this.store.put("merge_context_fences", { ...fence, settled: true }, fence.implementation_id);
+  }
+  releaseStoppedMergeContexts(runId: string): void {
+    // Keep the closed marker: restoring an old unknown receipt cannot revive its fence or send.
+    for (const approval of this.store.list<FactoryHumanApproval>("human_review_approvals").filter(approval => approval.run_id === runId)) this.store.put("merge_context_fences", { id: approval.id, implementation_id: approval.implementation_id, run_id: runId, context_revision: approval.context_revision ?? null, stopped: true }, approval.implementation_id);
+  }
+  private assertContextMutable(id: string, runId: string | null): void {
+    if (runId && this.store.get<FactoryRun>("runs", runId)?.action === "verify-provider") return;
+    if (this.store.list<MergeContextFence>("merge_context_fences", id).some(fence => !fence.stopped && !fence.settled)) throw new FactoryError("merge_context_busy", "Merge authorization is being observed on its Machine. Your context change was not saved; retain it and retry after the merge outcome or a confirmed Stop.", 409);
+  }
   specification(id: string): SpecificationVersion | null { return this.store.list<SpecificationVersion>("specifications", id).at(-1) ?? null; }
+  /** The single extra pool is only for interviewing or drafting an unaccepted Specification. */
+  planningCapacityEligible(run: Pick<FactoryRun, "action" | "implementation_id">): boolean {
+    const specification = this.specification(run.implementation_id);
+    return ["grill-me", "grill-with-docs"].includes(run.action) || run.action === "to-spec" && (!specification || !this.approved(run.implementation_id, "specification", specification.id));
+  }
   tickets(id: string): FactoryTicket[] {
     const graph = this.store.get<{ id: string; specification_id: string; tickets: FactoryTicket[] }>("graphs", id);
     return graph && graph.specification_id === this.specification(id)?.id ? graph.tickets : [];
@@ -100,32 +132,34 @@ export class FactoryWorkflow {
   }
   /** Only a verified native page may supply an answer; ambiguous replies stay pending. */
   retainNativeAnswers(run: FactoryRun, snapshot: NativeConversationSnapshot, latestPage: boolean): void {
-    if (!snapshot.worker_id) this.retainNativeAcceptance(run, snapshot, latestPage);
-    const questions = this.store.list<FactoryQuestion>("questions", run.implementation_id)
-      .filter(question => question.run_id === run.id && (question.worker_id ?? null) === (snapshot.worker_id ?? null)).sort((a, b) => a.created_at.localeCompare(b.created_at));
-    // A chronological interval does not identify which overlapping question the
-    // owner is answering. Keep every such reply pending for an explicit decision.
-    if (questions.filter(question => question.answer === null && question.answer_kind !== "confirmation").length !== 1) return;
-    const turns = snapshot.turns.filter(turn => turn.ts !== null && Number.isFinite(Date.parse(turn.ts)));
-    const decisions = this.store.list<FactoryApproval>("approvals", run.implementation_id).filter(a => a.provenance?.kind === "native_chat" && a.provenance.run_id === run.id && a.provenance.source_id === snapshot.source_id);
-    const userTurns = snapshot.turns.filter(turn => turn.role === "user" && !decisions.some(a => a.provenance?.turn_ts === turn.ts) && turn.parts.some(part => part.kind === "text") && turn.parts.every(part => part.kind === "text" || part.kind === "image"));
-    if (userTurns.some(turn => turn.ts === null || !Number.isFinite(Date.parse(turn.ts)))) return;
-    const oldest = turns.reduce((time, turn) => Math.min(time, Date.parse(turn.ts!)), Infinity);
-    const newest = turns.reduce((time, turn) => Math.max(time, Date.parse(turn.ts!)), -Infinity);
-    for (const [index, question] of questions.entries()) {
-      if (question.answer !== null || question.answer_kind === "confirmation") continue;
-      const start = Date.parse(question.created_at);
-      const end = questions[index + 1] ? Date.parse(questions[index + 1]!.created_at) : Infinity;
-      // A page must cover the whole question interval, not just one of several replies.
-      if (!Number.isFinite(start) || end <= start || questions[index - 1]?.created_at === question.created_at || snapshot.cursor && oldest > start || !latestPage && newest < end) continue;
-      const replies = userTurns.filter(turn => Date.parse(turn.ts!) > start && Date.parse(turn.ts!) < end);
-      if (replies.length !== 1) continue;
-      const reply = replies[0]!;
-      const answer = reply.parts.flatMap(part => part.kind === "text" ? [part.text] : []).join("\n").trim();
-      if (!answer || answer.length > 20_000) continue;
-      this.mutate(run.implementation_id, "answer", { question_id: question.id, revision: question.revision, answer });
-      this.store.event(run.implementation_id, "native_question_answered", { question_id: question.id, run_id: run.id, snapshot_id: snapshot.id, source_id: snapshot.source_id, turn_ts: reply.ts });
-    }
+    this.store.db.transaction(() => {
+      if (!snapshot.worker_id) this.retainNativeAcceptance(run, snapshot, latestPage);
+      const questions = this.store.list<FactoryQuestion>("questions", run.implementation_id)
+        .filter(question => question.run_id === run.id && (question.worker_id ?? null) === (snapshot.worker_id ?? null)).sort((a, b) => a.created_at.localeCompare(b.created_at));
+      // A chronological interval does not identify which overlapping question the
+      // owner is answering. Keep every such reply pending for an explicit decision.
+      if (questions.filter(question => question.answer === null && question.answer_kind !== "confirmation").length !== 1) return;
+      const turns = snapshot.turns.filter(turn => turn.ts !== null && Number.isFinite(Date.parse(turn.ts)));
+      const decisions = this.store.list<FactoryApproval>("approvals", run.implementation_id).filter(a => a.provenance?.kind === "native_chat" && a.provenance.run_id === run.id && a.provenance.source_id === snapshot.source_id);
+      const userTurns = snapshot.turns.filter(turn => turn.role === "user" && !decisions.some(a => a.provenance?.turn_ts === turn.ts) && turn.parts.some(part => part.kind === "text") && turn.parts.every(part => part.kind === "text" || part.kind === "image"));
+      if (userTurns.some(turn => turn.ts === null || !Number.isFinite(Date.parse(turn.ts)))) return;
+      const oldest = turns.reduce((time, turn) => Math.min(time, Date.parse(turn.ts!)), Infinity);
+      const newest = turns.reduce((time, turn) => Math.max(time, Date.parse(turn.ts!)), -Infinity);
+      for (const [index, question] of questions.entries()) {
+        if (question.answer !== null || question.answer_kind === "confirmation") continue;
+        const start = Date.parse(question.created_at);
+        const end = questions[index + 1] ? Date.parse(questions[index + 1]!.created_at) : Infinity;
+        // A page must cover the whole question interval, not just one of several replies.
+        if (!Number.isFinite(start) || end <= start || questions[index - 1]?.created_at === question.created_at || snapshot.cursor && oldest > start || !latestPage && newest < end) continue;
+        const replies = userTurns.filter(turn => Date.parse(turn.ts!) > start && Date.parse(turn.ts!) < end);
+        if (replies.length !== 1) continue;
+        const reply = replies[0]!;
+        const answer = reply.parts.flatMap(part => part.kind === "text" ? [part.text] : []).join("\n").trim();
+        if (!answer || answer.length > 20_000) continue;
+        this.mutate(run.implementation_id, "answer", { question_id: question.id, revision: question.revision, answer });
+        this.store.event(run.implementation_id, "native_question_answered", { question_id: question.id, run_id: run.id, snapshot_id: snapshot.id, source_id: snapshot.source_id, turn_ts: reply.ts });
+      }
+    }).immediate();
   }
   private retainNativeAcceptance(run: FactoryRun, snapshot: NativeConversationSnapshot, latestPage: boolean): void {
     const spec = this.specification(run.implementation_id);
@@ -157,6 +191,7 @@ export class FactoryWorkflow {
         if (body.run_id !== undefined && (!run || run.implementation_id !== id)) throw new FactoryError("invalid_run", "Select this Implementation's Run");
         const worker = typeof body.worker_id === "string" ? this.store.get<FactoryWorker>("workers", body.worker_id) : null;
         if (body.worker_id !== undefined && (!worker || worker.run_id !== run?.id || ["completed", "cancelled", "failed"].includes(worker.condition))) throw new FactoryError("invalid_worker", "Select an owned active worker for this question", 409);
+        this.assertContextMutable(id, run?.id ?? null);
         const question: FactoryQuestion = { ...this.store.record(), implementation_id: id, run_id: run?.id ?? null, ...(worker ? { worker_id: worker.id } : {}), question: body.question.trim(), ...(body.answer_kind === undefined ? {} : { answer_kind: body.answer_kind }), answer: null, revision: this.store.record().id };
         this.store.put("questions", question, id); this.store.event(id, "question_asked", question);
         if (worker) this.store.put("workers", { ...worker, condition: "needs_you", continuation: { ...this.store.record(), kind: "owner", condition: "parking", reason: "Waiting for verified native rest before releasing capacity", question_revision: null } }, run!.id);
@@ -168,6 +203,7 @@ export class FactoryWorkflow {
         if (!question || question.implementation_id !== id) throw new FactoryError("invalid_question", "Select this Implementation's question");
         if (body.revision !== question.revision || question.answer !== null) throw new FactoryError("stale_question", "This asking was changed or already answered", 409);
         if (typeof body.answer !== "string" || !body.answer.trim() || body.answer.length > 20_000) throw new FactoryError("invalid_answer", "Enter your answer");
+        this.assertContextMutable(id, question.run_id);
         const answered = { ...question, answer: body.answer.trim(), updated_at: new Date().toISOString() };
         this.store.put("questions", answered, id); this.store.event(id, "owner_answered", answered); return answered;
       }

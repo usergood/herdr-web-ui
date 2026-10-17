@@ -8,7 +8,13 @@ export class FactoryHumanApprovalService {
   private stopped = false;
   stop(): void { this.stopped = true; }
   private readonly busy = new Set<string>();
-  constructor(private readonly store: FactoryStore, private readonly runtime: FactoryRuntime, private readonly workflow: import("./factory-workflow.ts").FactoryWorkflow, private readonly retainBeforeDelivery: (id: string) => Promise<unknown>) {}
+  constructor(private readonly store: FactoryStore, private readonly runtime: FactoryRuntime, private readonly workflow: import("./factory-workflow.ts").FactoryWorkflow, private readonly retainBeforeDelivery: (id: string) => Promise<unknown>) {
+    // Restored unknown sends may still be executing on another Machine.
+    for (const approval of store.list<FactoryHumanApproval>("human_review_approvals")) {
+      const confirmed = ["merged", "awaiting_release", "released"].includes(approval.condition) && /^[a-f0-9]{40}$/.test(approval.merge_sha ?? "");
+      if (approval.merge_not_sent === false && !confirmed) workflow.retainMergeContext(approval, true);
+    }
+  }
   private candidate(id: string, review: FactoryHumanReview, submitting = false) {
     if (this.stopped) throw new FactoryError("stopping", "The bridge is stopping", 409);
     this.runtime.assertExecuting(id);
@@ -143,6 +149,7 @@ export class FactoryHumanApprovalService {
     if (this.stopped || receipt.superseded_by_batch_id || this.busy.has(receipt.id)) return;
     this.busy.add(receipt.id);
     let mergeNotSent = receipt.merge_not_sent === true;
+    let freshContextFence = false;
     try {
       const idea = this.store.get<Implementation>("implementations", receipt.implementation_id)!;
       if (receipt.condition === "merged" && idea.delivery_scope?.milestone === "release") {
@@ -173,8 +180,14 @@ export class FactoryHumanApprovalService {
         if (receipt.repair_scope !== this.repairScope(receipt.implementation_id, receipt.run_id)) throw new FactoryError("repair_scope_changed", "The owner context changed; review the repair scope before granting new merge authority", 409);
         this.assertRepairLineage(receipt, this.store.get<FactoryHumanFeedbackBatch>("review_batches", receipt.repair_batch_id)!, receipt.head);
       }
-      receipt = { ...receipt, merge_not_sent: false };
-      this.store.put("human_review_approvals", receipt, receipt.implementation_id);
+      this.store.db.transaction(() => {
+        this.candidate(receipt.implementation_id, review);
+        this.assertOwnerContext(receipt);
+        if (JSON.stringify(this.store.get("human_review_approvals", receipt.id)) !== JSON.stringify(receipt)) throw new FactoryError("approval_conflict", "The retained merge authority changed before dispatch", 409);
+        freshContextFence = this.workflow.retainMergeContext(receipt);
+        receipt = { ...receipt, merge_not_sent: false };
+        this.store.put("human_review_approvals", receipt, receipt.implementation_id);
+      }).immediate();
       let result = await this.runtime.operation<FactoryMergeResult>(run, "merge", { approval: receipt, pull_request: pr, head: pr.head, workspace_hash: check.workspace_hash, check_id: check.id, evidence_ids: pr.evidence_ids, reports: reports.map(r => ({ worker_id: r.worker_id, source_id: r.source_id })) } satisfies import("../shared/factory.ts").FactoryMergeRequest);
       mergeNotSent = false;
       this.runtime.assertExecuting(receipt.implementation_id);
@@ -183,12 +196,15 @@ export class FactoryHumanApprovalService {
       const observations = result.condition === "uncertain" ? (receipt.observations ?? 0) + 1 : 0;
       this.store.db.transaction(() => {
         this.store.put("human_review_approvals", { ...receipt, ...result, observations, next_observation_at: Date.now() + (result.condition === "awaiting_release" ? 30000 : Math.min(30000, 1000 * 2 ** observations)), ...(observations >= 6 ? { condition: "blocked" as const } : {}), id: receipt.id, reason: observations >= 6 ? `${result.reason}; six observations could not confirm the outcome. Inspect the PR and use the same approval to observe again` : result.reason, updated_at: new Date().toISOString() }, receipt.implementation_id);
+        if (result.condition !== "uncertain") this.workflow.releaseMergeContext(receipt.id);
         const idea = this.store.get<Implementation>("implementations", receipt.implementation_id)!;
         if (result.condition !== "uncertain") this.store.put("implementations", { ...idea, stage: result.condition === "awaiting_release" ? "review" : "done", outcome: result.condition === "released" ? "released" : "merged" });
       }).immediate();
       if (["merged", "released"].includes(result.condition)) await this.finishDelivery(this.store.get<FactoryHumanApproval>("human_review_approvals", receipt.id)!);
     } catch (error) {
       if (this.stopped || error instanceof FactoryError && error.code === "assignment_paused") return;
+      // A later unsent observation cannot retire an earlier request with an unknown outcome.
+      if (freshContextFence && error instanceof FactoryError && ["merge_waiting", "merge_blocked", "merge_denied"].includes(error.code)) this.workflow.releaseMergeContext(receipt.id);
       if (error instanceof FactoryError && error.code === "merge_waiting") {
         this.store.put("human_review_approvals", { ...receipt, condition: "pending", merge_not_sent: mergeNotSent, observations: 0, next_observation_at: Date.now() + 2000, reason: error.message }, receipt.implementation_id);
         return;
