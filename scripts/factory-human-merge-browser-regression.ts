@@ -8,7 +8,7 @@ import { published, until } from "./factory-human-review-fixture.ts";
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
-    for (const scenario of ["scope_question", "frozen_release", "merge", "release", "stale", "failing", "protected", "denied", "lost", "pending"] as const) {
+    for (const scenario of ["scope_question", "frozen_release", "merge", "release", "stale", "failing", "protected", "denied", "lost", "offline", "pending"] as const) {
       const f = await capacityFixture({ advancingHeads: true });
       f.setTranscript({ source_id: "owned-delivery-history", version: "one", cursor: null, turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: "Retained implementation delivery history." }] }] });
       const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
@@ -83,7 +83,33 @@ try {
             assert.equal((await approved).status(), 200);
             assert.equal(f.mergeEffects.length, 1, "The old Machine's merge-only receipt precedes restoring its native manifest");
           } finally { nativeProject.delivery_policy = nativeMilestone; }
-        } else await approve.click();
+        } else {
+          if (scenario === "offline") f.offline(true);
+          const approved = scenario === "lost" || scenario === "offline" ? page.waitForResponse(response => response.url().endsWith(`/implementations/${id}/human-review/approve`) && response.request().method() === "POST") : null;
+          await approve.click();
+          if (approved) {
+            const response = await approved;
+            assert.equal(response.status(), 200);
+            const uncertain = await response.json();
+            assert.equal(uncertain.condition, "uncertain");
+            // Keep the fictional Machine unresolved while observing the retained error and reload.
+            if (scenario === "lost") f.offline(true);
+            assert(uncertain.reason);
+            console.log(JSON.stringify({ viewport: viewport.width, scenario, condition: uncertain.condition, reason: uncertain.reason }));
+            await review.getByRole("alert").filter({ hasText: uncertain.reason }).waitFor();
+            assert.equal(await review.getByRole("status").filter({ hasText: uncertain.reason }).count(), 0);
+            await page.reload();
+            await review.getByRole("alert").filter({ hasText: uncertain.reason }).waitFor();
+            const retained = await detail();
+            assert.equal(retained.human_review_approvals.length, 1);
+            assert.equal(retained.human_review_approvals[0].id, uncertain.id);
+            assert.notEqual(retained.implementation.stage, "done");
+            assert.equal(f.mergeEffects.length, scenario === "lost" ? 1 : 0);
+            f.mergeFailure(null); f.offline(false);
+            await review.getByText("Merge verified", { exact: true }).waitFor();
+            assert.equal((await detail()).human_review_approvals[0].id, uncertain.id, "Recovery observes the retained approval without another click");
+          }
+        }
         if (scenario === "scope_question") {
           const blockedResponse = await approvalResponse!;
           assert.equal(blockedResponse.status(), 409, "An unanswered scope question must block approval before authority is retained");
@@ -107,6 +133,8 @@ try {
           const waiting = await until(detail, d => d.human_review_approvals?.[0]?.condition === "pending");
           assert.equal(waiting.human_review_approvals.length, 1);
           assert.equal(f.mergeEffects.length, 0);
+          assert(waiting.human_review_approvals[0].reason);
+          await review.getByRole("status").filter({ hasText: waiting.human_review_approvals[0].reason }).waitFor();
           assert.equal(await review.getByRole("alert").count(), 0);
           await page.reload();
           f.mergeFailure(null);
@@ -116,7 +144,8 @@ try {
           const waiting = await detail();
           assert.equal(waiting.implementation.stage, "review", "A merge receipt cannot complete a release-required Assignment");
           const releaseWait = scenario === "frozen_release" ? "Merge verified; waiting for the Assignment's required containing release" : "Merge verified; waiting for a published release containing it";
-          await review.getByText(releaseWait, { exact: true }).waitFor();
+          await review.getByRole("status").filter({ hasText: releaseWait }).waitFor();
+          assert.equal(await review.getByRole("alert").filter({ hasText: releaseWait }).count(), 0);
           assert.equal(waiting.human_review_approvals.length, 1);
           assert.equal(waiting.human_review_approvals[0].condition, "awaiting_release");
           assert.notEqual(waiting.runs.find((candidate: { id: string }) => candidate.id === run.id).condition, "completed");
@@ -156,7 +185,7 @@ try {
         }
         await page.reload();
         assert.equal((await detail()).human_review_approvals.length, scenario === "failing" || scenario === "scope_question" ? 0 : 1);
-        if (["merge", "lost", "release", "frozen_release", "pending"].includes(scenario)) assert.equal(f.mergeEffects.length, 1);
+        if (["merge", "lost", "offline", "release", "frozen_release", "pending"].includes(scenario)) assert.equal(f.mergeEffects.length, 1);
         assert.equal(f.launches.length, scenario === "merge" ? 3 : 2);
         assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
         assert.deepEqual(errors, []);

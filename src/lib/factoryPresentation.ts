@@ -16,5 +16,5 @@ export function factoryConditionLabel(condition: RunCondition, t: Translate): st
 
 /** Failure reasons are assertive; ordinary execution and owner waits stay polite. */
 export function factoryReasonRole(condition: string | null | undefined): "alert" | "status" {
-  return condition === "blocked" || condition === "failed" || condition === "disconnected" || condition === "interrupted" ? "alert" : "status";
+  return condition === "uncertain" || condition === "blocked" || condition === "failed" || condition === "disconnected" || condition === "interrupted" ? "alert" : "status";
 }

@@ -45,7 +45,7 @@ export function HumanReviewConversation({ detail, busy, perform, history }: { de
       })}>{t("Approve with comments")}</button><p>{t("Approval submits all saved comments for repair, then merges after passing checks and independent reviews. No further approval is required.")}</p></div>}
       <p role={review.condition === "blocked" ? "alert" : "status"}>{review.reason ?? t("Review the captured result and discuss it with the assistant.")}</p>
       <p className="field-hint">{t("Approval merges this checked and independently reviewed candidate into its authorized target.")}</p>
-      {approval && <p role={approval.condition === "blocked" ? "alert" : "status"}>{approval.reason ?? (approval.condition === "released" ? t("Release verified") : approval.condition === "merged" ? t("Merge verified") : t("Merge approval retained"))}</p>}
+      {approval && <p role={factoryReasonRole(approval.condition)}>{approval.reason ?? (approval.condition === "released" ? t("Release verified") : approval.condition === "merged" ? t("Merge verified") : t("Merge approval retained"))}</p>}
       {(retainedComments || composing || text.trim()) && <p role="status">{t("Finish your draft comments before approving without comments.")}</p>}
       <button className="btn factory-button" disabled={busy || review.condition !== "ready" || !review.snapshot_id || retainedComments || composing || !!text.trim() || !!approval && approval.condition !== "blocked"} onClick={() => void perform(async () => {
         if (!review.snapshot_id) return;

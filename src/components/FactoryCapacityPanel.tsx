@@ -33,8 +33,8 @@ export function FactoryCapacityPanel({ capacity }: { capacity: FactoryCapacity }
       <p className="field-hint">{t("Waiting conversations retain their history and worktree. Resumption uses the same capacity queue.")}</p>
       <ul className="factory-capacity-reservations">{capacity.continuations.map(context => <li key={context.id}>
         <a href={`#factory/${context.implementation_id}`}>{context.assignment_title}</a> · {context.machine_id} · {context.provider}
-        <div role={context.condition === "blocked" ? "alert" : undefined}>
-        <p role={context.condition === "blocked" ? undefined : "status"}>{context.condition === "parked" ? t("Execution capacity released") : context.condition === "queued" ? t("Waiting to resume") : context.condition === "sending" ? t("Resuming conversation") : context.condition === "uncertain" ? t("Execution uncertain; reservation retained") : context.condition === "blocked" ? t("Needs you") : t("Waiting for native rest")}</p>
+        <div role={factoryReasonRole(context.condition)}>
+        <p>{context.condition === "parked" ? t("Execution capacity released") : context.condition === "queued" ? t("Waiting to resume") : context.condition === "sending" ? t("Resuming conversation") : context.condition === "uncertain" ? t("Execution uncertain; reservation retained") : context.condition === "blocked" ? t("Needs you") : t("Waiting for native rest")}</p>
         {context.reason && <p>{context.reason}</p>}
         </div>
       </li>)}</ul>
