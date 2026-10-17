@@ -70,6 +70,109 @@ export async function forcedColorLineJourney(browser: Browser, viewport: { width
   } finally { await context.close(); await f.close(); }
 }
 
+/** A resting observation cannot release an unresolved Human Review discussion send. */
+export async function discussionOwnershipJourney(browser: Browser, viewport: { width: number; height: number }, lost: boolean) {
+  const f = await capacityFixture({ advancingHeads: true });
+  const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
+  let gate: ReturnType<typeof f.holdNextSend> | undefined;
+  try {
+    const { id, prefix, detail } = await published(f);
+    const ready = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
+    const origin = () => `http://localhost:${f.app.port}`;
+    assert.equal((await context.request.post(`${origin()}/api/auth`, { data: { token: f.token } })).status(), 204);
+    let page = await context.newPage(); page.setDefaultTimeout(10000);
+    const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
+    const open = async () => {
+      await page.goto(`${origin()}/#factory/${id}`);
+      await page.getByRole("navigation", { name: "Workflow history", exact: true }).getByRole("button", { name: "Human Review", exact: true }).click();
+    };
+    await open();
+    const send = async (content: string) => {
+      const review = page.getByRole("region", { name: "Human Review", exact: true });
+      await review.getByRole("textbox", { name: "Discuss this review", exact: true }).fill(content);
+      const response = page.waitForResponse(response => response.url().endsWith(`${prefix}/human-review/messages`) && response.request().method() === "POST");
+      await review.getByRole("button", { name: "Send discussion", exact: true }).click();
+      const saved = await response; assert.equal(saved.status(), 202);
+      return { message: await saved.json(), body: saved.request().postDataJSON() };
+    };
+    const first = await send("Explain this captured result without editing");
+    const started = await until(detail, d => d.runs.some((run: any) => run.conversation_kind === "human_review" && run.condition === "working") && d.human_review_deliveries.some((entry: any) => entry.id === first.message.id && entry.condition === "sent"));
+    const assistant = started.runs.find((run: any) => run.conversation_kind === "human_review");
+    f.runs.get(assistant.id)!.condition = "ready";
+    assert.equal((await f.api(`/runs/${assistant.id}/reconcile`, {})).status, 200);
+    const parked = await detail(); const oldContinuation = parked.runs.find((run: any) => run.id === assistant.id).continuation;
+    assert.equal(oldContinuation.condition, "parked");
+    assert.deepEqual((await f.api("").then(response => response.json())).capacity.normal, { limit: 1, used: 0 });
+    const otherId = await f.assignment("Waiting behind owned discussion"); const otherPrefix = `/implementations/${otherId}`;
+    const otherDetail = () => f.api(otherPrefix).then(response => response.json());
+    const other = await otherDetail();
+    await f.api(`/projects/${other.implementation.project_id}/configure`, { checks: [["bun", "test"]], permissions: "Owned fixtures only" });
+    const specification = await f.api(`${otherPrefix}/specifications`, { content: "Begin only when normal capacity is genuinely free" }).then(response => response.json());
+    const oldLaunches = [...f.launches]; const oldWorkers = [...f.workerLaunches];
+    gate = f.holdNextSend(); let entered = false; void gate.started.then(() => { entered = true; });
+    if (lost) f.loseNextSend();
+    const second = await send("Retain this second discussion exactly once");
+    await until(async () => entered, value => value);
+    f.runs.get(assistant.id)!.condition = "ready";
+    assert.equal((await f.api(`/runs/${assistant.id}/reconcile`, {})).status, 200);
+    const held = await detail(); const heldRun = held.runs.find((run: any) => run.id === assistant.id);
+    const heldCapacity = (await f.api("").then(response => response.json())).capacity;
+    assert.equal((await f.api(`${otherPrefix}/specification-acceptance`, { source: "button", specification_id: specification.id, hash: specification.hash })).status, 201);
+    console.log(JSON.stringify({ viewport: viewport.width, lost_ack: lost, held_discussion: { run_id: heldRun.id, condition: heldRun.condition, continuation: heldRun.continuation, delivery: held.human_review_deliveries.find((entry: any) => entry.id === second.message.id), capacity: heldCapacity, launches: f.launches, prompts: f.prompts } }));
+    if (!lost) f.runs.get(assistant.id)!.condition = "working";
+    gate.release();
+    let observed;
+    if (lost) {
+      await until(detail, d => d.human_review_deliveries.some((entry: any) => entry.id === second.message.id && entry.condition === "uncertain"));
+      await page.close(); f.restart();
+      assert.equal((await f.api(`/runs/${assistant.id}/reconcile`, {})).status, 200);
+      observed = await detail();
+      const waiting = await until(otherDetail, d => d.capacity_waiting.length > 0 || d.runs.length > 0);
+      const capacity = (await f.api("").then(response => response.json())).capacity;
+      const retained = observed.runs.find((run: any) => run.id === assistant.id);
+      console.log(JSON.stringify({ viewport: viewport.width, lost_discussion_after_restart: { run_id: retained.id, condition: retained.condition, continuation: retained.continuation, delivery: observed.human_review_deliveries.find((entry: any) => entry.id === second.message.id), capacity, other_runs: waiting.runs.map((run: any) => ({ id: run.id, condition: run.condition })), launches: f.launches, prompts: f.prompts } }));
+      assert.equal(retained.continuation.condition, "uncertain", "A pre-ACK resting observation cannot settle a lost discussion send");
+      assert.equal(retained.continuation.id, oldContinuation.id); assert.equal(retained.continuation.kind, "children");
+      assert.deepEqual(capacity.normal, { limit: 1, used: 1 }); assert(capacity.contexts.some((entry: any) => entry.id === assistant.id && entry.uncertain));
+      assert.equal(waiting.runs.length, 0); assert.deepEqual(f.launches, oldLaunches); assert.deepEqual(f.workerLaunches, oldWorkers);
+      assert.equal((await f.api(`${prefix}/human-review/messages`, second.body)).status, 202);
+      assert.equal((await detail()).messages.filter((entry: any) => entry.id === second.message.id).length, 1);
+      assert.equal((await context.request.post(`${origin()}/api/auth`, { data: { token: f.token } })).status(), 204);
+      page = await context.newPage(); page.setDefaultTimeout(10000); page.on("pageerror", error => errors.push(error.message));
+      await open(); const reason = observed.human_review_deliveries.find((entry: any) => entry.id === second.message.id).reason;
+      const review = page.getByRole("region", { name: "Human Review", exact: true });
+      await review.getByRole("alert").filter({ hasText: reason }).waitFor();
+      await page.getByRole("region", { name: "Factory capacity", exact: true }).getByText("Agent contexts: 1/1", { exact: true }).waitFor();
+      await page.reload(); await review.getByRole("alert").filter({ hasText: reason }).waitFor();
+    } else {
+      const acknowledged = await until(detail, d => d.human_review_deliveries.some((entry: any) => entry.id === second.message.id && entry.condition === "sent"));
+      assert.equal(acknowledged.human_review_deliveries.find((entry: any) => entry.id === second.message.id).reason, null);
+      const ackQueue = await until(otherDetail, d => d.capacity_waiting.length > 0 || d.runs.length > 0);
+      const ackCapacity = (await f.api("").then(response => response.json())).capacity;
+      console.log(JSON.stringify({ viewport: viewport.width, acknowledged_working_discussion: { run: acknowledged.runs.find((run: any) => run.id === assistant.id), delivery: acknowledged.human_review_deliveries.find((entry: any) => entry.id === second.message.id), capacity: ackCapacity, other_runs: ackQueue.runs.map((run: any) => ({ id: run.id, condition: run.condition })), native_condition: f.runs.get(assistant.id)!.condition } }));
+      assert.equal(f.runs.get(assistant.id)!.condition, "working");
+      assert(ackCapacity.contexts.some((entry: any) => entry.id === assistant.id), "The old pre-ACK ready observation cannot release the newly executing discussion turn");
+      assert.deepEqual(ackCapacity.normal, { limit: 1, used: 1 }); assert.equal(ackQueue.runs.length, 0); assert.deepEqual(f.launches, oldLaunches);
+      f.runs.get(assistant.id)!.condition = "ready";
+      assert.equal((await f.api(`/runs/${assistant.id}/reconcile`, {})).status, 200);
+      observed = await detail(); const resting = observed.runs.find((run: any) => run.id === assistant.id);
+      const admitted = await until(otherDetail, d => d.runs.length === 1);
+      console.log(JSON.stringify({ viewport: viewport.width, confirmed_discussion: { run_id: resting.id, condition: resting.condition, continuation: resting.continuation, delivery: observed.human_review_deliveries.find((entry: any) => entry.id === second.message.id), admitted_run: admitted.runs[0].id, launches: f.launches, prompts: f.prompts } }));
+      assert.equal(resting.continuation.condition, "parked"); assert.equal(resting.continuation.id, oldContinuation.id);
+      assert.equal(f.launches.length, oldLaunches.length + 1); assert.deepEqual(f.workerLaunches, oldWorkers);
+      await page.reload(); await page.getByRole("region", { name: "Human Review", exact: true }).getByText(second.message.content, { exact: true }).waitFor();
+    }
+    assert.equal(heldRun.continuation.condition, "sending", "Human Review must retain an unresolved native-send claim across a resting observation");
+    assert.equal(heldRun.continuation.id, oldContinuation.id); assert.deepEqual(heldCapacity.normal, { limit: 1, used: 1 }); assert(heldCapacity.contexts.some((entry: any) => entry.id === assistant.id));
+    assert.equal(held.human_review_deliveries.find((entry: any) => entry.id === second.message.id).condition, "sending");
+    assert.deepEqual(observed.human_reviews, started.human_reviews); assert.deepEqual(observed.pull_requests, ready.pull_requests); assert.deepEqual(observed.review_evidence, ready.review_evidence); assert.deepEqual(observed.checks, ready.checks); assert.deepEqual(observed.approvals, ready.approvals);
+    assert.equal(observed.human_review_approvals.length, 0); assert.equal(f.mergeEffects.length, 0); assert.equal(f.prompts.length, 1); assert.equal(f.prompts[0].run_id, assistant.id); assert(f.prompts[0].text.includes(second.message.content));
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)); assert.deepEqual(errors, []);
+    console.log(`PASS Human Review ${lost ? "lost" : "confirmed"} discussion ACK retains capacity until settlement/rest, stable scope and one delivery (${viewport.width})`);
+  } finally { gate?.release(); await context.close(); f.close(); }
+}
+
+if (import.meta.main) {
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
@@ -293,5 +396,7 @@ try {
     } finally { await context.close(); f.close(); }
   }
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) await forcedColorLineJourney(browser, viewport);
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) for (const lost of [false, true]) await discussionOwnershipJourney(browser, viewport, lost);
   console.log("PASS Human Review captured files, discussion, capacity and retained history on desktop/mobile");
 } finally { await browser.close(); }
+}
