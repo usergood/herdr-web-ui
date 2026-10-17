@@ -460,3 +460,73 @@ describe("Human Review through authenticated HTTP", () => {
     } finally { f.close(); }
   }, 20000);
 });
+
+for (const lost of [false, true]) it(`waits for a retained Orchestrator continuation during fresh review with ${lost ? "lost" : "confirmed"} delivery acknowledgment`, async () => {
+  const f = await capacityFixture({ advancingHeads: true });
+  let checkGate: ReturnType<typeof f.holdNextCheck> | undefined;
+  let sendGate: ReturnType<typeof f.holdNextSend> | undefined;
+  try {
+    const { prefix, detail, run } = await published(f);
+    const ready = await until(detail, current => current.human_reviews?.[0]?.condition === "ready");
+    const oldWorkers = new Set(ready.workers.map((worker: any) => worker.id));
+    const oldChecks = [...f.executedChecks];
+    f.runs.get(run.id)!.condition = "working";
+    const question = await f.agent(run.id, "question", { question: "Retain this accepted behavior after the owner decision?" }).then(response => response.json());
+    checkGate = f.holdNextCheck("integration"); sendGate = f.holdNextSend();
+    if (lost) f.loseNextSend();
+    expect((await f.api(`${prefix}/questions/${question.id}/answer`, { revision: question.revision, answer: "Yes; freshly review the same accepted behavior" })).status).toBe(200);
+    await checkGate.started;
+    // The previous native turn genuinely rests before its answered continuation
+    // is dispatched; the next turn remains working while its acknowledgment waits.
+    f.runs.get(run.id)!.condition = "ready";
+    expect((await f.api(`/runs/${run.id}/reconcile`, {})).status).toBe(200);
+    await sendGate.started;
+    const sending = await detail(); const retained = sending.runs.find((current: any) => current.id === run.id);
+    expect(retained).toMatchObject({ condition: "accepted", continuation: { kind: "owner", condition: "sending", question_revision: sending.question_revision } });
+    expect(f.runs.get(run.id)!.condition).toBe("working");
+    checkGate.release();
+    const waiting = await until(detail, current => current.automatic_review[0]?.check_id === current.checks.at(-1)?.id && ["reviewing", "waiting", "blocked"].includes(current.automatic_review[0]?.condition));
+    expect(["reviewing", "waiting"]).toContain(waiting.automatic_review[0].condition);
+    if (waiting.automatic_review[0].condition === "waiting") expect(waiting.automatic_review[0].reason).toContain("continuation");
+    expect(waiting.runs.find((current: any) => current.id === run.id)).toMatchObject({ worktree: retained.worktree, continuation: { id: retained.continuation.id, condition: "sending", question_revision: sending.question_revision } });
+    const reserved = (await f.api("").then(response => response.json())).capacity;
+    expect(reserved.contexts).toContainEqual(expect.objectContaining({ id: run.id, pool: "normal" }));
+    expect(waiting.workers.map((worker: any) => worker.id)).toEqual(ready.workers.map((worker: any) => worker.id));
+    expect(waiting.checks.at(-1).condition).toBe("passed");
+    expect(f.executedChecks).toHaveLength(oldChecks.length + 1);
+    expect(f.prompts).toHaveLength(1);
+    sendGate.release();
+    if (lost) {
+      await until(detail, current => current.runs.find((candidate: any) => candidate.id === run.id)?.continuation?.condition === "uncertain");
+      f.restart();
+      expect((await f.api(`/runs/${run.id}/reconcile`, {})).status).toBe(200);
+      const uncertain = await detail();
+      expect(uncertain.runs.find((candidate: any) => candidate.id === run.id).continuation).toMatchObject({ id: retained.continuation.id, condition: "uncertain", question_revision: sending.question_revision });
+      const capacity = (await f.api("").then(response => response.json())).capacity;
+      expect(capacity.contexts).toContainEqual(expect.objectContaining({ id: run.id, pool: "normal", uncertain: true }));
+      expect(uncertain.workers.map((worker: any) => worker.id)).toEqual(ready.workers.map((worker: any) => worker.id));
+      expect(f.prompts).toHaveLength(1);
+    } else {
+      await until(detail, current => current.runs.find((candidate: any) => candidate.id === run.id)?.continuation?.condition === "resumed");
+      const contract = await f.agent(run.id, "contract").then(response => response.json());
+      expect((await f.agent(run.id, "consume", { revision: contract.question_revision })).status).toBe(200);
+      f.runs.get(run.id)!.condition = "ready";
+      expect((await f.api(`/runs/${run.id}/reconcile`, {})).status).toBe(200);
+      for (const role of ["standards", "spec"]) {
+        const current = await until(detail, current => current.workers.some((worker: any) => worker.role === role && !oldWorkers.has(worker.id) && worker.condition === "working"));
+        const worker = current.workers.find((worker: any) => worker.role === role && worker.condition === "working");
+        const context = await f.agent(run.id, "contract").then(response => response.json());
+        expect(context.question_revision).toBe(sending.question_revision);
+        expect((await f.agent(run.id, "consume", { revision: context.question_revision, worker_id: worker.id })).status).toBe(200);
+        f.workers.get(worker.id)!.condition = "ready";
+      }
+      const refreshed = await until(detail, current => current.automatic_review[0]?.condition === "published" && current.automatic_review[0]?.context_revision === sending.question_revision);
+      expect(refreshed.human_reviews[0].snapshot_id).toBe(ready.human_reviews[0].snapshot_id);
+      expect(f.executedChecks).toHaveLength(oldChecks.length + 1);
+      expect(refreshed.workers.filter((worker: any) => worker.role === "implementer")).toHaveLength(1);
+      expect(f.prompts).toHaveLength(1);
+    }
+    expect((await detail()).human_review_approvals).toHaveLength(0);
+    expect(f.mergeEffects).toHaveLength(0);
+  } finally { checkGate?.release(); sendGate?.release(); f.close(); }
+}, 30000);

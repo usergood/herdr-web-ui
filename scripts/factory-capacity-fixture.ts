@@ -39,6 +39,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; work
   const publications = new Map<string, any>();
   let losePublication = false;
   let publicationGate: { entered: () => void; wait: Promise<void> } | null = null;
+  let sendGate: { entered: () => void; wait: Promise<void> } | null = null;
   let headGate: { entered: () => void; wait: Promise<void> } | null = null;
   let loseStop = false; let loseRunStop = false; let unavailableRunStop = false;
   let denyPublication = false;
@@ -123,7 +124,7 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; work
       if (action === "reconcile") return Response.json(run);
       if (action === "artifacts") return Response.json([]);
       if (action === "finish") { run.condition = "completed"; return Response.json(run); }
-      if (action === "send") { if (rejectSend) { const code = rejectSend; rejectSend = null; run.condition = "needs_you"; return Response.json({ error: { code, message: code === "input_draft" ? "Owned native input contains a draft" : "Owned native permission arrived before delivery" } }, { status: 409 }); } prompts.push({ run_id: run.id, text: body.text }); run.condition = "working"; if (loseSend) { loseSend = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost continuation acknowledgment" } }, { status: 503 }); } return Response.json({ ok: true }); }
+      if (action === "send") { if (rejectSend) { const code = rejectSend; rejectSend = null; run.condition = "needs_you"; return Response.json({ error: { code, message: code === "input_draft" ? "Owned native input contains a draft" : "Owned native permission arrived before delivery" } }, { status: 409 }); } prompts.push({ run_id: run.id, text: body.text }); run.condition = "working"; if (sendGate) { const gate = sendGate; sendGate = null; gate.entered(); await gate.wait; } if (loseSend) { loseSend = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost continuation acknowledgment" } }, { status: 503 }); } return Response.json({ ok: true }); }
       if (action === "stop") { if (unavailableRunStop) return Response.json({ error: { code: "native_identity_uncertain", message: "Owned native shutdown is unconfirmed" } }, { status: 409 }); run.condition = "cancelled"; if (loseRunStop) { loseRunStop = false; return Response.json({ error: { code: "lost_ack", message: "Owned lost parent shutdown acknowledgment" } }, { status: 503 }); } return Response.json(run); }
       if (action === "operations/check") {
         const checked = { ...body.check, head: scenario.advancingHeads ? (body.worker_id ? workers.get(body.worker_id)?.head : tips.get(run.id)) ?? "1".repeat(40) : "1".repeat(40), workspace_hash: scenario.workspaceHash ?? "owned-check", commands: [{ args: ["bun", "test"], exit_code: 0, output: "Owned checks passed" }], condition: "passed" } as FactoryCheck;
@@ -218,6 +219,12 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; work
       const run = runs.get(runId);
       if (!run) throw new Error("Select an owned fixture Run before marking research ready");
       run.condition = "ready"; researchReadyRuns.add(runId);
+    },
+    holdNextSend: () => {
+      let entered!: () => void; let release!: () => void;
+      const started = new Promise<void>(resolve => { entered = resolve; });
+      const wait = new Promise<void>(resolve => { release = resolve; });
+      sendGate = { entered, wait }; return { started, release };
     },
     holdNextHead: () => {
       let entered!: () => void; let release!: () => void;

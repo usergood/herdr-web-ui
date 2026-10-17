@@ -54,6 +54,9 @@ export class FactoryPipeline {
     if (run?.implementation_completion_pending) throw new FactoryError("execution_finishing", "Reconcile the retained implementation retirement before allocating more work", 409);
     if (!completedAllowed && (run?.implementation_completion || this.store.get("implementation_retirement", id))) throw new FactoryError("execution_retired", "This native lease is retired. Stop the invalidated attempt, then use explicit Retry to repair its retained work", 409);
     if (run?.issue_pause) throw new FactoryError("issue_pause_required", "Controlled pause requested; preserve work and reconcile owned workers before a new attempt", 409);
+    // A retained, admitted conversation reserves its identity before delivery.
+    // That known in-flight continuation is a wait, never permission to allocate.
+    if (run?.condition === "accepted" && run.checkout && run.worktree && (!factoryRequired || run.action === "implement-spec") && run.continuation?.condition === "sending") throw new FactoryError("continuation_waiting", "Waiting for the admitted Run's retained continuation delivery acknowledgment", 409);
     if (!run || factoryRequired && run.action !== "implement-spec" || !run.checkout || !["working", "ready", "needs_you", "blocked"].includes(run.condition) && !(completedAllowed && run.condition === "completed" && run.implementation_completion)) throw new FactoryError("factory_run_required", "Reconcile an admitted repository Run first", 409);
     return run;
   }
