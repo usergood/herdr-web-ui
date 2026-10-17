@@ -331,7 +331,23 @@ export interface UsageReport {
   readonly providers: readonly ProviderUsage[];
 }
 
-/** CLIProxyAPI management configuration: the management key never leaves the server. */
+/**
+ * Hub management (CLIProxyAPI); successful responses use Cache-Control: no-store.
+ * CLIProxyStatus omits the saved management key.
+ * GET /api/cliproxy -> CLIProxyStatus for the saved connection.
+ * PUT /api/cliproxy { url, management_key? } -> CLIProxyStatus; a first save or URL change
+ * requires a supplied key. DELETE /api/cliproxy -> unconfigured CLIProxyStatus.
+ * POST /api/cliproxy/login { provider: "claude" | "codex" } -> CLIProxyLogin (URL and state).
+ * GET /api/cliproxy/login?state=... -> CLIProxyLoginStatus (wait or ok). A terminal ok
+ * consumes the state; an upstream status:error consumes it and returns 502.
+ * DELETE /api/cliproxy/login?state=... -> { status: "ok" }, cancelling that pending login.
+ * POST /api/cliproxy/callback { provider, state, redirect_url } -> { status: "ok" };
+ * provider and redirect query state must match the pending login, and the redirect must
+ * use HTTP(S) and include code or error. Callback success still needs the status poll.
+ * States belong to this server instance, expire after five minutes (400 when missing or
+ * expired), and allow at most eight pending logins (409 when full). Saving/removing the
+ * connection clears pending states; restarting the server also loses them.
+ */
 export interface CLIProxyStatus {
   readonly configured: boolean;
   readonly url: string;
