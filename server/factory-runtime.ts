@@ -1,6 +1,5 @@
 import { issueRetryAvailable } from "./issue-queue.ts";
 import { latestImplementationAttempt } from "../shared/issue-queue.ts";
-import { agentCapacityPool } from "./factory-capacity.ts";
 import { FactoryParking } from "./factory-parking.ts";
 import { FactoryDispatch } from "./factory-dispatch.ts";
 import { existsSync } from "node:fs";
@@ -63,7 +62,7 @@ export class FactoryRuntime {
       }
     };
     this.queue.resumeSuspension = (id, body) => this.resumeSuspension(id, body);
-    this.parking = new FactoryParking(store, workflow, this.queue, planning => agentCapacityPool(store, settings(), planning), (run, text, signal, worker) => worker ? this.operation(run, "send-worker", { worker_id: worker.id, text }).then(() => {}) : this.deliver(run, text, signal));
+    this.parking = new FactoryParking(store, workflow, this.queue, (planning, requestId) => this.queue.reserve(settings(), planning, requestId), (run, text, signal, worker) => worker ? this.operation(run, "send-worker", { worker_id: worker.id, text }).then(() => {}) : this.deliver(run, text, signal));
   }
   private acceptedUpstream(id: string, implementation: Implementation): void {
     if (!implementation.upstream_update) return;
@@ -131,7 +130,7 @@ export class FactoryRuntime {
       // A matching Start may have been admitted while this request waited for dispatch.
       // Revalidate its scope through start instead of queuing its accepted key again.
       if (this.store.list<FactoryRun>("runs", id).some(run => run.idempotency_key === body.idempotency_key)) return this.start(id, body, origin);
-      this.projectAdmission(id);
+      this.projectAdmission(id, this.queue.continuing?.(id, body) === true);
     }
     const planning = ["grill-me", "grill-with-docs"].includes(action) || action === "to-spec" && !this.workflow.approved(id, "specification", this.workflow.specification(id)?.id ?? "");
     return this.queue.start({ ...this.store.record(), id: `${id}:${body.idempotency_key}`, implementation_id: id, assignment_title: idea.title, action, machine_id: idea.machine_id ?? project?.machine_id ?? "local", provider: idea.provider ?? project?.provider ?? this.settings().provider, idempotency_key: body.idempotency_key, reason: "Waiting for agent capacity", purpose: planning ? "planning" : "execution", condition: "queued", run_id: null }, body, origin);
@@ -209,7 +208,7 @@ export class FactoryRuntime {
     if (this.workflow.questions(run.implementation_id, run.id).some(q => q.answer === null)) throw new FactoryError("answers_unready", "Answer pending owner questions before continuing", 409);
     const reserved = this.store.db.transaction(() => {
       this.assertExecuting(run.implementation_id);
-      const pool = agentCapacityPool(this.store, this.settings(), !workerId && this.planning(run));
+      const pool = this.queue.reserve(this.settings(), !workerId && this.planning(run), `suspension:${body.pause_id}:${target.id}`);
       const reservation = { ...target, condition: "accepted" as const, ...(!workerId ? { capacity_pool: pool } : {}), suspension: { ...target.suspension!, condition: "resuming" as const } };
       this.store.put(kind, reservation, workerId ? id : run.implementation_id);
       return reservation;
@@ -517,7 +516,8 @@ export class FactoryRuntime {
     // A prepared issue remains governed by admission even after its current evidence
     // becomes stale or its plan needs owner decisions. Never fall back to manual Start.
     if (action === "implement-spec" && body.issue_scope === undefined && this.store.list<import("../shared/issue-planning.ts").IssuePlanning>("github_plan_versions", id).some(plan => plan.specification_id && plan.graph_hash)) throw new FactoryError("issue_scope_required", "Select the displayed prepared issue scope before starting implementation", 409);
-    let planningRunId = body.issue_scope !== undefined ? continuation?.runId : undefined;
+    const planningPredecessor = continuation?.runId ? this.store.get<FactoryRun>("runs", continuation.runId) : null;
+    let planningRunId = body.issue_scope !== undefined && planningPredecessor && activeConditions.has(planningPredecessor.condition) ? planningPredecessor.id : undefined;
     let issueAdmission = body.issue_scope === undefined ? null : this.issueAdmission(id, body.issue_scope, retryRunId, planningRunId);
     const validateIssue = () => {
       if (issueAdmission && hash(JSON.stringify(this.issueAdmission(id, body.issue_scope, retryRunId, planningRunId))) !== hash(JSON.stringify(issueAdmission))) throw new FactoryError("issue_changed", "The issue admission evidence changed; review it before starting", 409);
@@ -683,7 +683,7 @@ export class FactoryRuntime {
       const owned = this.store.list<FactoryRun>("runs").filter((entry) => activeConditions.has(entry.condition));
       if (owned.some((entry) => entry.implementation_id === id)) throw new FactoryError("implementation_owned", "An existing or uncertain Run still owns this Implementation", 409);
       const planning = ["grill-me", "grill-with-docs"].includes(action) || action === "to-spec" && (!specification || !this.workflow.approved(id, "specification", specification.id));
-      const capacityPool = agentCapacityPool(this.store, this.settings(), planning);
+      const capacityPool = this.queue.reserve(this.settings(), planning, `${id}:${body.idempotency_key}`);
       if (["work", "implement-spec"].includes(action)) this.projectAdmission(id, !!continuation?.runId);
       const selectedImplementation = this.store.get<Implementation>("implementations", id)!;
       if (bindAssignmentDelivery && !selectedImplementation.delivery_scope) {
@@ -724,8 +724,8 @@ export class FactoryRuntime {
     const existing = reviewRuns.find(r => r.id === review.assistant_run_id && r.base === review.head && !["completed", "cancelled", "failed"].includes(r.condition)) ?? reviewRuns.find(r => r.idempotency_key === key);
     if (existing) {
       // Admission and the durable sending claim precede every native effect.
-      this.store.db.transaction(() => { currentReview(); agentCapacityPool(this.store, this.settings()); claim(); }).immediate();
-      await this.send(existing, `Human Review discussion of snapshot ${review.snapshot_id}, head ${review.head}. Discuss only; do not edit, create workers, publish or merge.\n\n${message.content}`, new AbortController().signal);
+      this.store.db.transaction(() => { currentReview(); this.queue.reserve(this.settings(), false, `discussion:${message.id}`); claim(); }).immediate();
+      await this.send(existing, `Human Review discussion of snapshot ${review.snapshot_id}, head ${review.head}. Discuss only; do not edit, create workers, publish or merge.\n\n${message.content}`, new AbortController().signal, `discussion:${message.id}`);
       return this.store.get<FactoryRun>("runs", existing.id)!;
     }
     const captured = await this.inspect(parent.machine_id, parent.worktree!);
@@ -738,7 +738,7 @@ export class FactoryRuntime {
     const run = this.store.db.transaction(() => {
       this.assertExecuting(parent.implementation_id);
       const current = currentReview();
-      const pool = agentCapacityPool(this.store, this.settings());
+      const pool = this.queue.reserve(this.settings(), false, `discussion:${message.id}`);
       const record: FactoryRun = { ...parent, ...this.store.record(), action: "work", conversation_kind: "human_review", capacity_pool: pool, condition: "accepted", waiting_reason: null, idempotency_key: key, base: review.head, checkout: parent.checkout, worktree: null, branch: null, workspace_id: null, pane_id: null, continuation: undefined, suspension: undefined, manifest: { ...manifest, checkout: inspected, human_review: { review, message, history, history_snapshot_ids: histories.map(s => s.id), snapshot: this.store.get("snapshots", review.snapshot_id!) }, context_message_ids: this.store.list<FactoryMessage>("messages", parent.implementation_id).filter(m => m.chat_id === message.chat_id).map(m => m.id) } };
       claim(); this.store.put("runs", record, parent.implementation_id);
       this.store.put("human_reviews", { ...current, assistant_run_id: record.id }, parent.implementation_id);
@@ -966,7 +966,7 @@ export class FactoryRuntime {
     return receipts.find(receipt => receipt.condition === "uncertain" || receipt.condition === "blocked") ?? receipts.find(receipt => receipt.condition !== "sent") ?? receipts[0] ?? null;
   }
   async outputs(run: FactoryRun): Promise<FactoryOutput[]> { return run.machine_id === "local" ? this.host.outputs(run.id) : this.remote(run.machine_id, `/runs/${run.id}/artifacts`); }
-  async send(run: FactoryRun, text: string, signal: AbortSignal): Promise<void> {
+  async send(run: FactoryRun, text: string, signal: AbortSignal, requestId?: string): Promise<void> {
     const retained = this.store.get<FactoryRun>("runs", run.id);
     if (retained?.scope_pause) throw new FactoryError("issue_scope_paused", retained.scope_pause.reason, 409);
     this.assertExecuting(run.implementation_id);
@@ -977,7 +977,7 @@ export class FactoryRuntime {
       if (current.condition !== "ready" && !["parked", "queued"].includes(current.continuation?.condition ?? "")) return null;
       const specification = this.workflow.specification(current.implementation_id);
       const planning = ["grill-me", "grill-with-docs"].includes(current.action) || current.action === "to-spec" && (!specification || !this.workflow.approved(current.implementation_id, "specification", specification.id));
-      const pool = agentCapacityPool(this.store, this.settings(), planning);
+      const pool = this.queue.reserve(this.settings(), planning, requestId);
       const reserved: FactoryRun = { ...current, ...(current.continuation ? { continuation: { ...current.continuation, condition: "sending", reason: "The owner is resuming this conversation" } } : {}), capacity_pool: pool, condition: "accepted", waiting_reason: null, updated_at: new Date().toISOString() };
       this.store.put("runs", reserved, run.implementation_id); return reserved;
     }).immediate();

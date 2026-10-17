@@ -307,6 +307,31 @@ test.each(["pause", "outage", "scope", "dependencies"])("Continue revalidates %s
   } finally { fixture.close(); }
 }, 15_000);
 
+test("Continue never replays a held native handoff after bridge restart", async () => {
+  const fixture = issueContinuationFixture();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => release = resolve);
+  let entered!: () => void, repeated!: () => void;
+  const waiting = new Promise<void>(resolve => entered = resolve), duplicate = new Promise<void>(resolve => repeated = resolve);
+  let finishes = 0;
+  const pending: Promise<unknown>[] = [];
+  try {
+    const { path, planning, body } = await fixture.preparedPlanning();
+    fixture.beforeFinish(async () => { finishes++; if (finishes === 1) entered(); else repeated(); await gate; });
+    pending.push(fixture.post(path + "/continue", body).catch(() => null));
+    await Promise.race([waiting, new Promise((_, reject) => setTimeout(() => reject(new Error("Native handoff did not reach its owned gate")), 5000))]);
+    fixture.restart();
+    const replay = fixture.post(path + "/continue", body).then(async response => ({ status: response.status, body: await response.json() }));
+    pending.push(replay.catch(() => null));
+    const result = await Promise.race([replay, duplicate.then(() => ({ replayed: true })), new Promise((_, reject) => setTimeout(() => reject(new Error("Retained handoff replay did not settle")), 5000))]);
+    expect(result).toMatchObject({ status: 409, body: { error: { code: "continuation_uncertain" } } });
+    const detail = await fixture.json(path);
+    expect(detail.runs).toEqual([expect.objectContaining({ id: planning.id, pane_id: planning.pane_id, workspace_id: planning.workspace_id })]);
+    expect(detail.capacity_waiting).toEqual([]);
+    expect(finishes).toBe(1);
+  } finally { release(); await Promise.allSettled(pending); fixture.close(); }
+}, 15_000);
+
 test("an uncertain planning finish cannot admit a successor or release the predecessor", async () => {
   const fixture = issueContinuationFixture();
   try {

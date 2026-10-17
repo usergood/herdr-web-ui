@@ -10,7 +10,7 @@ import type { FactoryWorkflow } from "./factory-workflow.ts";
 export class FactoryParking {
   private readonly sending = new Set<string>();
   private readonly abort = new AbortController();
-  constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly queue: FactoryDispatch, private readonly reserve: (planning: boolean) => "normal" | "planning", private readonly deliver: (run: FactoryRun, text: string, signal: AbortSignal, worker?: FactoryWorker) => Promise<void>) {
+  constructor(private readonly store: FactoryStore, private readonly workflow: FactoryWorkflow, private readonly queue: FactoryDispatch, private readonly reserve: (planning: boolean, requestId: string) => "normal" | "planning", private readonly deliver: (run: FactoryRun, text: string, signal: AbortSignal, worker?: FactoryWorker) => Promise<void>) {
     queue.resume = (id, body) => this.resume(id, body);
   }
   observe(run: FactoryRun, resting: boolean): FactoryRun {
@@ -99,7 +99,7 @@ export class FactoryParking {
       if (current.suspension || this.store.get<Implementation>("implementations", parent.implementation_id)?.pause) throw new FactoryError("continuation_waiting", "Owner suspension must be resumed before scheduler delivery", 409);
       if (current.continuation.condition !== "queued") throw new FactoryError("continuation_waiting", current.continuation.reason, 409);
       if (this.workflow.questionRevision(parent.implementation_id, id) !== body.revision || this.workflow.questions(parent.implementation_id, id).some(question => question.answer === null)) throw new FactoryError("continuation_waiting", "Waiting for the current answered revision", 409);
-      const pool = this.reserve(!workerId && this.planning(parent));
+      const pool = this.reserve(!workerId && this.planning(parent), `resume:${current.continuation.id}`);
       const reserved: FactoryRun | FactoryWorker = { ...current, ...(!workerId ? { capacity_pool: pool } : {}), condition: "accepted", continuation: { ...current.continuation, condition: "sending", reason: "Resuming the retained conversation" } };
       this.store.put(collection, reserved, workerId ? id : parent.implementation_id);
       return reserved;

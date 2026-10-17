@@ -39,6 +39,24 @@ describe("global factory capacity through authenticated HTTP", () => {
       expect(f.launches).toHaveLength(3);
     } finally { f.close(); }
   }, 15_000);
+  it("lets the extra planning pool run while an older execution request retains normal-slot priority", async () => {
+    const f = await capacityFixture();
+    try {
+      await f.api("/settings", { max_agents: 1 });
+      const holder = await f.assignment("Normal holder"), older = await f.assignment("Older execution"), planning = await f.assignment("Independent planning");
+      const running = await f.api(`/implementations/${holder}/runs`, { action: "work", idempotency_key: "holder" }).then(r => r.json());
+      const queued = await f.api(`/implementations/${older}/runs`, { action: "work", idempotency_key: "older" }).then(r => r.json());
+      expect(queued).toMatchObject({ condition: "queued", purpose: "execution" });
+      const interview = await f.api(`/implementations/${planning}/runs`, { action: "grill-me", idempotency_key: "planning" }).then(r => r.json());
+      expect(interview).toMatchObject({ condition: "working", capacity_pool: "planning" });
+      expect((await f.api("").then(r => r.json())).capacity.waiting).toEqual([expect.objectContaining({ id: queued.id, created_at: queued.created_at })]);
+      expect((await f.api(`/runs/${running.id}/stop`, {})).status).toBe(200);
+      const admitted = await eventually(() => f.api(`/implementations/${older}`).then(r => r.json()), d => d.runs[0]?.condition === "working");
+      expect(admitted.runs[0].capacity_pool).toBe("normal");
+      expect((await f.api(`/implementations/${planning}`).then(r => r.json())).runs).toEqual([expect.objectContaining({ id: interview.id, condition: "working" })]);
+      expect(f.launches).toHaveLength(3);
+    } finally { f.close(); }
+  });
   it("orders child reviews with root requests and deduplicates concurrent starts", async () => {
     const f = await capacityFixture();
     try {
@@ -81,6 +99,77 @@ describe("global factory capacity through authenticated HTTP", () => {
       const first = await eventually(() => f.api(`/implementations/${id}`).then(r => r.json()), d => d.workers.some((w: { ticket_id: string }) => w.ticket_id === graph.tickets[0].id));
       expect(first.workers).toHaveLength(1);
       expect((await f.api("").then(r => r.json())).capacity.waiting[0]).toMatchObject({ id: wait.id, created_at: wait.created_at, condition: "queued" });
+    } finally { f.close(); }
+  });
+  it("does not starve slow eligible admission behind an older dependency wait", async () => {
+    const f = await capacityFixture();
+    let gate: ReturnType<typeof f.holdNextAdmission> | null = null;
+    try {
+      await f.api("/settings", { max_agents: 1 });
+      const id = await f.assignment("Unready dependency");
+      const detail = await f.api(`/implementations/${id}`).then(r => r.json());
+      await f.api(`/projects/${detail.implementation.project_id}/configure`, { checks: [["bun", "test"]], permissions: "Owned slow-admission fixture" });
+      const spec = await f.api(`/implementations/${id}/specifications`, { content: "First before second" }).then(r => r.json());
+      for (const kind of ["specification", "testing_seams"]) await f.api(`/implementations/${id}/approvals`, { kind, revision: spec.id, scope: "Owned dependency" });
+      const graph = await f.api(`/implementations/${id}/tickets`, { specification_id: spec.id, tickets: [{ key: "first", title: "First", acceptance: "First completes", dependencies: [] }, { key: "second", title: "Second", acceptance: "Wait for first", dependencies: ["first"] }] }).then(r => r.json());
+      await f.api(`/implementations/${id}/approvals`, { kind: "ticket_graph", revision: graph.hash, scope: "Owned dependency order" });
+      const run = await f.api(`/implementations/${id}/runs`, { action: "implement-spec", idempotency_key: "parent" }).then(r => r.json());
+      const queued = await f.api(`/runs/${run.id}/workers`, { role: "implementer", ticket_id: graph.tickets[1].id, idempotency_key: "unready" }).then(r => r.json());
+      expect(queued).toMatchObject({ condition: "queued", reason: expect.stringContaining("Ticket") });
+      f.runs.get(run.id)!.condition = "ready";
+      expect((await f.api(`/runs/${run.id}/reconcile`, {})).status).toBe(200);
+      const eligible = await f.assignment("Slow eligible independent work");
+      gate = f.holdNextAdmission();
+      const starting = f.api(`/implementations/${eligible}/runs`, { action: "work", idempotency_key: "slow" });
+      await gate.started;
+      const afterRefresh = Date.now() + 600;
+      await eventually(() => f.api(`/implementations/${id}`).then(r => r.json()), () => Date.now() >= afterRefresh, 2000);
+      gate.release();
+      const response = await starting;
+      expect(response.status).toBe(202);
+      expect(await response.json()).toMatchObject({ condition: "working", capacity_pool: "normal" });
+      expect((await f.api("").then(r => r.json())).capacity.waiting).toEqual([expect.objectContaining({ id: queued.id, created_at: queued.created_at, condition: "queued" })]);
+      expect((await f.api(`/implementations/${id}`).then(r => r.json())).workers).toHaveLength(0);
+    } finally { gate?.release(); f.close(); }
+  });
+  it("continues a retained ordinary planning Run through Project queue pause while refusing a new Start", async () => {
+    const f = await capacityFixture();
+    try {
+      const id = await f.assignment("Accepted ordinary planning");
+      const detail = await f.api(`/implementations/${id}`).then(r => r.json());
+      const project = detail.implementation.project_id;
+      await f.api(`/projects/${project}/configure`, { checks: [["bun", "test"]], permissions: "Owned accepted continuation" });
+      const planning = await f.api(`/implementations/${id}/runs`, { action: "grill-with-docs", idempotency_key: "planning" }).then(r => r.json());
+      const specification = await f.api(`/implementations/${id}/specifications`, { content: "Owned accepted Specification" }).then(r => r.json());
+      for (const kind of ["specification", "testing_seams"]) await f.api(`/implementations/${id}/approvals`, { kind, revision: specification.id, scope: "Owned public HTTP fixture" });
+      const graph = await f.api(`/implementations/${id}/tickets`, { specification_id: specification.id, tickets: [{ key: "one", title: "Owned change", acceptance: "Preserve accepted continuation", dependencies: [] }] }).then(r => r.json());
+      await f.api(`/implementations/${id}/approvals`, { kind: "ticket_graph", revision: graph.hash, scope: "Owned graph" });
+      f.runs.get(planning.id)!.condition = "ready";
+      expect((await f.api(`/runs/${planning.id}/reconcile`, {})).status).toBe(200);
+      expect((await f.api(`/projects/${project}/queue/configure`, { expected_revision: null, paused: true })).status).toBe(200);
+      const unrelated = await f.api("/implementations", { title: "New unrelated work", description: "Owned paused queue guard", project_id: project }).then(r => r.json());
+      const refused = await f.api(`/implementations/${unrelated.id}/runs`, { action: "work", run_id: planning.id, idempotency_key: "forged-predecessor" });
+      expect(refused.status).toBe(409);
+      expect((await refused.json()).error.code).toBe("queue_paused");
+      await f.api("/settings", { max_agents: 1 });
+      const holderId = await f.assignment("Independent normal holder");
+      const holder = await f.api(`/implementations/${holderId}/runs`, { action: "work", idempotency_key: "holder" }).then(r => r.json());
+      expect(holder.condition).toBe("working");
+      const body = { action: "implement-spec", run_id: planning.id, idempotency_key: "accepted-continue", allow_partial_handoff: true };
+      const response = await f.api(`/implementations/${id}/continue`, body);
+      expect(response.status).toBe(202);
+      const waiting = await response.json();
+      expect(waiting).toMatchObject({ condition: "queued", run_id: null });
+      expect((await f.api(`/implementations/${id}`).then(r => r.json())).runs).toMatchObject([{ id: planning.id, condition: "completed" }]);
+      f.restart();
+      expect((await f.api(`/runs/${holder.id}/stop`, {})).status).toBe(200);
+      const admitted = await eventually(() => f.api(`/implementations/${id}`).then(r => r.json()), d => d.runs.some((run: { action: string; condition: string }) => run.action === "implement-spec" && run.condition === "working"));
+      const successor = admitted.runs.find((run: { action: string }) => run.action === "implement-spec");
+      expect(successor).toMatchObject({ action: "implement-spec", condition: "working", specification_id: specification.id, graph_hash: graph.hash });
+      expect(admitted.events.filter((event: { kind: string; data: { run_id?: string } }) => event.kind === "workflow_step_finished" && event.data.run_id === planning.id)).toHaveLength(1);
+      expect((await f.api(`/implementations/${id}`).then(r => r.json())).runs).toMatchObject([{ id: planning.id, condition: "completed" }, { id: successor.id, condition: "working" }]);
+      expect((await f.api(`/implementations/${id}/continue`, body).then(r => r.json())).id).toBe(successor.id);
+      expect((await f.api(`/implementations/${unrelated.id}`).then(r => r.json())).runs).toEqual([]);
     } finally { f.close(); }
   });
   it("recovers a disconnected queued request after restart without resetting its age", async () => {

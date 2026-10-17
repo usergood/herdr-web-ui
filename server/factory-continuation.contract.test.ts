@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "./index.ts";
 import { herdrRpc, sessionSnapshot, workspaceClose, type WorkspaceCreateResult } from "./herdr/client.ts";
@@ -33,6 +33,78 @@ async function fixture(hostToken = "", overrides: Partial<FactoryNative> = {}) {
 }
 
 describe("continuing approved workflow steps", () => {
+  it.each([[false, false], [false, true], [true, true]])("keeps an older queued request ahead of a continuation when capacity opens during admission (planning pool: %s, already queued: %s)", async (planning, alreadyQueued) => {
+    const host = await fixture("owned-fifo-host", { startAgent: async options => { await herdrRpc("pane.report_agent", { pane_id: options.paneId, source: "manual", agent: "codex", state: "working" }); } });
+    const state = mkdtempSync(join(homedir(), ".fifo-http-"));
+    let armed = false; let release!: () => void; let entered!: () => void;
+    const waiting = new Promise<void>(resolve => entered = resolve), gate = new Promise<void>(resolve => release = resolve);
+    const launches: string[] = [];
+    const proxy = Bun.serve({ port: 0, async fetch(request) {
+      const url = new URL(request.url);
+      if (url.pathname.endsWith("/inspect") && armed && (await request.clone().json()).path === host.repo) { armed = false; entered(); await gate; }
+      if (url.pathname.endsWith("/launch")) launches.push((await request.clone().json()).run.idempotency_key);
+      const response = await fetch(`http://localhost:${host.app.port}${url.pathname}${url.search}`, request);
+      const headers = new Headers(response.headers); headers.delete("content-encoding"); headers.delete("content-length");
+      return new Response(response.body, { status: response.status, headers });
+    } });
+    const options = { port: 0, stateDir: state, token: "", machines: false as const, factory: { accountDiscoveryHome: state, native: { version: async () => null }, machineEndpoint: (id: string) => id === "fifo-host" ? { url: `http://localhost:${proxy.port}`, token: "owned-fifo-host" } : undefined } };
+    let app = createServer(options);
+    const api = (path: string, body?: unknown) => fetch(`http://localhost:${app.port}/api/factory${path}`, { method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const json = async (path: string, body?: unknown) => { const response = await api(path, body); const value = await response.json(); if (!response.ok) throw new Error(JSON.stringify(value)); return value; };
+    try {
+      await json("/settings", { max_agents: 1 });
+      const project = await json("/projects", { name: "Held FIFO admission", path: host.repo, machine_id: "fifo-host", provider: "codex", tracker: "app" });
+      const idea = async (title: string, project_id?: string) => { const created = await json("/implementations", { title, description: "Owned FIFO fixture", ...(project_id ? { project_id } : {}) }); if (!project_id) await json(`/implementations/${created.id}/configure`, { machine_id: "fifo-host", provider: "codex" }); return created; };
+      const holder = await idea("Executing holder"), older = await idea("Older queued verification"), newer = await idea("Newer continuation", project.id);
+      const blocker = await json(`/implementations/${holder.id}/runs`, { action: "verify-provider", idempotency_key: "fifo-holder" });
+      const extra = planning ? await idea("Executing planning holder") : null;
+      const extraRun = extra ? await json(`/implementations/${extra.id}/runs`, { action: "grill-me", idempotency_key: "fifo-extra-holder" }) : null;
+      const oldRequest = { action: planning ? "grill-me" : "verify-provider", idempotency_key: "fifo-older" };
+      expect(await json(`/implementations/${older.id}/runs`, oldRequest)).toMatchObject({ condition: "queued", run_id: null });
+      const continuation = { action: planning ? "grill-with-docs" : "verify-provider", run_id: null, idempotency_key: "fifo-newer" };
+      let continuing: Promise<Response>;
+      if (alreadyQueued) {
+        const queued = await api(`/implementations/${newer.id}/continue`, continuation);
+        expect(queued.status).toBe(202);
+        continuing = Promise.resolve(queued);
+        armed = true;
+      } else {
+        armed = true;
+        continuing = api(`/implementations/${newer.id}/continue`, continuation);
+      }
+      await Promise.race([waiting, new Promise((_, reject) => setTimeout(() => reject(new Error("Continuation did not enter held admission")), 5000))]);
+      expect((await api(`/runs/${extraRun?.id ?? blocker.id}/stop`, {})).status).toBe(200);
+      release();
+      const response = await continuing;
+      expect(response.status).toBe(202);
+      expect(await response.json()).toMatchObject({ condition: "queued", run_id: null });
+      const deadline = Date.now() + 5000;
+      let prior = await json(`/implementations/${older.id}`);
+      while (prior.runs[0]?.condition !== "working" && Date.now() < deadline) { await Bun.sleep(10); prior = await json(`/implementations/${older.id}`); }
+      expect(prior.runs).toHaveLength(1);
+      expect(prior.runs[0]).toMatchObject({ action: oldRequest.action, idempotency_key: "fifo-older", condition: "working" });
+      expect(typeof prior.runs[0].pane_id).toBe("string");
+      expect(typeof prior.runs[0].workspace_id).toBe("string");
+      expect((await json(`/implementations/${newer.id}`)).runs).toHaveLength(0);
+      const before = await json("");
+      const wait = before.capacity.waiting.find((entry: { implementation_id: string }) => entry.implementation_id === newer.id);
+      expect(wait).toMatchObject({ condition: "queued", idempotency_key: "fifo-newer" });
+      const port = app.port; app.stop(); app = createServer({ ...options, port });
+      expect((await json("")).capacity.waiting.find((entry: { implementation_id: string }) => entry.implementation_id === newer.id)).toMatchObject({ id: wait.id, created_at: wait.created_at });
+      const restored = await json(`/implementations/${older.id}`);
+      expect(restored.runs[0]).toMatchObject({ id: prior.runs[0].id, pane_id: prior.runs[0].pane_id, workspace_id: prior.runs[0].workspace_id });
+      const stopped = await api(`/runs/${prior.runs[0].id}/stop`, {});
+      expect({ status: stopped.status, body: await stopped.json() }).toMatchObject({ status: 200, body: { id: prior.runs[0].id, condition: "cancelled" } });
+      let next = await json(`/implementations/${newer.id}`);
+      const resumedDeadline = Date.now() + 5000;
+      while (!next.runs.length && Date.now() < resumedDeadline) { await Bun.sleep(10); next = await json(`/implementations/${newer.id}`); }
+      expect(next.runs).toHaveLength(1);
+      expect(next.runs[0]).toMatchObject({ action: continuation.action, idempotency_key: "fifo-newer" });
+      expect((await json(`/implementations/${newer.id}/continue`, continuation)).id).toBe(next.runs[0].id);
+      expect(launches).toEqual(["fifo-holder", ...(planning ? ["fifo-extra-holder"] : []), "fifo-older", "fifo-newer"]);
+    } finally { release(); app.stop(); await proxy.stop(true); await host.close(); rmSync(state, { recursive: true, force: true }); }
+  }, 30_000);
+
   it("pauses native owned execution while keeping its dirty worktree and retained Run available", async () => {
     const f = await fixture("owned-pause");
     try {

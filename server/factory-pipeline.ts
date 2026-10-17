@@ -1,6 +1,6 @@
 import { hasIssueSource } from "./issue-delivery.ts";
 import { assertFactoryBuildPlatform } from "./factory-command.ts";
-import { agentCapacityPool, factoryCapacity } from "./factory-capacity.ts";
+import { factoryCapacity } from "./factory-capacity.ts";
 import type { FactoryApproval, FactoryCheck, FactoryProject, FactoryReviewEvidence, FactoryRun, FactorySettings, FactoryTicket, FactoryWorker, Implementation } from "../shared/protocol.ts";
 import type { FactoryAutomaticReview, FactoryHumanFeedbackBatch, ReviewComment } from "../shared/factory.ts";
 import { CLEAN_WORKSPACE_HASH, FactoryError } from "./factory-host.ts";
@@ -92,7 +92,7 @@ export class FactoryPipeline {
       }
       if (rework && this.store.list<FactoryWorker>("workers", id).some((worker) => worker.ticket_id === rework.id && owns(worker.condition))) throw new FactoryError("ticket_owned", "This Ticket already has an active or uncertain writer", 409);
       if (role !== "implementer" && this.store.list<FactoryWorker>("workers", id).some((worker) => worker.role === "implementer" && owns(worker.condition))) throw new FactoryError("writers_active", "Quiesce repository writers before independent final reviews", 409);
-      agentCapacityPool(this.store, this.settings());
+      this.runtime.queue.reserve(this.settings(), false, `${id}:${body.idempotency_key}`);
       this.runtime.assertProjectCapacity(run);
       const shared = body.shared_paths ?? [];
       const configured = (run.manifest as { project: FactoryProject }).project.shared_paths ?? [];
