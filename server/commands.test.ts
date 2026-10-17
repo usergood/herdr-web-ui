@@ -145,7 +145,7 @@ describe("paneCommands", () => {
     const goal = paneCommands("claude", null, temp("commands-home-")).find((command) => command.name === "goal");
     expect(goal?.source).toBe("builtin");
     expect(goal?.description.startsWith("[condition|clear] — ")).toBeTrue();
-    expect(paneCommands("codex", null, temp("commands-home-")).some((command) => command.name === "goal")).toBeFalse();
+    expect(paneCommands("codex", null, temp("commands-home-")).some((command) => command.name === "goal")).toBeTrue();
   });
 
   it("loads user and nested project Claude commands with descriptions", () => {
@@ -194,32 +194,24 @@ describe("skills and plugins", () => {
     write(join(home, ".claude", "settings.json"), JSON.stringify({ enabledPlugins: { "tools@market": true } }));
 
     expect(paneCommands("claude", cwd, home).filter((command) => command.source !== "builtin")).toEqual([
-      { name: "alias:check", description: "Shared check", source: "project" },
       { name: "alias:check", description: "Shared check", source: "user" },
-      { name: "linked", description: "Shared skill", source: "skill" },
-      { name: "linked", description: "Shared skill", source: "skill" },
-      { name: "review", description: "Shared review", source: "project" },
+      { name: "linked", description: "Shared skill", source: "skill", origin: "user" },
       { name: "review", description: "Shared review", source: "user" },
-      { name: "team:check", description: "Shared check", source: "project" },
       { name: "team:check", description: "Shared check", source: "user" },
       { name: "tools:alias:check", description: "Shared check", source: "plugin" },
-      { name: "tools:linked", description: "Shared skill", source: "plugin" },
+      { name: "tools:linked", description: "Shared skill", source: "skill", origin: "plugin" },
       { name: "tools:review", description: "Shared review", source: "plugin" },
       { name: "tools:team:check", description: "Shared check", source: "plugin" },
     ]);
     expect(paneCommands("codex", cwd, home).filter((command) => command.source !== "builtin")).toEqual([
-      { name: "linked", description: "Shared skill", source: "skill", trigger: "$" },
-      { name: "linked", description: "Shared skill", source: "skill", trigger: "$" },
-      { name: "prompts:alias:check", description: "Shared check", source: "user" },
       { name: "prompts:review", description: "Shared review", source: "user" },
-      { name: "prompts:team:check", description: "Shared check", source: "user" },
     ]);
     const previousPiAgentDir = process.env["PI_CODING_AGENT_DIR"];
     process.env["PI_CODING_AGENT_DIR"] = join(home, ".pi", "agent");
     try {
       expect(paneCommands("pi", null, home).filter((command) => command.source !== "builtin")).toEqual([
-        { name: "skill:linked", description: "Shared skill", source: "skill" },
-        { name: "skill:linked", description: "Shared skill", source: "skill" },
+        { name: "skill:linked", description: "Shared skill", source: "skill", origin: "user" },
+        { name: "skill:linked", description: "Shared skill", source: "skill", origin: "user" },
       ]);
     } finally {
       if (previousPiAgentDir === undefined) delete process.env["PI_CODING_AGENT_DIR"];
@@ -242,11 +234,47 @@ describe("skills and plugins", () => {
     write(join(home, ".claude", "settings.json"), JSON.stringify({ enabledPlugins: { "hud@market": true, "off@market": false } }));
     const extra = paneCommands("claude", cwd, home).filter((command) => command.source === "skill" || command.source === "plugin");
     expect(extra).toEqual([
-      { name: "deploy", description: "Ship it", source: "skill" },
+      { name: "deploy", description: "Ship it", source: "skill", origin: "project" },
       { name: "hud:configure", description: "Configure options", source: "plugin" },
-      { name: "hud:setup", description: "Configure the HUD", source: "plugin" },
-      { name: "patina", description: "Rewrite AI prose", source: "skill" },
+      { name: "hud:setup", description: "Configure the HUD", source: "skill", origin: "plugin" },
+      { name: "patina", description: "Rewrite AI prose", source: "skill", origin: "user" },
     ]);
+  });
+
+  it("passes a long or multi-line description on whole: the menu shortens it, the tooltip shows it", () => {
+    const home = temp("whole-home-");
+    const long = "Builds the docs site, deploys it to a throwaway preview host and posts the address on the pull request it was asked from, then tears the host down once that pull request closes, however long that takes.";
+    expect(long.length).toBeGreaterThanOrEqual(200);
+    write(join(home, ".claude", "commands", "preview.md"), `---\ndescription: ${long}\n---\nbody\n`);
+    write(join(home, ".claude", "skills", "patina", "SKILL.md"), "---\nname: patina\ndescription: >-\n  Rewrites AI prose in the house style.\n  Use when asked to deslop; never on code.\n---\n");
+    write(join(home, ".claude", "skills", "literal", "SKILL.md"), "---\ndescription: |\n  Line one.\n  Line two.\n---\n");
+    write(join(home, ".pi", "agent", "prompts", "review.md"), "---\ndescription: >-\n  Review the staged changes\n  one file at a time.\n---\nbody\n");
+    const claude = paneCommands("claude", null, home);
+    expect(claude.find((command) => command.name === "preview")?.description).toBe(long);
+    expect(claude.find((command) => command.name === "patina")?.description).toBe("Rewrites AI prose in the house style. Use when asked to deslop; never on code.");
+    expect(claude.find((command) => command.name === "literal")?.description).toBe("Line one.\nLine two.");
+    expect(paneCommands("pi", null, home).find((command) => command.name === "review")?.description).toBe("Review the staged changes one file at a time.");
+  });
+
+  it("keeps the description line of a header that is not strict YAML", () => {
+    const home = temp("loose-home-");
+    const commands = join(home, ".claude", "commands");
+    write(join(commands, "hint.md"), "---\nargument-hint: [system] [--source <path>]\ndescription: With hint\n---\nYou are the front door\n");
+    write(join(commands, "colon.md"), "---\ndescription: Use when: the user asks\n---\n# Heading\n");
+    write(join(commands, "sibling.md"), "---\nname: [broken\ndescription: \"Still here\"\n---\nBody line\n");
+    write(join(commands, "none.md"), "---\nname: [broken\n---\nBody line\n");
+    write(join(commands, "hash.md"), "---\ndescription: Close issue #102 and its PR\n---\nbody\n");
+    write(join(commands, "escaped.md"), "---\ndescription: \"Say \\\"hi\\\" first\"\n---\nbody\n");
+    const claude = paneCommands("claude", null, home);
+    const said = (name: string) => claude.find((command) => command.name === name)?.description;
+    expect(said("hint")).toBe("With hint");
+    expect(said("colon")).toBe("Use when: the user asks");
+    expect(said("sibling")).toBe("Still here");
+    // no description line at all: the body's first line, as before
+    expect(said("none")).toBe("Body line");
+    // a ` #` in a plain value is part of the text, not a YAML comment; a quoted value is YAML's
+    expect(said("hash")).toBe("Close issue #102 and its PR");
+    expect(said("escaped")).toBe('Say "hi" first');
   });
 
   it("offers Codex's saved prompts as /prompts:<name> and its skills with $", () => {
@@ -255,7 +283,7 @@ describe("skills and plugins", () => {
     write(join(home, ".codex", "skills", "deepinit", "SKILL.md"), "---\nname: deepinit\ndescription: Deep codebase initialization\n---\n");
     const extra = paneCommands("codex", null, home).filter((command) => command.source !== "builtin");
     expect(extra).toEqual([
-      { name: "deepinit", description: "Deep codebase initialization", source: "skill", trigger: "$" },
+      { name: "deepinit", description: "Deep codebase initialization", source: "skill", trigger: "$", origin: "user" },
       { name: "prompts:review", description: "Review the diff", source: "user" },
     ]);
   });
@@ -292,8 +320,8 @@ describe("pi's slash commands", () => {
       { name: "plain", description: "First line wins when there is no frontmatter", source: "user" },
       { name: "review", description: "Review staged git changes", source: "user" },
       // a skill is a command under skill:, which is how pi names it and how it must be typed
-      { name: "skill:from-agents", description: "Found under ~/.agents", source: "skill" },
-      { name: "skill:pdf-tools", description: "Extract text from PDFs", source: "skill" },
+      { name: "skill:from-agents", description: "Found under ~/.agents", source: "skill", origin: "user" },
+      { name: "skill:pdf-tools", description: "Extract text from PDFs", source: "skill", origin: "user" },
     ]);
   });
 

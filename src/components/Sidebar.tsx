@@ -625,12 +625,14 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, excludedPan
     const pane = currentPane(workspace, panes);
     const selected = panes.some((candidate) => candidate.pane_id === selectedPaneId);
     const repoKey = workspace.worktree?.repo_key;
-    const branch = workspace.worktree?.is_linked_worktree ? branches.get(workspace.workspace_id) : undefined;
+    const linked = workspace.worktree?.is_linked_worktree === true;
+    const branch = branches.get(workspace.workspace_id);
     const branchTitle = branch?.branch ?? (branch?.isDetached ? t("Detached HEAD") : null);
     // the row says the workspace's name, the one its owner gave it or herdr made from the branch; the
     // branch itself is the tooltip's and the menu's, where the name does not already say it
     const rowTitle = workspace.label;
-    const secondaryBranch = branchTitle && workspace.label !== branchTitle && workspace.label !== worktreeLabel(branchTitle) ? branchTitle : null;
+    const secondaryBranch = linked && branchTitle && workspace.label !== branchTitle && workspace.label !== worktreeLabel(branchTitle) ? branchTitle : null;
+    const branchLine = !twoLine && !nested && branchTitle ? branchTitle : null;
     // the tooltip and the menu keep the exact branch (its slashes) even where the row does not repeat it
     const branchNote = branchTitle && branchTitle !== workspace.label ? branchTitle : null;
     const paths = [...new Set([workspace.worktree?.checkout_path, pane.cwd].filter((path): path is string => Boolean(path)))];
@@ -713,6 +715,12 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, excludedPan
               {foldedCount > 0 && <span className="workspace-fold-count" aria-hidden="true">+{foldedCount}</span>}
             </span>
             {lines.place && <span className="workspace-place">{lines.place}</span>}
+          </span> : branchLine ? <span className="workspace-copy is-branch-line">
+            <span className="workspace-line">
+              <span className="workspace-name">{rowTitle}</span>
+              {foldedCount > 0 && <span className="workspace-fold-count" aria-hidden="true">+{foldedCount}</span>}
+            </span>
+            <span className="workspace-place workspace-branch">{branchLine}</span>
           </span> : <span className="workspace-copy">
             <span className="workspace-name">{rowTitle}</span>
             {secondaryBranch && <span className="worktree-workspace-label">{secondaryBranch}</span>}

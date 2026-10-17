@@ -1,4 +1,5 @@
 import type { SlashCommand } from "../../shared/protocol.ts";
+import { DEFAULT_SKILL_SYNTAX, type SkillSyntax } from "../../shared/skill-syntax.ts";
 
 /** One skill name as an answer spells it: `/name`, or `$name` for a Codex skill. */
 export interface SkillMention {
@@ -24,7 +25,7 @@ function escapeRegExp(value: string): string {
  * `$name` for a Codex skill). A bare word never matches, nor does a longer name that merely starts
  * with a skill's (`/review-all` for `review`), a path (`/review/x`, `a/review`) or a file (`/review.md`).
  */
-export function createSkillMatcher(commands: readonly SlashCommand[], options: { omo?: boolean } = {}): SkillMatcher | null {
+export function createSkillMatcher(commands: readonly SlashCommand[], syntax: SkillSyntax = DEFAULT_SKILL_SYNTAX): SkillMatcher | null {
   const names = new Map<string, string>();
   /** omo's placeholder `[skill: name]`: bracketed, so it needs neither the leading nor the trailing guard */
   const bracketed = new Map<string, string>();
@@ -32,9 +33,11 @@ export function createSkillMatcher(commands: readonly SlashCommand[], options: {
     if (command.source !== "skill" || command.name === "") continue;
     const trigger = command.trigger ?? "/";
     names.set(trigger + command.name, command.name);
-    if (options.omo && command.name.startsWith("skill:") && command.name.length > "skill:".length) {
-      names.set(`$${command.name}`, command.name);
-      bracketed.set(`[skill: ${command.name.slice("skill:".length)}]`, command.name);
+    if (command.name.startsWith("skill:") && command.name.length > "skill:".length) {
+      for (const form of syntax.chipForms) {
+        const raw = form.replace("{bare}", command.name.slice("skill:".length));
+        (raw.startsWith("[") && raw.endsWith("]") ? bracketed : names).set(raw, command.name);
+      }
     }
   }
   if (names.size === 0) return null;

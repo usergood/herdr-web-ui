@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
+import { skillSyntax } from "../../shared/skill-syntax.ts";
 import { agentDisplayLabel, composerDelivery, composerMessage, terminalOnlyCommand, composerSendShown, composerPayload, composerModelDraw, composerStatusCompact, composerStatusHint, composerStatusWord, COMPOSER_STATUS_COMPACT_BELOW, contextLeftPercent, formatTokens, imageMention, insertLeadingMention, MAX_COMPOSER_CHARS, QUEUE_READY_STATUS, rankSlashCommands, submitNote, submitNotTyped, submitRefusal, sameMessage } from "./compose.ts";
 import { briefDescription, commandGroup, commandsForTrigger, slashCommandReplacement } from "./compose.ts";
 import { activeTrigger, applyCompletion, type ActiveTrigger } from "./mentions.ts";
@@ -18,11 +19,15 @@ describe("menu rows", () => {
     expect(briefDescription("\u30B9\u30AD\u30EB\u3092\u63A2\u3059\u3002\u6B21\u306B\u5165\u308C\u308B\u3002")).toBe("\u30B9\u30AD\u30EB\u3092\u63A2\u3059");
   });
 
-  it("groups an omo skill by whose it is, and anything else by its source", () => {
+  it("groups a skill by where it comes from, and anything else by its source", () => {
     expect(commandGroup({ name: "skill:mine", description: "", source: "skill", origin: "user" })).toBe("skill-user");
+    expect(commandGroup({ name: "deploy", description: "", source: "skill", origin: "project" })).toBe("skill-project");
     expect(commandGroup({ name: "skill:mass-ulw", description: "", source: "skill", origin: "bundled" })).toBe("skill-bundled");
+    expect(commandGroup({ name: "hud:setup", description: "", source: "skill", origin: "plugin" })).toBe("skill-plugin");
     expect(commandGroup({ name: "review", description: "", source: "skill" })).toBe("skill");
     expect(commandGroup({ name: "model", description: "", source: "builtin" })).toBe("builtin");
+    // a plugin's command file is not a skill: it keeps its own group
+    expect(commandGroup({ name: "hud:configure", description: "", source: "plugin" })).toBe("plugin");
   });
 });
 
@@ -77,6 +82,30 @@ describe("omo command completion", () => {
     expect(slashCommandReplacement(claudeSkill, "claude", inline)).toBe("/delegate ");
     expect(slashCommandReplacement(codexSkill, "codex", inline)).toBe("$delegate ");
     expect(slashCommandReplacement(skill, "pi", slash)).toBe("/skill:mass-ulw ");
+  });
+
+  it("keeps a Claude, Codex or pi menu open past the colon of a namespaced name", () => {
+    const options = (agent: string) => ({ skills: skillSyntax(agent).skillTriggers.includes("$"), namespaced: skillSyntax(agent).namespaced });
+    expect(activeTrigger("/plugin:bra", 11, options("claude"))).toEqual({ kind: "slash", query: "plugin:bra", start: 0, end: 11 });
+    expect(activeTrigger("/prompts:rev", 12, options("codex"))).toEqual({ kind: "slash", query: "prompts:rev", start: 0, end: 12 });
+    expect(activeTrigger("/skill:pd", 9, options("pi"))).toEqual({ kind: "slash", query: "skill:pd", start: 0, end: 9 });
+    expect(activeTrigger("x $", 3, options("pi"))).toBeNull();
+    // the whole namespaced name is what Enter writes, for a pi skill as for an omo one
+    expect(applyCompletion("/skill:pd", activeTrigger("/skill:pd", 9, options("pi"))!, slashCommandReplacement(skill, "pi", slash))).toEqual({ text: "/skill:mass-ulw ", caret: 16 });
+  });
+
+  it("offers omp inline /skill: but not /model or dollar triggers", () => {
+    const syntax = skillSyntax("omp");
+    const options = { skills: syntax.skillTriggers.includes("$"), namespaced: syntax.namespaced };
+    const text = "please /skill:mas";
+    const trigger = activeTrigger(text, text.length, options);
+    if (trigger === null) throw new Error("Expected omp skill trigger");
+    expect(rankSlashCommands(commandsForTrigger(commands, "omp", trigger), trigger.query, {}, true)).toEqual([skill]);
+    const model = "please /model";
+    const modelTrigger = activeTrigger(model, model.length, options);
+    if (modelTrigger === null) throw new Error("Expected slash trigger");
+    expect(rankSlashCommands(commandsForTrigger(commands, "omp", modelTrigger), modelTrigger.query, {}, true)).toEqual([]);
+    expect(activeTrigger("x $", 3, options)).toBeNull();
   });
 });
 

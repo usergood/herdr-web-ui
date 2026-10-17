@@ -10,6 +10,44 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 ## [0.7.0] - 2026-10-16
 
 ### Added
+- Agy panes now offer their commands and user, project, plugin and bundled skills in the slash
+  menu, with origin groups, one-line descriptions and skill chips in user messages.
+  ([#1245](https://github.com/devswha/herdr-web-ui/pull/1245))
+- Codex's command menu now includes shared and ancestor-project skills, system skills and enabled
+  plugin skills, grouped by origin. It honors the pane's `CODEX_HOME` and disabled skill paths,
+  offers saved prompts as `/prompts:name`, and inserts skills as `$name`.
+  ([#1245](https://github.com/devswha/herdr-web-ui/pull/1245))
+- Devin chat now lists local commands and skills with their source groups, imports enabled
+  skills from other agents, and shows skill chips instead of expanded prompts in your messages.
+  Cloud-only commands and skills, MCP prompts, and terminal-only pickers are excluded.
+  ([#1245](https://github.com/devswha/herdr-web-ui/pull/1245))
+- GJC chat now lists its commands, user and project skills, and four bundled workflows with
+  origin icons and one-line descriptions. Namespaced commands and skill calls keep their colons,
+  and invoked skills appear as chips in user messages. Discovery honors the pane's agent directory
+  and skill settings, including disabled user or untrusted project skills.
+  ([#1245](https://github.com/devswha/herdr-web-ui/pull/1245))
+- A Grok pane's `/` menu now lists Grok's slash commands and the skills Grok loads for that pane:
+  yours (`~/.grok/skills`, `~/.claude/skills`, `[skills] paths` in `config.toml`), this
+  project's (`.grok/skills` and `.claude/skills` in the folder and the repository root, left out
+  when `.gitignore` ignores them) and those of plugins. `$GROK_HOME` is honored, and typed
+  `/name` skill names should show as chips in your messages. This is built from Grok's published
+  README, not checked against a running Grok, which is not installed where this was written.
+  Grok's built-in skills, which live inside its binary, are not listed.
+  ([#1245](https://github.com/devswha/herdr-web-ui/pull/1245))
+- Hermes chat now lists its CLI commands, trusted project and personal skills, installed bundled
+  skills, skill bundles and quick commands, with origin groups and one-line descriptions.
+  Plugin skills are not listed because their enabled state lives in Hermes' Python plugin manager.
+  ([#1245](https://github.com/devswha/herdr-web-ui/pull/1245))
+- omp's chat menu lists its skills from native, plugin and compatible agent providers, with
+  profile-aware settings, origin groups and inline `/skill:` completion. File commands and prompt
+  templates respect command precedence; recorded skill invocations appear as user chips.
+  Invocation-only extension and plugin roots cannot be recovered from on-disk settings.
+  ([#1245](https://github.com/devswha/herdr-web-ui/pull/1245))
+- OpenCode chat now lists its commands and valid skills from user and project roots, with origin
+  groups and one-line descriptions. Pane-specific config directories and external-skill switches
+  are honored, and recorded skill expansions show the original invocation as a chip.
+  Commands whose recorded screens cannot be represented in chat are omitted.
+  ([#1245](https://github.com/devswha/herdr-web-ui/pull/1245))
 - The installers open the app in your browser after a new install on a PC with a desktop, where
   the address bar's Install adds it. Over SSH they print the `ssh -L` tunnel to run instead, and
   `HERDR_WEB_NO_OPEN=1` turns the opening off.
@@ -31,7 +69,33 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   ([#1236](https://github.com/devswha/herdr-web-ui/pull/1236))
 
 ### Changed
-- Merge the original repository through 9352a102, including file diffs and browsing, account sign-in,
+- Every agent's `/` menu (and Codex's `$`) now reads the way omo's does: each command's
+  description is one short line with the whole text in its tooltip, skills stand under where they
+  come from (yours, this project's, built in, from a plugin) with an icon for each, a namespaced
+  name such as `/skill:x`, `/plugin:x` or `/prompts:x` keeps the menu open past its `:`, and the
+  skill names in your own messages show as chips. A command's description is no longer cut at 120
+  characters, and a multi-line one in a skill's frontmatter arrives whole.
+  ([#1245](https://github.com/devswha/herdr-web-ui/pull/1245))
+- Codex's built-in commands now match its recorded palette, excluding screens the chat cannot
+  represent. Project `.codex/skills` remains excluded because Codex loading it is unconfirmed;
+  project skills come from `.agents/skills`.
+  ([#1245](https://github.com/devswha/herdr-web-ui/pull/1245))
+- Settings → Devices shows one red warning, not two, while nothing is paired and no token is
+  set: the note on what pairing turns on is a plain hint now, and it tells someone whose proxy
+  already signs people in to set `HERDR_WEB_TOKEN` and have the proxy send it. The guide's
+  **Behind a reverse proxy** shows the Caddy and nginx lines. Who gets in is unchanged.
+  ([#1242](https://github.com/devswha/herdr-web-ui/pull/1242))
+- A pi pane's `/` menu now lists the nested skills pi finds below its skills folder and the
+  skills listed in its settings, groups them under "Your skills", and, once pi trusts the
+  project, adds that project's `.pi/skills`, `.agents/skills` and `.pi/prompts`.
+  ([#1245](https://github.com/devswha/herdr-web-ui/pull/1245))
+- As in herdr's own sidebar, a top-level git workspace now shows its branch on a second line under
+  its name, while indented worktrees and folders outside git stay one line. A repository without
+  worktrees has its branch read too, so the strip under its message box names it as well.
+  ([#1244](https://github.com/devswha/herdr-web-ui/pull/1244))
+- A repository's worktrees hang from it on dim tree branches, as herdr draws them.
+  ([#1244](https://github.com/devswha/herdr-web-ui/pull/1244))
+- Merge the original repository through 95507e2e, including file diffs and browsing, account sign-in,
   workspace favorites, mirrored split views, tabs and current agent compatibility fixes.
   Original release notes and credits are retained in [upstream release history](docs/upstream-release-history.md).
   ([#33](https://github.com/usergood/saurons-eye/pull/33) by @usergood)
@@ -75,6 +139,21 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   ([#1237](https://github.com/devswha/herdr-web-ui/pull/1237))
 
 ### Fixed
+- Claude's menu follows its personal, ancestor-project, synced and enabled plugin skills,
+  with origin groups, name precedence and linked-worktree fallback. Its command list follows
+  Claude Code 2.1.301's recorded palette and omits screens the chat cannot represent.
+  ([#1245](https://github.com/devswha/herdr-web-ui/pull/1245))
+- Explicit Claude skill invocations remain readable as skill chips instead of disappearing.
+  Binary-compiled skills, session-only added directories, and skills in subfolders that Claude
+  loads only after working there are not listed.
+  ([#1245](https://github.com/devswha/herdr-web-ui/pull/1245))
+- A browser that gets in with a token its proxy sends in an `Authorization` header no longer
+  offers **Sign out**, which cleared nothing: the proxy sent the token again with the next
+  request. `/api/health` marks such a sign-in with `auth.bearer`.
+  ([#1242](https://github.com/devswha/herdr-web-ui/pull/1242))
+- In omp, gjc and Hermes chats, a skill call now shows as the skill's name instead of the
+  skill's full instructions pasted into the conversation.
+  ([#1245](https://github.com/devswha/herdr-web-ui/pull/1245))
 - On a phone, a New worktree made with Shell opens its terminal: closing the sheet no longer sent
   the app back to the pane it was opened on before the new pane was listed.
   ([#1241](https://github.com/devswha/herdr-web-ui/pull/1241))

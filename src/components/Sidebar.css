@@ -166,6 +166,31 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
    row's content moves. */
 .worktree-children .workspace-header { padding-left: var(--side-box); }
 
+/* herdr's tree: a worktree hangs from its repository's folder on a dim branch, a tee for each
+   but the last and an elbow for the last, drawn in the indent and never in the way of a click */
+.worktree-children .workspace-group > .workspace-header::before,
+.worktree-children .workspace-group > .workspace-header::after {
+  position: absolute;
+  left: calc(var(--side-box) / 2);
+  content: "";
+  background: var(--border-strong);
+  pointer-events: none;
+}
+
+.worktree-children .workspace-group > .workspace-header::before {
+  top: 0;
+  bottom: 0;
+  width: var(--hairline);
+}
+
+.worktree-children .workspace-group:last-child > .workspace-header::before { bottom: 50%; }
+
+.worktree-children .workspace-group > .workspace-header::after {
+  top: 50%;
+  width: calc(var(--side-box) / 2 - var(--space-1));
+  height: var(--hairline);
+}
+
 /* The folder that leads a workspace row. It is the fold, and a button, when linked worktrees
    sit under the workspace: open while they show, closed while they are folded. */
 .sidebar-row-action.workspace-toggle {
@@ -237,7 +262,12 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
    on the height and in the type of an agent's row. */
 .machine-workspaces.is-two-line .workspace-header { min-height: var(--side-row-2); }
 
-.workspace-copy.is-two-line {
+/* One line: as in herdr's sidebar, a top-level git workspace says its branch under its name, on
+   the same height as a two-line row; worktrees and folders outside git stay one line. */
+.workspace-header:has(.workspace-copy.is-branch-line) { min-height: var(--side-row-2); }
+
+.workspace-copy.is-two-line,
+.workspace-copy.is-branch-line {
   flex-direction: column;
   align-items: stretch;
   justify-content: center;

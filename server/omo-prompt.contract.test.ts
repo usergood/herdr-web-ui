@@ -186,7 +186,9 @@ describe("slash commands follow the pane's process", () => {
 
   it("keeps Claude commands for a Claude process", async () => {
     const commands = await names(await waiting("claude", "claude"));
-    expect(commands).toContain("config");
+    // Claude's own list: /model (a picker the chat answers) stays, /config (a screen it cannot) is left out
+    expect(commands).toContain("model");
+    expect(commands).not.toContain("config");
     expect(commands).not.toContain("favorite-models");
   }, 30_000);
 });

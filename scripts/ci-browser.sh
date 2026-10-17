@@ -115,7 +115,7 @@ run_script scripts/chat-selection-copy-regression.ts
 run_script scripts/chat-fallback-browser-qa.ts
 run_script scripts/grok-chat-browser-qa.ts
 run_script scripts/omo-chat-browser-qa.ts
-run_script scripts/omo-skill-menu-demo-regression.ts
+run_script scripts/agent-skill-menu-demo-regression.ts
 run_script scripts/agy-chat-browser-qa.ts
 run_script scripts/gjc-status-browser-regression.ts
 run_script scripts/math-browser-qa.ts
@@ -134,6 +134,7 @@ run_script scripts/composer-fit-demo-regression.ts
 run_script scripts/held-rows-demo-regression.ts
 run_script scripts/sidebar-activity-demo-regression.ts
 run_script scripts/sidebar-spacing-demo-regression.ts
+run_script scripts/sidebar-branch-line-demo-regression.ts
 run_script scripts/workspace-touch-reorder-demo-regression.ts
 run_script scripts/prompt-dock-demo-regression.ts
 run_script scripts/plugin-actions-demo-regression.ts

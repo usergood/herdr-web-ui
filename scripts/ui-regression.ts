@@ -1717,13 +1717,13 @@ try {
     "a linked checkout's keyboard menu and right-click menu have identical actions");
   await page.keyboard.press("Escape");
   await childMenu.waitFor({ state: "detached" });
-  // pinned, the worktree gets a shortcut in the pinned card at the top and stays in its repository's group; unpinned, the shortcut goes
+  // pinned, the worktree leaves its repository's group for the pinned card at the top; unpinned, it returns
   await childHeader.locator(".workspace-select").click({ button: "right" });
   await childMenu.getByRole("menuitem", { name: "Pin workspace", exact: true }).click();
   const pinnedCard = page.locator(".workspace-list-pinned");
-  await pinnedCard.locator(`.workspace-group[data-workspace="pinned:${worktree.workspace_id}"]`).waitFor();
-  assert.equal(await page.locator(`.worktree-children .workspace-group[data-workspace="${worktree.workspace_id}"]`).count(), 1, "a pinned worktree stays in its group, as a favorite");
-  await pinnedCard.locator(`.workspace-group[data-workspace="pinned:${worktree.workspace_id}"] .workspace-select`).click({ button: "right" });
+  await pinnedCard.locator(`.workspace-group[data-workspace="${worktree.workspace_id}"]`).waitFor();
+  assert.equal(await page.locator(`.worktree-children .workspace-group[data-workspace="${worktree.workspace_id}"]`).count(), 0, "a pinned worktree leaves its group");
+  await pinnedCard.locator(`.workspace-group[data-workspace="${worktree.workspace_id}"] .workspace-select`).click({ button: "right" });
   await childMenu.getByRole("menuitem", { name: "Unpin workspace", exact: true }).click();
   await pinnedCard.waitFor({ state: "detached" });
   await childRow.waitFor();

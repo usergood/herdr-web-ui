@@ -828,13 +828,8 @@
   display: contents;
 }
 
-/* an omo row's one sentence keeps to the right half of a wide menu, cut short there, so the names
-   read as one column instead of each being pushed against its description */
-.composer-menu .menu-item[data-brief] .menu-item-hint {
-  max-width: 55%;
-}
-
-/* whose an omo skill is: yours in the accent, the ones omo ships dimmed like any other icon */
+/* where a skill comes from: yours in the accent; the project's, the agent's own and a plugin's
+   dimmed like any other icon */
 .composer-menu .menu-item[data-origin="user"] svg {
   color: var(--accent);
 }
@@ -865,6 +860,9 @@
   margin-left: auto;
   flex: 0 1 auto;
   min-width: 0;
+  /* a row's one sentence keeps to the right half of a wide menu, cut short there, so the names
+     read as one column instead of each being pushed against its description */
+  max-width: 55%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1033,19 +1031,12 @@
     row-gap: 0;
   }
 
+  /* a row's description is one sentence already: one line under the name, cut if it must */
   .composer-menu .menu-item-hint {
     flex: 1 1 100%;
     margin-left: 0;
-    white-space: normal;
-    text-overflow: clip;
-    line-height: 1.35;
-  }
-
-  /* an omo row's description is one sentence already: one line under the name, cut if it must */
-  .composer-menu .menu-item[data-brief] .menu-item-hint {
     max-width: none;
-    white-space: nowrap;
-    text-overflow: ellipsis;
+    line-height: 1.35;
   }
 
   /* under the icon, not under the row's left edge */

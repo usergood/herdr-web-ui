@@ -710,6 +710,14 @@ One set for both themes: the card is island black wherever it shows.
   shell shows the terminal glyph, and a linked worktree without an agent the branch glyph. The
   mark never stands for another pane's agent; the row's tooltip lists every agent in the
   workspace. A custom worktree workspace name follows the branch on the same line in dim text.
+  On One line, as in herdr's own sidebar, a top-level git workspace (a repository, or a worktree
+  whose repository is not open) says its branch under its name in `--text-dim` `--fs-xs`, on a
+  two-line row's height (`--side-row-2`); an indented worktree, whose name already comes from its
+  branch, and a folder outside git stay one line. The branch is read with the worktree inventory
+  (`useWorktreeBranches`), a repository without worktrees and a git workspace herdr has not marked
+  included. As herdr draws its tree, each indented worktree hangs from its repository's folder on
+  a `--hairline` `--border-strong` branch in the indent: a tee for each but the last, an elbow for
+  the last.
   Selection uses a neutral rounded fill; workspace rows have no amber rail or separate reorder
   gutter. Drag the row itself, or press `Alt+↑/↓` while its selector is focused, to reorder it.
   On a touch screen (`pointer: coarse`) the browser's drag is off: a long press (400ms, still
