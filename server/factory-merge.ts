@@ -139,7 +139,9 @@ export class FactoryMerge {
         if (!texts.has(entry.sha)) texts.set(entry.sha, deliveryText(await api(`repos/${pr.repository}/git/blobs/${entry.sha}`), entry.sha));
         const observed = texts.get(entry.sha);
         const approved = await git(run.worktree!, ["cat-file", "blob", file.oid]);
-        if (observed == null || createHash("sha1").update(`blob ${Buffer.byteLength(approved)}\0`).update(approved).digest("hex") !== file.oid || !retainsApprovedText(approved, observed, reviewed.diff)) return false;
+        // Presentation diffs may inherit ANSI colors; coverage needs literal Git patch lines.
+        const diff = await git(run.worktree!, ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--unified=3", baseline, pr.head, "--", file.path]);
+        if (observed == null || createHash("sha1").update(`blob ${Buffer.byteLength(approved)}\0`).update(approved).digest("hex") !== file.oid || !retainsApprovedText(approved, observed, diff)) return false;
       }
       return true;
     };

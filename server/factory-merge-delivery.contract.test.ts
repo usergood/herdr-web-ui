@@ -55,9 +55,10 @@ it.each([
   } finally { f.close(); }
 }, 20000);
 
-it("Human Review refuses restoring a reviewed deletion even with unrelated additions", async () => {
+it.each([false, true])("Human Review refuses restoring a reviewed deletion even with unrelated additions (colored Git diff: %s)", async colored => {
   const f = await mergeFixture({ milestone: "release", baselineContent: "removed line\nretained line\n", candidateContent: "retained line\n" });
   try {
+    if (colored) f.git(["config", "color.diff", "always"]);
     expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "awaiting_release" });
     f.git(["tag", "restored-deletion", f.descendant("removed line\nretained line\nIndependent later content\n")]); f.change({ release: "restored-deletion" }); f.restart();
     expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "awaiting_release", release_tag: null });
