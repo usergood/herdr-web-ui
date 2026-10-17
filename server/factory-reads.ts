@@ -123,6 +123,7 @@ export class FactoryReads {
       return [idea.id, frozen] as const;
     }));
     const waiting = this.list<NonNullable<FactoryDetail["capacity_waiting"]>[number] & { ticket_id?: string }>("capacity_waits");
+    const workflowReasons = ["automatic_execution", "automatic_review", "human_reviews"].flatMap(kind => this.list<{ run_id: string; reason: string | null; reason_is_error?: boolean }>(kind));
     // Recover concrete failure reasons in SQL without decoding retained output bodies.
     const failedCommands = new Map(this.store.db.query<{ id: string; commands: string }, []>("SELECT records.id, json_group_array(json_object('args', json_extract(command.value, '$.args'), 'exit_code', json_extract(command.value, '$.exit_code'))) AS commands FROM records JOIN json_each(records.data, '$.commands') AS command WHERE records.kind='checks' AND json_extract(records.data, '$.condition')='failed' AND json_extract(command.value, '$.exit_code') IS NOT 0 GROUP BY records.id").all().map(row => [row.id, JSON.parse(row.commands) as Pick<FactoryCheck["commands"][number], "args" | "exit_code">[]]));
     const progressChecks = checks.map(check => ({ ...check, commands: (failedCommands.get(check.id) ?? []).map(command => ({ ...command, output: "" })) }));
@@ -141,7 +142,7 @@ export class FactoryReads {
       projects, checkouts: this.list<FactoryOverview["checkouts"][number]>("checkouts").map(checkout => { if (!navigation) return checkout; const { instructions, ...summary } = checkout; return summary; }), settings,
       capacity: factoryCapacity(this, settings),
       conversations: navigation ? conversations.map(conversation => ({ ...conversation, contexts: conversation.contexts.map(({ run_id, worker_id }) => ({ run_id, worker_id })) })) : conversations,
-      progress: ideas.map(idea => assignmentProgress(idea, tickets.get(idea.id)!, byIdea.get(idea.id)!, workers, progressChecks, waiting)),
+      progress: ideas.map(idea => assignmentProgress(idea, tickets.get(idea.id)!, byIdea.get(idea.id)!, workers, progressChecks, waiting, workflowReasons)),
       board,
       activity: ideas.flatMap(idea => { const run = byIdea.get(idea.id)?.at(-1), graph = tickets.get(idea.id)!; return run ? [{ implementation_id: idea.id, run_id: run.id, condition: run.condition, action: run.action, waiting_reason: run.waiting_reason, completed_tickets: graph.filter(t => t.status === "done").length, total_tickets: graph.length }] : []; }),
       pane_archives: this.list("pane_archives"),

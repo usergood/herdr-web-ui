@@ -126,13 +126,13 @@ export interface FactoryPlanningRequest extends FactoryRecord {
 export interface FactoryAutomaticExecution extends FactoryRecord {
   run_id: string; plan_hash: string;
   condition: "executing" | "waiting" | "blocked" | "checked";
-  reason: string | null; attempts: number; next_attempt_at: number;
+  reason: string | null; reason_is_error?: boolean; attempts: number; next_attempt_at: number;
 }
 export interface FactoryAutomaticReview extends FactoryRecord {
   context_revision?: string; generation?: number; human_batch_id?: string;
   run_id: string; head: string; round: number;
   condition: "reviewing" | "repairing" | "publishing" | "published" | "waiting" | "blocked";
-  reason: string | null; attempts: number; next_attempt_at: number;
+  reason: string | null; reason_is_error?: boolean; attempts: number; next_attempt_at: number;
   check_id: string; evidence_ids: string[]; batch_id: string | null;
 }
 /** Original reports are immutable; repaired-revision evidence is retained separately. */
@@ -268,7 +268,7 @@ export interface FactoryHumanReviewDelivery {
 export interface FactoryHumanReview extends FactoryRecord {
   implementation_id: string; run_id: string; conversation_id: string;
   head: string; snapshot_id: string | null; assistant_run_id: string | null;
-  condition: "capturing" | "ready" | "repairing" | "waiting" | "blocked"; reason: string | null;
+  condition: "capturing" | "ready" | "repairing" | "waiting" | "blocked"; reason: string | null; reason_is_error?: boolean;
 }
 export interface FactoryDetail {
   human_review_approvals?: FactoryHumanApproval[];

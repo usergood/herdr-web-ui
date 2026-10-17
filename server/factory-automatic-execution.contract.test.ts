@@ -85,6 +85,7 @@ describe("Automatic Ticket execution through authenticated HTTP", () => {
       worker.condition = "needs_you"; worker.waiting_reason = "Owned native permission required";
       const waiting = await until(detail, d => d.automatic_execution?.[0]?.reason === "Owned native permission required");
       expect(waiting.checks).toEqual([]);
+      expect(waiting.automatic_execution[0].reason_is_error).toBe(false);
       expect(waiting.workers[0].condition).toBe("needs_you");
       expect(waiting.tickets.map((t: any) => t.status)).toEqual(["proposed", "proposed"]);
       worker.condition = "ready"; worker.waiting_reason = null;
@@ -127,7 +128,8 @@ describe("Automatic Ticket execution through authenticated HTTP", () => {
       f.runs.get(run.id)!.condition = "ready";
       const started = await until(detail, d => d.workers.length === 1 && d.workers[0].condition === "working");
       f.workers.get(started.workers[0].id)!.condition = "ready";
-      await until(detail, d => d.automatic_execution?.[0]?.reason?.includes("build capacity"));
+      const capacityWait = await until(detail, d => d.automatic_execution?.[0]?.reason?.includes("build capacity"));
+      expect(capacityWait.automatic_execution[0].reason_is_error).toBe(false);
       expect((await detail()).checks).toEqual([]);
       f.failNextCheck(); gate.release(); await held;
       const blocked = await until(detail, d => d.automatic_execution?.[0]?.condition === "blocked");
@@ -286,3 +288,24 @@ for (const scope of ["worker", "integration"] as const) it(`Resume reruns the un
     expect(done.approvals.map((a: any) => a.kind)).toEqual(["specification"]);
   } finally { gate.release(); f.close(); }
 }, 20000);
+
+it("marks a recoverable execution Machine fault and clears it for an ordinary permission wait", async () => {
+  const f = await capacityFixture();
+  try {
+    const { detail, run } = await acceptedPlan(f);
+    f.runs.get(run.id)!.condition = "ready";
+    const started = await until(detail, current => current.workers[0]?.condition === "working");
+    f.offline(true);
+    const fault = await until(detail, current => current.automatic_execution?.[0]?.condition === "waiting" && current.automatic_execution[0].attempts > 0);
+    expect(fault.automatic_execution[0].reason_is_error).toBe(true);
+    f.restart();
+    expect((await detail()).automatic_execution[0].reason_is_error).toBe(true);
+    f.offline(false);
+    const worker = f.workers.get(started.workers[0].id)!;
+    worker.condition = "needs_you"; worker.waiting_reason = "Owned permission must be answered";
+    const permission = await until(detail, current => current.automatic_execution?.[0]?.reason === worker.waiting_reason);
+    expect(permission.automatic_execution[0].reason_is_error).toBe(false);
+    expect(permission.automatic_execution[0].attempts).toBe(0);
+    expect(f.workerLaunches).toHaveLength(1);
+  } finally { f.close(); }
+});

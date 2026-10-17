@@ -6,7 +6,7 @@ const executing = (context: FactoryRun | FactoryWorker) => context.condition ===
 const attention = (condition: string) => ["needs_you", "blocked", "interrupted", "failed"].includes(condition);
 
 /** Board progress projects retained evidence. It neither admits work nor changes its age. */
-export function assignmentProgress(idea: Implementation, tickets: FactoryTicket[], runs: FactoryRun[], workers: FactoryWorker[], checks: FactoryCheck[] = [], waiting: BoardWait[] = []): FactoryAssignmentProgress {
+export function assignmentProgress(idea: Implementation, tickets: FactoryTicket[], runs: FactoryRun[], workers: FactoryWorker[], checks: FactoryCheck[] = [], waiting: BoardWait[] = [], workflowReasons: { run_id: string; reason: string | null; reason_is_error?: boolean }[] = []): FactoryAssignmentProgress {
   const current = runs.at(-1);
   const relevant = workers.filter(worker => runs.some(run => run.id === worker.run_id));
   const waits = waiting.filter(wait => wait.implementation_id === idea.id);
@@ -46,13 +46,16 @@ export function assignmentProgress(idea: Implementation, tickets: FactoryTicket[
   const latestWorkers = relevant.filter((worker, index) => runs.some(run => run.id === worker.run_id && (!ended(run.condition) || run === current)) && !relevant.slice(index + 1).some(next => next.run_id === worker.run_id && next.role === worker.role && next.ticket_id === worker.ticket_id));
   const scopedRuns = runs.filter(run => !ended(run.condition) || run === current);
   const failed = (context: FactoryRun | FactoryWorker) => ["failed", "interrupted", "disconnected", "blocked"].includes(context.condition);
+  const workflowFaults = workflowReasons.filter(record => record.reason_is_error && record.reason && scopedRuns.some(run => run.id === record.run_id)).map(record => record.reason!);
   const errorReasons = [...new Set([
+    ...workflowFaults,
     ...(idea.deletion?.reasons ?? []), ...(idea.pause?.reasons ?? []),
     ...waits.filter(wait => wait.condition === "blocked").map(wait => wait.reason),
     ...[...scopedRuns, ...latestWorkers].filter(failed).flatMap(context => contextReason(context) ? [contextReason(context)!] : []),
     ...latestChecks.filter(check => ["failed", "interrupted"].includes(check.condition)).map(checkReason),
   ])];
   const reasons = [...new Set([
+    ...workflowFaults,
     ...(idea.deletion?.reasons ?? []), ...(idea.pause?.reasons ?? []),
     ...waits.map(wait => wait.reason),
     ...scopedRuns.flatMap(run => contextReason(run) ? [contextReason(run)!] : []),

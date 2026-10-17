@@ -333,10 +333,21 @@ describe("Human Review through authenticated HTTP", () => {
       const { detail } = await published(f);
       const waiting = await until(detail, d => d.human_reviews?.[0]?.condition === "waiting");
       expect(waiting.human_reviews[0].reason).toContain("Machine");
+      expect(waiting.human_reviews[0].reason_is_error).toBe(true);
       expect(waiting.snapshots).toEqual([]);
-      f.restart(); f.reviewUnavailable(false);
+      const overview = await f.api("").then(response => response.json());
+      expect(overview.progress.find((progress: any) => progress.implementation_id === waiting.implementation.id).error_reasons).toContain(waiting.human_reviews[0].reason);
+      f.offline(true); f.reviewUnavailable(false);
+      const disconnected = await until(detail, current => current.runs[0].condition === "disconnected");
+      expect(disconnected.human_reviews[0].reason_is_error).toBe(true);
+      f.restart();
+      expect((await detail()).human_reviews[0].reason_is_error).toBe(true);
+      f.offline(false);
       const ready = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
       expect(ready.human_reviews[0].id).toBe(waiting.human_reviews[0].id);
+      expect(ready.human_reviews[0]).toMatchObject({ reason: null, reason_is_error: false });
+      expect((await f.api(`/implementations/${ready.implementation.id}?view=current`).then(response => response.json())).human_reviews[0].reason_is_error).toBe(false);
+      expect((await f.api("").then(response => response.json())).progress.find((progress: any) => progress.implementation_id === ready.implementation.id).error_reasons).not.toContain(disconnected.human_reviews[0].reason);
       expect(ready.snapshots).toHaveLength(1);
       expect(ready.events.filter((e: any) => e.kind === "human_review_handoff")).toHaveLength(1);
       expect(f.launches).toHaveLength(1);
@@ -487,6 +498,7 @@ for (const lost of [false, true]) it(`waits for a retained Orchestrator continua
     checkGate.release();
     const waiting = await until(detail, current => current.automatic_review[0]?.check_id === current.checks.at(-1)?.id && ["reviewing", "waiting", "blocked"].includes(current.automatic_review[0]?.condition));
     expect(["reviewing", "waiting"]).toContain(waiting.automatic_review[0].condition);
+    expect(waiting.automatic_review[0].reason_is_error).toBe(false);
     if (waiting.automatic_review[0].condition === "waiting") expect(waiting.automatic_review[0].reason).toContain("continuation");
     expect(waiting.runs.find((current: any) => current.id === run.id)).toMatchObject({ worktree: retained.worktree, continuation: { id: retained.continuation.id, condition: "sending", question_revision: sending.question_revision } });
     const reserved = (await f.api("").then(response => response.json())).capacity;
@@ -530,3 +542,30 @@ for (const lost of [false, true]) it(`waits for a retained Orchestrator continua
     expect(f.mergeEffects).toHaveLength(0);
   } finally { checkGate?.release(); sendGate?.release(); f.close(); }
 }, 30000);
+
+it("keeps a working Orchestrator handoff wait non-error and clears it after native rest", async () => {
+  const f = await capacityFixture({ advancingHeads: true });
+  try {
+    const { detail, run } = await published(f, "merge", false);
+    f.runs.get(run.id)!.condition = "working";
+    const waiting = await until(detail, current => current.human_reviews?.[0]?.condition === "waiting");
+    expect(waiting.human_reviews[0].reason_is_error).toBe(false);
+    expect(waiting.human_reviews[0].reason).toContain("native rest");
+    const native = f.runs.get(run.id)!;
+    native.condition = "blocked"; native.waiting_reason = "Owned repository operation is blocked";
+    const blocked = await until(detail, current => current.human_reviews[0].reason === native.waiting_reason);
+    expect(blocked.human_reviews[0].reason_is_error).toBe(true);
+    native.condition = "working"; native.waiting_reason = null;
+    await until(detail, current => current.human_reviews[0].reason === waiting.human_reviews[0].reason && current.human_reviews[0].reason_is_error === false);
+    f.offline(true);
+    const fault = await until(detail, current => current.runs[0].condition === "disconnected" && current.human_reviews[0].reason_is_error === true);
+    expect(fault.human_reviews[0].reason_is_error).toBe(true);
+    f.restart();
+    expect((await detail()).human_reviews[0].reason_is_error).toBe(true);
+    f.offline(false);
+    f.runs.get(run.id)!.condition = "ready";
+    const ready = await until(detail, current => current.human_reviews[0]?.condition === "ready");
+    expect(ready.human_reviews[0]).toMatchObject({ id: waiting.human_reviews[0].id, reason: null, reason_is_error: false });
+    expect(f.mergeEffects).toHaveLength(0);
+  } finally { f.close(); }
+}, 20000);

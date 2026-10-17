@@ -99,21 +99,24 @@ export class FactoryHumanReview {
     if (existing && ["ready", "blocked"].includes(existing.condition)) return;
     const pr = this.store.get<FactoryPullRequest>("pull_requests", run.id);
     if (!pr) return;
-    let entry: HumanReview = existing ?? { ...this.store.record(), id: run.id, implementation_id: run.implementation_id, run_id: run.id, conversation_id: `${run.implementation_id}:human_review`, head: pr.head, snapshot_id: null, assistant_run_id: null, condition: "capturing", reason: null };
+    let entry: HumanReview = existing ?? { ...this.store.record(), id: run.id, implementation_id: run.implementation_id, run_id: run.id, conversation_id: `${run.implementation_id}:human_review`, head: pr.head, snapshot_id: null, assistant_run_id: null, condition: "capturing", reason: null, reason_is_error: false };
     this.store.put("human_reviews", entry, run.implementation_id);
     try {
       const current = await this.runtime.reconcile(run.id);
-      if (current.condition !== "ready") throw new FactoryError("review_waiting", current.waiting_reason ?? "Waiting for Orchestrator to reach verified native rest", 409);
+      if (current.condition !== "ready") {
+        const waiting = ["working", "needs_you"].includes(current.condition) || current.condition === "accepted" && current.continuation?.condition === "sending";
+        throw new FactoryError(waiting ? "review_waiting" : "execution_uncertain", current.waiting_reason ?? "Waiting for Orchestrator to reach verified native rest", 409);
+      }
       const snapshot = await this.review.capture(run.implementation_id, { run_id: run.id, mode: "branch" });
       if (snapshot.head !== pr.head) throw new FactoryError("review_stale", "The captured candidate differs from the checked PR head", 409);
       this.runtime.assertExecuting(run.implementation_id);
       this.store.db.transaction(() => {
-        entry = { ...entry, head: pr.head, snapshot_id: snapshot.id, condition: "ready", reason: null };
+        entry = { ...entry, head: pr.head, snapshot_id: snapshot.id, condition: "ready", reason: null, reason_is_error: false };
         this.store.put("human_reviews", entry, run.implementation_id);
         this.store.event(run.implementation_id, "human_review_handoff", { run_id: run.id, snapshot_id: snapshot.id, head: pr.head, conversation_id: entry.conversation_id });
       }).immediate();
     } catch (error) {
-      this.store.put("human_reviews", { ...entry, condition: error instanceof FactoryError && error.code === "review_stale" ? "blocked" : "waiting", reason: error instanceof FactoryError ? error.message : "The execution Machine is unavailable; captured review will resume when it reconnects" }, run.implementation_id);
+      this.store.put("human_reviews", { ...entry, condition: error instanceof FactoryError && error.code === "review_stale" ? "blocked" : "waiting", reason_is_error: !(error instanceof FactoryError && ["review_waiting", "assignment_paused", "assignment_deleting"].includes(error.code)), reason: error instanceof FactoryError ? error.message : "The execution Machine is unavailable; captured review will resume when it reconnects" }, run.implementation_id);
     }
   }
 }

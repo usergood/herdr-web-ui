@@ -34,11 +34,11 @@ export class FactoryExecution {
     const frozen = run?.manifest as { planning_authority?: { id: string; automatic_execution?: boolean }; contract_hash?: string } | undefined;
     return run?.action === "implement-spec" && !["completed", "cancelled", "failed"].includes(run.condition) && frozen?.planning_authority?.automatic_execution && frozen.planning_authority.id === plan.authority.approval_id && frozen.contract_hash === plan.authority.contract_hash && run.specification_id === plan.specification_id ? run : null;
   }
-  private save(plan: FactoryExecutionPlan, condition: FactoryAutomaticExecution["condition"], reason: string | null, attempts = 0, nextAttempt = 0): void {
+  private save(plan: FactoryExecutionPlan, condition: FactoryAutomaticExecution["condition"], reason: string | null, attempts = 0, nextAttempt = 0, reasonIsError = false): void {
     if (!this.live(plan)) return;
     const previous = this.store.get<FactoryAutomaticExecution>("automatic_execution", plan.run_id);
-    if (previous?.condition === condition && previous.reason === reason && previous.attempts === attempts) return;
-    const record: FactoryAutomaticExecution = { ...(previous ?? this.store.record()), id: plan.run_id, run_id: plan.run_id, plan_hash: plan.hash, condition, reason, attempts, next_attempt_at: nextAttempt, updated_at: new Date().toISOString() };
+    if (previous?.condition === condition && previous.reason === reason && previous.attempts === attempts && (previous.reason_is_error ?? false) === reasonIsError) return;
+    const record: FactoryAutomaticExecution = { ...(previous ?? this.store.record()), id: plan.run_id, run_id: plan.run_id, plan_hash: plan.hash, condition, reason, reason_is_error: reasonIsError, attempts, next_attempt_at: nextAttempt, updated_at: new Date().toISOString() };
     this.store.put("automatic_execution", record, this.store.get<FactoryRun>("runs", plan.run_id)!.implementation_id);
   }
   private async advance(plan: FactoryExecutionPlan): Promise<void> {
@@ -99,7 +99,7 @@ export class FactoryExecution {
       if (["capacity_exhausted", "build_capacity_exhausted", "shared_writer_owned", "worker_busy", "integration_busy", "answers_unready", "answers_unconsumed", "continuation_waiting"].includes(code)) { this.save(plan, "waiting", reason); return; }
       const retry = ["execution_uncertain", "machine_offline", "machine_disconnected", "remote_factory_unavailable", "integration_uncertain"].includes(code);
       const attempts = (progress?.attempts ?? 0) + 1;
-      this.save(plan, retry && attempts < 6 ? "waiting" : "blocked", `${reason}${retry && attempts >= 6 ? "; automatic recovery exhausted after six observations" : ""}`, attempts, retry ? Date.now() + Math.min(30_000, 1000 * 2 ** (attempts - 1)) : 0);
+      this.save(plan, retry && attempts < 6 ? "waiting" : "blocked", `${reason}${retry && attempts >= 6 ? "; automatic recovery exhausted after six observations" : ""}`, attempts, retry ? Date.now() + Math.min(30_000, 1000 * 2 ** (attempts - 1)) : 0, true);
     }
   }
   private async reviewed(plan: FactoryExecutionPlan): Promise<void> {
@@ -110,7 +110,7 @@ export class FactoryExecution {
     if (previous?.condition === "published" && previous.context_revision === this.workflow.questionRevision(run.implementation_id, run.id) && !this.workflow.questions(run.implementation_id, run.id).some(question => question.answer === null)) { await this.handoff(run); return; }
     if (["blocked"].includes(previous?.condition ?? "") || (previous?.next_attempt_at ?? 0) > Date.now()) return;
     const lastCheck = this.store.list<FactoryCheck>("checks", run.id).filter(c => c.worker_id === null).at(-1);
-    let state: FactoryAutomaticReview = previous ?? { ...this.store.record(), id: run.id, run_id: run.id, head: lastCheck?.head ?? "", round: 0, condition: "reviewing", reason: null, attempts: 0, next_attempt_at: 0, check_id: lastCheck?.id ?? "", evidence_ids: [], batch_id: null };
+    let state: FactoryAutomaticReview = { ...(previous ?? { ...this.store.record(), id: run.id, run_id: run.id, head: lastCheck?.head ?? "", round: 0, condition: "reviewing", reason: null, attempts: 0, next_attempt_at: 0, check_id: lastCheck?.id ?? "", evidence_ids: [], batch_id: null }), reason_is_error: false };
     try {
       run = await this.runtime.reconcile(run.id);
       if (!this.live(plan)) return;
@@ -211,7 +211,7 @@ export class FactoryExecution {
       const waiting = ["capacity_exhausted", "build_capacity_exhausted", "shared_writer_owned", "integration_busy", "publication_busy", "worker_busy", "answers_unready", "answers_unconsumed", "continuation_waiting"].includes(code);
       const retry = ["execution_uncertain", "machine_offline", "machine_disconnected", "remote_factory_unavailable", "publication_uncertain", "review_evidence_required", "native_evidence_required", "check_interrupted"].includes(code);
       const attempts = (previous?.attempts ?? 0) + 1;
-      this.store.put("automatic_review", { ...state, condition: waiting || retry && attempts < 6 ? "waiting" : "blocked", reason: `${error instanceof FactoryError ? error.message : "Automatic review could not be verified"}${retry && attempts >= 6 ? "; automatic recovery exhausted after six observations" : ""}`, attempts: waiting ? 0 : attempts, next_attempt_at: retry ? Date.now() + Math.min(30000, 1000 * 2 ** (attempts - 1)) : 0 }, run.implementation_id);
+      this.store.put("automatic_review", { ...state, condition: waiting || retry && attempts < 6 ? "waiting" : "blocked", reason_is_error: !waiting, reason: `${error instanceof FactoryError ? error.message : "Automatic review could not be verified"}${retry && attempts >= 6 ? "; automatic recovery exhausted after six observations" : ""}`, attempts: waiting ? 0 : attempts, next_attempt_at: retry ? Date.now() + Math.min(30000, 1000 * 2 ** (attempts - 1)) : 0 }, run.implementation_id);
     }
   }
   private async repair(plan: FactoryExecutionPlan, state: FactoryAutomaticReview): Promise<void> {

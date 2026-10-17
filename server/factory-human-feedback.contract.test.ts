@@ -332,3 +332,41 @@ it("binds conditional repair authority to the original owner context and merges 
     expect(f.mergeEffects).toHaveLength(1);
   } finally { f.close(); }
 }, 30000);
+
+it("retains repair observation faults as errors and clears them for verified recovery", async () => {
+  const f = await capacityFixture({ advancingHeads: true });
+  try {
+    const { prefix, detail } = await published(f);
+    const ready = await until(detail, current => current.human_reviews?.[0]?.condition === "ready");
+    const review = ready.human_reviews[0];
+    const comment = await f.api(`${prefix}/comments`, { snapshot_id: review.snapshot_id, path: "progress.ts", side: "new", line_start: 1, line_end: 1, content: "Recheck this retained repair" }).then(response => response.json());
+    const submitted = await f.api(`${prefix}/human-review/submit`, { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, disposition: "decline", comment_ids: [comment.id], idempotency_key: "typed-repair-reason" });
+    expect(submitted.status).toBe(202);
+    const batch = await submitted.json();
+    const repairing = await until(detail, current => current.workers.some((worker: any) => worker.rework_batch_id === batch.id && worker.condition === "working"));
+    const worker = f.workers.get(repairing.workers.find((worker: any) => worker.rework_batch_id === batch.id).id)!;
+    worker.condition = "needs_you"; worker.waiting_reason = "Owned repair permission required";
+    const permission = await until(detail, current => current.automatic_review[0]?.reason === worker.waiting_reason);
+    expect(permission.automatic_review[0].reason_is_error).toBe(false);
+    f.loseNextCheck(); f.unavailableCheckObservation(true);
+    worker.condition = "ready"; worker.waiting_reason = null;
+    const fault = await until(detail, current => current.automatic_review[0]?.condition === "waiting" && current.automatic_review[0]?.reason_is_error === true);
+    const check = fault.checks.find((check: any) => check.worker_id === worker.id && check.condition === "interrupted");
+    expect(check).toBeDefined();
+    expect((await f.api("").then(response => response.json())).progress.find((progress: any) => progress.implementation_id === ready.implementation.id).error_reasons).toContain(fault.automatic_review[0].reason);
+    f.restart();
+    expect((await detail()).automatic_review[0].reason_is_error).toBe(true);
+    f.unavailableCheckObservation(false);
+    for (const role of ["standards", "spec"]) {
+      const current = await until(detail, current => current.workers.some((worker: any) => worker.role === role && worker.condition === "working"));
+      expect(current.automatic_review[0].reason_is_error).toBe(false);
+      f.workers.get(current.workers.find((worker: any) => worker.role === role && worker.condition === "working").id)!.condition = "ready";
+    }
+    const recovered = await until(detail, current => current.human_reviews[0]?.condition === "ready" && current.human_feedback_batches[0]?.resolution);
+    expect(recovered.automatic_review[0]).toMatchObject({ reason: null, reason_is_error: false });
+    expect(recovered.checks.find((candidate: any) => candidate.id === check.id).condition).toBe("passed");
+    expect(f.executedChecks.filter(id => id === check.id)).toHaveLength(1);
+    expect(recovered.human_review_approvals).toHaveLength(0);
+    expect(f.mergeEffects).toHaveLength(0);
+  } finally { f.close(); }
+}, 30000);

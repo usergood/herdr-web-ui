@@ -105,10 +105,13 @@ describe("Automatic independent review through authenticated HTTP", () => {
       const { detail } = await candidate(f);
       const first = await until(detail, d => d.workers.some((w: any) => w.role === "standards" && w.condition === "working"));
       f.loseNextStop(); f.workers.get(first.workers.find((w: any) => w.role === "standards").id)!.condition = "ready";
-      await until(detail, d => d.automatic_review?.[0]?.condition === "waiting");
+      const fault = await until(detail, d => d.automatic_review?.[0]?.condition === "waiting");
+      expect(fault.automatic_review[0].reason_is_error).toBe(true);
+      expect((await f.api("").then(response => response.json())).progress.find((progress: any) => progress.implementation_id === fault.implementation.id).error_reasons).toContain(fault.automatic_review[0].reason);
       f.restart();
       const next = await until(detail, d => d.workers.some((w: any) => w.role === "spec" && w.condition === "working"));
       expect(next.review_evidence).toHaveLength(1);
+      expect(next.automatic_review[0].reason_is_error).toBe(false);
       expect(next.workers.find((w: any) => w.role === "standards").condition).toBe("completed");
       f.workers.get(next.workers.find((w: any) => w.role === "spec").id)!.condition = "ready";
       const done = await until(detail, d => d.review_evidence.length === 2);
@@ -124,6 +127,7 @@ describe("Automatic independent review through authenticated HTTP", () => {
       worker.condition = "needs_you"; worker.waiting_reason = "Owned review permission required";
       const waiting = await until(detail, d => d.automatic_review?.[0]?.reason === "Owned review permission required");
       expect(waiting.review_evidence).toEqual([]); expect(f.publications.size).toBe(0);
+      expect(waiting.automatic_review[0].reason_is_error).toBe(false);
       worker.condition = "ready"; worker.waiting_reason = null;
       const second = await until(detail, d => d.workers.some((w: any) => w.role === "spec" && w.condition === "working"));
       await f.agent(run.id, "question", { question: "Does this require new scope?" });
