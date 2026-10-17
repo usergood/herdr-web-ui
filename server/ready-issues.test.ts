@@ -107,10 +107,11 @@ test.each(["verified", "stale_head", "uncertain_check"])("only current verified 
     let integration = await f.request(`${workerRoute}/${worker.id}/integrate`, {});
     const integrationDeadline = Date.now() + 5000;
     // A parent resuming after its child wait briefly holds an accepted lease.
-    // This exact guard rejects before integration dispatch, so observation can settle it.
-    while (integration.status === 409 && integration.body.error?.code === "factory_run_required" && Date.now() < integrationDeadline) {
+    // Both admission guards reject before integration dispatch; the precise
+    // continuation wait distinguishes an admitted lease whose Send is pending.
+    while (integration.status === 409 && ["factory_run_required", "continuation_waiting"].includes(integration.body.error?.code) && Date.now() < integrationDeadline) {
       const parent = (await f.request(`/implementations/${a.implementation_id}`)).body.runs.find((entry: any) => entry.id === run.id);
-      expect(parent).toMatchObject({ action: "implement-spec", checkout: run.checkout, continuation: { kind: "children" } });
+      expect(parent).toMatchObject({ id: run.id, action: "implement-spec", checkout: run.checkout, worktree: run.worktree, branch: run.branch, workspace_id: run.workspace_id, pane_id: run.pane_id, continuation: { kind: "children" } });
       await f.tick(); await Bun.sleep(10);
       integration = await f.request(`${workerRoute}/${worker.id}/integrate`, {});
     }
