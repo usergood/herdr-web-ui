@@ -519,7 +519,16 @@ for (const lost of [false, true]) it(`waits for a retained Orchestrator continua
       expect(uncertain.workers.map((worker: any) => worker.id)).toEqual(ready.workers.map((worker: any) => worker.id));
       expect(f.prompts).toHaveLength(1);
     } else {
-      await until(detail, current => current.runs.find((candidate: any) => candidate.id === run.id)?.continuation?.condition === "resumed");
+      // Read after the queued review has already parked the working parent for
+      // its next children, rather than relying on observing an intermediate turn.
+      const advanced = await until(detail, current => current.events.some((event: any) => event.kind === "conversation_resumed" && event.data.continuation_id === retained.continuation.id) && current.runs.find((candidate: any) => candidate.id === run.id)?.continuation?.kind === "children");
+      const resumed = advanced.events.filter((event: any) => event.kind === "conversation_resumed" && event.data.continuation_id === retained.continuation.id);
+      expect(resumed).toHaveLength(1);
+      expect(resumed[0].data).toEqual({ run_id: run.id, continuation_id: retained.continuation.id, revision: sending.question_revision });
+      const parked = advanced.runs.find((candidate: any) => candidate.id === run.id);
+      expect(parked).toMatchObject({ condition: "working", worktree: retained.worktree, continuation: { kind: "children", condition: "parking" } });
+      expect(f.prompts).toHaveLength(1);
+      console.log("PASS confirmed continuation receipt survives the next child-parking transition", JSON.stringify({ receipt: resumed[0].data, native_condition: f.runs.get(run.id)!.condition, continuation: parked.continuation, automatic_review: advanced.automatic_review[0].condition }));
       const contract = await f.agent(run.id, "contract").then(response => response.json());
       expect((await f.agent(run.id, "consume", { revision: contract.question_revision })).status).toBe(200);
       f.runs.get(run.id)!.condition = "ready";

@@ -294,7 +294,8 @@ it("accepts an authenticated durable factory queue request without exposing its 
     const response = await f.api(path, body); expect(response.status).toBe(202);
     const wait = await response.json();
     expect(wait).toMatchObject({ condition: "queued", purpose: "execution", run_id: null, implementation_id: waiting });
-    expect(Object.keys(wait).sort()).toEqual(["id", "created_at", "updated_at", "implementation_id", "assignment_title", "action", "machine_id", "provider", "idempotency_key", "reason", "condition", "purpose", "run_id"].sort());
+    expect(Object.keys(wait).sort()).toEqual(["id", "created_at", "updated_at", "implementation_id", "assignment_title", "action", "machine_id", "provider", "idempotency_key", "reason", "reason_is_error", "condition", "purpose", "run_id"].sort());
+    expect(wait.reason_is_error).toBe(false);
     const conflict = await f.api(path, { ...body, action: "grill-with-docs" });
     expect(conflict.status).toBe(409);
     expect((await conflict.json()).error.code).toBe("idempotency_conflict");
