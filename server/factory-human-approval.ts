@@ -238,7 +238,7 @@ export class FactoryHumanApprovalService {
         this.store.put("human_review_approvals", { ...receipt, condition: "pending", merge_not_sent: mergeNotSent, observations: 0, next_observation_at: Date.now() + 2000, reason: error.message }, receipt.implementation_id);
         return;
       }
-      const retry = !(error instanceof FactoryError) || ["machine_offline", "machine_disconnected", "remote_factory_unavailable", "merge_uncertain", "merge_busy"].includes(error.code);
+      const retry = !(error instanceof FactoryError) || ["machine_offline", "machine_disconnected", "remote_factory_unavailable", "release_inventory_unavailable", "merge_uncertain", "merge_busy"].includes(error.code);
       const observations = (receipt.observations ?? 0) + 1;
       this.store.put("human_review_approvals", { ...receipt, merge_not_sent: receipt.merge_not_sent === true || error instanceof FactoryError && error.code === "merge_blocked", observations, next_observation_at: Date.now() + Math.min(30000, 1000 * 2 ** observations), condition: retry && observations < 6 ? "uncertain" : "blocked", reason: error instanceof FactoryError ? error.message : "Merge outcome is unknown; reconcile the retained approval before further action" }, receipt.implementation_id);
     } finally { this.busy.delete(receipt.id); }

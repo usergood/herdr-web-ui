@@ -196,6 +196,41 @@ it.each(["initial merge", "verified merge"])("the connection automatically recov
   } finally { await f.close(); }
 }, 20000);
 
+
+it.each(["local", "remote"] as const)("the %s Machine automatically recovers an inventory fault in the first approval response without another owner decision", async machine => {
+  const f = await releaseBrowserFixture(machine === "local" ? { machineId: "local" } : {});
+  const post = (path: string, body: unknown) => fetch(`http://localhost:${f.app.port}${f.prefix}${path}`, { method: "POST", headers: { authorization: `Bearer ${f.token}`, "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+  try {
+    const ready = await f.detail(); const review = ready.human_reviews[0];
+    expect(ready.human_review_approvals).toEqual([]);
+    expect(ready.runs.find((run: any) => run.id === f.core.id).machine_id).toBe(machine === "local" ? "local" : "owned-release");
+    const body = { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, idempotency_key: `first-response-${machine}` };
+    f.core.change({ release_page_error: 1 });
+    const response = await post("/human-review/approve", body); expect(response.status).toBe(200);
+    const retained = await response.json();
+    expect(retained).toMatchObject({ condition: "uncertain", head: review.head, snapshot_id: review.snapshot_id, context_revision: ready.question_revision, idempotency_key: body.idempotency_key, merge_sha: null, merge_not_sent: false });
+    expect(retained.reason).toContain("release inventory");
+    expect((await f.detail()).implementation.stage).toBe("review");
+    const merge = f.core.githubState().pull.mergeCommit.oid;
+    expect(merge).toMatch(/^[a-f0-9]{40}$/);
+    expect(f.core.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+    f.core.git(["tag", "first-response-recovered", merge]);
+    f.core.change({ release_page_error: 0, release: "first-response-recovered" });
+    const callsBeforeRecovery = f.core.calls().length;
+    await f.restart();
+    const completed = await until(f.detail, d => d.human_review_approvals[0]?.condition === "released");
+    expect(completed.human_review_approvals).toHaveLength(1);
+    expect(completed.human_review_approvals[0]).toMatchObject({ id: retained.id, run_id: retained.run_id, review_id: retained.review_id, head: retained.head, snapshot_id: retained.snapshot_id, context_revision: retained.context_revision, idempotency_key: retained.idempotency_key, merge_sha: merge, release_tag: "first-response-recovered", condition: "released", reason: null });
+    expect(completed.implementation).toMatchObject({ stage: "done", outcome: "released" });
+    expect(completed.pull_requests).toEqual(ready.pull_requests);
+    expect(completed.checks).toEqual(ready.checks);
+    expect(completed.review_evidence).toEqual(ready.review_evidence);
+    expect(completed.events.filter((event: any) => event.kind === "human_review_merge_authorized")).toHaveLength(1);
+    expect(f.core.calls().length).toBeGreaterThan(callsBeforeRecovery);
+    expect(f.core.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { await f.close(); }
+}, 20000);
+
 it("Human Review preserves the Assignment release milestone when a later Run captures merge policy", async () => {
   const f = await mergeFixture({ milestone: "merge", assignmentMilestone: "release" });
   try {
