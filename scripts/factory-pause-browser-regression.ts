@@ -3,6 +3,7 @@ import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
 import { capacityFixture } from "./factory-capacity-fixture.ts";
+import { checkInFlightLifecycle } from "./factory-lifecycle-browser.ts";
 
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
@@ -77,4 +78,5 @@ try {
     } finally { await context.close(); f.close(); }
   }
   console.log("PASS Assignment Pause pending, reconnect, reload and queued Resume on desktop/mobile");
+  await checkInFlightLifecycle(browser);
 } finally { await browser.close(); }

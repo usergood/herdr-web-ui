@@ -53,8 +53,10 @@ export function FactoryPanel({ overview, refreshOverview, machines, onOpenPane, 
   const [selected, setSelected] = useState<string | null>(() => selectedId === undefined ? selectedFromUrl() : selectedId);
   const [detail, setDetail] = useState<FactoryCurrent | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const busyRef = useRef(busy); busyRef.current = busy;
+  const [actionBusy, setBusy] = useState(false);
+  const [lifecycleBusy, setLifecycleBusy] = useState(false);
+  const lifecycleBusyRef = useRef(false);
+  const busy = actionBusy || lifecycleBusy;
   const [title, setTitle] = useState(""); const [notes, setNotes] = useState("");
   const [note, setNote] = useState("");
   const [projectFilter, setProjectFilter] = useState(projectId ?? "all");
@@ -95,7 +97,7 @@ export function FactoryPanel({ overview, refreshOverview, machines, onOpenPane, 
     let live = true;
     let timer: ReturnType<typeof setTimeout>;
     const read = async () => {
-      try { if (document.visibilityState === "visible" && !busyRef.current) await refresh(); }
+      try { if (document.visibilityState === "visible") await refresh(); }
       catch (failure) { if (live) setError(failure instanceof Error ? failure.message : String(failure)); }
       finally { if (live) timer = setTimeout(() => void read(), 5000); }
     };
@@ -114,6 +116,14 @@ export function FactoryPanel({ overview, refreshOverview, machines, onOpenPane, 
     try { await action(); await refresh(); }
     catch (failure) { setError(failure instanceof Error ? ("detail" in failure ? String(failure.detail) : failure.message) : String(failure)); await refresh().catch(() => {}); }
     finally { setBusy(false); }
+  }
+  async function performLifecycle(action: () => Promise<void>): Promise<void> {
+    if (lifecycleBusyRef.current) return;
+    lifecycleBusyRef.current = true; setLifecycleBusy(true); setError(null);
+    const id = selection.current;
+    try { await action(); await refresh(); }
+    catch (failure) { if (id === selection.current) setError(failure instanceof Error ? failure.message : String(failure)); await refresh().catch(() => {}); }
+    finally { lifecycleBusyRef.current = false; setLifecycleBusy(false); }
   }
   const prefix = selected ? `/implementations/${selected}` : "";
   const currentSpec: SpecificationVersion | undefined = detail?.specifications.at(-1);
@@ -197,8 +207,8 @@ export function FactoryPanel({ overview, refreshOverview, machines, onOpenPane, 
       </section>
       <AssignmentIssueSource runs={detail.runs} events={detail.events} busy={busy} perform={perform} sources={detail.github_sources ?? []} problem={detail.github_sync?.problem ?? null} tickets={detail.tickets} graphHash={detail.graph_hash} questionRevision={detail.question_revision} preset={preset} />
       <AssignmentActions preset={preset} onPresetChange={setPreset} key={detail.implementation.id} detail={detail} project={selectedProject} machineId={effectiveMachine} machineName={machines.find(m=>m.id===effectiveMachine)?.name??effectiveMachine} provider={effectiveProvider??"codex"} busy={busy} perform={perform} onOpenPane={onOpenPane} capabilities={execution.capabilities} problem={execution.problem} onCapabilities={execution.apply} />
-      <AssignmentPause assignment={detail.implementation} busy={busy} perform={perform} />
-      <AssignmentDelete key={detail.implementation.id} assignment={detail.implementation} busy={busy} perform={perform} onDeleted={() => choose(null)} />
+      <AssignmentPause assignment={detail.implementation} busy={lifecycleBusy} perform={performLifecycle} />
+      <AssignmentDelete key={detail.implementation.id} assignment={detail.implementation} busy={lifecycleBusy} perform={performLifecycle} onDeleted={() => choose(null)} />
       <WorkflowConversations detail={detail} machines={machines} selectedId={conversationId} onSelect={id => onConversation?.(id)} onOpenPane={onOpenPane} busy={busy} perform={perform} />
       <FactoryAutomaticExecution detail={detail} onOpenPane={onOpenPane} />
       <FactoryPublicationPanel key={detail.implementation.id} detail={detail} busy={busy} perform={perform} />
