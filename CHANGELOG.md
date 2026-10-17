@@ -139,6 +139,8 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   ([#1237](https://github.com/devswha/herdr-web-ui/pull/1237))
 
 ### Fixed
+- Keep Human Review discussion slots reserved while message delivery is pending or uncertain.
+  ([#34](https://github.com/usergood/saurons-eye/pull/34) by @usergood)
 - Keep fresh reviews waiting while an owner reply’s delivery remains uncertain after reconnect.
   ([#34](https://github.com/usergood/saurons-eye/pull/34) by @usergood)
 - Claude's menu follows its personal, ancestor-project, synced and enabled plugin skills,
