@@ -16,13 +16,13 @@ export function FactoryCapacityPanel({ capacity }: { capacity: FactoryCapacity }
     <ul className="factory-capacity-reservations">
       {capacity.contexts.map(context => <li key={context.id}>
         <strong>{context.assignment_title}</strong> · {context.label} · {context.machine_id} · {context.provider} · {context.condition} · {context.pool === "planning" ? t("Extra planning capacity") : t("Normal capacity")}
-        {context.uncertain && <p className="factory-capacity-uncertain">{t("Execution uncertain; reservation retained")}</p>}
+        {context.uncertain && <p role={context.reason && factoryReasonRole(context.condition) === "alert" ? undefined : factoryReasonRole(context.condition)} className="factory-capacity-uncertain">{t("Execution uncertain; reservation retained")}</p>}
         {context.reason && <p role={factoryReasonRole(context.condition)}>{context.reason}</p>}
       </li>)}
-      {capacity.build_reservations.map(build => <li key={build.id}>
+      {capacity.build_reservations.map(build => <li key={build.id}><div role={factoryReasonRole(build.condition)}>
         <strong>{build.assignment_title}</strong> · {t("Build limit")} · {build.machine_id} · {build.condition}
         {build.uncertain && <p className="factory-capacity-uncertain">{t("Execution uncertain; reservation retained")}</p>}
-      </li>)}
+      </div></li>)}
       {capacity.waiting.map(wait => <li key={wait.id}>
         <a href={`#factory/${wait.implementation_id}`}>{wait.assignment_title}</a> · {wait.condition === "blocked" ? t("Needs you") : t("Waiting for agent capacity")} · {wait.machine_id} · {wait.provider}
         <p role={wait.condition === "blocked" ? "alert" : "status"}>{wait.reason}</p>

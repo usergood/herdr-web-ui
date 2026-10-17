@@ -3,6 +3,7 @@ import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
 import { capacityFixture } from "./factory-capacity-fixture.ts";
+import { until } from "./factory-human-review-fixture.ts";
 
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
@@ -75,6 +76,96 @@ try {
       assert.equal(blockedFixture.prompts.length, 0);
       assert.equal(blockedFixture.launches.length, 1);
     } finally { await blockedContext.close(); blockedFixture.close(); }
+
+    const uncertainFixture = await capacityFixture();
+    const uncertainContext = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
+    try {
+      await uncertainFixture.api("/settings", { max_agents: 1, max_builds: 1 });
+      const id = await uncertainFixture.assignment("Uncertain build reservation");
+      const run = await uncertainFixture.api(`/implementations/${id}/runs`, { action: "work", idempotency_key: "uncertain-build" }).then(r => r.json());
+      uncertainFixture.loseNextCheck(); uncertainFixture.unavailableCheckObservation(true);
+      const check = await uncertainFixture.api(`/runs/${run.id}/checks`, {}).then(r => r.json());
+      assert.equal(check.condition, "interrupted");
+      const overview = () => uncertainFixture.api("").then(r => r.json());
+      const first = (await overview()).capacity;
+      assert.deepEqual(first.builds, { limit: 1, used: 1 });
+      assert.equal(first.build_reservations[0].id, check.id);
+      assert.equal(first.build_reservations[0].uncertain, true);
+      assert.equal(first.build_reservations[0].reason, null);
+      console.log(JSON.stringify({ viewport: viewport.width, build: first.build_reservations[0], builds: first.builds }));
+      let origin = `http://localhost:${uncertainFixture.app.port}`;
+      assert.equal((await uncertainContext.request.post(`${origin}/api/auth`, { data: { token: uncertainFixture.token } })).status(), 204);
+      const page = await uncertainContext.newPage(); page.setDefaultTimeout(10_000);
+      const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
+      await page.goto(`${origin}/#factory/${id}`);
+      const capacity = page.getByRole("region", { name: "Factory capacity", exact: true });
+      const uncertainText = "Execution uncertain; reservation retained";
+      const buildRow = capacity.locator("li").filter({ hasText: "Build limit" });
+      await capacity.getByRole("alert").filter({ hasText: "Build limit" }).getByText(uncertainText, { exact: true }).waitFor();
+      assert.equal(await buildRow.getByRole("status").count(), 0);
+      await page.reload();
+      await capacity.getByRole("alert").filter({ hasText: "Build limit" }).getByText(uncertainText, { exact: true }).waitFor();
+      uncertainFixture.restart();
+      origin = `http://localhost:${uncertainFixture.app.port}`;
+      assert.equal((await uncertainContext.request.post(`${origin}/api/auth`, { data: { token: uncertainFixture.token } })).status(), 204);
+      await page.goto(`${origin}/#factory/${id}`);
+      await capacity.getByRole("alert").filter({ hasText: "Build limit" }).getByText(uncertainText, { exact: true }).waitFor();
+      const retained = (await overview()).capacity;
+      assert.deepEqual(retained.builds, first.builds);
+      assert.equal(retained.build_reservations[0].id, check.id);
+      const blocked = await uncertainFixture.api(`/runs/${run.id}/checks`, {});
+      assert.equal(blocked.status, 409);
+      assert.equal((await blocked.json()).error.code, "build_capacity_exhausted");
+      assert.equal(uncertainFixture.executedChecks.length, 1, "Unknown check ownership cannot replay a build");
+      const executionRow = capacity.locator("li").filter({ hasText: "Normal capacity" });
+      for (const condition of ["interrupted", "disconnected"] as const) {
+        const native = uncertainFixture.runs.get(run.id)!;
+        native.condition = condition; native.waiting_reason = null;
+        assert.equal((await uncertainFixture.api(`/runs/${run.id}/reconcile`, {})).status, 200);
+        const projected = (await overview()).capacity.contexts.find((entry: { id: string }) => entry.id === run.id);
+        assert.equal(projected.condition, condition); assert.equal(projected.reason, null);
+        await executionRow.getByRole("alert").filter({ hasText: uncertainText }).waitFor();
+        assert.equal(await executionRow.getByRole("alert").count(), 1);
+        native.waiting_reason = "Owned native execution could not be confirmed";
+        await uncertainFixture.api(`/runs/${run.id}/reconcile`, {});
+        await executionRow.getByRole("alert").filter({ hasText: native.waiting_reason }).waitFor();
+        assert.equal(await executionRow.getByRole("alert").count(), 1, "An existing execution error is announced once");
+      }
+      uncertainFixture.runs.get(run.id)!.condition = "working";
+      uncertainFixture.runs.get(run.id)!.waiting_reason = null;
+      await uncertainFixture.api(`/runs/${run.id}/reconcile`, {});
+      uncertainFixture.unavailableCheckObservation(false);
+      const observedCheck = await uncertainFixture.api(`/runs/${run.id}/checks/${check.id}/reconcile`, {});
+      assert.equal(observedCheck.status, 200);
+      const passed = await observedCheck.json();
+      assert.equal(passed.id, check.id); assert.equal(passed.condition, "passed");
+      await until(overview, value => value.capacity.builds.used === 0);
+      const heldCheck = uncertainFixture.holdNextCheck();
+      const checking = uncertainFixture.api(`/runs/${run.id}/checks`, {});
+      let checkEntered = false;
+      void heldCheck.started.then(() => { checkEntered = true; });
+      try {
+        await until(async () => checkEntered, entered => entered);
+        await capacity.getByRole("status").filter({ hasText: "Build limit" }).waitFor();
+        assert.equal(await capacity.getByRole("alert").filter({ hasText: "Build limit" }).count(), 0);
+        assert.equal((await overview()).capacity.build_reservations[0].condition, "working");
+      } finally { heldCheck.release(); await checking; }
+      await uncertainFixture.api(`/runs/${run.id}/stop`, {});
+      const acceptedId = await uncertainFixture.assignment("Accepted ordinary reservation");
+      const allocation = uncertainFixture.holdNextAllocation();
+      const starting = uncertainFixture.api(`/implementations/${acceptedId}/runs`, { action: "work", idempotency_key: "accepted-reservation" });
+      let allocationId: string | null = null;
+      void allocation.started.then(value => { allocationId = value; });
+      try {
+        const acceptedRunId = await until(async () => allocationId, value => value !== null);
+        const accepted = (await overview()).capacity.contexts.find((entry: { id: string }) => entry.id === acceptedRunId);
+        assert.equal(accepted.condition, "accepted"); assert.equal(accepted.uncertain, true); assert.equal(accepted.reason, null);
+        const acceptedRow = capacity.locator("li").filter({ hasText: "Accepted ordinary reservation" });
+        await acceptedRow.getByRole("status").filter({ hasText: uncertainText }).waitFor();
+        assert.equal(await acceptedRow.getByRole("alert").count(), 0, "Accepted ownership is an ordinary reservation despite the uncertainty boolean");
+      } finally { allocation.release(); await starting; }
+      assert.deepEqual(errors, []);
+    } finally { await uncertainContext.close(); uncertainFixture.close(); }
   }
-  console.log("PASS automatic queued-to-running dispatch and reload on desktop/mobile");
+  console.log("PASS automatic queued-to-running dispatch, interrupted build ownership/alerts, ordinary reservations and reload/restart on desktop/mobile");
 } finally { await browser.close(); }
