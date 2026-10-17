@@ -8,7 +8,7 @@ import type { FactoryRun } from "../shared/factory.ts";
 import type { FactoryNative } from "./factory-native.ts";
 
 /** Owned external repository and native workspace; every observation uses HTTP. */
-export async function factoryDeliveryFixture(remote = false, reviewReports = false, native: Partial<FactoryNative> = {}, options: { githubRepository?: string; accountTools?: import("./account-tools.ts").AccountTools } = {}) {
+export async function factoryDeliveryFixture(remote = false, reviewReports = false, native: Partial<FactoryNative> = {}, options: { githubRepository?: string; accountTools?: import("./account-tools.ts").AccountTools; coordinatorNative?: Partial<FactoryNative> } = {}) {
   const root = mkdtempSync(join(tmpdir(), "saurons-delivery-"));
   const repo = join(root, "repo"); mkdirSync(repo);
   writeFileSync(join(repo, "README.md"), "Owned delivery fixture\n");
@@ -44,7 +44,7 @@ export async function factoryDeliveryFixture(remote = false, reviewReports = fal
     const headers = new Headers(response.headers); headers.delete("content-encoding"); headers.delete("content-length");
     return new Response(response.body, { status: response.status, headers });
   } }) : null;
-  const coordinator = () => createServer({ port: 0, token: "", stateDir: join(root, "coordinator"), machines: false, factory: { accountTools: options.accountTools, accountDiscoveryHome: root, machineEndpoint: id => id === "delivery-host" && !offline ? { url: `http://localhost:${proxy!.port}`, token: "owned-delivery-host" } : undefined } });
+  const coordinator = () => createServer({ port: 0, token: "", stateDir: join(root, "coordinator"), machines: false, factory: { accountTools: options.accountTools, accountDiscoveryHome: root, native: options.coordinatorNative, machineEndpoint: id => id === "delivery-host" && !offline ? { url: `http://localhost:${proxy!.port}`, token: "owned-delivery-host" } : undefined } });
   let app = remote ? coordinator() : host;
   const request = (path: string, body?: unknown) => fetch(`http://localhost:${app.port}/api/factory${path}`, { method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json", "x-herdr-factory": "1", "x-herdr-machine": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const project = await request("/projects", { name: "Delivery Project", path: repo, machine_id: remote ? "delivery-host" : "local", provider: "codex", tracker: "app" }).then(r => r.json());

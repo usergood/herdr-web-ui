@@ -1,12 +1,13 @@
 /** Real board progress and passive presentation through public owned fixtures. */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { chromium, type Browser } from "playwright-core";
 import { published, until } from "./factory-human-review-fixture.ts";
 import { createServer } from "../server/index.ts";
+import { factoryDeliveryFixture } from "../server/factory-delivery.fixture.ts";
 import type { FactoryActivity, FactoryBoardItem, FactoryDetail, FactoryOverview, FactoryRun } from "../shared/protocol.ts";
 import { capacityFixture } from "./factory-capacity-fixture.ts";
 import { boardRepair, boardScenario } from "./factory-board-fixture.ts";
@@ -84,6 +85,72 @@ export async function lifecycleBoardJourney(browser: Browser, viewport: { width:
   console.log(JSON.stringify({ viewport: viewport.width, lifecycle_lanes: observed }));
   assert.deepEqual(observed, [{ transition: "paused", lane: "Running", progress: "running" }, { transition: "delivered_discussion", lane: "Done", progress: "done" }], "Displayed lanes preserve lifecycle independently of Pause and new discussion activity");
   console.log(`PASS Paused Running and delivered discussion Done retain lifecycle lanes with ordinary status/activity controls (${viewport.width})`);
+}
+
+export async function completionEvidenceBoardJourney(browser: Browser, viewport: { width: number; height: number }) {
+  const catalog = async (provider: import("../shared/factory.ts").FactoryProvider) => ({ protocol: 1 as const, provider, models: [{ id: "owned-completion-model", name: "Owned completion model", reasoning: [], default_reasoning: null }], problem: null });
+  const f = await factoryDeliveryFixture(true, false, { modelCatalog: catalog }, { coordinatorNative: { version: async () => "owned-completion-coordinator", modelCatalog: catalog } });
+  const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
+  try {
+    const run = await f.start();
+    assert.equal((await f.request(`/runs/${run.id}/stop`, {})).status, 200, "Stop only the owned native fixture before inspecting retained work");
+    const origin = () => `http://localhost:${f.app.port}`;
+    const page = await context.newPage(); page.setDefaultTimeout(10000);
+    const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
+    const currentStatus = () => page.locator(".factory-section > .factory-board-status");
+    const card = () => page.getByRole("article", { name: "Retained research", exact: true });
+    const projections = async (reason: string, activity: string) => {
+      const current = await f.request(`${f.prefix}?view=current`).then(response => response.json());
+      const overview = await f.request("").then(response => response.json());
+      for (const state of [current.board, overview.board.find((entry: { implementation_id: string }) => entry.implementation_id === run.implementation_id)]) {
+        assert.equal(state.lane, "needs_you"); assert.equal(state.activity, activity); assert.equal(state.waiting_reason, reason);
+      }
+    };
+    const fault = async (kind: "unknown" | "changes") => {
+      f.disconnect();
+      await page.goto(`${origin()}/#factory/${run.implementation_id}`);
+      const response = page.waitForResponse(response => response.url().endsWith(`${f.prefix}/completion-evidence`));
+      await page.getByRole("button", { name: "Check completion evidence", exact: true }).click();
+      const inspected = await response; assert.equal(inspected.status(), 200);
+      const evidence = await inspected.json(); assert.equal(evidence.repository_changes, kind); assert.equal(evidence.quiescent, false);
+      const reason = evidence.reason; assert.equal(typeof reason, "string"); assert(reason);
+      await projections(reason, kind === "changes" ? "awaiting_merge" : "implementing");
+      await currentStatus().getByText(reason, { exact: true }).waitFor();
+      const roles = [{ surface: "current", alerts: await currentStatus().getByRole("alert").filter({ hasText: reason }).count(), statuses: await currentStatus().getByRole("status").filter({ hasText: reason }).count() }];
+      await page.goto(`${origin()}/#assignments`);
+      await card().locator(".factory-board-status").getByText(reason, { exact: true }).waitFor();
+      roles.push({ surface: "overview", alerts: await card().getByRole("alert").filter({ hasText: reason }).count(), statuses: await card().getByRole("status").filter({ hasText: reason }).count() });
+      console.log(JSON.stringify({ viewport: viewport.width, unavailable_completion_evidence: { kind, evidence, roles } }));
+      assert.deepEqual(roles, [{ surface: "current", alerts: 1, statuses: 0 }, { surface: "overview", alerts: 1, statuses: 0 }], "Unavailable Machine repository evidence is one alert on current and overview, independent of ordinary attention/progress");
+      assert.equal(evidence.reason_is_error, true);
+      await page.reload(); await card().getByRole("alert").filter({ hasText: reason }).waitFor();
+      await page.goto(`${origin()}/#factory/${run.implementation_id}`); await page.reload();
+      await currentStatus().getByRole("alert").filter({ hasText: reason }).waitFor();
+      f.reconnect(); return reason;
+    };
+    const unknownReason = await fault("unknown");
+    writeFileSync(join(run.worktree!, "findings.md"), "Owned retained findings\n");
+    const snapshotResponse = await f.request(`${f.prefix}/snapshots`, { run_id: run.id, mode: "workspace" });
+    const snapshot = await snapshotResponse.json(); assert.equal(snapshotResponse.status, 201, JSON.stringify(snapshot));
+    assert(snapshot.files.some((file: { path: string }) => file.path === "findings.md"));
+    const ordinary = async (oldReason: string) => {
+      const inspected = await f.request(`${f.prefix}/completion-evidence`); assert.equal(inspected.status, 200);
+      const evidence = await inspected.json(); assert.equal(evidence.repository_changes, "changes"); assert.equal(evidence.quiescent, true); assert.equal(evidence.reason_is_error, false);
+      assert.equal(evidence.reason, "Repository changes require verified PR delivery. Link the delivery evidence before completing this Assignment.");
+      await projections(evidence.reason, "awaiting_merge");
+      await page.goto(`${origin()}/#assignments`); await page.reload();
+      await card().getByRole("status").filter({ hasText: evidence.reason }).waitFor();
+      assert.equal(await card().getByRole("alert").count(), 0); assert.equal(await card().getByText(oldReason, { exact: true }).count(), 0);
+      await page.goto(`${origin()}/#factory/${run.implementation_id}`); await page.reload();
+      await currentStatus().getByRole("status").filter({ hasText: evidence.reason }).waitFor();
+      assert.equal(await currentStatus().getByRole("alert").count(), 0); assert.equal(await currentStatus().getByText(oldReason, { exact: true }).count(), 0);
+    };
+    await ordinary(unknownReason);
+    const retainedReason = await fault("changes");
+    await ordinary(retainedReason);
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)); assert.deepEqual(errors, []);
+    console.log(`PASS real Machine completion-evidence faults alert on current/overview, persist reload and recover to ordinary delivery status (${viewport.width})`);
+  } finally { f.reconnect(); await context.close(); await f.close(); }
 }
 
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
@@ -366,4 +433,5 @@ try {
   await ticketProgressBoard();
   await activityAndHistoryBoard();
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) await lifecycleBoardJourney(browser, viewport);
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) await completionEvidenceBoardJourney(browser, viewport);
 } finally { await browser.close(); }
