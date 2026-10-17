@@ -1,5 +1,6 @@
 import { expect, it } from "bun:test";
 import { mergeFixture } from "../scripts/factory-merge-fixture.ts";
+import { releaseBrowserFixture } from "../scripts/factory-release-browser-fixture.ts";
 
 it("Human Review discovers a valid containing release on page two after restart", async () => {
   const f = await mergeFixture({ milestone: "release" });
@@ -18,6 +19,76 @@ it("Human Review discovers a valid containing release on page two after restart"
     f.restart(); expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "released", merge_sha: merge, release_tag: "page-two-release" });
     expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
   } finally { f.close(); }
+}, 20000);
+
+const draftReleasePage = (page: number) => Array.from({ length: 100 }, (_, index) => ({ id: (page - 1) * 100 + index + 1, draft: true, prerelease: false, tag_name: `draft-${page}-${index}` }));
+
+it.each([0, 1, 3])("Human Review keeps a complete inventory with %s full pages and no eligible release as an ordinary wait", async fullPages => {
+  const f = await mergeFixture({ milestone: "release" });
+  try {
+    const pages = Object.fromEntries(Array.from({ length: fullPages }, (_, index) => [index + 1, draftReleasePage(index + 1)]));
+    f.change({ release_pages: pages });
+    const response = await f.post(f.route + "merge", f.body); expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ condition: "awaiting_release", release_tag: null, reason: "Merge verified; waiting for a published release containing it" });
+    const lookups = f.calls().filter(args => /\/releases(?:\?|$)/.test(args[1] ?? ""));
+    expect(lookups).toHaveLength(fullPages + 1);
+    expect(lookups.at(-1)?.[1]).toBe(`repos/fictional/project/releases?per_page=100&page=${fullPages + 1}`);
+    expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { f.close(); }
+}, 20000);
+
+it.each(["unavailable", "malformed page", "malformed row", "overlap", "oversized page", "bounded incomplete"])("Human Review reports %s release inventory as a recoverable fault rather than absent delivery", async fault => {
+  const f = await mergeFixture({ milestone: "release" });
+  try {
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "awaiting_release" });
+    const first = draftReleasePage(1); const pages: Record<string, unknown> = { 1: first, 2: [] };
+    if (fault === "malformed page") pages[2] = null;
+    if (fault === "malformed row") pages[2] = [{ id: 101, draft: false, prerelease: false }];
+    if (fault === "overlap") pages[2] = [first[0]];
+    if (fault === "oversized page") pages[2] = [...draftReleasePage(2), { id: 201, draft: true, prerelease: false, tag_name: "too-many" }];
+    if (fault === "bounded incomplete") for (let page = 2; page <= 11; page++) pages[page] = draftReleasePage(page);
+    f.change({ release_pages: pages, release_page_error: fault === "unavailable" ? 2 : 0 }); f.restart();
+    const before = f.calls().length;
+    const response = await f.post(f.route + "merge", f.body); expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: "release_inventory_unavailable" } });
+    const lookups = f.calls().slice(before).filter(args => /\/releases(?:\?|$)/.test(args[1] ?? ""));
+    expect(lookups).toHaveLength(fault === "bounded incomplete" ? 10 : 2);
+    expect(lookups.some(args => args[1]?.includes("page=11"))).toBe(false);
+    f.change({ release_pages: { 1: [] }, release_page_error: 0 }); f.restart();
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "awaiting_release", release_tag: null });
+    expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { f.close(); }
+}, 20000);
+
+it.each(["initial merge", "verified merge"])("the connection automatically recovers a paginated inventory fault after %s with its original owner authority", async stage => {
+  const f = await releaseBrowserFixture();
+  const post = (path: string, body: unknown) => fetch(`http://localhost:${f.app.port}${f.prefix}${path}`, { method: "POST", headers: { authorization: `Bearer ${f.token}`, "content-type": "application/json", "x-herdr-factory": "1" }, body: JSON.stringify(body) });
+  try {
+    const ready = await f.detail(); const review = ready.human_reviews[0]; expect(ready.human_review_approvals).toEqual([]);
+    const body = { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, idempotency_key: `inventory-recovery-${stage.replaceAll(" ", "-")}` };
+    if (stage === "verified merge") {
+      const approved = await post("/human-review/approve", body); expect(approved.status).toBe(200);
+      expect(await approved.json()).toMatchObject({ condition: "awaiting_release" });
+    }
+    f.core.change({ release_pages: { 1: draftReleasePage(1), 2: [] }, release_page_error: 2 });
+    const response = await post("/human-review/approve", body); expect(response.status).toBe(200); const retained = await response.json();
+    expect(retained.condition).toBe(stage === "initial merge" ? "uncertain" : "awaiting_release");
+    expect(retained.reason).toContain("release inventory is incomplete or unavailable");
+    if (stage === "verified merge") expect(retained.reason_is_error).toBe(true);
+    else expect((await post("/questions", { question: "Must remain unsaved while merge confirmation is unknown" })).status).toBe(409);
+    expect((await f.detail()).human_review_approvals).toHaveLength(1);
+    const merge = f.core.githubState().pull.mergeCommit.oid; f.core.git(["tag", "recovered-paged-release", merge]);
+    f.core.change({ release_page_error: 0, release_pages: { 1: draftReleasePage(1), 2: [{ id: 101, draft: false, prerelease: false, tag_name: "recovered-paged-release" }] } });
+    await f.restart();
+    const completed = await until(f.detail, d => d.human_review_approvals[0]?.condition === "released" && d.runs.find((run: any) => run.id === f.core.id)?.condition === "completed");
+    expect(completed.human_review_approvals).toHaveLength(1);
+    expect(completed.human_review_approvals[0]).toMatchObject({ id: retained.id, head: retained.head, context_revision: retained.context_revision, idempotency_key: retained.idempotency_key, merge_sha: merge, release_tag: "recovered-paged-release", condition: "released", reason: null });
+    expect(completed.human_review_approvals[0].reason_is_error ?? false).toBe(false);
+    expect(completed.implementation).toMatchObject({ stage: "done", outcome: "released" });
+    expect(completed.events.filter((event: any) => event.kind === "human_review_merge_authorized")).toHaveLength(1);
+    for (const request of f.mergeRequests) expect(request.approval).toMatchObject({ id: retained.id, head: retained.head, context_revision: retained.context_revision, idempotency_key: retained.idempotency_key });
+    expect(f.core.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { await f.close(); }
 }, 20000);
 
 it("Human Review preserves the Assignment release milestone when a later Run captures merge policy", async () => {
