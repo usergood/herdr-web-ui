@@ -36,7 +36,7 @@ export async function captureReview(path: string, base: string, mode: ReviewSnap
       const groups = mode === "branch" ? [{ name: "branch", args: [base, head] }] : [{ name: "staged", args: ["--cached", "HEAD"] }, { name: "unstaged", args: [] as string[] }];
       let size = 0;
       for (const group of groups) {
-        const changes = namedChanges(await git(path, ["diff", "--no-ext-diff", "--no-textconv", "--name-status", "-z", "--find-renames", ...group.args, "--"]));
+        const changes = namedChanges(await git(path, ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--name-status", "-z", "--find-renames", ...group.args, "--"]));
         for (const change of changes) {
           const file = join(path, change.path);
           const revisions = mode === "branch" ? [base, head] : ["HEAD"];
@@ -45,7 +45,7 @@ export async function captureReview(path: string, base: string, mode: ReviewSnap
             const metadata = await git(path, ["ls-tree", "-l", "-z", revision, "--", ...(change.oldPath ? [change.oldPath] : []), change.path]);
             if (metadata.split("\0").some(row => Number(/^\d+ \w+ [a-f0-9]+\s+(\d+)\t/.exec(row)?.[1] ?? 0) > FILE_LIMIT)) oversized = true;
           }
-          let diff = oversized ? "" : await git(path, ["diff", "--no-ext-diff", "--no-textconv", "--find-renames", ...group.args, "--", ...(change.oldPath ? [change.oldPath] : []), change.path]);
+          let diff = oversized ? "" : await git(path, ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames", ...group.args, "--", ...(change.oldPath ? [change.oldPath] : []), change.path]);
           if (Buffer.byteLength(diff) > FILE_LIMIT) { diff = ""; oversized = true; }
           size += Buffer.byteLength(diff);
           const treeEntry = mode === "branch" ? (await git(path, ["ls-tree", "-z", head, "--", change.path])).split("\t")[0]?.split(" ") : undefined;

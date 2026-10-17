@@ -1,9 +1,56 @@
 import { describe, expect, it } from "bun:test";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createServer } from "./index.ts";
 import { CLEAN_WORKSPACE_HASH } from "./factory-host.ts";
 import { capacityFixture } from "../scripts/factory-capacity-fixture.ts";
 import { published, until } from "../scripts/factory-human-review-fixture.ts";
 
 describe("Human Review comment drafts through authenticated HTTP", () => {
+  it.each(["branch", "workspace"])("captures color-forced %s changes with exact selectable line ranges", async mode => {
+    const root = mkdtempSync(join(tmpdir(), "review-color-")); const repo = join(root, "repo"); mkdirSync(repo);
+    const git = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    git(["init", "-b", "main"]); git(["config", "user.name", "Fixture"]); git(["config", "user.email", "fixture@example.invalid"]);
+    git(["config", "color.ui", "always"]); git(["config", "color.diff", "always"]);
+    const before = Array.from({ length: 14 }, (_, index) => `original ${index + 1}`).join("\n") + "\n";
+    const after = before.replace("original 2\noriginal 3", "reviewed 2\nreviewed 3");
+    for (const path of ["branch.txt", "staged.txt", "unstaged.txt"]) writeFileSync(join(repo, path), before);
+    git(["add", "."]); git(["commit", "-m", "Owned review baseline"]);
+    const app = createServer({ port: 0, token: "owned-color-review", stateDir: join(root, "state"), machines: false, factory: { accountDiscoveryHome: root, native: { version: async () => null } } });
+    const api = (path: string, body: unknown) => fetch(`http://localhost:${app.port}/api/factory${path}`, { method: "POST", headers: { authorization: "Bearer owned-color-review", "x-herdr-factory": "1", "content-type": "application/json" }, body: JSON.stringify(body) });
+    try {
+      const projectResponse = await api("/projects", { name: "Owned colored review", path: repo, machine_id: "local", provider: "codex", tracker: "app" });
+      expect(projectResponse.status).toBe(201); const project = await projectResponse.json();
+      const ideaResponse = await api("/implementations", { title: "Owned colored review", description: "Retain exact line anchors", project_id: project.id });
+      expect(ideaResponse.status).toBe(201); const idea = await ideaResponse.json(); const prefix = `/implementations/${idea.id}`;
+      writeFileSync(join(repo, "branch.txt"), after); git(["add", "branch.txt"]); git(["commit", "-m", "Owned reviewed changes"]);
+      writeFileSync(join(repo, "staged.txt"), after); git(["add", "staged.txt"]);
+      writeFileSync(join(repo, "unstaged.txt"), after); writeFileSync(join(repo, "untracked.txt"), "new line one\nnew line two\n");
+      const captured = await api(`${prefix}/snapshots`, { mode }); expect(captured.status).toBe(201); const snapshot = await captured.json();
+      const changes = mode === "branch" ? [["branch.txt", "branch:M"]] : [["staged.txt", "staged:M"], ["unstaged.txt", "unstaged:M"]];
+      for (const [path, change] of changes) {
+        const file = snapshot.files.find((file: any) => file.path === path && file.status === change);
+        expect(file.diff).toContain("@@ -1,6 +1,6 @@");
+        const anchor = { snapshot_id: snapshot.id, path, change, side: "old", line_start: 2, line_end: 3, content: "Retain this exact reviewed range" };
+        for (const side of ["old", "new"]) {
+          const result = await api(`${prefix}/comments`, { ...anchor, side }); const comment = await result.json();
+          expect(result.status).toBe(201);
+          expect(comment).toMatchObject({ ...anchor, side, status: "draft", context: file.diff });
+          expect(comment.context).toContain("-original 2\n-original 3\n+reviewed 2\n+reviewed 3");
+          expect(comment.context.includes(String.fromCharCode(27))).toBe(false);
+        }
+        for (const invalid of [{ ...anchor, line_start: 12, line_end: 13 }, { ...anchor, change: "branch:D" }, { ...anchor, line_end: 104 }]) expect((await api(`${prefix}/comments`, invalid)).status).toBe(400);
+      }
+      expect(snapshot.files.every((file: any) => !file.diff.includes(String.fromCharCode(27)))).toBe(true);
+      if (mode === "workspace") {
+        const anchor = { snapshot_id: snapshot.id, path: "untracked.txt", change: "untracked:A", side: "new", line_start: 1, line_end: 2, content: "Retain the complete new file" };
+        expect((await api(`${prefix}/comments`, anchor)).status).toBe(201);
+        expect((await api(`${prefix}/comments`, { ...anchor, side: "old" })).status).toBe(400);
+      }
+    } finally { app.stop(); rmSync(root, { recursive: true, force: true }); }
+  });
   it("validates exact sides, contiguous ranges and change identities for renamed and deleted files", async () => {
     const f = await capacityFixture();
     try {
