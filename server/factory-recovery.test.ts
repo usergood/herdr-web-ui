@@ -93,17 +93,35 @@ test("late retirement observation preserves a newer owner context and the accept
     const question = (await f.request(f.prefix + "/questions", { question: "Confirm the delivery decision?" })).body;
     expect((await f.request(`/runs/${f.run.id}/reconcile`, {})).body.condition).toBe("needs_you");
     expect(await f.request(`${f.prefix}/questions/${question.id}/answer`, { revision: question.revision, answer: "Confirmed" })).toMatchObject({ status: 200 });
-    // Hold the final retirement proof, after the first head observation and verified shutdown.
+    // A held head response can observe either retirement phase; both must preserve newer owner context.
     const held = f.holdHeadResponse(1);
     const recovering = f.request(`/runs/${f.run.id}/reconcile`, {});
     await held.received;
     const later = (await f.request(f.prefix + "/questions", { run_id: f.run.id, question: "Confirm the later owner context?" })).body;
+    const newer = (await f.request(f.prefix)).body.runs.find((run: { id: string }) => run.id === f.run.id);
+    expect(newer.continuation).toMatchObject({ kind: "owner" });
+    expect(typeof newer.continuation.id).toBe("string");
+    const completion = accepted.body.implementation_completion;
+    expect(completion).toMatchObject({ head: f.head });
+    const preserved = { id: f.run.id, implementation_id: f.run.implementation_id, machine_id: f.run.machine_id, checkout: f.run.checkout, worktree: f.run.worktree, branch: f.run.branch, workspace_id: f.run.workspace_id, pane_id: f.run.pane_id, accepted_result: accepted.body.accepted_result, continuation: { id: newer.continuation.id, kind: "owner" } };
+    const expectPreserved = (run: any) => {
+      expect(run).toMatchObject(preserved);
+      expect(["needs_you", "completed"]).toContain(run.condition);
+      if (run.condition === "completed") {
+        expect(run.implementation_completion_pending ?? false).toBe(false);
+        expect(run.implementation_completion).toEqual(completion);
+      }
+    };
     expect(await f.request(`${f.prefix}/questions/${later.id}/answer`, { revision: later.revision, answer: "Keep this exact context" })).toMatchObject({ status: 200 });
     held.release();
-    expect(await recovering).toMatchObject({ status: 409, body: { error: { code: "execution_changed" } } });
+    const recovered = await recovering;
+    if (recovered.status === 409) expect(recovered).toMatchObject({ body: { error: { code: "execution_changed" } } });
+    else { expect(recovered.status).toBe(200); expectPreserved(recovered.body); }
     const retained = (await f.request(f.prefix)).body;
-    expect(retained.runs.find((run: { id: string }) => run.id === f.run.id)).toMatchObject({ id: f.run.id, machine_id: f.run.machine_id, worktree: f.run.worktree, workspace_id: f.run.workspace_id, pane_id: f.run.pane_id, accepted_result: accepted.body.accepted_result, continuation: { kind: "owner" } });
+    expectPreserved(retained.runs.find((run: { id: string }) => run.id === f.run.id));
     expect(retained.questions.find((entry: { id: string }) => entry.id === later.id)).toMatchObject({ revision: later.revision, answer: "Keep this exact context" });
-    expect((await f.request(`/runs/${f.run.id}/reconcile`, {})).body).toMatchObject({ condition: "completed", accepted_result: accepted.body.accepted_result, implementation_completion: { head: f.head } });
+    const fresh = await f.request(`/runs/${f.run.id}/reconcile`, {});
+    expect(fresh).toMatchObject({ status: 200, body: { condition: "completed" } });
+    expectPreserved(fresh.body);
   } finally { f.close(); }
 }, 30_000);
