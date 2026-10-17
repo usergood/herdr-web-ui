@@ -122,12 +122,19 @@ test.each(["verified", "stale_head", "uncertain_check"])("only current verified 
       resumed = (await f.request(`/runs/${run.id}/reconcile`, {})).body;
     }
     expect(resumed).toMatchObject({ id: run.id, condition: "working" });
-    expect(await f.request(`/runs/${run.id}/checks`, {})).toMatchObject({ status: 200, body: { condition: "passed" } });
+    // In the positive case, unfinished checks keep retirement gated until the summary turn rests.
+    if (mode !== "verified") expect(await f.request(`/runs/${run.id}/checks`, {})).toMatchObject({ status: 200, body: { condition: "passed" } });
     const standards = (await f.request(workerRoute, { role: "standards", idempotency_key: "independent-standards" })).body;
     await f.request(`${workerRoute}/${standards.id}/review-evidence`, {});
     await f.tick();
     expect((await f.request(`/implementations/${b.implementation_id}`)).body.runs[0]).toMatchObject({ id: independent.id, condition: "working" });
     const spec = (await f.request(workerRoute, { role: "spec", idempotency_key: "independent-spec" })).body;
+    if (mode === "verified") {
+      f.rest(run.id);
+      const parked = await f.request(`/runs/${run.id}/reconcile`, {});
+      expect(parked).toMatchObject({ status: 200, body: { continuation: { kind: "children", condition: "parked" } } });
+      expect(parked.body.continuation.worker_keys).toContain("independent-spec");
+    }
     if (mode === "stale_head") {
       writeFileSync(run.worktree + "/later.txt", "An unreviewed later change\n");
       for (const args of [["add", "later.txt"], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "later change"]]) execFileSync("git", ["-C", run.worktree, ...args], { stdio: "ignore" });
@@ -146,11 +153,22 @@ test.each(["verified", "stale_head", "uncertain_check"])("only current verified 
     let complete = (await f.request(`/implementations/${a.implementation_id}`)).body;
     if (mode === "verified") {
       const deadline = Date.now() + 5000;
+      let checked = false;
       while (complete.runs[0].condition !== "completed" && Date.now() < deadline) {
+        const current = complete.runs.find((entry: { id: string }) => entry.id === run.id);
+        if (!checked && current.condition === "working" && current.continuation?.kind === "children" && current.continuation.condition === "resumed") {
+          expect(current).toMatchObject({ id: run.id, machine_id: run.machine_id, worktree: run.worktree, branch: run.branch, workspace_id: run.workspace_id, pane_id: run.pane_id });
+          // The summary ACK started a native turn after the first rest observation.
+          f.rest(run.id);
+          expect(await f.request(`/runs/${run.id}/reconcile`, {})).toMatchObject({ status: 200, body: { id: run.id, condition: "ready", worktree: run.worktree, workspace_id: run.workspace_id, pane_id: run.pane_id } });
+          expect(await f.request(`/runs/${run.id}/checks`, {})).toMatchObject({ status: 200, body: { condition: "passed" } });
+          checked = true;
+        }
         await f.tick();
         complete = (await f.request(`/implementations/${a.implementation_id}`)).body;
         if (complete.runs[0].condition !== "completed") await Bun.sleep(10);
       }
+      expect(checked).toBe(true);
     }
     if (mode !== "verified") {
       expect(complete.runs[0].condition).not.toBe("completed");

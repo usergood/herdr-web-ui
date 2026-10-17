@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { createServer } from "../server/index.ts";
 import { herdrRpc, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
+import { routeDrained } from "./drained-route.ts";
 
 const root=mkdtempSync(join(tmpdir(),"saurons-inbox-browser-"));const repo=join(root,"project");mkdirSync(repo);writeFileSync(join(repo,"README.md"),"Owned project\n");
 for(const args of [["init","-b","main"],["add","."],["-c","user.name=Fixture","-c","user.email=fixture@example.invalid","commit","-m","initial"]])execFileSync("git",args,{cwd:repo,stdio:"ignore"});
@@ -35,11 +36,16 @@ try {
   await shot("inbox-actions-desktop.png");if(evidence){await page.setViewportSize({width:390,height:844});await shot("inbox-actions-mobile.png");await page.setViewportSize({width:1440,height:1000});}
   const launched=page.waitForResponse(r=>r.url().endsWith("/runs")&&r.request().method()==="POST");await page.getByRole("button",{name:"Start work",exact:true}).click();const result=await launched;assert.equal(result.status(),202);const work=await result.json();assert.equal(work.action,"work");assert.equal(work.condition,"working");
   await page.locator(".factory-panel").waitFor({state:"hidden"});assert.equal(await page.getByRole("button",{name:"Chat",exact:true}).getAttribute("aria-pressed"),"true");
-  await page.route(`**/api/factory/implementations/${work.implementation_id}?view=current`,async route=>{if(route.request().method()!=="GET")return route.continue();const response=await route.fetch();const detail=await response.json();await route.fulfill({json:{...detail,runs:detail.runs.map((r:any)=>r.id===work.id&&!["cancelled","completed","failed"].includes(r.condition)?{...r,condition:"interrupted",waiting_reason:"Owned fixture: native launch rejected an argument"}:r)}});});
+  const closeInterruptedRoute=await routeDrained(page,`**/api/factory/implementations/${work.implementation_id}?view=current`,async route=>{if(route.request().method()!=="GET")return route.continue();const response=await route.fetch();const detail=await response.json();await route.fulfill({json:{...detail,runs:detail.runs.map((r:any)=>r.id===work.id&&!["cancelled","completed","failed"].includes(r.condition)?{...r,condition:"interrupted",waiting_reason:"Owned fixture: native launch rejected an argument"}:r)}});});
   await page.goto(`http://localhost:${app.port}/#factory/${work.implementation_id}`);const recovery=page.getByRole("region",{name:"Next step",exact:true});
   await recovery.getByRole("button",{name:"Stop this attempt",exact:true}).waitFor();assert.equal(await recovery.getByRole("button",{name:"Accept research",exact:true}).count(),0);
-  const stoppedWork=page.waitForResponse(r=>r.url().endsWith(`/runs/${work.id}/stop`)&&r.request().method()==="POST");await recovery.getByRole("button",{name:"Stop this attempt",exact:true}).click();assert.equal((await stoppedWork).status(),200);
-  await page.unroute(`**/api/factory/implementations/${work.implementation_id}?view=current`);await recovery.getByRole("button",{name:"Start work",exact:true}).waitFor();
+  const stoppedWork=page.waitForResponse(r=>r.url().endsWith(`/runs/${work.id}/stop`)&&r.request().method()==="POST");await recovery.getByRole("button",{name:"Stop this attempt",exact:true}).click();const stoppedResponse=await stoppedWork;assert.equal(stoppedResponse.status(),200);const stopped=await stoppedResponse.json();assert.equal(stopped.id,work.id);assert.equal(stopped.condition,"cancelled");
+  await closeInterruptedRoute();
+  try {await recovery.getByRole("button",{name:"Start work",exact:true}).waitFor();} catch(error) {
+    const current=await page.request.get(`http://localhost:${app.port}/api/factory/implementations/${work.implementation_id}?view=current`).then(response=>response.json());
+    console.error("Owned Stop recovery",JSON.stringify({stopped:{id:stopped.id,condition:stopped.condition},runs:current.runs.map((run:any)=>({id:run.id,condition:run.condition,waiting_reason:run.waiting_reason})),next_step:await recovery.textContent()}));
+    await shot("inbox-stop-recovery-failure.png");throw error;
+  }
   await page.goto(`http://localhost:${app.port}/#projects/${project.id}/inbox`);await page.getByRole("textbox",{name:"Idea title",exact:true}).fill("Plan the new checkout");await page.getByRole("button",{name:"Capture idea",exact:true}).click();
   await page.getByRole("heading",{name:"Plan the new checkout",exact:true}).waitFor();
   const planningId=new URL(page.url()).hash.slice("#factory/".length);
