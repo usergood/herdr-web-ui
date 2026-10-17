@@ -25,10 +25,6 @@ test("accepted integration supersedes earlier worker content, while missing deli
     await held.received;
     const accepted = await f.request(`/runs/${f.run.id}/accept`, { head: check.head });
     expect(accepted).toMatchObject({ status: 200, body: { condition: "completed" } });
-    const question = (await f.request(f.prefix + "/questions", { question: "Confirm the remaining owner decision?" })).body;
-    held.release(); await earlier;
-    const retained = (await f.request(f.prefix)).body.runs.find((run: { id: string }) => run.id === f.run.id);
-    expect(retained.accepted_result).toEqual(accepted.body.accepted_result);
     const oid = execFileSync("git", ["-C", f.run.worktree!, "rev-parse", "HEAD:ready.txt"], { encoding: "utf8" }).trim();
     const head = check.head;
     const resources = {
@@ -39,7 +35,14 @@ test("accepted integration supersedes earlier worker content, while missing deli
       [`repos/fictional/schedules/git/trees/${head}?recursive=1`]: { truncated: false, tree: [{ path: "ready.txt", mode: "100644", type: "blob", sha: oid }] },
     };
     f.respond({ resources });
-    const linked = (await f.request(f.prefix + "/delivery", { expected_revision: null, machine_id: "owned-host", account_profile_id: f.hostAccountId, pull_numbers: [12] })).body;
+    const linkResponse = await f.request(f.prefix + "/delivery", { expected_revision: null, machine_id: "owned-host", account_profile_id: f.hostAccountId, pull_numbers: [12] });
+    expect(linkResponse).toMatchObject({ status: 200, body: { condition: "linked" } });
+    expect(typeof linkResponse.body.revision).toBe("string");
+    const linked = linkResponse.body;
+    const question = (await f.request(f.prefix + "/questions", { question: "Confirm the remaining owner decision?" })).body;
+    held.release(); await earlier;
+    const retained = (await f.request(f.prefix)).body.runs.find((run: { id: string }) => run.id === f.run.id);
+    expect(retained.accepted_result).toEqual(accepted.body.accepted_result);
     const sync = () => f.request(f.prefix + "/delivery/sync", { expected_revision: linked.revision });
     f.respond({ resources: { ...resources, "repos/fictional/schedules/pulls/12/files?per_page=100&page=1": [] } });
     expect(await sync()).toMatchObject({ status: 200, body: { condition: "needs_you", problem: expect.stringContaining("does not cover the intended changes") } });
