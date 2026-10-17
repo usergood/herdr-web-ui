@@ -91,7 +91,16 @@ export class FactoryExecutionHost {
       const discovered = await this.discover(run.worktree!);
       if (checkout.repository !== (run.manifest as { checkout: ProjectCheckout }).checkout.repository || discovered.github.repository?.toLowerCase() !== p.repository.toLowerCase() || checkout.branch !== p.branch || checkout.head !== p.head || (await captureReview(run.worktree!, p.base, "workspace")).files.length) throw new FactoryError("publication_scope_changed", "The reviewed repository, branch or diff changed", 409);
       const environment = await this.accounts!.environment(p.account_snapshot, true, run.worktree!);
-      await withAccountEnvironment(environment, async () => { await assertPublicationRouting(run.worktree!); authorize(); return this.native.pushBranch({ cwd: run.worktree!, repository: p.repository, branch: p.branch, head: p.head }); });
+      await withAccountEnvironment(environment, async () => {
+        await assertPublicationRouting(run.worktree!); authorize();
+        const identity = { id: `${run.id}:${p.head}`, run_id: run.id, head: p.head, branch: p.branch, repository: p.repository, base_branch: p.target_branch };
+        const retained = this.store.get<typeof identity>("host_publications", identity.id);
+        if (retained && (retained.id !== identity.id || retained.run_id !== run.id || retained.head !== p.head || retained.branch !== p.branch || retained.repository !== p.repository || retained.base_branch !== p.target_branch)) throw new FactoryError("publication_target_changed", "The retained publication destination changed", 409);
+        // A push may reach Git even when its reply is lost. Preserve its branch before dispatch,
+        // using the same receipt identity as automatic publication without claiming a PR exists.
+        if (!retained) this.store.put("host_publications", { ...identity, condition: "prepared" }, run.id);
+        return this.native.pushBranch({ cwd: run.worktree!, repository: p.repository, branch: p.branch, head: p.head });
+      });
     }, authorize);
   }
   async modelCatalog(provider: import("../shared/factory.ts").FactoryProvider, path: string, repository: string, snapshot?: AccountBindingSnapshot | null) {
