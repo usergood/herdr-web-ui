@@ -8,6 +8,142 @@ import { published, until } from "./factory-human-review-fixture.ts";
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 try {
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    for (const variant of ["answered_scope", "answered_pending", "answered_comments"] as const) {
+      const f = await capacityFixture({ advancingHeads: true });
+      const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
+      try {
+        const { id, prefix, detail, run } = await published(f);
+        const original = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
+        const candidate = original.human_reviews[0];
+        const originalWorkers = new Set(original.workers.map((worker: { id: string }) => worker.id));
+        const originalEvidence = new Set(original.review_evidence.map((report: { id: string }) => report.id));
+        const origin = `http://localhost:${f.app.port}`;
+        assert.equal((await context.request.post(`${origin}/api/auth`, { data: { token: f.token } })).status(), 204);
+        const page = await context.newPage(); page.setDefaultTimeout(10000);
+        const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
+        await page.goto(`${origin}/#factory/${id}`);
+        const navigation = page.getByRole("navigation", { name: "Workflow history", exact: true });
+        await navigation.getByRole("button", { name: "Human Review", exact: true }).click();
+        const review = page.getByRole("region", { name: "Human Review", exact: true });
+        const approve = review.getByRole("button", { name: "Approve and merge", exact: true });
+        await review.getByText("Approval merges this checked and independently reviewed candidate into its authorized target.", { exact: true }).waitFor();
+        let prior: { id: string; context_revision: string; idempotency_key: string } | null = null;
+        let priorBody: Record<string, unknown> | null = null;
+        if (variant === "answered_pending") {
+          f.mergeFailure("merge_waiting");
+          const response = page.waitForResponse(response => response.url().endsWith(`${prefix}/human-review/approve`) && response.request().method() === "POST");
+          await approve.click();
+          const pending = await response;
+          assert.equal(pending.status(), 200); prior = await pending.json(); priorBody = pending.request().postDataJSON();
+          assert.equal((await detail()).human_review_approvals[0].condition, "pending");
+          assert.equal(f.mergeEffects.length, 0);
+        }
+        let draftId: string | null = null;
+        if (variant === "answered_comments") {
+          await review.getByRole("button", { name: "After 1", exact: true }).click();
+          await review.getByRole("textbox", { name: "Review finding", exact: true }).fill("Recheck the retained behavior after the owner answer");
+          await review.getByRole("button", { name: "Save draft finding", exact: true }).click();
+          await review.getByRole("region", { name: "Draft comments", exact: true }).getByText("Recheck the retained behavior after the owner answer", { exact: true }).waitFor();
+          draftId = (await detail()).comments.find((comment: { content: string }) => comment.content === "Recheck the retained behavior after the owner answer").id;
+        }
+        const questionResponse = await f.agent(run.id, "question", { question: "Should this published candidate gain another external delivery target?" });
+        assert.equal(questionResponse.status, 201);
+        const question = await questionResponse.json();
+        assert.equal(question.answer, null);
+        if (variant === "answered_scope") {
+          const rejected = page.waitForResponse(response => response.url().endsWith(`${prefix}/human-review/approve`) && response.request().method() === "POST");
+          await approve.click();
+          assert.equal((await rejected).status(), 409, "Unanswered context must not retain merge authority");
+          assert.equal((await detail()).human_review_approvals.length, 0);
+        }
+        if (variant !== "answered_pending") await navigation.getByRole("button", { name: "Orchestrator", exact: true }).click();
+        await page.getByText(question.question, { exact: true }).first().waitFor();
+        await page.getByRole("textbox", { name: "Your answer", exact: true }).fill("No new delivery target; keep the accepted scope unchanged and review this answer.");
+        const answered = page.waitForResponse(response => response.url().endsWith(`${prefix}/questions/${question.id}/answer`) && response.request().method() === "POST");
+        const delivered = page.waitForResponse(response => /\/runs\/[^/]+\/send-answers$/.test(new URL(response.url()).pathname) && response.request().method() === "POST");
+        await page.getByRole("button", { name: "Save answer", exact: true }).click();
+        const answerResponse = await answered; assert.equal(answerResponse.status(), 200);
+        assert.equal(answerResponse.request().postDataJSON().revision, question.revision);
+        assert(["sent", "queued", "sending"].includes((await (await delivered).json()).condition));
+        const ownerContext = await f.agent(run.id, "contract").then(response => response.json());
+        assert.notEqual(ownerContext.question_revision, original.question_revision);
+        assert.equal((await f.agent(run.id, "consume", { revision: ownerContext.question_revision })).status, 200);
+        f.runs.get(run.id)!.condition = "ready";
+        const retainedAnswer = (await detail()).questions.find((entry: { id: string }) => entry.id === question.id);
+        assert.equal(retainedAnswer.answer, "No new delivery target; keep the accepted scope unchanged and review this answer.");
+        if (prior) {
+          const invalidated = await until(detail, d => d.human_review_approvals.find((receipt: { id: string }) => receipt.id === prior!.id)?.condition === "blocked");
+          const oldReceipt = invalidated.human_review_approvals.find((receipt: { id: string }) => receipt.id === prior!.id);
+          assert.equal(oldReceipt.context_revision, original.question_revision);
+          assert.equal(oldReceipt.idempotency_key, prior.idempotency_key);
+          assert.equal(oldReceipt.merge_not_sent, true);
+          f.mergeFailure(null);
+        }
+        assert.equal(f.mergeEffects.length, 0);
+        console.log(JSON.stringify({ viewport: viewport.width, variant, question: question.id, answered_revision: ownerContext.question_revision, previous_revision: original.question_revision }));
+        for (const axis of ["standards", "spec"]) {
+          const reviewing = await until(detail, d => d.workers.some((worker: { id: string; role: string; condition: string }) => !originalWorkers.has(worker.id) && worker.role === axis && worker.condition === "working"));
+          const worker = reviewing.workers.find((worker: { id: string; role: string; condition: string }) => !originalWorkers.has(worker.id) && worker.role === axis && worker.condition === "working");
+          const contract = await f.agent(run.id, "contract").then(response => response.json());
+          assert.equal(contract.question_revision, ownerContext.question_revision);
+          assert.equal((await f.agent(run.id, "consume", { revision: contract.question_revision, worker_id: worker.id })).status, 200);
+          f.workers.get(worker.id)!.condition = "ready";
+        }
+        const fresh = await until(detail, d => d.automatic_review[0]?.condition === "published" && d.automatic_review[0].context_revision === ownerContext.question_revision && d.human_reviews[0]?.condition === "ready");
+        const refreshed = fresh.automatic_review[0];
+        assert((refreshed.generation ?? 0) > (original.automatic_review[0].generation ?? 0));
+        assert.notEqual(refreshed.check_id, original.automatic_review[0].check_id);
+        assert.equal(refreshed.evidence_ids.length, 2);
+        assert(refreshed.evidence_ids.every((id: string) => !originalEvidence.has(id)));
+        assert.equal(fresh.human_reviews[0].head, candidate.head);
+        assert.equal(fresh.human_reviews[0].snapshot_id, candidate.snapshot_id);
+        assert.equal(fresh.pull_requests[0].number, original.pull_requests[0].number);
+        assert.equal(fresh.pull_requests[0].head, original.pull_requests[0].head);
+        assert.equal(f.mergeEffects.length, 0, "Fresh evidence and an owner answer alone never authorize merge");
+        if (priorBody) {
+          const replay = await f.api(`${prefix}/human-review/approve`, priorBody);
+          assert([200, 409].includes(replay.status));
+          assert.equal((await detail()).human_review_approvals.find((receipt: { id: string }) => receipt.id === prior!.id).condition, "blocked");
+          assert.equal(f.mergeEffects.length, 0, "Replaying the old approval cannot authorize the changed owner context");
+        }
+        if (variant !== "answered_pending") {
+          await navigation.getByRole("button", { name: "Human Review", exact: true }).click();
+          await page.reload();
+        }
+        if (variant === "answered_comments") {
+          const draft = (await detail()).comments.find((comment: { id: string }) => comment.id === draftId);
+          assert.equal(draft.snapshot_id, candidate.snapshot_id); assert.equal(draft.status, "draft");
+          await review.getByRole("region", { name: "Draft comments", exact: true }).getByText(draft.content, { exact: true }).waitFor();
+          const response = page.waitForResponse(response => response.url().endsWith(`${prefix}/human-review/submit`) && response.request().method() === "POST");
+          await review.getByRole("button", { name: "Approve with comments", exact: true }).click();
+          const approved = await response; assert.equal(approved.status(), 202);
+          const batch = await approved.json(); assert.equal(batch.merge_authorized, true);
+          assert.equal(batch.snapshot_id, candidate.snapshot_id);
+          for (const role of ["implementer", "standards", "spec"]) {
+            const repairing = await until(detail, d => d.workers.some((worker: { role: string; condition: string }) => worker.role === role && worker.condition === "working"));
+            const worker = repairing.workers.find((worker: { role: string; condition: string }) => worker.role === role && worker.condition === "working");
+            const contract = await f.agent(run.id, "contract").then(response => response.json());
+            assert.equal(contract.question_revision, ownerContext.question_revision);
+            assert.equal((await f.agent(run.id, "consume", { revision: contract.question_revision, worker_id: worker.id })).status, 200);
+            f.workers.get(worker.id)!.condition = "ready";
+          }
+        } else {
+          const response = page.waitForResponse(response => response.url().endsWith(`${prefix}/human-review/approve`) && response.request().method() === "POST");
+          await approve.click();
+          const approved = await response; assert.equal(approved.status(), 200);
+          assert.equal((await approved.json()).context_revision, ownerContext.question_revision);
+        }
+        await review.getByText("Merge verified", { exact: true }).waitFor();
+        const done = await until(detail, d => d.implementation.stage === "done");
+        assert.equal(done.human_review_approvals.length, prior ? 2 : 1);
+        assert.equal(done.human_review_approvals.at(-1).context_revision, ownerContext.question_revision);
+        assert.equal(done.human_review_approvals.at(-1).condition, "merged");
+        if (prior) assert.equal(done.human_review_approvals[0].condition, "blocked");
+        assert.equal(f.mergeEffects.length, 1);
+        assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+        assert.deepEqual(errors, []);
+      } finally { await context.close(); f.close(); }
+    }
     for (const scenario of ["scope_question", "frozen_release", "merge", "release", "stale", "failing", "protected", "denied", "lost", "offline", "pending"] as const) {
       const f = await capacityFixture({ advancingHeads: true });
       f.setTranscript({ source_id: "owned-delivery-history", version: "one", cursor: null, turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: "Retained implementation delivery history." }] }] });
