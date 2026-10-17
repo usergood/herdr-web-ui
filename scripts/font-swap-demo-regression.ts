@@ -7,6 +7,7 @@ import { appFaces } from "./app-faces.ts";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { openSettingsPage } from "./settings-page.ts";
 
 // The late arrival of the app's faces (src/fonts/fonts.css, font-display: swap), on the unmodified
 // app over the demo's fixture transport: the font files are held back here as a slow link holds
@@ -60,6 +61,78 @@ try {
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
+      for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+        const context = await browser.newContext({ viewport, locale: "en-US", isMobile: viewport.width < 640, hasTouch: viewport.width < 640, permissions: ["local-fonts"] });
+        try {
+          await context.addInitScript(() => localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en" })));
+          const page = await context.newPage(); page.setDefaultTimeout(10000);
+          const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
+          const session = await context.newCDPSession(page);
+          const { targetInfo } = await session.send("Target.getTargetInfo");
+          const permission = async (setting: "granted" | "denied") => session.send("Browser.setPermission", { permission: { name: "local-fonts" }, setting, origin: new URL(url).origin, browserContextId: targetInfo.browserContextId });
+          await permission("denied");
+          await page.goto(url);
+          if (viewport.width < 640) await page.getByRole("button", { name: "Open workspace list", exact: true }).click();
+          await page.getByRole("button", { name: "Settings", exact: true }).click();
+          await openSettingsPage(page, "Terminal");
+          const dialog = page.getByRole("dialog", { name: "Settings", exact: true });
+          const field = dialog.getByRole("textbox", { name: "Terminal font", exact: true });
+          const font = dialog.locator(".settings-font-field").filter({ has: page.getByRole("textbox", { name: "Terminal font", exact: true }) });
+          const previous = await field.inputValue();
+          const browse = font.getByRole("button", { name: "Browse installed fonts for Terminal font", exact: true });
+          await browse.click();
+          const unavailable = "Installed fonts could not be listed. Type the name instead.";
+          await font.getByText(unavailable, { exact: true }).waitFor();
+          await font.getByRole("alert").filter({ hasText: unavailable }).waitFor();
+          assert.equal(await font.getByRole("status").filter({ hasText: unavailable }).count(), 0);
+          assert.equal(await field.inputValue(), previous);
+          await permission("granted");
+          const families = await page.evaluate(async () => {
+            const rows = await (window as unknown as { queryLocalFonts: () => Promise<{ family: string }[]> }).queryLocalFonts();
+            const names = [...new Set(rows.map(row => row.family))];
+            const canvas = document.createElement("canvas").getContext("2d")!;
+            const proportional = names.find(name => {
+              canvas.font = `32px "${name.replace(/["\\]/g, "")}"`;
+              return Math.abs(canvas.measureText("W").width - canvas.measureText("i").width) > 1;
+            });
+            const monospace = names.find(name => /mono|courier|console/i.test(name) && name.includes(" "));
+            return { proportional, monospace };
+          });
+          assert(families.proportional && families.monospace, "The browser exposes both real proportional and monospace installed fonts");
+          await browse.click();
+          await font.getByRole("list", { name: "Installed fonts", exact: true }).waitFor();
+          assert.equal(await font.getByText(unavailable, { exact: true }).count(), 0);
+          await font.getByRole("searchbox", { name: "Search fonts", exact: true }).fill(families.proportional);
+          await font.getByRole("button", { name: families.proportional, exact: true }).click();
+          const refused = `${families.proportional} is not monospace. The terminal needs a fixed-width font, so the current font was kept.`;
+          await font.getByText(refused, { exact: true }).waitFor();
+          await font.getByRole("alert").filter({ hasText: refused }).waitFor();
+          assert.equal(await font.getByRole("status").filter({ hasText: refused }).count(), 0);
+          assert.equal(await field.inputValue(), previous);
+          await font.getByRole("searchbox", { name: "Search fonts", exact: true }).fill(families.monospace);
+          await font.getByRole("button", { name: families.monospace, exact: true }).click();
+          assert.equal(await field.inputValue(), `"${families.monospace}"`);
+          assert.equal(await font.getByRole("alert").count(), 0);
+          assert.equal(await font.getByRole("list", { name: "Installed fonts", exact: true }).count(), 0);
+          await openSettingsPage(page, "Shortcuts");
+          const record = dialog.getByRole("button", { name: "Record shortcut for Command palette", exact: true });
+          const row = dialog.locator(".settings-row").filter({ has: page.getByRole("button", { name: "Record shortcut for Command palette", exact: true }) });
+          const before = await page.evaluate(() => JSON.parse(localStorage.getItem("herdr-web-ui:settings")!).shortcutOverrides);
+          await record.click();
+          await row.getByRole("status").filter({ hasText: "Press the new shortcut, or Escape to cancel." }).waitFor();
+          assert.equal(await row.getByRole("alert").count(), 0);
+          await page.keyboard.press("KeyG");
+          await row.getByText(/Hold .* and press a key\./).waitFor();
+          await row.getByRole("alert").filter({ hasText: /Hold .* and press a key\./ }).waitFor();
+          assert.equal(await row.getByRole("status").filter({ hasText: /Hold .* and press a key\./ }).count(), 0);
+          await page.keyboard.press("Escape");
+          assert.equal(await row.getByRole("alert").count(), 0);
+          assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem("herdr-web-ui:settings")!).shortcutOverrides), before, "Rejected recording and Cancel preserve the configured shortcut");
+          assert.deepEqual(errors, []);
+          console.log(`PASS font access denial, proportional refusal, monospace recovery and shortcut error/status controls ${viewport.width}x${viewport.height}`);
+        } finally { await context.close(); }
+      }
+
       /** A phone on a slow link: every font file is held until `release`. `stall` names files that never come at all. */
       const open = async (stall: RegExp | null, height = 844): Promise<{ page: Page; errors: string[]; held: () => number; release: () => void; close: () => Promise<void> }> => {
         const context = await browser.newContext({ viewport: { width: 390, height }, locale: "en-US", hasTouch: true, isMobile: true });

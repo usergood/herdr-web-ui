@@ -126,14 +126,26 @@ try {
   assert.equal(detail.runs.length, 4); assert.equal(detail.workers.length, 5);
   assert.equal(launches, 0); assert.deepEqual(errors, []);
   // An unreadable imported message must not take down the Assignment's history.
-  await page.route(`**/api/factory/implementations/${f.assignment.id}?view=workflow&*`, async route => {
-    const response = await route.fetch(); const body = await response.json();
-    const snapshot = body.native_snapshots.find((entry: { id: string }) => entry.id === "interview-context-history");
-    if (snapshot) snapshot.turns[0].parts = [{ kind: "tool", name: "owned-unreadable-tool", summary: { unreadable: "fixture" }, input: "", output: "" }];
-    await route.fulfill({ response, json: body });
-  });
-  await page.goto(`http://localhost:${app.port}/#factory/${f.assignment.id}`);
-  await panel.getByText("This preview can't be shown.", { exact: true }).waitFor();
-  await panel.getByText("Retained specification-context decisions", { exact: true }).waitFor();
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    await page.route(`**/api/factory/implementations/${f.assignment.id}?view=workflow&*`, async route => {
+      const response = await route.fetch(); const body = await response.json();
+      const snapshot = body.native_snapshots.find((entry: { id: string }) => entry.id === "interview-context-history");
+      if (snapshot) snapshot.turns[0].parts = [{ kind: "tool", name: "owned-unreadable-tool", summary: { unreadable: "fixture" }, input: "", output: "" }];
+      await route.fulfill({ response, json: body });
+    });
+    try {
+      await page.goto(`http://localhost:${app.port}/#factory/${f.assignment.id}`);
+      await panel.getByText("This preview can't be shown.", { exact: true }).waitFor();
+      await panel.getByRole("alert").filter({ hasText: "This preview can't be shown." }).waitFor();
+      assert.equal(await panel.getByRole("status").filter({ hasText: "This preview can't be shown." }).count(), 0);
+      await panel.getByText("Retained specification-context decisions", { exact: true }).waitFor();
+    } finally { await page.unrouteAll({ behavior: "wait" }); }
+    await page.reload();
+    await panel.getByText("Retained interview-context decisions", { exact: true }).waitFor();
+    await panel.getByText("Retained specification-context decisions", { exact: true }).waitFor();
+    assert.equal(await panel.getByText("This preview can't be shown.", { exact: true }).count(), 0);
+    console.log(`PASS retained message fault alert, healthy adjacent history and fresh-read recovery ${viewport.width}x${viewport.height}`);
+  }
   console.log("workflow conversations: desktop/mobile hierarchy, provenance, restart and navigation passed");
 } finally { await browser.close(); app.stop(); await workspaceClose(native.workspace.workspace_id); rmSync(state, { recursive: true, force: true }); }

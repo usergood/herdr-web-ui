@@ -53,7 +53,7 @@ export function FactoryProjectGitHub({ project, busy, perform, checkoutPath, che
   const ready = accounts?.profiles.find(p => p.id === form.account_profile_id)?.state === "ready";
   return <section className="factory-section" data-testid="project-github"><h3>{t("Project GitHub workflow")}</h3>
     <p className="field-hint">{t("GitHub uses a verified account on the connection server: {name}", { name: machineName ?? t("Machine") })}</p>
-    {notice && <p role="status">{notice}</p>}
+    {notice && <p role="alert">{notice}</p>}
     {problem && <p role="alert">{problem}</p>}
     <form className="factory-form" onSubmit={event => { event.preventDefault(); void perform(async () => {
       const id = epoch.current;

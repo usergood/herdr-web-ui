@@ -66,7 +66,7 @@ export function FactoryProjectAccounts({ project, machineId, busy, perform, chec
       <button className="btn factory-button" disabled={busy || !overview}>{t("Create account profile")}</button>
     </form>
     {overview?.profiles.map((profile) => <article className="factory-artifact" key={profile.id}>
-      <h4>{profile.name}</h4><p>{names[profile.service]} · {profile.expected_login} · <span role="status">{stateLabel(profile.state, t)}</span></p>
+      <h4>{profile.name}</h4><p>{names[profile.service]} · {profile.expected_login} · <span role={profile.state === "failed" ? "alert" : "status"}>{stateLabel(profile.state, t)}</span></p>
       {profile.expected_account_id && <p>{profile.expected_account_id}</p>}{profile.problem && <p role="alert">{profile.problem}</p>}
       <div className="factory-actions">
         <button className="btn factory-button" disabled={busy || profile.state === "setting_up"} onClick={() => setEditing(profile.id)}>{t("Edit account profile")}</button>
@@ -85,7 +85,7 @@ export function FactoryProjectAccounts({ project, machineId, busy, perform, chec
       {profile.fingerprint && <p>{profile.fingerprint}</p>}{profile.github_key_id && <p role="status">{t("Public key registered")}</p>}
       {profile.public_key && <details><summary>{t("Public SSH key")}</summary><pre>{profile.public_key}</pre></details>}
     </article>)}
-    {setup && <div className="factory-artifact" role="status">
+    {setup && <div className="factory-artifact" role={setup.phase === "failed" || setup.problem ? "alert" : "status"}>
       <p>{setup.phase === "complete" ? t("Account sign-in completed") : setup.problem ?? t("Complete authorization in your browser, then return here.")}</p>
       {setup.verification_url && <a className="btn factory-button" href={setup.verification_url} target="_blank" rel="noopener noreferrer">{t("Open authorization page")}</a>}
       {setup.user_code && <p><code>{setup.user_code}</code></p>}

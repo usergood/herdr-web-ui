@@ -71,10 +71,10 @@ export function ProjectSyncSchedules({ projectId, configured, busy, perform, onS
           <button type="button" className="btn" disabled={busy || saved.condition === "running" || saved.condition === "uncertain" || form.job === "github_sync" && !configured} onClick={() => void act("run", form)}>{t("Run now")}</button>
           {saved.condition === "uncertain" && <button type="button" className="btn" disabled={busy} onClick={() => void act("reconcile", form)}>{t("Reconcile sync")}</button>}
         </div>
-        <p role="status">{condition(saved.condition)}</p>
+        <p role={saved.condition === "failed" ? "alert" : "status"}>{condition(saved.condition)}</p>
         <p>{t("Next execution")}: {saved.next_execution ? <time dateTime={saved.next_execution}>{new Date(saved.next_execution).toLocaleString(undefined, { timeZone: saved.time_zone })} · {saved.time_zone}</time> : t("No scheduled execution")}</p>
         {saved.retry_at && <p>{t("Sync retry")}: <time dateTime={saved.retry_at}>{new Date(saved.retry_at).toLocaleString(undefined, { timeZone: saved.time_zone })} · {saved.time_zone}</time></p>}
-        {saved.condition === "failed" && !saved.retry_at && <p>{t("Automatic retries stopped. Correct the problem and choose Run now.")}</p>}
+        {saved.condition === "failed" && !saved.retry_at && <p role="alert">{t("Automatic retries stopped. Correct the problem and choose Run now.")}</p>}
         </div>
       </SettingsGroup>
       </form>

@@ -153,7 +153,7 @@ function FontFamilyInput({ value, label, onCommit, fixedWidthFor = null }: { val
           </button>
         )}
       </div>
-      {unavailable && <p className="settings-font-note" role="status">{t("Installed fonts could not be listed. Type the name instead.")}</p>}
+      {unavailable && <p className="settings-font-note" role="alert">{t("Installed fonts could not be listed. Type the name instead.")}</p>}
       {browsing && families !== null && (
         <div className="settings-font-picker">
           <input
@@ -173,7 +173,7 @@ function FontFamilyInput({ value, label, onCommit, fixedWidthFor = null }: { val
               }
             }}
           />
-          {refused !== "" && <p className="settings-font-note" role="status">{t("{font} is not monospace. The terminal needs a fixed-width font, so the current font was kept.", { font: refused })}</p>}
+          {refused !== "" && <p className="settings-font-note" role="alert">{t("{font} is not monospace. The terminal needs a fixed-width font, so the current font was kept.", { font: refused })}</p>}
           <ul className="settings-font-list" aria-label={t("Installed fonts")}>
             {matches.slice(0, FONT_LIST_LIMIT).map((family) => (
               <li key={family}>
@@ -755,7 +755,7 @@ function ShortcutsPage() {
           const unbound = defaultKeys.length === 0;
           const rowText = recording?.id === shortcut.id ? (recording.problem ?? t("Press the new shortcut, or Escape to cancel.")) : confirming ? riskText(confirming.risk, compactKeys(bindingDisplayKeys(confirming.value))) : selectedRisk ? riskText(selectedRisk, compactKeys(displayedKeys)) : undefined;
           return (
-            <SettingsRow key={shortcut.id} label={t(shortcut.label)} wide={shortcut.id !== "voice"} description={rowText === undefined ? undefined : <span role="status">{rowText}</span>}>
+            <SettingsRow key={shortcut.id} label={t(shortcut.label)} wide={shortcut.id !== "voice"} description={rowText === undefined ? undefined : <span role={recording?.id === shortcut.id && recording.problem ? "alert" : "status"}>{rowText}</span>}>
               {shortcut.id === "voice" ? <span className="settings-keys">{formatKeys(shortcut.keys).map((key) => <kbd className="kbd" key={key}>{key}</kbd>)}</span> : (
                 <span className="settings-shortcut-control">
                 <button type="button" className="btn settings-shortcut-record" ref={(button) => { if (button) recordButtons.current.set(shortcut.id, button); else recordButtons.current.delete(shortcut.id); }} aria-pressed={recording?.id === shortcut.id} aria-label={t("Record shortcut for {name}", { name: t(shortcut.label) })} onClick={() => { setPending(null); setRecording(recording?.id === shortcut.id ? null : { id: shortcut.id, problem: null }); }}>{recording?.id === shortcut.id ? t("Press keys…") : t("Record")}</button>

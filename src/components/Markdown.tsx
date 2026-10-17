@@ -135,7 +135,7 @@ export function ReservedImage({ src, alt, width, className, slot, slotStyle, fal
     onLoad={() => setSettled({ src, failed: false })} onError={() => setSettled({ src, failed: true })} />;
   if (!slot) return image;
   if (phase === "failed") {
-    return <span className="image-slot is-failed" style={slotStyle}>
+    return <span className="image-slot is-failed" style={slotStyle} role="alert">
       <span className="image-slot-note"><ImageOff aria-hidden="true" /><span>{t("Image unavailable")}</span>{alt !== "" && <span>{alt}</span>}</span>
     </span>;
   }

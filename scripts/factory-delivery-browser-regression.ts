@@ -61,6 +61,7 @@ try {
   assert.equal(await accept.isEnabled(), false, "Research requires a fresh evidence check");
   await page.getByRole("button", { name: "Check completion evidence", exact: true }).click();
   await accept.waitFor();
+  await page.getByRole("status").filter({ hasText: "No repository changes; owned work is quiescent." }).waitFor();
   const completion = page.waitForResponse(r => r.url().endsWith(`${f.prefix}/complete-work`) && r.request().method() === "POST");
   await accept.click();
   assert.equal((await completion).status(), 200);
@@ -96,7 +97,7 @@ try {
   await page.getByRole("button", { name: "Accept research", exact: true }).click();
   assert.equal((await rejected).status(), 409, "A previous browser check cannot accept new repository changes");
   const nextStep = page.getByRole("region", { name: "Next step", exact: true });
-  await nextStep.getByText("Repository changes require verified PR delivery. Link the delivery evidence before completing this Assignment.", { exact: true }).waitFor();
+  await nextStep.getByRole("status").filter({ hasText: "Repository changes require verified PR delivery. Link the delivery evidence before completing this Assignment." }).waitFor();
   assert.equal(await nextStep.getByRole("button", { name: "Accept research", exact: true }).isEnabled(), false);
   assert.equal((await f.request(changingPrefix).then(r => r.json())).board.lane, "needs_you");
   assert(await nextStep.evaluate(el => el.scrollWidth <= el.clientWidth), "Completion blockers fit a phone");
@@ -119,10 +120,15 @@ try {
   const remote = await factoryDeliveryFixture(true);
   try {
     const remoteRun = await remote.start(); remote.disconnect();
-    await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto(`http://localhost:${remote.app.port}/#factory/${remoteRun.implementation_id}`);
-    await page.getByRole("button", { name: "Check completion evidence", exact: true }).click();
-    await page.getByRole("region", { name: "Next step", exact: true }).getByText("Repository change evidence is unavailable. Reconnect the Machine and inspect the retained work before accepting research.", { exact: true }).waitFor();
+    for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+      await page.setViewportSize(viewport);
+      await page.goto(`http://localhost:${remote.app.port}/#factory/${remoteRun.implementation_id}`);
+      await page.getByRole("button", { name: "Check completion evidence", exact: true }).click();
+      const evidenceError = "Repository change evidence is unavailable. Reconnect the Machine and inspect the retained work before accepting research.";
+      const remoteNextStep = page.getByRole("region", { name: "Next step", exact: true });
+      await remoteNextStep.getByText(evidenceError, { exact: true }).waitFor();
+      await remoteNextStep.getByRole("alert").filter({ hasText: evidenceError }).waitFor();
+    }
     assert.equal(await page.getByRole("button", { name: "Accept research", exact: true }).count(), 0);
     assert.equal((await remote.request(remote.prefix).then(r => r.json())).board.lane, "needs_you");
     assert.equal(await page.getByRole("button", { name: "Discard Assignment", exact: true }).count(), 0);
