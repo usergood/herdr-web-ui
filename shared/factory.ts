@@ -362,6 +362,8 @@ export interface FactoryAssignmentProgress {
   counts: { waiting: number; running: number; completed: number };
   tickets: { ticket_id: string; title: string; state: "waiting" | "running" | "completed"; reason: string | null }[];
   reasons: string[];
+  /** Known failures are assertive; ordinary waits remain only in reasons. */
+  error_reasons?: string[];
 }
 export interface FactoryOverview { progress: FactoryAssignmentProgress[] }
 /** Pollable owner decisions. Historical collections and evidence bodies are fetched on demand. */

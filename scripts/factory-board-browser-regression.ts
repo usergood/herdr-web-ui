@@ -13,6 +13,51 @@ import { routeDrained } from "./drained-route.ts";
 
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 
+async function failedProgressBoard(): Promise<void> {
+  const observed: { width: number; check: number; first: number; second: number }[] = [];
+  for (const viewport of [{ width: 390, height: 844 }, { width: 1440, height: 1000 }]) {
+    const f = await capacityFixture();
+    const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
+    try {
+      await f.api("/settings", { max_agents: 4 });
+      const id = await f.assignment("Concurrent failed Tickets"); const prefix = `/implementations/${id}`;
+      const detail = await f.api(prefix).then(r => r.json());
+      await f.api(`/projects/${detail.implementation.project_id}/configure`, { checks: [["bun", "test"]], permissions: "Owned unpaid fixtures" });
+      const spec = await f.api(prefix + "/specifications", { content: "Two independent owned Tickets" }).then(r => r.json());
+      for (const kind of ["specification", "testing_seams"]) await f.api(prefix + "/approvals", { kind, revision: spec.id, scope: "Public HTTP and browser" });
+      const graph = await f.api(prefix + "/tickets", { specification_id: spec.id, tickets: [{ key: "transport", title: "Transport progress", acceptance: "Transport", dependencies: [] }, { key: "view", title: "View progress", acceptance: "View", dependencies: [] }] }).then(r => r.json());
+      await f.api(prefix + "/approvals", { kind: "ticket_graph", revision: graph.hash, scope: "Independent Tickets" });
+      const run = await f.api(prefix + "/runs", { action: "implement-spec", idempotency_key: "failures" }).then(r => r.json());
+      const reasons = ["Transport compiler failed", "View compiler failed"]; const workers = [];
+      for (const [index, ticket] of graph.tickets.entries()) workers.push(await f.api(`/runs/${run.id}/workers`, { role: "implementer", ticket_id: ticket.id, shared_paths: [], idempotency_key: `independent-${index}` }).then(r => r.json()));
+      for (const [index, worker] of workers.entries()) { Object.assign(f.workers.get(worker.id)!, { condition: "failed", waiting_reason: reasons[index] }); await f.api(`/runs/${run.id}/workers/${worker.id}/reconcile`, {}); }
+      const checkedId = await f.assignment("Failed validation result");
+      const checkedRun = await f.api(`/implementations/${checkedId}/runs`, { action: "work", idempotency_key: "check" }).then(r => r.json());
+      f.failNextCheck(); assert.equal((await f.api(`/runs/${checkedRun.id}/checks`, {}).then(r => r.json())).condition, "failed");
+      const origin = `http://localhost:${f.app.port}`;
+      assert.equal((await context.request.post(`${origin}/api/auth`, { data: { token: f.token } })).status(), 204);
+      const page = await context.newPage(); page.setDefaultTimeout(10_000);
+      const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
+      await page.goto(`${origin}/#assignments`);
+      const failedCheck = page.getByRole("article", { name: "Failed validation result", exact: true });
+      await failedCheck.getByText("Checks failed: bun test (exit 1)", { exact: true }).waitFor();
+      const card = page.getByRole("article", { name: "Concurrent failed Tickets", exact: true });
+      await card.getByText("All Tickets (2)", { exact: true }).click();
+      await card.getByText(reasons[1]!, { exact: true }).first().waitFor();
+      observed.push({ width: viewport.width, check: await failedCheck.getByRole("alert").filter({ hasText: "Checks failed: bun test (exit 1)" }).count(), first: await card.getByRole("alert").filter({ hasText: reasons[0] }).count(), second: await card.getByRole("alert").filter({ hasText: reasons[1] }).count() });
+      console.log("Owned failed progress alerts", JSON.stringify(observed.at(-1)));
+      // Matching owner-attention text remains polite, but cannot hide the worker's typed failure.
+      await f.api(prefix + "/questions", { run_id: run.id, question: reasons[0] });
+      await page.reload();
+      await card.getByRole("status").filter({ hasText: reasons[0] }).waitFor();
+      assert.equal(await card.getByRole("alert").filter({ hasText: reasons[0] }).count(), 1);
+      assert.equal(await card.getByRole("alert").filter({ hasText: reasons[1] }).count(), 1);
+      assert.deepEqual(errors, []);
+    } finally { await context.close(); f.close(); }
+  }
+  assert.deepEqual(observed, [{ width: 390, check: 1, first: 1, second: 1 }, { width: 1440, check: 1, first: 1, second: 1 }], "Each failed check and concurrent Ticket error is announced exactly once");
+}
+
 async function ticketProgressBoard(): Promise<void> {
   const cleanupFailures: string[] = [];
   const cleanupAlert = async (card: import("playwright-core").Locator, reason: string, label: string): Promise<void> => {
@@ -242,6 +287,7 @@ try {
 }
 
 try {
+  await failedProgressBoard();
   await ticketProgressBoard();
   await activityAndHistoryBoard();
 } finally { await browser.close(); }

@@ -9,7 +9,7 @@ describe("Assignment board through authenticated HTTP", () => {
       const { id, run, worker, graph } = await boardScenario(f);
       const progress = () => f.api("").then(r => r.json()).then(o => o.progress.find((p: any) => p.implementation_id === id));
       expect(await progress()).toMatchObject({
-        lane: "running", activities: ["implementing"], counts: { waiting: 1, running: 1, completed: 0 },
+        lane: "running", activities: ["implementing"], error_reasons: [], counts: { waiting: 1, running: 1, completed: 0 },
         tickets: [
           { ticket_id: graph.tickets[0].id, title: "Transport progress", state: "running" },
           { title: "Dependent view", state: "waiting", reason: "Waiting for dependencies: Transport progress" },
@@ -61,7 +61,7 @@ describe("Assignment board through authenticated HTTP", () => {
       await f.api(`/implementations/${queuedId}/runs`, { action: "work", idempotency_key: "queued" });
       const overview = () => f.api("").then(r => r.json());
       const queued = (await overview()).progress.find((p: any) => p.implementation_id === queuedId);
-      expect(queued).toMatchObject({ lane: "queued", activities: [], counts: { waiting: 0, running: 0, completed: 0 } });
+      expect(queued).toMatchObject({ lane: "queued", activities: [], error_reasons: [], counts: { waiting: 0, running: 0, completed: 0 } });
       expect(queued.reasons.join(" ")).toContain("capacity");
       const native = f.workers.get(worker.id)!;
       native.condition = "failed"; native.waiting_reason = "Transport compiler failed";
@@ -70,6 +70,7 @@ describe("Assignment board through authenticated HTTP", () => {
       expect(progress).toMatchObject({ lane: "needs_you", activities: [], counts: { waiting: 2, running: 0, completed: 0 }, tickets: [{ state: "waiting", reason: "Transport compiler failed" }, { state: "waiting" }] });
       expect(progress.tickets[1].reason).toContain("Transport progress");
       expect(progress.reasons).toContain("Transport compiler failed");
+      expect(progress.error_reasons).toContain("Transport compiler failed");
     } finally { f.close(); }
   });
 
@@ -156,9 +157,14 @@ describe("Assignment board through authenticated HTTP", () => {
       await f.api(`/runs/${run.id}/checks`, {});
       const progress = () => f.api("").then(r => r.json()).then(o => o.progress.find((p: any) => p.implementation_id === id));
       expect((await progress()).reasons).toContain("Checks failed: bun test (exit 1)");
+      expect((await progress()).error_reasons).toEqual(["Checks failed: bun test (exit 1)"]);
+      await f.api(`/runs/${run.id}/checks`, {});
+      expect((await progress()).error_reasons).toEqual([]);
+      f.failNextCheck(); await f.api(`/runs/${run.id}/checks`, {});
+      expect((await progress()).error_reasons).toEqual(["Checks failed: bun test (exit 1)"]);
       await f.api(`/runs/${run.id}/stop`, {});
       await f.api(`/implementations/${id}/runs`, { action: "work", idempotency_key: "fresh" });
-      expect(await progress()).toMatchObject({ lane: "running", activities: ["implementing"], reasons: [] });
+      expect(await progress()).toMatchObject({ lane: "running", activities: ["implementing"], reasons: [], error_reasons: [] });
     } finally { f.close(); }
   });
 
@@ -174,6 +180,8 @@ describe("Assignment board through authenticated HTTP", () => {
       const overview = await f.api("").then(r => r.json());
       expect(overview.progress.find((p: any) => p.implementation_id === recovering)).toMatchObject({ lane: "running", activities: [] });
       expect(overview.progress.find((p: any) => p.implementation_id === blocked)).toMatchObject({ lane: "needs_you", activities: [] });
+      expect(overview.progress.find((p: any) => p.implementation_id === blocked).error_reasons).toContain(overview.capacity.waiting.find((wait: any) => wait.implementation_id === blocked).reason);
+      expect(overview.progress.find((p: any) => p.implementation_id === recovering).error_reasons).toContain(run.waiting_reason);
     } finally { f.close(); }
   });
 
@@ -192,9 +200,55 @@ describe("Assignment board through authenticated HTTP", () => {
         await Bun.sleep(30);
       }
       const progress = () => f.api("").then(r => r.json()).then(o => o.progress.find((p: any) => p.implementation_id === id));
-      expect(await progress()).toMatchObject({ lane: "needs_you", activities: [] });
+      expect(await progress()).toMatchObject({ lane: "needs_you", activities: [], error_reasons: [] });
       await f.api(`/implementations/${id}/pause`, {});
       expect(await progress()).toMatchObject({ lane: "needs_you", activities: [] });
+    } finally { f.close(); }
+  });
+
+  it("retains every concurrent failed Ticket reason separately from ordinary waiting", async () => {
+    const f = await capacityFixture();
+    try {
+      await f.api("/settings", { max_agents: 4 });
+      const id = await f.assignment("Concurrent failed Tickets");
+      const prefix = `/implementations/${id}`;
+      const detail = await f.api(prefix).then(r => r.json());
+      await f.api(`/projects/${detail.implementation.project_id}/configure`, { checks: [["bun", "test"]], permissions: "Owned unpaid fixtures" });
+      const spec = await f.api(prefix + "/specifications", { content: "Two independent owned Tickets" }).then(r => r.json());
+      for (const kind of ["specification", "testing_seams"]) await f.api(prefix + "/approvals", { kind, revision: spec.id, scope: "Public HTTP and browser" });
+      const graph = await f.api(prefix + "/tickets", { specification_id: spec.id, tickets: [{ key: "transport", title: "Transport progress", acceptance: "Transport", dependencies: [] }, { key: "view", title: "View progress", acceptance: "View", dependencies: [] }] }).then(r => r.json());
+      await f.api(prefix + "/approvals", { kind: "ticket_graph", revision: graph.hash, scope: "Independent Tickets" });
+      const run = await f.api(prefix + "/runs", { action: "implement-spec", idempotency_key: "failures" }).then(r => r.json());
+      const reasons = ["Transport compiler failed", "View compiler failed"];
+      const workers = [];
+      for (const [index, ticket] of graph.tickets.entries()) workers.push(await f.api(`/runs/${run.id}/workers`, { role: "implementer", ticket_id: ticket.id, shared_paths: [], idempotency_key: `independent-${index}` }).then(r => r.json()));
+      for (const [index, worker] of workers.entries()) {
+        Object.assign(f.workers.get(worker.id)!, { condition: "failed", waiting_reason: reasons[index] });
+        await f.api(`/runs/${run.id}/workers/${worker.id}/reconcile`, {});
+      }
+      const overview = await f.api("").then(r => r.json());
+      const progress = overview.progress.find((entry: any) => entry.implementation_id === id);
+      expect(progress.error_reasons).toEqual(reasons);
+      expect(progress.tickets.map((ticket: any) => ticket.reason)).toEqual(reasons);
+      expect(overview.board.find((entry: any) => entry.implementation_id === id)).toMatchObject({ condition: "failed", waiting_reason: reasons[0] });
+      await f.api(prefix + "/questions", { run_id: run.id, question: reasons[0] });
+      const attention = await f.api("").then(r => r.json());
+      expect(attention.board.find((entry: any) => entry.implementation_id === id)).toMatchObject({ condition: "needs_you", waiting_reason: reasons[0] });
+      expect(attention.progress.find((entry: any) => entry.implementation_id === id).error_reasons).toEqual(reasons);
+    } finally { f.close(); }
+  });
+
+  it.each(["failed", "interrupted", "disconnected", "blocked", "needs_you"] as const)("classifies native %s reasons without treating owner attention as failure", async condition => {
+    const f = await capacityFixture();
+    try {
+      const id = await f.assignment("Retained native condition");
+      const run = await f.api(`/implementations/${id}/runs`, { action: "work", idempotency_key: "native" }).then(r => r.json());
+      const reason = condition === "needs_you" ? "Which owner scope should be retained?" : "Owned native execution requires recovery";
+      Object.assign(f.runs.get(run.id)!, { condition, waiting_reason: reason });
+      await f.api(`/runs/${run.id}/reconcile`, {});
+      const progress = (await f.api("").then(r => r.json())).progress.find((entry: any) => entry.implementation_id === id);
+      expect(progress.reasons).toContain(reason);
+      expect(progress.error_reasons).toEqual(condition === "needs_you" ? [] : [reason]);
     } finally { f.close(); }
   });
 

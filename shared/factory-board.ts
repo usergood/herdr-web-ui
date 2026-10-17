@@ -44,10 +44,18 @@ export function assignmentProgress(idea: Implementation, tickets: FactoryTicket[
     return { ticket_id: ticket.id, title: ticket.title, state: done ? "completed" as const : running ? "running" as const : "waiting" as const, reason };
   });
   const latestWorkers = relevant.filter((worker, index) => runs.some(run => run.id === worker.run_id && (!ended(run.condition) || run === current)) && !relevant.slice(index + 1).some(next => next.run_id === worker.run_id && next.role === worker.role && next.ticket_id === worker.ticket_id));
+  const scopedRuns = runs.filter(run => !ended(run.condition) || run === current);
+  const failed = (context: FactoryRun | FactoryWorker) => ["failed", "interrupted", "disconnected", "blocked"].includes(context.condition);
+  const errorReasons = [...new Set([
+    ...(idea.deletion?.reasons ?? []), ...(idea.pause?.reasons ?? []),
+    ...waits.filter(wait => wait.condition === "blocked").map(wait => wait.reason),
+    ...[...scopedRuns, ...latestWorkers].filter(failed).flatMap(context => contextReason(context) ? [contextReason(context)!] : []),
+    ...latestChecks.filter(check => ["failed", "interrupted"].includes(check.condition)).map(checkReason),
+  ])];
   const reasons = [...new Set([
     ...(idea.deletion?.reasons ?? []), ...(idea.pause?.reasons ?? []),
     ...waits.map(wait => wait.reason),
-    ...runs.filter(run => !ended(run.condition) || run === current).flatMap(run => contextReason(run) ? [contextReason(run)!] : []),
+    ...scopedRuns.flatMap(run => contextReason(run) ? [contextReason(run)!] : []),
     ...latestWorkers.flatMap(worker => contextReason(worker) ? [contextReason(worker)!] : []),
     ...rows.flatMap(row => row.reason ? [row.reason] : []),
     ...latestChecks.filter(check => ["failed", "interrupted"].includes(check.condition)).map(checkReason),
@@ -60,7 +68,7 @@ export function assignmentProgress(idea: Implementation, tickets: FactoryTicket[
   const needsAttention = waits.some(wait => wait.condition === "blocked") || (current && attention(current.suspension?.previous_condition ?? current.condition)) || latestWorkers.some(worker => attention(worker.suspension?.previous_condition ?? worker.condition)) || latestChecks.some(check => ["failed", "interrupted"].includes(check.condition));
   const lane = idea.stage === "done" ? "done" : needsAttention || idea.stage === "review" ? "needs_you"
     : underway ? "running" : waits.length || idea.stage === "ready" ? "queued" : idea.stage === "inbox" ? "inbox" : "needs_you";
-  return { implementation_id: idea.id, lane, activities: (["specifying", "implementing", "testing", "auto_review", "fixing"] as const).filter(activity => activities.has(activity)), counts: { waiting: rows.filter(row => row.state === "waiting").length, running: rows.filter(row => row.state === "running").length, completed: rows.filter(row => row.state === "completed").length }, tickets: rows, reasons };
+  return { implementation_id: idea.id, lane, activities: (["specifying", "implementing", "testing", "auto_review", "fixing"] as const).filter(activity => activities.has(activity)), counts: { waiting: rows.filter(row => row.state === "waiting").length, running: rows.filter(row => row.state === "running").length, completed: rows.filter(row => row.state === "completed").length }, tickets: rows, reasons, error_reasons: errorReasons };
 }
 
 export function factoryRunActivity(action: FactoryAction): FactoryActivity {
