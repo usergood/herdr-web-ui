@@ -144,14 +144,35 @@ describe("permanent Delete of owned native/Machine resources", () => {
       const first = await f.api(`/implementations/${id}/runs`, { action: "work", idempotency_key: "first" }).then(r => r.json());
       await f.api(`/runs/${first.id}/stop`, {});
       const run = await f.api(`/implementations/${id}/runs`, { action: "work", idempotency_key: "second" }).then(r => r.json());
+      // Establish the unrelated native sibling before this adapter creates a
+      // child-wait continuation; the fixture reports idle but runs no paid agent.
+      const sibling = await f.assignment("Keep sibling");
+      const keepResponse = await f.api(`/implementations/${sibling.id}/runs`, { action: "work", idempotency_key: "keep" });
+      expect(keepResponse.status).toBe(202);
+      const accepted = await keepResponse.json();
+      // Start may accept a queued request behind an older native continuation.
+      // Establish the protected sibling before deleting any target resources.
+      const keep = await (async () => {
+        const deadline = Date.now() + 8_000;
+        for (;;) {
+          const detail = await f.api(`/implementations/${sibling.id}`).then(r => r.json());
+          const candidate = detail.runs.find((entry: any) => entry.idempotency_key === "keep");
+          if (candidate?.worktree && candidate.pane_id && candidate.workspace_id && ["working", "ready"].includes(candidate.condition)) return candidate;
+          if (Date.now() > deadline) throw new Error(`Protected sibling was not admitted: ${JSON.stringify({ accepted, runs: detail.runs, waiting: detail.capacity_waiting }, (key, value) => key === "manifest" ? undefined : value)}`);
+          await Bun.sleep(20);
+        }
+      })();
+      expect((await f.api(`/implementations/${sibling.id}`).then(r => r.json())).runs).toHaveLength(1);
       const worker = await f.api(`/runs/${run.id}/workers`, { role: "standards", idempotency_key: "child" }).then(r => r.json());
       for (const path of [first.worktree, run.worktree, worker.worktree]) {
         writeFileSync(join(path, "README.md"), "Delete unfinished changes\n");
         writeFileSync(join(path, ".gitignore"), "ignored.txt\n");
         writeFileSync(join(path, "ignored.txt"), "Delete ignored output\n");
       }
-      const sibling = await f.assignment("Keep sibling");
-      const keep = await f.api(`/implementations/${sibling.id}/runs`, { action: "work", idempotency_key: "keep" }).then(r => r.json());
+      expect(await f.readFile(join(keep.worktree, "README.md")).then(r => r.text())).toBe("Protected primary checkout\n");
+      const beforeDelete = await f.request("/api/session").then(r => r.json());
+      expect(beforeDelete.snapshot.panes.some((pane: any) => pane.pane_id === keep.pane_id)).toBe(true);
+      console.log("PASS protected native sibling admitted before Delete", JSON.stringify({ accepted: { id: accepted.id, condition: accepted.condition, reason: accepted.reason, run_id: accepted.run_id }, sibling: { id: keep.id, condition: keep.condition, worktree: keep.worktree, pane_id: keep.pane_id }, capacity: (await f.api("").then(r => r.json())).capacity }));
       const response = await f.api(`/implementations/${id}/delete`, {});
       expect(await response.json()).toEqual({ id, condition: "deleted" });
       for (const path of [first.worktree, run.worktree, worker.worktree]) expect((await f.readFile(join(path, "README.md"))).status).toBe(404);

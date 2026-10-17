@@ -2,10 +2,11 @@ import { afterAll, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, readlinkSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { herdrRpc, herdrSocketPath, sessionSnapshot, workspaceClose, workspaceCreate, paneRead } from "./herdr/client.ts";
+import { herdrRpc, herdrSocketPath, sessionSnapshot, workspaceClose, workspaceCreate, paneRead, paneProcessInfo } from "./herdr/client.ts";
 import { ConversationUnavailable, gjcTranscriptPath, paneConversation } from "./conversation.ts";
 import { isGjcProcess } from "./gjc-runtime.ts";
 import { startShellAgent } from "./shell-agent.ts";
+import { createServer } from "./index.ts";
 
 const home = realpathSync(mkdtempSync(join(tmpdir(), "herdr-gjc-binding-")));
 // The owned SDK rows share this real Git anchor, including checkout-local CI TMPDIR.
@@ -356,8 +357,38 @@ it("starts the gjc this server found on its PATH, by absolute path, and waits un
     expect(info.process_info?.foreground_processes?.find((candidate) => isGjcProcess(candidate.argv ?? []))?.argv?.slice(-1)).toEqual([dir]);
     process.env["PATH"] = "/nonexistent";
     const bare = await shell();
-    await expect(startShellAgent("gjc", bare, [], { timeoutMs: 1500 })).rejects.toThrow("not on this server's PATH");
-    expect((await paneRead({ paneId: bare })).text.replaceAll(home, "")).not.toContain("gjc");
+    // A path-only prompt may name gjc even when no command was dispatched.
+    const prompt = "owned-gjc-path-only> ";
+    await herdrRpc("pane.send_text", { pane_id: bare, text: `PS1=${shellQuote(prompt)}; export PATH=${shellQuote(bin)}\n` });
+    const readyDeadline = Date.now() + 5000;
+    for (;;) {
+      if ((await paneRead({ paneId: bare })).text.trimEnd().endsWith(prompt.trimEnd())) break;
+      if (Date.now() >= readyDeadline) throw new Error("Owned missing-binary shell prompt did not become ready");
+      await Bun.sleep(50);
+    }
+    const stateDir = mkdtempSync(join(home, "http-state-"));
+    const app = createServer({ port: 0, token: "owned-gjc-oracle", stateDir, machines: false });
+    const headers = { authorization: "Bearer owned-gjc-oracle" };
+    const screen = async () => {
+      const response = await fetch(`http://localhost:${app.port}/api/pane/read?pane_id=${encodeURIComponent(bare)}&source=visible&format=text`, { headers });
+      expect(response.status).toBe(200);
+      return (await response.json() as { read: { text: string } }).read.text;
+    };
+    try {
+      const offered = await fetch(`http://localhost:${app.port}/api/agents`, { headers });
+      expect(offered.status).toBe(200);
+      expect((await offered.json() as { agents: { kind: string }[] }).agents.map(agent => agent.kind)).not.toContain("gjc");
+      const before = await screen();
+      expect(before).toContain(prompt.trimEnd());
+      const shellBefore = await paneProcessInfo(bare);
+      expect(shellBefore?.shell_pid).toBeGreaterThan(0);
+      await expect(startShellAgent("gjc", bare, [], { timeoutMs: 1500 })).rejects.toThrow("not on this server's PATH");
+      // The pane can run our owned fallback, but a failed server lookup must type nothing.
+      expect(await screen()).toBe(before);
+      const shellAfter = await paneProcessInfo(bare);
+      expect(shellAfter?.shell_pid).toBe(shellBefore!.shell_pid);
+      expect(shellAfter?.foreground_processes?.some(process => isGjcProcess(process.argv ?? [])) ?? false).toBe(false);
+    } finally { app.stop(); rmSync(stateDir, { recursive: true, force: true }); }
   } finally {
     if (previousPath === undefined) delete process.env["PATH"]; else process.env["PATH"] = previousPath;
   }
