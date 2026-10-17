@@ -366,6 +366,7 @@ export class FactoryRuntime {
             account_changed: "The frozen GitHub account changed; reconcile its accepted scope",
           };
           const code = failure?.error?.code;
+          if (code === "release_inventory_unavailable") throw new FactoryError("remote_factory_unavailable", "The published release inventory is incomplete or unavailable; retained merge authority will be observed again", 409);
           if (code && reasons[code]) throw new FactoryError(code, reasons[code], 409);
           throw new FactoryError("remote_factory_unavailable", "The execution Machine could not verify its review or publication operation", 409);
         }

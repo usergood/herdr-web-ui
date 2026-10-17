@@ -206,16 +206,30 @@ export class FactoryMerge {
     result.merge_sha = sha; result.condition = "merged"; result.reason = null;
     if ((frozen.implementation?.delivery_scope?.milestone ?? frozen.project?.delivery_policy) === "release") {
       result.condition = "awaiting_release"; result.reason = "Merge verified; waiting for a published release containing it";
-      const releases = await api(`repos/${pr.repository}/releases`) as { draft: boolean; prerelease: boolean; tag_name: string }[];
-      if (!Array.isArray(releases)) throw new FactoryError("merge_coverage_unverified", "The published release inventory could not be verified", 409);
-      for (const release of releases.slice(0, 100)) if (!release.draft && !release.prerelease && typeof release.tag_name === "string" && release.tag_name) {
-        const commit = await api(`repos/${pr.repository}/commits/${encodeURIComponent(`tags/${release.tag_name}`)}`) as { sha: string };
-        if (/^[a-f0-9]{40}$/.test(commit.sha) && await contains(commit.sha) && await containsChanges(commit.sha, true)) {
-          const latest = await api(`repos/${pr.repository}/commits/${encodeURIComponent(`tags/${release.tag_name}`)}`) as { sha: string };
-          if (latest.sha !== commit.sha) throw new FactoryError("merge_coverage_unverified", "The release tag changed during delivery verification; observe it again", 409);
-          result.condition = "released"; result.release_tag = release.tag_name; result.reason = null; break;
+      const seen = new Set<number>();
+      for (let page = 1; page <= 10; page++) {
+        let releases: { id: number; draft: boolean; prerelease: boolean; tag_name: string }[];
+        try { releases = await api(`repos/${pr.repository}/releases?per_page=100&page=${page}`) as typeof releases; }
+        catch (error) {
+          if (error instanceof FactoryError && error.code !== "account_login_unavailable") throw error;
+          throw new FactoryError("release_inventory_unavailable", "The published release inventory is unavailable; retain the verified merge and observe again", 409);
         }
+        if (!Array.isArray(releases) || releases.length > 100) throw new FactoryError("release_inventory_unavailable", "The published release inventory is incomplete; retain the verified merge and observe again", 409);
+        for (const release of releases) {
+          if (!release || !Number.isSafeInteger(release.id) || release.id < 1 || seen.has(release.id) || typeof release.draft !== "boolean" || typeof release.prerelease !== "boolean" || typeof release.tag_name !== "string" || !release.tag_name.trim()) throw new FactoryError("release_inventory_unavailable", "The published release inventory is incomplete or changed during pagination; observe it again", 409);
+          seen.add(release.id);
+        }
+        for (const release of releases) if (!release.draft && !release.prerelease) {
+          const commit = await api(`repos/${pr.repository}/commits/${encodeURIComponent(`tags/${release.tag_name}`)}`) as { sha: string };
+          if (/^[a-f0-9]{40}$/.test(commit.sha) && await contains(commit.sha) && await containsChanges(commit.sha, true)) {
+            const latest = await api(`repos/${pr.repository}/commits/${encodeURIComponent(`tags/${release.tag_name}`)}`) as { sha: string };
+            if (latest.sha !== commit.sha) throw new FactoryError("merge_coverage_unverified", "The release tag changed during delivery verification; observe it again", 409);
+            result.condition = "released"; result.release_tag = release.tag_name; result.reason = null; return result;
+          }
+        }
+        if (releases.length < 100) return result;
       }
+      throw new FactoryError("release_inventory_unavailable", "The published release inventory exceeds ten pages; retain the verified merge and observe again", 409);
     }
     return result;
   }
