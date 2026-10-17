@@ -98,6 +98,7 @@ export async function completionEvidenceBoardJourney(browser: Browser, viewport:
     const page = await context.newPage(); page.setDefaultTimeout(10000);
     const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
     const currentStatus = () => page.locator(".factory-section > .factory-board-status");
+    const nextStep = () => page.getByRole("region", { name: "Next step", exact: true });
     const card = () => page.getByRole("article", { name: "Retained research", exact: true });
     const projections = async (reason: string, activity: string) => {
       const current = await f.request(`${f.prefix}?view=current`).then(response => response.json());
@@ -116,16 +117,21 @@ export async function completionEvidenceBoardJourney(browser: Browser, viewport:
       const reason = evidence.reason; assert.equal(typeof reason, "string"); assert(reason);
       await projections(reason, kind === "changes" ? "awaiting_merge" : "implementing");
       await currentStatus().getByText(reason, { exact: true }).waitFor();
+      await nextStep().getByText(reason, { exact: true }).waitFor();
+      const nextRole = { alerts: await nextStep().getByRole("alert").filter({ hasText: reason }).count(), statuses: await nextStep().getByRole("status").filter({ hasText: reason }).count() };
+      console.log(JSON.stringify({ viewport: viewport.width, completion_next_step: { kind, evidence, role: nextRole } }));
       const roles = [{ surface: "current", alerts: await currentStatus().getByRole("alert").filter({ hasText: reason }).count(), statuses: await currentStatus().getByRole("status").filter({ hasText: reason }).count() }];
       await page.goto(`${origin()}/#assignments`);
       await card().locator(".factory-board-status").getByText(reason, { exact: true }).waitFor();
       roles.push({ surface: "overview", alerts: await card().getByRole("alert").filter({ hasText: reason }).count(), statuses: await card().getByRole("status").filter({ hasText: reason }).count() });
       console.log(JSON.stringify({ viewport: viewport.width, unavailable_completion_evidence: { kind, evidence, roles } }));
       assert.deepEqual(roles, [{ surface: "current", alerts: 1, statuses: 0 }, { surface: "overview", alerts: 1, statuses: 0 }], "Unavailable Machine repository evidence is one alert on current and overview, independent of ordinary attention/progress");
+      assert.deepEqual(nextRole, { alerts: 1, statuses: 0 }, "Next step announces the actual completion-evidence error for both unknown and retained changes");
       assert.equal(evidence.reason_is_error, true);
       await page.reload(); await card().getByRole("alert").filter({ hasText: reason }).waitFor();
       await page.goto(`${origin()}/#factory/${run.implementation_id}`); await page.reload();
       await currentStatus().getByRole("alert").filter({ hasText: reason }).waitFor();
+      await nextStep().getByRole("alert").filter({ hasText: reason }).waitFor();
       f.reconnect(); return reason;
     };
     const unknownReason = await fault("unknown");
@@ -144,6 +150,9 @@ export async function completionEvidenceBoardJourney(browser: Browser, viewport:
       await page.goto(`${origin()}/#factory/${run.implementation_id}`); await page.reload();
       await currentStatus().getByRole("status").filter({ hasText: evidence.reason }).waitFor();
       assert.equal(await currentStatus().getByRole("alert").count(), 0); assert.equal(await currentStatus().getByText(oldReason, { exact: true }).count(), 0);
+      await nextStep().getByRole("status").filter({ hasText: evidence.reason }).waitFor();
+      console.log(JSON.stringify({ viewport: viewport.width, ordinary_completion_next_step: { reason: evidence.reason, other_alerts: await nextStep().getByRole("alert").allTextContents() } }));
+      assert.equal(await nextStep().getByRole("alert").filter({ hasText: evidence.reason }).count(), 0); assert.equal(await nextStep().getByText(oldReason, { exact: true }).count(), 0);
     };
     await ordinary(unknownReason);
     const retainedReason = await fault("changes");

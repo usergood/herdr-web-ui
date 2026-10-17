@@ -103,7 +103,7 @@ export function AssignmentActions({ preset, onPresetChange, detail, project, mac
     {detail.runs.length > 0 && detail.implementation.stage !== "done" && <div className="factory-actions">
       <button className="btn factory-button" disabled={busy} onClick={() => void perform(async () => { await factoryRequest(prefix + "/completion-evidence"); })}>{t("Check completion evidence")}</button>
       {!active && latest?.action === "work" && <button className="btn factory-button" disabled={busy || !!detail.implementation.delivery_scope && !canAcceptResearch} onClick={() => void perform(async () => { await factoryRequest(prefix + "/complete-work", { run_id: latest.id }); })}>{detail.implementation.delivery_scope ? t("Accept research") : t("Mark work done")}</button>}
-      <p role={completionEvidence?.repository_changes === "unknown" ? "alert" : "status"}>{completionEvidence?.reason ?? (canAcceptResearch ? t("No repository changes; owned work is quiescent.") : t("Check repository changes and owned work before accepting research."))}</p>
+      <p role={completionEvidence?.reason_is_error || completionEvidence?.repository_changes === "unknown" ? "alert" : "status"}>{completionEvidence?.reason ?? (canAcceptResearch ? t("No repository changes; owned work is quiescent.") : t("Check repository changes and owned work before accepting research."))}</p>
     </div>}
     {active ? <div className="factory-actions">
       {unconfirmedWork && active.waiting_reason && <p role="alert">{active.waiting_reason}</p>}
