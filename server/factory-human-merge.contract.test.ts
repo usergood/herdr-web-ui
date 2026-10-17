@@ -579,6 +579,25 @@ it("requires fresh reviewed owner context after an answered scope question chang
     expect(blocked.human_review_approvals).toHaveLength(0);
     expect(blocked.implementation.stage).toBe("review");
     expect(f.mergeEffects).toHaveLength(0);
+    const oldWorkers = new Set(ready.workers.map((worker: { id: string }) => worker.id));
+    for (const axis of ["standards", "spec"]) {
+      const current = await until(detail, d => d.workers.some((worker: any) => worker.role === axis && !oldWorkers.has(worker.id) && worker.condition === "working"), 6000);
+      const worker = current.workers.find((worker: any) => worker.role === axis && !oldWorkers.has(worker.id) && worker.condition === "working");
+      const contract = await f.agent(ready.human_reviews[0].run_id, "contract").then(response => response.json());
+      expect(contract.question_revision).toBe(blocked.question_revision);
+      expect((await f.agent(ready.human_reviews[0].run_id, "consume", { revision: contract.question_revision, worker_id: worker.id })).status).toBe(200);
+      f.workers.get(worker.id)!.condition = "ready";
+    }
+    const fresh = await until(detail, d => d.automatic_review[0]?.condition === "published" && d.automatic_review[0]?.context_revision === blocked.question_revision);
+    expect(fresh.automatic_review[0].check_id).not.toBe(ready.automatic_review[0].check_id);
+    expect(fresh.automatic_review[0].evidence_ids.every((id: string) => !ready.automatic_review[0].evidence_ids.includes(id))).toBe(true);
+    expect(fresh.human_reviews[0]).toMatchObject({ id: review.id, head: review.head, snapshot_id: review.snapshot_id });
+    expect(f.mergeEffects).toHaveLength(0);
+    expect(fresh.human_review_approvals).toHaveLength(0);
+    const approved = await f.api(`${prefix}/human-review/approve`, { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, idempotency_key: "fresh-reviewed-owner-context" });
+    expect(approved.status).toBe(200);
+    expect(await approved.json()).toMatchObject({ context_revision: blocked.question_revision, condition: "merged" });
+    expect(f.mergeEffects).toHaveLength(1);
   } finally { f.close(); }
 }, 20000);
 
@@ -663,5 +682,109 @@ for (const answered of [false, true]) it(`blocks retained pending CI authority a
     expect((await detail()).human_review_approvals).toHaveLength(1);
     expect(f.mergeObservations).toHaveLength(1);
     expect(f.mergeEffects).toHaveLength(0);
+    if (answered) {
+      const ids = new Set(ready.workers.map((worker: { id: string }) => worker.id));
+      for (const axis of ["standards", "spec"]) {
+        const current = await until(detail, d => d.workers.some((worker: any) => worker.role === axis && !ids.has(worker.id) && worker.condition === "working"));
+        const worker = current.workers.find((worker: any) => worker.role === axis && !ids.has(worker.id) && worker.condition === "working");
+        const contract = await f.agent(review.run_id, "contract").then(response => response.json());
+        expect((await f.agent(review.run_id, "consume", { revision: contract.question_revision, worker_id: worker.id })).status).toBe(200);
+        f.workers.get(worker.id)!.condition = "ready";
+      }
+      const fresh = await until(detail, d => d.automatic_review[0]?.condition === "published" && d.automatic_review[0]?.context_revision === stopped.question_revision);
+      expect(f.mergeEffects).toHaveLength(0);
+      const response = await f.api(`${prefix}/human-review/approve`, { ...body, idempotency_key: "fresh-after-owner-context" });
+      expect(response.status).toBe(200);
+      const renewed = await response.json();
+      expect(renewed).toMatchObject({ condition: "merged", context_revision: fresh.question_revision });
+      expect(renewed.id).not.toBe(receipt.id);
+      const done = await detail();
+      expect(done.human_review_approvals).toHaveLength(2);
+      expect(done.human_review_approvals[0]).toMatchObject({ id: receipt.id, idempotency_key: body.idempotency_key, context_revision: ready.question_revision, condition: "blocked", merge_not_sent: true });
+      expect(f.mergeEffects).toHaveLength(1);
+    }
   } finally { f.close(); }
 }, 20000);
+
+it("keeps fresh owner context fenced while its new evidence generation is being checked", async () => {
+  const f = await capacityFixture({ advancingHeads: true }); let gate: ReturnType<typeof f.holdNextHead> | undefined;
+  try {
+    const { prefix, detail, run } = await published(f);
+    const ready = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
+    const review = ready.human_reviews[0];
+    const question = await f.api(`${prefix}/questions`, { question: "Confirm unchanged behavior before refreshed review" }).then(response => response.json());
+    gate = f.holdNextHead();
+    expect((await f.api(`${prefix}/questions/${question.id}/answer`, { revision: question.revision, answer: "Keep the accepted behavior and review this context" })).status).toBe(200);
+    await gate.started;
+    const boundary = await detail();
+    expect(boundary.automatic_review[0].context_revision).toBe(boundary.question_revision);
+    expect(boundary.pull_requests[0].check_id).toBe(ready.pull_requests[0].check_id);
+    const authority = { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head };
+    const plain = await f.api(`${prefix}/human-review/approve`, { ...authority, idempotency_key: "premature-refresh" });
+    expect(plain.status).toBe(409);
+    expect((await plain.json()).error.code).toBe("fresh_evidence_required");
+    const comment = await f.api(`${prefix}/comments`, { snapshot_id: review.snapshot_id, path: "progress.ts", side: "new", line_start: 1, line_end: 1, content: "Retain this anchored draft through refresh" }).then(response => response.json());
+    const comments = await f.api(`${prefix}/human-review/submit`, { ...authority, disposition: "approve", comment_ids: [comment.id], idempotency_key: "premature-refresh-comments" });
+    expect(comments.status).toBe(409);
+    expect((await detail()).human_review_approvals).toHaveLength(0);
+    expect((await detail()).human_feedback_batches).toHaveLength(0);
+    expect(f.mergeEffects).toHaveLength(0);
+    gate.release();
+    for (const axis of ["standards", "spec"]) {
+      const current = await until(detail, d => d.workers.some((worker: any) => worker.role === axis && !ready.workers.some((old: any) => old.id === worker.id) && worker.condition === "working"));
+      const worker = current.workers.find((worker: any) => worker.role === axis && worker.condition === "working");
+      const contract = await f.agent(run.id, "contract").then(response => response.json());
+      expect((await f.agent(run.id, "consume", { revision: contract.question_revision, worker_id: worker.id })).status).toBe(200);
+      f.workers.get(worker.id)!.condition = "ready";
+    }
+    const fresh = await until(detail, d => d.automatic_review[0]?.condition === "published" && d.automatic_review[0]?.context_revision === boundary.question_revision);
+    expect(fresh.comments).toContainEqual(expect.objectContaining({ id: comment.id, snapshot_id: review.snapshot_id, status: "draft" }));
+    expect(fresh.human_reviews[0].snapshot_id).toBe(review.snapshot_id);
+    expect(f.mergeEffects).toHaveLength(0);
+  } finally { gate?.release(); f.close(); }
+}, 20000);
+
+for (const pause of [false, true]) it(`retains a fresh-context check across ${pause ? "Pause and Resume" : "restart and a lost acknowledgment"} without replaying completed work`, async () => {
+  const f = await capacityFixture({ advancingHeads: true }); let gate: ReturnType<typeof f.holdNextCheck> | undefined;
+  try {
+    const { prefix, detail, run } = await published(f);
+    const ready = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
+    const originalChecks = [...f.executedChecks]; const originalWorkers = [...f.workerLaunches];
+    const question = await f.api(`${prefix}/questions`, { question: "Confirm the original behavior after publication" }).then(response => response.json());
+    gate = f.holdNextCheck("integration");
+    if (!pause) f.loseNextCheck();
+    expect((await f.api(`${prefix}/questions/${question.id}/answer`, { revision: question.revision, answer: "Keep the original behavior; freshly verify it" })).status).toBe(200);
+    await gate.started;
+    const checking = await detail(); const check = checking.checks.at(-1);
+    expect(check.id).not.toBe(ready.pull_requests[0].check_id);
+    expect(check.condition).toBe("working");
+    if (pause) expect((await f.api(`${prefix}/pause`, {}).then(response => response.json())).pause.condition).toBe("paused");
+    f.restart();
+    if (pause) {
+      expect((await f.api(`${prefix}/resume`, {})).status).toBe(200);
+      await until(detail, d => !d.runs.find((candidate: any) => candidate.id === run.id).suspension);
+      f.runs.get(run.id)!.condition = "ready";
+    } else {
+      const retained = await until(detail, d => d.automatic_review[0]?.condition === "waiting");
+      expect(retained.automatic_review[0].reason).toContain("fresh-context check");
+      expect(f.executedChecks).toEqual([...originalChecks, check.id]);
+      expect(retained.checks.at(-1).id).toBe(check.id);
+    }
+    gate.release();
+    for (const axis of ["standards", "spec"]) {
+      const current = await until(detail, d => d.workers.some((worker: any) => worker.role === axis && !ready.workers.some((old: any) => old.id === worker.id) && worker.condition === "working"));
+      const worker = current.workers.find((worker: any) => worker.role === axis && worker.condition === "working");
+      const contract = await f.agent(run.id, "contract").then(response => response.json());
+      expect((await f.agent(run.id, "consume", { revision: contract.question_revision, worker_id: worker.id })).status).toBe(200);
+      f.workers.get(worker.id)!.condition = "ready";
+    }
+    const fresh = await until(detail, d => d.automatic_review[0]?.condition === "published" && d.automatic_review[0]?.context_revision === checking.question_revision);
+    expect(fresh.checks.find((candidate: any) => candidate.id === check.id).condition).toBe(pause ? "cancelled" : "passed");
+    expect(f.executedChecks).toHaveLength(originalChecks.length + (pause ? 2 : 1));
+    expect(f.workerLaunches.slice(0, originalWorkers.length)).toEqual(originalWorkers);
+    expect(fresh.workers.filter((worker: any) => worker.role === "implementer")).toHaveLength(1);
+    expect(fresh.human_reviews[0].snapshot_id).toBe(ready.human_reviews[0].snapshot_id);
+    expect(fresh.human_review_approvals).toHaveLength(0);
+    expect(f.publications.size).toBe(1); expect(f.mergeEffects).toHaveLength(0);
+  } finally { gate?.release(); f.close(); }
+}, 30000);

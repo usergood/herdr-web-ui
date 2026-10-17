@@ -18,8 +18,8 @@ export class FactoryHumanApprovalService {
     const frozen = run?.manifest as { project?: FactoryProject } | undefined;
     if (!run || run.implementation_id !== id || run.action !== "implement-spec" || review.condition !== "ready" || !snapshot || snapshot.head !== review.head || !pr || pr.head !== review.head || frozen?.project?.pull_request?.repository !== pr.repository || frozen.project.pull_request.base_branch !== pr.base_branch) throw new FactoryError("review_stale", "Select the current captured and published Human Review candidate", 409);
     if (this.workflow.questions(id, run.id).some(question => question.answer === null)) throw new FactoryError("answers_unready", "Answer pending owner questions before granting Human Review merge authority", 409);
-    const context = this.store.get<import("../shared/factory.ts").FactoryAutomaticReview>("automatic_review", run.id)?.context_revision;
-    if (context !== this.workflow.questionRevision(id, run.id)) throw new FactoryError("fresh_evidence_required", "The owner context changed; retain fresh checks and independent review before granting merge authority", 409);
+    const progress = this.store.get<import("../shared/factory.ts").FactoryAutomaticReview>("automatic_review", run.id);
+    if (progress?.context_revision !== this.workflow.questionRevision(id, run.id) || progress.condition !== "published" || progress.head !== pr.head || progress.check_id !== pr.check_id || JSON.stringify([...progress.evidence_ids].sort()) !== JSON.stringify([...pr.evidence_ids].sort())) throw new FactoryError("fresh_evidence_required", "The owner context changed; retain fresh checks and independent review before granting merge authority", 409);
     if (this.store.list<FactoryRun>("runs", id).filter(r => r.action === "implement-spec").at(-1)?.id !== run.id) throw new FactoryError("review_stale", "A newer implementation attempt supersedes this review", 409);
     if (!submitting && this.store.list<FactoryDetail["comments"][number]>("comments", id).some(c => c.status !== "resolved")) throw new FactoryError("review_comments_pending", "Submit or resolve all retained review comments before approving without comments", 409);
     const check = this.store.list<FactoryCheck>("checks", run.id).filter(c => c.worker_id === null).at(-1);
@@ -71,7 +71,14 @@ export class FactoryHumanApprovalService {
     const review = typeof body.review_id === "string" ? this.store.get<FactoryHumanReview>("human_reviews", body.review_id) : null;
     if (!review || review.implementation_id !== id || review.snapshot_id !== body.snapshot_id || review.head !== body.head) throw new FactoryError("review_stale", "Approval must name the displayed snapshot and head", 409);
     const receipts = this.store.list<FactoryHumanApproval>("human_review_approvals", id);
-    let receipt = receipts.find(a => a.idempotency_key === body.idempotency_key) ?? receipts.find(a => a.review_id === review.id && !a.superseded_by_batch_id);
+    let receipt = receipts.find(a => a.idempotency_key === body.idempotency_key);
+    if (!receipt) {
+      const context = this.workflow.questionRevision(id, review.run_id);
+      const retained = receipts.filter(a => a.review_id === review.id && !a.superseded_by_batch_id);
+      // A new owner decision never rebinds an old key or unknown merge send.
+      const safelyBlocked = retained.every(a => typeof a.context_revision === "string" && a.context_revision !== context && a.condition === "blocked" && a.merge_not_sent === true && !a.merge_sha && !a.release_tag && !this.busy.has(a.id));
+      receipt = retained.find(a => a.context_revision === context) ?? (safelyBlocked ? undefined : retained[0]);
+    }
     if (receipt && (receipt.superseded_by_batch_id || receipt.review_id !== review.id || receipt.head !== body.head || receipt.snapshot_id !== body.snapshot_id)) throw new FactoryError("approval_conflict", "This approval identity belongs to another candidate", 409);
     if (!receipt) {
       this.candidate(id, review);

@@ -107,7 +107,7 @@ export class FactoryExecution {
     if (!live) return;
     let run: FactoryRun = live;
     const previous = this.store.get<FactoryAutomaticReview>("automatic_review", run.id);
-    if (previous?.condition === "published") { await this.handoff(run); return; }
+    if (previous?.condition === "published" && previous.context_revision === this.workflow.questionRevision(run.implementation_id, run.id) && !this.workflow.questions(run.implementation_id, run.id).some(question => question.answer === null)) { await this.handoff(run); return; }
     if (["blocked"].includes(previous?.condition ?? "") || (previous?.next_attempt_at ?? 0) > Date.now()) return;
     const lastCheck = this.store.list<FactoryCheck>("checks", run.id).filter(c => c.worker_id === null).at(-1);
     let state: FactoryAutomaticReview = previous ?? { ...this.store.record(), id: run.id, run_id: run.id, head: lastCheck?.head ?? "", round: 0, condition: "reviewing", reason: null, attempts: 0, next_attempt_at: 0, check_id: lastCheck?.id ?? "", evidence_ids: [], batch_id: null };
@@ -120,13 +120,27 @@ export class FactoryExecution {
       const revision = this.workflow.questionRevision(run.implementation_id, run.id);
       if (state.context_revision && state.context_revision !== revision) {
         for (const worker of this.store.list<FactoryWorker>("workers", run.id).filter(w => w.role !== "implementer" && !["completed", "cancelled", "failed"].includes(w.condition))) { await this.pipeline.workerAction(run.id, worker.id, "stop"); if (!this.live(plan)) return; }
-        state = { ...state, generation: (state.generation ?? 0) + 1, evidence_ids: [] };
+        const batch = state.human_batch_id ? this.store.get<import("../shared/factory.ts").FactoryHumanFeedbackBatch>("review_batches", state.human_batch_id) : null;
+        // Bind a durable fresh-check boundary to this context. An accepted check
+        // after it is reconciled by identity after a lost reply, never replayed.
+        const baseline = this.store.list<FactoryCheck>("checks", run.id).filter(check => check.worker_id === null).at(-1)?.id ?? state.check_id;
+        state = { ...state, context_revision: revision, generation: (state.generation ?? 0) + 1, evidence_ids: [], condition: state.batch_id && !batch?.resolution ? state.condition : "reviewing", attempts: 0, next_attempt_at: 0, reason: null, ...(batch?.resolution ? { human_batch_id: undefined, batch_id: null } : {}) };
+        this.store.db.transaction(() => {
+          this.store.put("automatic_review_refresh", { id: run.id, run_id: run.id, implementation_id: run.implementation_id, revision, baseline_check_id: baseline }, run.implementation_id);
+          this.store.put("automatic_review", state!, run.implementation_id);
+        }).immediate();
       }
       state = { ...state, context_revision: revision };
       if (state?.condition === "repairing" || state?.batch_id) { await this.repair(plan, state); return; }
       const head = await this.runtime.operation<{ head: string; workspace_hash: string }>(run, "head");
       if (!this.live(plan)) return;
-      const check = this.store.list<FactoryCheck>("checks", run.id).filter(c => c.worker_id === null).at(-1);
+      const refresh = this.store.get<{ revision: string; baseline_check_id: string }>("automatic_review_refresh", run.id);
+      const latest = this.store.list<FactoryCheck>("checks", run.id).filter(check => check.worker_id === null).at(-1);
+      if (refresh?.revision === revision && (!latest || latest.id === refresh.baseline_check_id)) await this.pipeline.check(run.id);
+      if (!this.live(plan)) return;
+      const check = refresh?.revision === revision ? await this.checked(plan, null) : latest;
+      if (!this.live(plan)) return;
+      if (!check && refresh?.revision === revision) { this.store.put("automatic_review", { ...state, condition: "waiting", reason: "Waiting for the retained fresh-context check to finish" }, run.implementation_id); return; }
       if (!check || check.condition !== "passed" || check.head !== head.head || check.workspace_hash !== head.workspace_hash) throw new FactoryError("review_stale", "Final checks must cover the current integration workspace", 409);
       if (state.head !== head.head) throw new FactoryError("review_stale", "The candidate changed outside the automatic repair lineage", 409);
       state = { ...state, condition: "reviewing", reason: null, check_id: check.id };
@@ -195,7 +209,7 @@ export class FactoryExecution {
       if (!this.live(plan) || !state) return;
       const code = error instanceof FactoryError ? error.code : "execution_uncertain";
       const waiting = ["capacity_exhausted", "build_capacity_exhausted", "shared_writer_owned", "integration_busy", "publication_busy", "worker_busy", "answers_unready", "answers_unconsumed"].includes(code);
-      const retry = ["execution_uncertain", "machine_offline", "machine_disconnected", "remote_factory_unavailable", "publication_uncertain", "review_evidence_required", "native_evidence_required"].includes(code);
+      const retry = ["execution_uncertain", "machine_offline", "machine_disconnected", "remote_factory_unavailable", "publication_uncertain", "review_evidence_required", "native_evidence_required", "check_interrupted"].includes(code);
       const attempts = (previous?.attempts ?? 0) + 1;
       this.store.put("automatic_review", { ...state, condition: waiting || retry && attempts < 6 ? "waiting" : "blocked", reason: `${error instanceof FactoryError ? error.message : "Automatic review could not be verified"}${retry && attempts >= 6 ? "; automatic recovery exhausted after six observations" : ""}`, attempts: waiting ? 0 : attempts, next_attempt_at: retry ? Date.now() + Math.min(30000, 1000 * 2 ** (attempts - 1)) : 0 }, run.implementation_id);
     }

@@ -272,6 +272,15 @@ it("recovers changed owner context through explicit Decline, consumed fresh revi
     f.mergeFailure(null);
     const context = await f.agent(run.id, "contract").then(r => r.json());
     expect((await f.agent(run.id, "consume", { revision: context.question_revision })).status).toBe(200);
+    // The answered context refreshes evidence automatically before new feedback
+    // may claim this unchanged captured candidate.
+    for (const role of ["standards", "spec"]) {
+      const current = await until(detail, d => d.workers.some((w: any) => w.role === role && w.condition === "working"));
+      const worker = current.workers.find((w: any) => w.role === role && w.condition === "working");
+      expect((await f.agent(run.id, "consume", { revision: context.question_revision, worker_id: worker.id })).status).toBe(200);
+      f.workers.get(worker.id)!.condition = "ready";
+    }
+    await until(detail, d => d.automatic_review[0]?.condition === "published" && d.automatic_review[0]?.context_revision === context.question_revision);
     const comment = await f.api(`${prefix}/comments`, { snapshot_id: review.snapshot_id, path: "progress.ts", side: "new", line_start: 1, line_end: 1, content: "Recheck the original behavior after this owner decision" }).then(r => r.json());
     const declined = await f.api(`${prefix}/human-review/submit`, { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, disposition: "decline", comment_ids: [comment.id], idempotency_key: "fresh-owner-review" });
     expect(declined.status).toBe(202);
