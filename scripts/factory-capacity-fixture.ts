@@ -6,7 +6,7 @@ import { createServer } from "../server/index.ts";
 import type { AccountTools } from "../server/account-tools.ts";
 import type { FactoryCheck, FactoryRun, FactoryWorker, NativeConversationSnapshot } from "../shared/factory.ts";
 
-export async function capacityFixture(scenario: { advancingHeads?: boolean; workspaceHash?: string; accountTools?: AccountTools; runTranscript?: (run: FactoryRun, before?: string) => Pick<NativeConversationSnapshot, "source_id" | "version" | "cursor" | "turns"> | null; workerTranscript?: (worker: FactoryWorker, before?: string) => Pick<NativeConversationSnapshot, "source_id" | "version" | "cursor" | "turns"> | null } = {}) {
+export async function capacityFixture(scenario: { advancingHeads?: boolean; workspaceHash?: string; accountTools?: AccountTools; publicationFailure?: () => Promise<Response | null>; runTranscript?: (run: FactoryRun, before?: string) => Pick<NativeConversationSnapshot, "source_id" | "version" | "cursor" | "turns"> | null; workerTranscript?: (worker: FactoryWorker, before?: string) => Pick<NativeConversationSnapshot, "source_id" | "version" | "cursor" | "turns"> | null } = {}) {
   const tips = new Map<string, string>(); let candidate = 1;
   const state = mkdtempSync(join(tmpdir(), "factory-capacity-"));
   const token = "owned-capacity-fixture";
@@ -165,6 +165,10 @@ export async function capacityFixture(scenario: { advancingHeads?: boolean; work
         return Response.json(mergeResults.get(run.id));
       }
       if (action === "operations/publish") {
+        if (scenario.publicationFailure) {
+          const failure = await scenario.publicationFailure();
+          if (failure) return failure;
+        }
         if (denyPublication) return Response.json({ error: { code: "publication_unconfigured", message: "Unsafe remote diagnostic must not be copied" } }, { status: 409 });
         if (!publications.has(run.id) || publications.get(run.id).head !== body.head) publications.set(run.id, { run_id: run.id, head: body.head, repository: "fictional/project", base_branch: "main", branch: run.branch, number: 27, url: "https://github.com/fictional/project/pull/27" });
         if (publicationGate) { const gate = publicationGate; publicationGate = null; gate.entered(); await gate.wait; }
