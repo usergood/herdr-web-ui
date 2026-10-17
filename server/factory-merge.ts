@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AccountBindingSnapshot } from "../shared/accounts.ts";
 import type { FactoryCheck, FactoryHumanApproval, FactoryMergeResult, FactoryProject, FactoryPullRequest, FactoryReviewEvidence, FactoryRun, FactoryWorker, Implementation } from "../shared/factory.ts";
 import type { ProjectGitHubPolicy } from "../shared/github-project.ts";
@@ -24,6 +25,37 @@ reviews(first:100) { nodes { state author { login } commit { oid } submittedAt }
 reviewThreads(first:100) { nodes { isResolved } pageInfo { hasNextPage } }
 reviewRequests(first:100) { nodes { __typename } pageInfo { hasNextPage } }
 commits(last:1) { nodes { commit { statusCheckRollup { contexts(first:100) { nodes { ... on CheckRun { name status conclusion } ... on StatusContext { context state } } pageInfo { hasNextPage } } } } } pageInfo { hasNextPage } }`;
+
+const COVERAGE_BLOB_LIMIT = 2 * 1024 * 1024;
+/** Authenticated blob evidence is useful only when its complete bytes match the tree entry. */
+function deliveryText(value: unknown, oid: string): string | null {
+  const blob = value as { sha?: unknown; encoding?: unknown; size?: unknown; content?: unknown } | null;
+  if (!blob || blob.sha !== oid || blob.encoding !== "base64" || typeof blob.size !== "number" || !Number.isSafeInteger(blob.size) || blob.size < 0 || blob.size > COVERAGE_BLOB_LIMIT || typeof blob.content !== "string" || blob.content.length > Math.ceil(COVERAGE_BLOB_LIMIT / 3) * 4 + COVERAGE_BLOB_LIMIT / 20) return null;
+  const encoded = blob.content.replace(/\n/g, "");
+  if (encoded.length % 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) return null;
+  const bytes = Buffer.from(encoded, "base64");
+  if (bytes.length !== blob.size || bytes.toString("base64") !== encoded || createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex") !== oid || bytes.includes(0)) return null;
+  const text = bytes.toString("utf8");
+  return Buffer.from(text, "utf8").equals(bytes) ? text : null;
+}
+
+/** A descendant may add text without undoing reviewed lines or restoring removed content.
+ * Independent replacements, binaries, empty files and renames still need exact blob evidence. */
+function retainsApprovedText(approved: string, observed: string, diff: string): boolean {
+  if (!approved || approved.includes("\0")) return false;
+  const removed = new Set<string>(); let hunk = false;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("@@ ")) hunk = true;
+    else if (hunk && line.startsWith("-")) removed.add(line.slice(1));
+  }
+  const lines = approved.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+  let next = 0;
+  for (const line of observed.match(/[^\n]*\n|[^\n]+$/g) ?? []) {
+    if (line === lines[next]) next++;
+    else if (removed.has(line.endsWith("\n") ? line.slice(0, -1) : line)) return false;
+  }
+  return next === lines.length;
+}
 
 /** A sent merge is observed after restart; its mutation is never replayed. */
 export class FactoryMerge {
@@ -93,10 +125,23 @@ export class FactoryMerge {
     intent ??= { id: key, approval, pr, condition: "prepared" };
     this.store.put("host_merges", intent, id);
     const api = async (path: string, args: string[] = [], guard = assertLive) => { const value = await this.accounts!.github(frozen.account_snapshot!, ["api", path, ...args], guard); assertLive(); return value; };
-    const containsChanges = async (ref: string) => {
+    const texts = new Map<string, string | null>();
+    const containsChanges = async (ref: string, additions = false) => {
       const tree = await api(`repos/${pr.repository}/git/trees/${encodeURIComponent(ref)}?recursive=1`) as DeliveryTree;
       if (tree?.truncated !== false || !Array.isArray(tree.tree)) throw new FactoryError("merge_coverage_unverified", "GitHub delivery tree evidence is incomplete", 409);
-      return changes.every(file => containsDeliveryChange(tree, file));
+      for (const file of changes) {
+        if (containsDeliveryChange(tree, file)) continue;
+        const entry = tree.tree.find(entry => entry.path === file.path);
+        const reviewed = candidate.files.find(candidate => candidate.path === file.path)!;
+        if (!additions || !file.oid || file.old_path || reviewed.binary || reviewed.oversized || !entry || entry.type !== "blob" || entry.mode !== file.mode || !["100644", "100755"].includes(entry.mode) || !/^[a-f0-9]{40}$/.test(entry.sha)) return false;
+        const previous = (await git(run.worktree!, ["ls-tree", "-z", baseline, "--", file.path])).split("\t")[0]?.split(" ")[2];
+        if (entry.sha === previous) return false;
+        if (!texts.has(entry.sha)) texts.set(entry.sha, deliveryText(await api(`repos/${pr.repository}/git/blobs/${entry.sha}`), entry.sha));
+        const observed = texts.get(entry.sha);
+        const approved = await git(run.worktree!, ["cat-file", "blob", file.oid]);
+        if (observed == null || createHash("sha1").update(`blob ${Buffer.byteLength(approved)}\0`).update(approved).digest("hex") !== file.oid || !retainsApprovedText(approved, observed, reviewed.diff)) return false;
+      }
+      return true;
     };
     const readPull = async () => {
       const [owner, name] = policy.repository.split("/");
@@ -143,7 +188,7 @@ export class FactoryMerge {
       return ["identical", "ahead"].includes(compare.status) && compare.merge_base_commit?.sha === sha;
     };
     const target = await api(`repos/${pr.repository}/commits/${encodeURIComponent(`heads/${pr.base_branch}`)}`) as { sha: string };
-    if (!/^[a-f0-9]{40}$/.test(target.sha) || !await contains(target.sha) || !await containsChanges(sha) || !await containsChanges(target.sha)) throw new FactoryError("merge_coverage_unverified", "The confirmed merge and authorized target do not contain all approved changes", 409);
+    if (!/^[a-f0-9]{40}$/.test(target.sha) || !await contains(target.sha) || !await containsChanges(sha) || !await containsChanges(target.sha, true)) throw new FactoryError("merge_coverage_unverified", "The confirmed merge and authorized target do not contain all approved changes", 409);
     const latestTarget = await api(`repos/${pr.repository}/commits/${encodeURIComponent(`heads/${pr.base_branch}`)}`) as { sha: string };
     if (latestTarget.sha !== target.sha) throw new FactoryError("merge_coverage_unverified", "The delivery branch changed during verification; observe its current content again", 409);
     this.store.put("host_merges", { ...intent, condition: "verified", merge_sha: sha }, id);
@@ -154,7 +199,7 @@ export class FactoryMerge {
       if (!Array.isArray(releases)) throw new FactoryError("merge_coverage_unverified", "The published release inventory could not be verified", 409);
       for (const release of releases.slice(0, 100)) if (!release.draft && !release.prerelease && typeof release.tag_name === "string" && release.tag_name) {
         const commit = await api(`repos/${pr.repository}/commits/${encodeURIComponent(`tags/${release.tag_name}`)}`) as { sha: string };
-        if (/^[a-f0-9]{40}$/.test(commit.sha) && await contains(commit.sha) && await containsChanges(commit.sha)) {
+        if (/^[a-f0-9]{40}$/.test(commit.sha) && await contains(commit.sha) && await containsChanges(commit.sha, true)) {
           const latest = await api(`repos/${pr.repository}/commits/${encodeURIComponent(`tags/${release.tag_name}`)}`) as { sha: string };
           if (latest.sha !== commit.sha) throw new FactoryError("merge_coverage_unverified", "The release tag changed during delivery verification; observe it again", 409);
           result.condition = "released"; result.release_tag = release.tag_name; result.reason = null; break;

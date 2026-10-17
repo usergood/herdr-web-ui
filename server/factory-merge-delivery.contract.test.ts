@@ -17,6 +17,98 @@ it("Human Review preserves the Assignment release milestone when a later Run cap
   } finally { f.close(); }
 }, 20000);
 
+it.each(["before", "middle", "after"].flatMap(position => [false, true].map(advanceTarget => ({ position, advanceTarget }))))("Human Review recognizes additive containing release after restart %j", async ({ position, advanceTarget }) => {
+  const f = await mergeFixture({ milestone: "release", candidateContent: "approved first\napproved second\n" });
+  try {
+    const merged = await f.post(f.route + "merge", f.body);
+    expect(merged.status).toBe(200);
+    expect(await merged.json()).toMatchObject({ condition: "awaiting_release", release_tag: null });
+    const merge = f.git(["rev-parse", "main"]);
+    const lines = ["approved first", "approved second"];
+    lines.splice(position === "before" ? 0 : position === "middle" ? 1 : 2, 0, "Independent later content");
+    const content = lines.join("\n") + "\n";
+    const containing = f.descendant(content, advanceTarget);
+    f.git(["tag", "additive-release", containing]); f.change({ release: "additive-release" });
+    expect(f.git(["show", "additive-release:result.txt"])).toBe(content.trim());
+    f.restart();
+    const response = await f.post(f.route + "merge", f.body);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ condition: "released", merge_sha: merge, release_tag: "additive-release", head: f.head });
+    f.restart();
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "released", merge_sha: merge, release_tag: "additive-release" });
+    expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+    expect(f.calls().some(args => args.includes("POST"))).toBe(false);
+  } finally { f.close(); }
+}, 20000);
+
+it.each([
+  { name: "changed approved line", content: "changed first\napproved second\n" },
+  { name: "full revert plus unrelated addition", content: "before\nIndependent later content\n" },
+  { name: "restored removed line alongside approved content", content: "before\napproved first\napproved second\nIndependent later content\n" },
+])("Human Review refuses descendant content that undoes the candidate: $name", async ({ content }) => {
+  const f = await mergeFixture({ milestone: "release", candidateContent: "approved first\napproved second\n" });
+  try {
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "awaiting_release" });
+    f.git(["tag", "invalid-content", f.descendant(content)]); f.change({ release: "invalid-content" }); f.restart();
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "awaiting_release", release_tag: null });
+    expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { f.close(); }
+}, 20000);
+
+it("Human Review refuses restoring a reviewed deletion even with unrelated additions", async () => {
+  const f = await mergeFixture({ milestone: "release", baselineContent: "removed line\nretained line\n", candidateContent: "retained line\n" });
+  try {
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "awaiting_release" });
+    f.git(["tag", "restored-deletion", f.descendant("removed line\nretained line\nIndependent later content\n")]); f.change({ release: "restored-deletion" }); f.restart();
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "awaiting_release", release_tag: null });
+    expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { f.close(); }
+}, 20000);
+
+it.each([
+  { name: "wrong hash", patch: { blob_patch: { sha: "f".repeat(40) } } },
+  { name: "wrong size", patch: { blob_patch: { size: 1 } } },
+  { name: "oversized blob", patch: { blob_patch: { size: 2 * 1024 * 1024 + 1 } } },
+  { name: "unsupported encoding", patch: { blob_patch: { encoding: "utf8" } } },
+  { name: "malformed base64", patch: { blob_patch: { content: "not base64" } } },
+  { name: "wrong mode", patch: { tree_mode: "100755" } },
+  { name: "incomplete tree", patch: { truncated_tree: true } },
+])("Human Review rejects incomplete or changed descendant evidence: $name", async ({ patch }) => {
+  const f = await mergeFixture({ milestone: "release" });
+  try {
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "awaiting_release" });
+    f.git(["tag", "unverified-release", f.descendant("after\nIndependent later content\n")]); f.change({ release: "unverified-release", ...patch }); f.restart();
+    const response = await f.post(f.route + "merge", f.body); const result = await response.json();
+    expect([200, 409]).toContain(response.status);
+    if (response.status === 409) expect(result).toMatchObject({ error: { code: "merge_coverage_unverified" } });
+    else expect(result).toMatchObject({ condition: "awaiting_release", release_tag: null });
+    expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { f.close(); }
+}, 20000);
+
+it.each(["", "approved\0binary\n"])("Human Review keeps non-text or empty approved blobs on exact coverage", async candidateContent => {
+  const f = await mergeFixture({ milestone: "release", candidateContent });
+  try {
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "awaiting_release" });
+    f.git(["tag", "non-text-extension", f.descendant(candidateContent + "Independent later content\n")]); f.change({ release: "non-text-extension" });
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "awaiting_release", release_tag: null });
+    expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { f.close(); }
+}, 20000);
+
+it("Human Review refuses a containing release whose tag moves during blob verification", async () => {
+  const f = await mergeFixture({ milestone: "release" });
+  try {
+    expect(await f.post(f.route + "merge", f.body).then(r => r.json())).toMatchObject({ condition: "awaiting_release" });
+    f.git(["tag", "moving-release", f.descendant("after\nIndependent later content\n")]); f.change({ release: "moving-release", move_tag_after_lookup: f.base });
+    const response = await f.post(f.route + "merge", f.body);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: "merge_coverage_unverified" } });
+    expect(f.git(["rev-parse", "moving-release"])).toBe(f.base);
+    expect(f.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { f.close(); }
+}, 20000);
+
 it("Human Review does not treat a descendant release that reverts approved content as delivery", async () => {
   const f = await mergeFixture({ milestone: "release" });
   try {
