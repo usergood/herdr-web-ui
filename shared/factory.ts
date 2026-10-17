@@ -9,6 +9,7 @@ export type FactoryActivity = "specifying" | "implementing" | "validating" | "re
 export interface FactoryBoardItem {
   implementation_id: string; lane: FactoryBoardLane; activity: FactoryActivity | null;
   condition: RunCondition | null; run_id: string | null; busy: boolean; waiting_reason: string | null;
+  delivery_completion_error?: string;
   ticket_progress: { completed: number; total: number } | null;
   /** Hide finished sidebar entries only after all owned work is reconciled. */
   sidebar_hidden?: boolean;
@@ -184,6 +185,8 @@ export interface FactoryRun extends FactoryRecord {
   /** Execution was reconciled at this checked revision; owner acceptance remains separate. */
   implementation_completion?: { head: string; workspace_hash: string; check_id: string; standards_id: string; spec_id: string };
   implementation_completion_pending?: boolean;
+  /** Verified delivery is retained while history/shutdown recovery remains incomplete. */
+  delivery_completion_error?: string;
   implementation_id: string; action: FactoryAction; provider: FactoryProvider; machine_id: string;
   condition: RunCondition; waiting_reason: string | null; idempotency_key: string;
   specification_id: string | null; graph_hash: string | null; base: string | null;
@@ -253,7 +256,7 @@ export interface FactoryHumanApproval extends FactoryRecord {
   implementation_id: string; review_id: string; run_id: string; snapshot_id: string; head: string;
   idempotency_key: string; provenance: { kind: "owner_button"; origin: string };
   condition: "repairing" | "pending" | "blocked" | FactoryMergeResult["condition"];
-  reason: string | null; merge_sha: string | null; release_tag: string | null;
+  reason: string | null; reason_is_error?: boolean; merge_sha: string | null; release_tag: string | null;
 }
 export interface FactoryHumanFeedbackBatch extends FactoryRecord {
   implementation_id: string; run_id: string; review_id: string; snapshot_id: string; head: string;

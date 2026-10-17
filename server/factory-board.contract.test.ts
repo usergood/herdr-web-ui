@@ -1,8 +1,82 @@
 import { describe, expect, it } from "bun:test";
 import { boardRepair, boardScenario } from "../scripts/factory-board-fixture.ts";
 import { capacityFixture } from "../scripts/factory-capacity-fixture.ts";
+import { published, until } from "../scripts/factory-human-review-fixture.ts";
 
 describe("Assignment board through authenticated HTTP", () => {
+  it("keeps Running as the displayed lifecycle lane through Pause and restart", async () => {
+    const f = await capacityFixture();
+    try {
+      const { id, run } = await boardScenario(f);
+      expect((await f.api(`/runs/${run.id}/checks`, {})).status).toBe(200);
+      const observe = async () => {
+        for (const suffix of ["", "?navigation=1"]) {
+          const overview = await f.api(suffix).then(r => r.json());
+          expect(overview.progress.find((entry: any) => entry.implementation_id === id).lane).toBe("running");
+          expect(overview.board.find((entry: any) => entry.implementation_id === id).lane).toBe("running");
+        }
+        for (const suffix of ["", "?view=current"]) expect((await f.api(`/implementations/${id}${suffix}`).then(r => r.json())).board.lane).toBe("running");
+      };
+      await observe();
+      expect((await f.api(`/implementations/${id}/pause`, {})).status).toBe(200);
+      expect((await f.api(`/implementations/${id}`).then(r => r.json())).implementation.pause.condition).toBe("paused");
+      await observe(); f.restart(); await observe();
+      expect((await f.api("").then(r => r.json())).progress.find((entry: any) => entry.implementation_id === id).activities).toEqual([]);
+    } finally { f.close(); }
+  });
+
+  it("keeps delivered Done as the displayed lifecycle lane while Human Review discussion executes", async () => {
+    const f = await capacityFixture({ advancingHeads: true });
+    try {
+      const { id, prefix, detail } = await published(f);
+      const review = (await until(detail, d => d.human_reviews?.[0]?.condition === "ready")).human_reviews[0];
+      const approved = await f.api(`${prefix}/human-review/approve`, { review_id: review.id, snapshot_id: review.snapshot_id, head: review.head, idempotency_key: "board-delivered" });
+      expect(approved.status).toBe(200); expect(await approved.json()).toMatchObject({ condition: "merged" });
+      expect((await detail()).implementation).toMatchObject({ stage: "done", outcome: "merged" });
+      const message = await f.api(`${prefix}/human-review/messages`, { review_id: review.id, content: "Explain this delivered result without changing it", idempotency_key: "done-discussion" });
+      expect(message.status).toBe(202);
+      const discussing = await until(detail, d => d.runs.some((run: any) => run.conversation_kind === "human_review" && run.condition === "working"));
+      expect(discussing.implementation.stage).toBe("done");
+      const observe = async () => {
+        for (const suffix of ["", "?navigation=1"]) {
+          const overview = await f.api(suffix).then(r => r.json());
+          expect(overview.progress.find((entry: any) => entry.implementation_id === id).lane).toBe("done");
+          expect(overview.board.find((entry: any) => entry.implementation_id === id).lane).toBe("done");
+          expect(overview.board.find((entry: any) => entry.implementation_id === id).sidebar_hidden ?? false).toBe(false);
+        }
+        for (const suffix of ["", "?view=current"]) expect((await f.api(`${prefix}${suffix}`).then(r => r.json())).board.lane).toBe("done");
+      };
+      expect((await detail()).board.busy).toBe(true);
+      await observe();
+      expect((await f.api(`${prefix}/questions`, { question: "Explain the already delivered behavior" })).status).toBe(201);
+      await observe(); f.restart(); await observe();
+    } finally { f.close(); }
+  }, 20000);
+
+  it.each(["retained-completion-evidence", "validation-only"])("preserves Running through Pause for %s", async scenario => {
+    const f = await capacityFixture(); let check: Promise<Response> | undefined; let release = () => {};
+    try {
+      const id = await f.assignment("Paused lifecycle family");
+      const run = await f.api(`/implementations/${id}/runs`, { action: "work", idempotency_key: "phase" }).then(r => r.json());
+      if (scenario === "retained-completion-evidence") {
+        const evidence = await f.api(`/implementations/${id}/completion-evidence`).then(r => r.json());
+        expect(evidence).toMatchObject({ repository_changes: "changes", quiescent: false, reason: "Repository changes require verified PR delivery. Link the delivery evidence before completing this Assignment." });
+      } else {
+        f.researchReady(run.id); await f.api(`/runs/${run.id}/reconcile`, {});
+        const gate = f.holdNextCheck("integration"); release = gate.release;
+        check = f.api(`/runs/${run.id}/checks`, {}); await gate.started;
+      }
+      const lane = async () => {
+        const view = await f.api("").then(r => r.json());
+        expect(view.board.find((entry: any) => entry.implementation_id === id).lane).toBe("running");
+        expect(view.progress.find((entry: any) => entry.implementation_id === id).lane).toBe("running");
+      };
+      await lane();
+      expect((await f.api(`/implementations/${id}/pause`, {})).status).toBe(200);
+      await check; await lane(); f.restart(); await lane();
+    } finally { release(); await check; f.close(); }
+  });
+
   it("names running Tickets and explains dependencies, then retains integrated completion across restart", async () => {
     const f = await capacityFixture();
     try {

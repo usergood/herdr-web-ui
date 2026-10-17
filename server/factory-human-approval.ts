@@ -119,7 +119,7 @@ export class FactoryHumanApprovalService {
   }
   async maintain(): Promise<void> {
     if (this.stopped) return;
-    for (const receipt of this.store.list<FactoryHumanApproval>("human_review_approvals")) if (!this.store.get<Implementation>("implementations", receipt.implementation_id)?.pause && ["repairing", "pending", "uncertain", "awaiting_release", "merged", "released"].includes(receipt.condition) && (!["merged", "released"].includes(receipt.condition) || this.store.get<FactoryRun>("runs", receipt.run_id)?.condition !== "completed") && (receipt.next_observation_at ?? 0) <= Date.now()) await this.reconcile(receipt);
+    for (const receipt of this.store.list<FactoryHumanApproval>("human_review_approvals")) if (!this.store.get<Implementation>("implementations", receipt.implementation_id)?.pause && (["repairing", "pending", "uncertain", "awaiting_release", "merged", "released"].includes(receipt.condition) || /^[a-f0-9]{40}$/.test(receipt.merge_sha ?? "")) && (!["merged", "released"].includes(receipt.condition) || this.store.get<FactoryRun>("runs", receipt.run_id)?.condition !== "completed") && (receipt.next_observation_at ?? 0) <= Date.now()) await this.reconcile(receipt);
   }
   /** Delivery evidence survives unavailable cleanup; only verified shutdown releases execution. */
   private async finishDelivery(receipt: FactoryHumanApproval): Promise<void> {
@@ -140,9 +140,37 @@ export class FactoryHumanApprovalService {
       if (this.stopped || error instanceof FactoryError && ["assignment_paused", "assignment_deleting"].includes(error.code)) return;
       const current = this.store.get<FactoryRun>("runs", run.id);
       const reason = error instanceof FactoryError ? error.message : "Delivery is verified; owned native shutdown remains unconfirmed";
-      if (current && current.condition !== "completed") this.store.put("runs", { ...current, waiting_reason: reason }, receipt.implementation_id);
+      if (current && current.condition !== "completed") this.store.put("runs", { ...current, waiting_reason: reason, delivery_completion_error: reason }, receipt.implementation_id);
       this.store.put("human_review_approvals", { ...receipt, next_observation_at: Date.now() + 2000 }, receipt.implementation_id);
       this.store.event(receipt.implementation_id, "delivery_completion_pending", { run_id: run.id, approval_id: receipt.id, reason });
+    }
+  }
+  /** An already verified merge grants observation of its frozen release, never a new send. */
+  private async observeRelease(receipt: FactoryHumanApproval): Promise<void> {
+    try {
+      this.runtime.assertExecuting(receipt.implementation_id);
+      const run = this.store.get<FactoryRun>("runs", receipt.run_id);
+      const pr = this.store.get<FactoryPullRequest>("pull_requests", receipt.run_id);
+      const project = (run?.manifest as { project?: FactoryProject } | undefined)?.project;
+      if (!run || run.implementation_id !== receipt.implementation_id || !pr || pr.head !== receipt.head || project?.pull_request?.repository !== pr.repository || project.pull_request.base_branch !== pr.base_branch) throw new FactoryError("merge_authority_changed", "The verified merge no longer matches its frozen release destination", 409);
+      const check = this.store.get<FactoryCheck>("checks", pr.check_id);
+      const reports = pr.evidence_ids.map(id => this.store.get<FactoryReviewEvidence>("review_evidence", id)).filter((report): report is FactoryReviewEvidence => !!report);
+      const result = await this.runtime.operation<FactoryMergeResult>(run, "merge", { approval: receipt, pull_request: pr, head: receipt.head, workspace_hash: check?.workspace_hash ?? "", check_id: pr.check_id, evidence_ids: pr.evidence_ids, reports: reports.map(report => ({ worker_id: report.worker_id, source_id: report.source_id })) } satisfies import("../shared/factory.ts").FactoryMergeRequest);
+      if (this.stopped) return;
+      this.runtime.assertExecuting(receipt.implementation_id);
+      if (result.run_id !== run.id || result.head !== receipt.head || result.repository !== pr.repository || result.base_branch !== pr.base_branch || result.number !== pr.number || result.merge_sha !== receipt.merge_sha || !["merged", "awaiting_release", "released"].includes(result.condition) || result.condition === "released" && (typeof result.release_tag !== "string" || !result.release_tag.trim())) throw new FactoryError("merge_coverage_unverified", "The Machine could not confirm the original verified merge and containing release", 409);
+      const released = result.condition === "released";
+      this.store.db.transaction(() => {
+        this.store.put("human_review_approvals", { ...receipt, ...result, condition: released ? "released" : "awaiting_release", reason: released ? null : result.reason ?? "Merge verified; waiting for a published release containing it", reason_is_error: false, observations: 0, next_observation_at: Date.now() + 30000 }, receipt.implementation_id);
+        this.workflow.releaseMergeContext(receipt.id);
+        const idea = this.store.get<Implementation>("implementations", receipt.implementation_id)!;
+        this.store.put("implementations", { ...idea, stage: released ? "done" : "review", outcome: released ? "released" : "merged" });
+      }).immediate();
+      if (released) await this.finishDelivery(this.store.get<FactoryHumanApproval>("human_review_approvals", receipt.id)!);
+    } catch (error) {
+      if (this.stopped || error instanceof FactoryError && ["assignment_paused", "assignment_deleting"].includes(error.code)) return;
+      const observations = (receipt.observations ?? 0) + 1;
+      this.store.put("human_review_approvals", { ...receipt, condition: "awaiting_release", observations, next_observation_at: Date.now() + Math.min(30000, 1000 * 2 ** observations), reason_is_error: true, reason: error instanceof FactoryError ? error.message : "The verified merge's containing release cannot currently be observed" }, receipt.implementation_id);
     }
   }
   private async reconcile(receipt: FactoryHumanApproval): Promise<void> {
@@ -158,6 +186,7 @@ export class FactoryHumanApprovalService {
         this.store.put("implementations", { ...idea, stage: "review", outcome: "merged" });
       }
       if (["merged", "released"].includes(receipt.condition)) { await this.finishDelivery(receipt); return; }
+      if (/^[a-f0-9]{40}$/.test(receipt.merge_sha ?? "")) { await this.observeRelease(receipt); return; }
       const review = this.store.get<FactoryHumanReview>("human_reviews", receipt.review_id)!;
       if (receipt.repair_batch_id && receipt.repair_scope !== this.repairScope(receipt.implementation_id, receipt.run_id)) throw new FactoryError("repair_scope_changed", "The owner context changed; review the repair scope before granting new merge authority", 409);
       this.assertOwnerContext(receipt);

@@ -4,12 +4,87 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { chromium } from "playwright-core";
+import { chromium, type Browser } from "playwright-core";
+import { published, until } from "./factory-human-review-fixture.ts";
 import { createServer } from "../server/index.ts";
 import type { FactoryActivity, FactoryBoardItem, FactoryDetail, FactoryOverview, FactoryRun } from "../shared/protocol.ts";
 import { capacityFixture } from "./factory-capacity-fixture.ts";
 import { boardRepair, boardScenario } from "./factory-board-fixture.ts";
 import { routeDrained } from "./drained-route.ts";
+
+export async function lifecycleBoardJourney(browser: Browser, viewport: { width: number; height: number }) {
+  const observed: { transition: string; lane: string | null; progress: string }[] = [];
+  const f = await capacityFixture();
+  const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
+  try {
+    const id = await f.assignment("Paused Running lifecycle"); const prefix = `/implementations/${id}`;
+    const detail = () => f.api(prefix).then(response => response.json());
+    await f.api(`/projects/${(await detail()).implementation.project_id}/configure`, { checks: [["bun", "test"]], permissions: "Owned public lifecycle fixtures" });
+    const run = await f.api(`${prefix}/runs`, { action: "work", idempotency_key: "lifecycle-work" }).then(response => response.json());
+    const check = await f.api(`/runs/${run.id}/checks`, {}).then(response => response.json()); assert.equal(check.condition, "passed");
+    const origin = `http://localhost:${f.app.port}`;
+    assert.equal((await context.request.post(`${origin}/api/auth`, { data: { token: f.token } })).status(), 204);
+    const page = await context.newPage(); page.setDefaultTimeout(10000);
+    const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
+    await page.goto(`${origin}/#assignments`);
+    const card = page.getByRole("article", { name: "Paused Running lifecycle", exact: true });
+    await page.getByRole("region", { name: "Running", exact: true }).getByRole("button", { name: "Paused Running lifecycle", exact: true }).waitFor();
+    await card.getByRole("status").filter({ hasText: /^Implementing$/ }).waitFor();
+    await card.getByRole("button", { name: "Paused Running lifecycle", exact: true }).click();
+    const pausedResponse = page.waitForResponse(response => response.url().endsWith(`${prefix}/pause`) && response.request().method() === "POST");
+    await page.getByRole("button", { name: "Pause Assignment", exact: true }).click();
+    assert.equal((await pausedResponse).status(), 200);
+    const paused = await until(detail, d => d.implementation.pause?.condition === "paused");
+    assert.equal(paused.runs[0].suspension.previous_condition, "working");
+    await page.goto(`${origin}/#assignments`); await page.reload();
+    await card.getByRole("status").filter({ hasText: /^Paused$/ }).waitFor();
+    const overview = await f.api("").then(response => response.json());
+    observed.push({ transition: "paused", lane: await card.evaluate(node => node.closest(".factory-lane")?.getAttribute("aria-label") ?? null), progress: overview.progress.find((entry: { implementation_id: string }) => entry.implementation_id === id).lane });
+    assert.equal(await card.locator(".factory-activity").count(), 0, "Paused is separate from live activity");
+    assert.equal(await card.getByRole("alert").count(), 0);
+    await card.getByRole("button", { name: "Paused Running lifecycle", exact: true }).click();
+    const resumedResponse = page.waitForResponse(response => response.url().endsWith(`${prefix}/resume`) && response.request().method() === "POST");
+    await page.getByRole("button", { name: "Resume Assignment", exact: true }).click();
+    assert.equal((await resumedResponse).status(), 200);
+    await until(detail, d => d.runs[0]?.condition === "working" && !d.implementation.pause);
+    await page.goto(`${origin}/#assignments`); await page.reload();
+    await page.getByRole("region", { name: "Running", exact: true }).getByRole("button", { name: "Paused Running lifecycle", exact: true }).waitFor();
+    await card.getByRole("status").filter({ hasText: /^Implementing$/ }).waitFor();
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); f.close(); }
+  const deliveredFixture = await capacityFixture({ advancingHeads: true });
+  deliveredFixture.setTranscript({ source_id: "owned-delivered-board", version: "one", cursor: null, turns: [{ role: "assistant", ts: "2026-10-16T00:00:00.000Z", parts: [{ kind: "text", text: "Retained delivered implementation." }] }] });
+  const deliveredContext = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
+  try {
+    const { id, detail, run } = await published(deliveredFixture); await until(detail, d => d.human_reviews[0]?.condition === "ready");
+    const origin = `http://localhost:${deliveredFixture.app.port}`;
+    assert.equal((await deliveredContext.request.post(`${origin}/api/auth`, { data: { token: deliveredFixture.token } })).status(), 204);
+    const page = await deliveredContext.newPage(); page.setDefaultTimeout(10000);
+    const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
+    await page.goto(`${origin}/#factory/${id}`);
+    await page.getByRole("navigation", { name: "Workflow history", exact: true }).getByRole("button", { name: "Human Review", exact: true }).click();
+    const review = page.getByRole("region", { name: "Human Review", exact: true });
+    await review.getByRole("button", { name: "Approve and merge", exact: true }).click();
+    await review.getByRole("status").filter({ hasText: "Merge verified" }).waitFor();
+    const delivered = await until(detail, d => d.runs.find((entry: { id: string }) => entry.id === run.id)?.condition === "completed");
+    assert.equal(delivered.implementation.stage, "done"); const approvalId = delivered.human_review_approvals[0].id;
+    await review.getByRole("textbox", { name: "Discuss this review", exact: true }).fill("Explain this delivered result without changing its delivery");
+    await review.getByRole("button", { name: "Send discussion", exact: true }).click();
+    const discussing = await until(detail, d => d.runs.some((entry: { conversation_kind: string; condition: string }) => entry.conversation_kind === "human_review" && entry.condition === "working"));
+    assert.equal(discussing.implementation.stage, "done"); assert.equal(discussing.human_review_approvals[0].id, approvalId);
+    assert.equal(discussing.human_review_approvals[0].condition, "merged"); assert.equal(deliveredFixture.mergeEffects.length, 1);
+    await page.goto(`${origin}/#assignments`); await page.reload();
+    const card = page.getByRole("article", { name: "Human Review result", exact: true });
+    await card.getByRole("status").filter({ hasText: /^Implementing$/ }).waitFor();
+    const overview = await deliveredFixture.api("").then(response => response.json());
+    observed.push({ transition: "delivered_discussion", lane: await card.evaluate(node => node.closest(".factory-lane")?.getAttribute("aria-label") ?? null), progress: overview.progress.find((entry: { implementation_id: string }) => entry.implementation_id === id).lane });
+    assert.equal(await card.getByRole("alert").count(), 0);
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)); assert.deepEqual(errors, []);
+  } finally { await deliveredContext.close(); deliveredFixture.close(); }
+  console.log(JSON.stringify({ viewport: viewport.width, lifecycle_lanes: observed }));
+  assert.deepEqual(observed, [{ transition: "paused", lane: "Running", progress: "running" }, { transition: "delivered_discussion", lane: "Done", progress: "done" }], "Displayed lanes preserve lifecycle independently of Pause and new discussion activity");
+  console.log(`PASS Paused Running and delivered discussion Done retain lifecycle lanes with ordinary status/activity controls (${viewport.width})`);
+}
 
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] || chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
 
@@ -290,4 +365,5 @@ try {
   await failedProgressBoard();
   await ticketProgressBoard();
   await activityAndHistoryBoard();
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) await lifecycleBoardJourney(browser, viewport);
 } finally { await browser.close(); }

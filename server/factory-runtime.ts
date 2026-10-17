@@ -777,7 +777,7 @@ export class FactoryRuntime {
     if (hash(JSON.stringify(actual.manifest)) !== hash(JSON.stringify(expected.manifest)) || !["accepted", "working", "ready", "needs_you", "blocked", "disconnected", "interrupted", "failed", "cancelled", "completed"].includes(actual.condition)) throw new FactoryError("run_identity_changed", "The Machine changed the accepted contract; preserve ownership", 409);
     if (expected.worktree && (actual.worktree !== expected.worktree || actual.branch !== expected.branch || expected.workspace_id !== null && actual.workspace_id !== expected.workspace_id || expected.pane_id !== null && actual.pane_id !== expected.pane_id)) throw new FactoryError("run_identity_changed", "The Machine changed the owned working directory or native identity", 409);
     // Admission, acceptance and reactivation are owned centrally; the Machine observes execution.
-    return { ...actual, accepted_result: expected.accepted_result, capacity_pool: expected.capacity_pool, continuation: expected.continuation, ...(expected.scope_pause ? { scope_pause: expected.scope_pause } : {}), implementation_completion: expected.implementation_completion, implementation_completion_pending: expected.implementation_completion_pending };
+    return { ...actual, delivery_completion_error: expected.delivery_completion_error, accepted_result: expected.accepted_result, capacity_pool: expected.capacity_pool, continuation: expected.continuation, ...(expected.scope_pause ? { scope_pause: expected.scope_pause } : {}), implementation_completion: expected.implementation_completion, implementation_completion_pending: expected.implementation_completion_pending };
   }
   async pauseIssueWork(source: ProjectGitHubSource<import("../shared/github-project.ts").ProjectIssueReadiness>): Promise<void> {
     for (const run of this.store.list<FactoryRun>("runs", source.implementation_id)) {
@@ -937,7 +937,7 @@ export class FactoryRuntime {
     if (!["cancelled", "completed"].includes(stopped.condition)) throw new FactoryError("native_identity_uncertain", "Delivery is verified; owned native shutdown remains unconfirmed", 409);
     if (this.stopped) throw new FactoryError("stopping", "Delivery completion will reconcile after restart", 409);
     this.assertExecuting(run.implementation_id);
-    const completed: FactoryRun = { ...stopped, condition: "completed", waiting_reason: null };
+    const completed: FactoryRun = { ...stopped, condition: "completed", waiting_reason: null, delivery_completion_error: undefined };
     this.store.put("runs", completed, run.implementation_id);
     this.store.event(run.implementation_id, "delivery_execution_completed", { run_id: id, history_retained: true, worktree_retained: true });
     return completed;

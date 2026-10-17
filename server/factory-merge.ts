@@ -73,9 +73,16 @@ export class FactoryMerge {
     const frozen = run.manifest as { project?: FactoryProject; account_snapshot?: AccountBindingSnapshot; github_policy?: ProjectGitHubPolicy | null; implementation?: Implementation; checkout?: { repository?: string } };
     const policy = frozen.project?.pull_request;
     const approval = body.approval as FactoryHumanApproval | undefined;
-    const pr = body.pull_request as FactoryPullRequest | undefined;
+    const requestedPr = body.pull_request as FactoryPullRequest | undefined;
+    const observing = !!approval && (approval.merge_sha !== null && approval.merge_sha !== undefined || ["merged", "awaiting_release", "released"].includes(approval.condition));
+    const retained = requestedPr ? this.store.get<Intent>("host_merges", `${id}:${requestedPr.head}`) : null;
+    if (observing) {
+      const identity = (value: FactoryHumanApproval) => JSON.stringify([value.id, value.run_id, value.implementation_id, value.review_id, value.snapshot_id, value.head, value.idempotency_key, value.context_revision, value.provenance, value.repair_batch_id, value.repair_scope, value.repair_signature, value.original_candidate]);
+      if (!/^[a-f0-9]{40}$/.test(approval!.merge_sha ?? "") || !retained || retained.condition !== "verified" || retained.merge_sha !== approval!.merge_sha || identity(retained.approval) !== identity(approval!) || !requestedPr || ["run_id", "head", "repository", "base_branch", "branch", "number", "url"].some(key => retained.pr[key as keyof FactoryPullRequest] !== requestedPr[key as keyof FactoryPullRequest])) throw new FactoryError("merge_authority_changed", "Release observation requires the original Machine-verified merge intent", 409);
+    }
+    const pr = observing ? retained!.pr : requestedPr;
     const publication = pr ? this.store.get<FactoryPullRequest & { condition: string }>("host_publications", `${id}:${pr.head}`) : null;
-    if (!this.accounts || !policy || !frozen.account_snapshot || run.action !== "implement-spec" || !run.worktree || !run.branch || run.condition !== "ready") throw new FactoryError("merge_unconfigured", "Merge requires a resting owned Run, frozen destination and verified GitHub account", 409);
+    if (!this.accounts || !policy || !frozen.account_snapshot || run.action !== "implement-spec" || !run.worktree || !run.branch || !observing && run.condition !== "ready") throw new FactoryError("merge_unconfigured", "Merge requires a resting owned Run, frozen destination and verified GitHub account", 409);
     if (!approval || approval.provenance?.kind !== "owner_button" || !approval.provenance.origin || approval.run_id !== id || approval.implementation_id !== run.implementation_id || approval.head !== body.head || !approval.snapshot_id || !approval.review_id || !pr || pr.run_id !== id || pr.head !== body.head || pr.repository !== policy.repository || pr.base_branch !== policy.base_branch || pr.branch !== run.branch || !publication || publication.condition !== "published" || publication.number !== pr.number || publication.head !== pr.head || publication.repository !== pr.repository || publication.base_branch !== pr.base_branch || publication.branch !== pr.branch || pr.url !== `https://github.com/${policy.repository}/pull/${pr.number}`) throw new FactoryError("merge_authority_changed", "Owner authority must match the exact published candidate and frozen target", 409);
     const scope = frozen.implementation?.delivery_scope;
     if (scope && (scope.github_repository && scope.github_repository !== pr.repository || scope.branch && scope.branch !== pr.base_branch || scope.repository && scope.repository !== frozen.checkout?.repository)) throw new FactoryError("merge_authority_changed", "The published candidate differs from the Assignment's frozen delivery destination", 409);
@@ -83,14 +90,15 @@ export class FactoryMerge {
     const reports = Array.isArray(body.reports) ? body.reports.map(r => r && typeof r.worker_id === "string" ? this.store.get<FactoryReviewEvidence>("host_review_evidence", r.worker_id) : null) : [];
     const latestReports = this.store.list<FactoryReviewEvidence>("host_review_evidence", id);
     const recipes = [...frozen.project?.setup ?? [], ...frozen.project?.checks ?? []];
-    if (!check || check.id !== body.check_id || check.id !== pr.check_id || check.run_id !== id || check.worker_id !== null || check.condition !== "passed" || check.head !== pr.head || check.workspace_hash !== body.workspace_hash || !recipes.length || JSON.stringify(check.commands.map(c => c.args)) !== JSON.stringify(recipes) || check.commands.some(c => c.exit_code !== 0) || reports.length !== 2 || reports[0]?.worker_id === reports[1]?.worker_id || !["standards", "spec"].every(axis => reports.some((r, i) => r?.worker_id === latestReports.filter(latest => latest.axis === axis).at(-1)?.worker_id && r?.axis === axis && r.run_id === id && r.head === pr.head && r.outcome === "passed" && r.source_id === (body.reports as { source_id: string }[])[i]?.source_id))) throw new FactoryError("fresh_evidence_required", "Merge requires the Machine's matching passing checks and independent Standards and Spec reports", 409);
+    if (!observing && (!check || check.id !== body.check_id || check.id !== pr.check_id || check.run_id !== id || check.worker_id !== null || check.condition !== "passed" || check.head !== pr.head || check.workspace_hash !== body.workspace_hash || !recipes.length || JSON.stringify(check.commands.map(c => c.args)) !== JSON.stringify(recipes) || check.commands.some(c => c.exit_code !== 0) || reports.length !== 2 || reports[0]?.worker_id === reports[1]?.worker_id || !["standards", "spec"].every(axis => reports.some((r, i) => r?.worker_id === latestReports.filter(latest => latest.axis === axis).at(-1)?.worker_id && r?.axis === axis && r.run_id === id && r.head === pr.head && r.outcome === "passed" && r.source_id === (body.reports as { source_id: string }[])[i]?.source_id)))) throw new FactoryError("fresh_evidence_required", "Merge requires the Machine's matching passing checks and independent Standards and Spec reports", 409);
     const assertLive = () => {
       if (this.stopped) throw new FactoryError("stopping", "The bridge is stopping; retain the merge intent for reconciliation", 409);
       const lease = this.store.get<{ run: FactoryRun; closing?: boolean }>("host_leases", id);
       if (!lease || lease.closing || lease.run.suspension || this.store.get("host_delete_requests", id)) throw new FactoryError("run_stopping", "Pause or Delete stopped this merge operation", 409);
+      if (observing) return;
       const latestCheck = this.store.list<FactoryCheck>("host_checks", id).filter(c => c.worker_id === null).at(-1);
       const currentReports = this.store.list<FactoryReviewEvidence>("host_review_evidence", id);
-      if (!latestCheck || latestCheck.id !== check.id || latestCheck.condition !== "passed" || latestCheck.head !== pr.head || latestCheck.workspace_hash !== check.workspace_hash || !["standards", "spec"].every(axis => {
+      if (!latestCheck || latestCheck.id !== check!.id || latestCheck.condition !== "passed" || latestCheck.head !== pr.head || latestCheck.workspace_hash !== check!.workspace_hash || !["standards", "spec"].every(axis => {
         const expected = reports.find(r => r?.axis === axis);
         const current = currentReports.filter(r => r.axis === axis).at(-1);
         return current?.worker_id === expected?.worker_id && current?.source_id === expected?.source_id && current?.head === pr.head && current?.outcome === "passed";
@@ -100,7 +108,7 @@ export class FactoryMerge {
     const assertCurrent = async () => {
       assertLive();
       const current = await this.head(id);
-      if (current.head !== pr.head || current.workspace_hash !== check.workspace_hash) throw new FactoryError("review_stale", "The checked workspace changed; capture and review the current candidate", 409);
+      if (current.head !== pr.head || current.workspace_hash !== check!.workspace_hash) throw new FactoryError("review_stale", "The checked workspace changed; capture and review the current candidate", 409);
       const origin = (await git(run.worktree!, ["config", "--get", "remote.origin.url"])).trim();
       if (![ `https://github.com/${policy.repository}`, `https://github.com/${policy.repository}.git`, `git@github.com:${policy.repository}.git`, `ssh://git@github.com/${policy.repository}.git` ].includes(origin)) throw new FactoryError("merge_target_changed", "The owned checkout no longer matches the frozen repository", 409);
       const tracked = await git(run.worktree!, ["diff", "--no-ext-diff", "--no-textconv", "HEAD", "--"]);
@@ -108,14 +116,14 @@ export class FactoryMerge {
       if (tracked || untracked.length) throw new FactoryError("dirty_integration", "Commit and review workspace changes before merging", 409);
       assertLive();
     };
-    await assertCurrent();
+    if (observing) assertLive(); else await assertCurrent();
     const baseline = scope ? scope.base : run.base;
     if (!baseline) throw new FactoryError("merge_coverage_unverified", "The Assignment has no retained delivery baseline", 409);
-    const candidate = await captureReview(run.worktree, baseline, "branch");
+    const candidate = await captureReview(run.worktree, baseline, "branch", observing ? pr.head : undefined);
     if (candidate.head !== pr.head || !candidate.files.length || candidate.files.some(file => file.new_oid === undefined || file.new_mode === undefined)) throw new FactoryError("merge_coverage_unverified", "The approved candidate's intended changes could not be verified", 409);
     const changes = candidate.files.map(file => ({ path: file.path, oid: file.new_oid!, mode: file.new_mode!, ...(file.old_path ? { old_path: file.old_path } : {}) }));
     const key = `${id}:${pr.head}`;
-    let intent = this.store.get<Intent>("host_merges", key);
+    let intent = retained ?? this.store.get<Intent>("host_merges", key);
     if (intent && (intent.approval.id !== approval.id || JSON.stringify(intent.pr) !== JSON.stringify(pr))) {
       if (intent.condition !== "prepared") throw new FactoryError("merge_authority_changed", "A different retained approval owns this merge", 409);
       // A checked no-op repair may retain the head while explicit owner authority
@@ -153,7 +161,7 @@ export class FactoryMerge {
       return pull;
     };
     let pull = await readPull();
-    if (!pull.merged && intent.condition === "prepared") {
+    if (!observing && !pull.merged && intent.condition === "prepared") {
       const complete = <T>(c: Connection<T> | undefined) => Array.isArray(c?.nodes) && c.pageInfo?.hasNextPage === false;
       const contexts = pull.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts;
       if (!complete(pull.reviews) || !complete(pull.reviewThreads) || !complete(pull.reviewRequests) || !complete(pull.commits) || contexts && !complete(contexts)) throw new FactoryError("merge_blocked", "GitHub review and check inventory is incomplete", 409);
@@ -185,6 +193,7 @@ export class FactoryMerge {
     const result: FactoryMergeResult = { run_id: id, head: pr.head, repository: pr.repository, base_branch: pr.base_branch, number: pr.number, condition: "uncertain", merge_sha: null, release_tag: null, reason: "GitHub has not confirmed this merge; the sent operation will not be replayed" };
     if (!pull.merged || pull.state !== "MERGED" || !/^[a-f0-9]{40}$/.test(pull.mergeCommit?.oid ?? "")) return result;
     const sha = pull.mergeCommit!.oid;
+    if (observing && sha !== intent.merge_sha) throw new FactoryError("merge_coverage_unverified", "GitHub no longer confirms the original verified merge commit", 409);
     const contains = async (target: string) => {
       const compare = await api(`repos/${pr.repository}/compare/${sha}...${encodeURIComponent(target)}`) as { status: string; merge_base_commit?: { sha: string } };
       return ["identical", "ahead"].includes(compare.status) && compare.merge_base_commit?.sha === sha;

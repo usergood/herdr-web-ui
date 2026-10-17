@@ -1334,7 +1334,8 @@ export const DEFAULT_PORT = 7317;
  *   frozen issue history and planning content remain in the lazy full Assignment response.
  * latest Specification, Ticket graph, Run status/model summaries, report/check metadata and
  * current continuation warnings. Human Review and automatic execution/review reasons carry optional
- * reason_is_error metadata so retrying faults remain distinct from ordinary waits.
+ * reason_is_error metadata so retrying faults remain distinct from ordinary waits. Runs retain optional
+ * delivery_completion_error independently of native status until verified cleanup succeeds.
  * No frozen manifests, transcripts, diffs or historical bodies.
  * GET ...?view=workflow&conversation_id= -> FactoryDetail-shaped selected logical conversation;
  * only its chat, native history and Human Review evidence bodies are read. Current polls keep metadata.

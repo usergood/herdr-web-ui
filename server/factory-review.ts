@@ -29,9 +29,9 @@ function linesInDiff(diff: string, side: "old" | "new"): Set<number> {
   return lines;
 }
 
-export async function captureReview(path: string, base: string, mode: ReviewSnapshot["mode"]): Promise<{ files: ReviewSnapshot["files"]; head: string }> {
+export async function captureReview(path: string, base: string, mode: ReviewSnapshot["mode"], revision?: string): Promise<{ files: ReviewSnapshot["files"]; head: string }> {
     const take = async (): Promise<{ files: ReviewSnapshot["files"]; head: string }> => {
-      const head = (await git(path, ["rev-parse", "HEAD"])).trim();
+      const head = (await git(path, ["rev-parse", mode === "branch" ? revision ?? "HEAD" : "HEAD"])).trim();
       const files: ReviewSnapshot["files"] = [];
       const groups = mode === "branch" ? [{ name: "branch", args: [base, head] }] : [{ name: "staged", args: ["--cached", "HEAD"] }, { name: "unstaged", args: [] as string[] }];
       let size = 0;

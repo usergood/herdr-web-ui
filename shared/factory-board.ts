@@ -5,6 +5,16 @@ const ended = (condition: string) => ["completed", "cancelled", "failed"].includ
 const executing = (context: FactoryRun | FactoryWorker) => context.condition === "working" && !context.suspension && (!context.continuation || context.continuation.condition === "resumed");
 const attention = (condition: string) => ["needs_you", "blocked", "interrupted", "failed"].includes(condition);
 
+/** Suspension retains its phase; restored inputs are used only to choose a lane. */
+function phaseContext<T extends FactoryRun | FactoryWorker>(idea: Implementation, context: T): T {
+  return idea.pause && context.suspension?.pause_id === idea.pause.id && !ended(context.condition)
+    ? { ...context, condition: context.suspension.previous_condition, suspension: undefined } : context;
+}
+function phaseCheck<T extends Pick<FactoryCheck, "condition" | "pause_id">>(idea: Implementation, check: T): T {
+  return idea.pause && check.condition === "cancelled" && check.pause_id === idea.pause.id
+    ? { ...check, condition: "working" } : check;
+}
+
 /** Board progress projects retained evidence. It neither admits work nor changes its age. */
 export function assignmentProgress(idea: Implementation, tickets: FactoryTicket[], runs: FactoryRun[], workers: FactoryWorker[], checks: FactoryCheck[] = [], waiting: BoardWait[] = [], workflowReasons: { run_id: string; reason: string | null; reason_is_error?: boolean }[] = []): FactoryAssignmentProgress {
   const current = runs.at(-1);
@@ -24,7 +34,7 @@ export function assignmentProgress(idea: Implementation, tickets: FactoryTicket[
     if (liveChecks.length) activities.add("testing");
   }
   const checkReason = (check: FactoryCheck) => check.condition === "interrupted" ? "Check execution is uncertain; reconcile its reservation" : `Checks failed${check.commands.filter(command => command.exit_code !== 0).map(command => `: ${command.args.join(" ")} (exit ${command.exit_code})`).join("")}`;
-  const contextReason = (context: FactoryRun | FactoryWorker) => context.waiting_reason || context.continuation?.reason || (attention(context.condition) || context.condition === "disconnected" ? `Execution ${context.condition}` : null);
+  const contextReason = (context: FactoryRun | FactoryWorker) => ("delivery_completion_error" in context && !ended(context.condition) ? context.delivery_completion_error : null) || context.waiting_reason || context.continuation?.reason || (attention(context.condition) || context.condition === "disconnected" ? `Execution ${context.condition}` : null);
   const completed = (ticket: FactoryTicket) => {
     const attempts = relevant.filter(worker => worker.ticket_id === ticket.id && worker.role === "implementer");
     const latest = attempts.at(-1);
@@ -48,6 +58,7 @@ export function assignmentProgress(idea: Implementation, tickets: FactoryTicket[
   const failed = (context: FactoryRun | FactoryWorker) => ["failed", "interrupted", "disconnected", "blocked"].includes(context.condition);
   const workflowFaults = workflowReasons.filter(record => record.reason_is_error && record.reason && scopedRuns.some(run => run.id === record.run_id)).map(record => record.reason!);
   const errorReasons = [...new Set([
+    ...scopedRuns.filter(run => !ended(run.condition)).flatMap(run => run.delivery_completion_error ? [run.delivery_completion_error] : []),
     ...workflowFaults,
     ...(idea.deletion?.reasons ?? []), ...(idea.pause?.reasons ?? []),
     ...waits.filter(wait => wait.condition === "blocked").map(wait => wait.reason),
@@ -65,9 +76,8 @@ export function assignmentProgress(idea: Implementation, tickets: FactoryTicket[
   ])];
   // Suspension changes native conditions to ready. Preserve the lane's prior phase,
   // while activity tags and Ticket counts continue to describe verified execution.
-  const laneContexts = [...runs, ...relevant].map(context => idea.pause && context.suspension && !ended(context.condition)
-    ? { ...context, condition: context.suspension.previous_condition, suspension: undefined } : context);
-  const underway = liveChecks.length > 0 || laneContexts.some(context => executing(context) || ["accepted", "disconnected"].includes(context.condition));
+  const laneContexts = [...runs, ...relevant].map(context => phaseContext(idea, context));
+  const underway = scopedChecks.some(check => phaseCheck(idea, check).condition === "working") || laneContexts.some(context => executing(context) || ["accepted", "disconnected"].includes(context.condition));
   const needsAttention = waits.some(wait => wait.condition === "blocked") || (current && attention(current.suspension?.previous_condition ?? current.condition)) || latestWorkers.some(worker => attention(worker.suspension?.previous_condition ?? worker.condition)) || latestChecks.some(check => ["failed", "interrupted"].includes(check.condition));
   const lane = idea.stage === "done" ? "done" : needsAttention || idea.stage === "review" ? "needs_you"
     : underway ? "running" : waits.length || idea.stage === "ready" ? "queued" : idea.stage === "inbox" ? "inbox" : "needs_you";
@@ -84,15 +94,34 @@ export function factoryRunActivity(action: FactoryAction): FactoryActivity {
   }
 }
 
+type BoardContext = { tickets?: FactoryTicket[]; runs?: FactoryRun[]; workers?: FactoryWorker[]; checks?: Omit<FactoryCheck, "commands">[]; questions?: FactoryQuestion[]; capacity_waiting?: FactoryCapacityWait[]; admission_problem?: string | null; selected?: boolean; readiness_problem?: string | null };
+
 /** Shared presentation policy for the bridge and fictional browser demo. */
-export function projectFactoryBoard(implementation: Implementation, context: { tickets?: FactoryTicket[]; runs?: FactoryRun[]; workers?: FactoryWorker[]; checks?: Omit<FactoryCheck, "commands">[]; questions?: FactoryQuestion[]; capacity_waiting?: FactoryCapacityWait[]; admission_problem?: string | null; selected?: boolean; readiness_problem?: string | null } = {}): FactoryBoardItem {
+export function projectFactoryBoard(implementation: Implementation, context: BoardContext = {}): FactoryBoardItem {
+  let current = projectNativeBoard(implementation, context);
+  if (implementation.pause && !implementation.discard_requested_at && !implementation.deletion) {
+    // Evaluate every existing delivery/research gate against retained execution phase,
+    // while current busy/activity/reasons and conservative sidebar visibility stay factual.
+    const phase = projectNativeBoard(implementation, { ...context,
+      runs: context.runs?.map(run => phaseContext(implementation, run)),
+      workers: context.workers?.map(worker => phaseContext(implementation, worker)),
+      checks: context.checks?.map(check => phaseCheck(implementation, check)),
+    });
+    current = { ...current, lane: phase.lane };
+  }
+  const deliveryError = context.runs?.filter(run => !ended(run.condition) && run.delivery_completion_error).at(-1)?.delivery_completion_error;
+  return deliveryError ? { ...current, delivery_completion_error: deliveryError } : current;
+}
+
+function projectNativeBoard(implementation: Implementation, context: BoardContext): FactoryBoardItem {
   const tickets = context.tickets ?? [];
   const runIds = new Set(context.runs?.map(entry => entry.id));
   const quiescent = !(context.runs ?? []).some(entry => !["completed", "cancelled", "failed"].includes(entry.condition))
     && !(context.workers ?? []).some(entry => runIds.has(entry.run_id) && !["completed", "cancelled", "failed"].includes(entry.condition))
     && !(context.checks ?? []).some(entry => runIds.has(entry.run_id) && ["working", "interrupted"].includes(entry.condition));
   const question = context.questions?.find(entry => entry.answer === null);
-  if (implementation.discard_requested_at || implementation.stage === "done" && ["research_accepted", "merged", "released", "discarded"].includes(implementation.outcome) && quiescent && !question) {
+  const delivered = implementation.stage === "done" && ["research_accepted", "merged", "released", "discarded"].includes(implementation.outcome);
+  if (implementation.discard_requested_at || delivered && quiescent && !question) {
     const finished = implementation.stage === "done" && quiescent;
     return { implementation_id: implementation.id, lane: finished ? "done" : "needs_you", activity: finished ? null : "discard_pending", condition: finished ? null : "needs_you", run_id: context.runs?.at(-1)?.id ?? null, busy: false, waiting_reason: finished ? null : "Owned work must be confirmed stopped before this Assignment can be discarded. Reconnect its Machine and reconcile Discard.", ticket_progress: tickets.length ? { completed: tickets.filter(ticket => ticket.status === "done").length, total: tickets.length } : null, sidebar_hidden: finished };
   }
@@ -114,5 +143,11 @@ export function projectFactoryBoard(implementation: Implementation, context: { t
   if (implementation.stage !== "done" && implementation.activity === "awaiting_merge" && !busy && !attention) return { implementation_id: implementation.id, lane: "needs_you", activity: "awaiting_merge", condition: "needs_you", run_id: run?.id ?? null, busy: false, waiting_reason: null, ticket_progress: tickets.length ? { completed: tickets.filter(ticket => ticket.status === "done").length, total: tickets.length } : null };
   if (implementation.stage !== "done" && !attention && !busy && run && implementation.completion_evidence?.repository_changes === "none" && implementation.completion_evidence.quiescent) return { implementation_id: implementation.id, lane: "needs_you", activity: "researching", condition: "needs_you", run_id: run.id, busy: false, waiting_reason: "Accept the retained research to finish this Assignment; no repository changes were found.", ticket_progress: tickets.length ? { completed: tickets.filter(ticket => ticket.status === "done").length, total: tickets.length } : null };
   if (implementation.stage !== "done" && !run?.scope_pause && implementation.completion_evidence?.reason && (!busy || implementation.completion_evidence.repository_changes === "unknown")) return { implementation_id: implementation.id, lane: "needs_you", activity: implementation.completion_evidence.repository_changes === "changes" ? "awaiting_merge" : run ? factoryRunActivity(run.action) : null, condition: attention?.condition ?? "needs_you", run_id: run?.id ?? null, busy, waiting_reason: implementation.completion_evidence.reason, ticket_progress: tickets.length ? { completed: tickets.filter(ticket => ticket.status === "done").length, total: tickets.length } : null };
-  return { implementation_id: implementation.id, lane: attention ? "needs_you" : busy ? "running" : implementation.stage === "done" ? "done" : awaitingChecks ? "running" : checkpoint || proposal ? "needs_you" : implementation.stage === "ready" || context.selected || waits.some(wait => wait.condition === "queued") ? "queued" : "inbox", activity: implementation.stage === "done" && !attention && !busy ? null : validating ? "validating" : reviewing ? "reviewing" : awaitingChecks ? "awaiting_checks" : run ? factoryRunActivity(run.action) : proposal ? implementation.stage === "review" ? "reviewing" : "specifying" : null, condition: attention?.condition ?? run?.condition ?? null, run_id: run?.id ?? null, busy, waiting_reason: attention?.waiting_reason ?? run?.waiting_reason ?? (!busy && implementation.stage !== "done" ? waits[0]?.reason : null) ?? null, ticket_progress: tickets.length ? { completed: tickets.filter(ticket => ticket.status === "done").length, total: tickets.length } : null };
+  // Native rest after Pause and a later discussion do not replace the Assignment's phase.
+  // Keep explicit delivery/research waits and guarded Discard above; reuse retained progress
+  // for ordinary suspension and delivered work without changing activity or sidebar ownership.
+  const lifecycleLane = !implementation.deletion && (delivered || implementation.pause && !attention)
+    ? assignmentProgress(implementation, tickets, context.runs ?? [], context.workers ?? [], (context.checks ?? []).map(check => ({ ...check, commands: [] })), context.capacity_waiting).lane
+    : undefined;
+  return { implementation_id: implementation.id, lane: lifecycleLane ?? (attention ? "needs_you" : busy ? "running" : implementation.stage === "done" ? "done" : awaitingChecks ? "running" : checkpoint || proposal ? "needs_you" : implementation.stage === "ready" || context.selected || waits.some(wait => wait.condition === "queued") ? "queued" : "inbox"), activity: implementation.stage === "done" && !attention && !busy ? null : validating ? "validating" : reviewing ? "reviewing" : awaitingChecks ? "awaiting_checks" : run ? factoryRunActivity(run.action) : proposal ? implementation.stage === "review" ? "reviewing" : "specifying" : null, condition: attention?.condition ?? run?.condition ?? null, run_id: run?.id ?? null, busy, waiting_reason: attention?.waiting_reason ?? run?.waiting_reason ?? (!busy && implementation.stage !== "done" ? waits[0]?.reason : null) ?? null, ticket_progress: tickets.length ? { completed: tickets.filter(ticket => ticket.status === "done").length, total: tickets.length } : null };
 }

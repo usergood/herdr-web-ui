@@ -658,6 +658,113 @@ it("finishes delivered execution and archives without manual Stop while retainin
 }, 20000);
 
 
+it("settles a restored legacy context fence only after positive verified release observation", async () => {
+  const f = await releaseBrowserFixture(); let pending: Promise<Response> | undefined;
+  try {
+    const body = await contextApproval(f, "legacy-release-fence");
+    const first = await contextPost(f, f.prefix + "/human-review/approve", body); expect(first.status).toBe(200); const receipt = await first.json();
+    expect(receipt.condition).toBe("awaiting_release");
+    // Model only legacy fault metadata after genuine owner approval and a Machine-verified merge.
+    f.app.stop(); const retained = new FactoryStore(f.stateDir);
+    retained.put("human_review_approvals", { ...receipt, condition: "blocked", reason: "The owner context changed", next_observation_at: 0 }, f.id);
+    retained.remove("merge_context_fences", receipt.id); retained.close();
+    f.core.change({ hold_graphql: true }); f.restartConnection();
+    pending = contextPost(f, f.prefix + "/human-review/approve", body);
+    await until(async () => f.core.githubState(), state => state.graphql_waiting === true);
+    const proposed = { question: "A later owner discussion after verified merge" };
+    expect((await contextPost(f, f.prefix + "/questions", proposed)).status).toBe(409);
+    f.core.change({ hold_graphql: false }); expect((await pending).status).toBe(200);
+    const observed = await until(f.detail, d => d.human_review_approvals[0]?.condition === "awaiting_release");
+    expect(observed.human_review_approvals[0]).toMatchObject({ id: receipt.id, context_revision: receipt.context_revision, merge_sha: receipt.merge_sha });
+    expect((await contextPost(f, f.prefix + "/questions", proposed)).status).toBe(201);
+    expect(f.core.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { f.core.change({ hold_graphql: false }); await pending?.catch(() => {}); await f.close(); }
+}, 20000);
+
+it("uses only the original verified Machine intent when live checks and workspace change", async () => {
+  const f = await releaseBrowserFixture();
+  try {
+    const body = await contextApproval(f, "read-only-release-observation");
+    const response = await contextPost(f, f.prefix + "/human-review/approve", body); expect(response.status).toBe(200); const receipt = await response.json();
+    expect(receipt.condition).toBe("awaiting_release");
+    f.core.change({ fail_check: true });
+    const changedCheck = await f.core.post(f.core.route + "check", { check: { ...f.core.check, id: crypto.randomUUID(), commands: [], condition: "working" }, worker_id: null });
+    const changedEvidence = await changedCheck.json();
+    expect(changedCheck.status, JSON.stringify(changedEvidence)).toBe(200);
+    expect(changedEvidence).toMatchObject({ head: f.core.head, condition: "failed" });
+    f.core.git(["checkout", "--detach", f.core.base]);
+    f.core.git(["tag", "owned-frozen-release", receipt.merge_sha]); f.core.change({ release: "owned-frozen-release" });
+    const original = f.mergeRequests[0]!;
+    const observed = await f.core.post(f.core.route + "merge", { ...original, approval: receipt, pull_request: { ...original.pull_request, check_id: "newer-unrelated-check", evidence_ids: [] }, check_id: "newer-unrelated-check", workspace_hash: "changed-live-workspace", evidence_ids: [], reports: [] });
+    expect(observed.status).toBe(200);
+    expect(await observed.json()).toMatchObject({ head: receipt.head, merge_sha: receipt.merge_sha, condition: "released", release_tag: "owned-frozen-release" });
+    expect(f.core.git(["rev-parse", "HEAD"])).toBe(f.core.base);
+    expect(f.core.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { await f.close(); }
+}, 20000);
+
+it.each(["prepared", "sending", "invalid-sha"])("refuses forged release observation of a %s intent without sending another merge", async condition => {
+  const f = await releaseBrowserFixture();
+  try {
+    if (condition === "sending") f.core.change({ lose: true });
+    else f.core.pull({ mergeStateStatus: "BLOCKED", reviewDecision: "REVIEW_REQUIRED" });
+    const body = await contextApproval(f, `refuse-observation-${condition}`);
+    const response = await contextPost(f, f.prefix + "/human-review/approve", body); expect(response.status).toBe(200); const receipt = await response.json();
+    expect(receipt.condition).toBe(condition === "sending" ? "uncertain" : "pending");
+    const before = f.core.calls().filter(args => args[1]?.endsWith("/merge")).length;
+    const original = f.mergeRequests[0]!;
+    const observed = await f.core.post(f.core.route + "merge", { ...original, approval: { ...receipt, condition: "awaiting_release", merge_sha: condition === "invalid-sha" ? "invalid" : f.core.head } });
+    expect(observed.status).toBe(409); expect(await observed.json()).toMatchObject({ error: { code: "merge_authority_changed" } });
+    expect(f.core.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(before);
+  } finally { await f.close(); }
+}, 20000);
+
+it("retains a typed release-observation fault and clears it under the original verified approval", async () => {
+  const f = await releaseBrowserFixture();
+  try {
+    const body = await contextApproval(f, "release-observation-recovery");
+    const response = await contextPost(f, f.prefix + "/human-review/approve", body); expect(response.status).toBe(200); const receipt = await response.json();
+    expect(receipt.condition).toBe("awaiting_release"); expect(receipt.reason_is_error ?? false).toBe(false);
+    f.core.change({ truncated_tree: true });
+    const failed = await contextPost(f, f.prefix + "/human-review/approve", body); expect(failed.status).toBe(200); const fault = await failed.json();
+    expect(fault).toMatchObject({ id: receipt.id, condition: "awaiting_release", merge_sha: receipt.merge_sha, reason_is_error: true });
+    expect(fault.reason).toEqual(expect.any(String));
+    f.core.git(["tag", "owned-release-recovered", receipt.merge_sha]); f.core.change({ truncated_tree: false, release: "owned-release-recovered" });
+    await f.restart();
+    const completed = await until(f.detail, d => d.human_review_approvals[0]?.condition === "released" && d.runs.find((run: any) => run.id === f.core.id)?.condition === "completed");
+    expect(completed.human_review_approvals).toHaveLength(1);
+    expect(completed.human_review_approvals[0]).toMatchObject({ id: receipt.id, context_revision: receipt.context_revision, head: receipt.head, merge_sha: receipt.merge_sha, condition: "released", reason: null, reason_is_error: false });
+    expect(f.core.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { await f.close(); }
+}, 20000);
+
+it.each(["current", "historical-blocked"])("observes the original verified release after later owner context changes (%s) without another approval or merge", async state => {
+  const f = await releaseBrowserFixture();
+  try {
+    const body = await contextApproval(f, "original-release-authority");
+    const response = await contextPost(f, f.prefix + "/human-review/approve", body);
+    expect(response.status).toBe(200); const approved = await response.json();
+    expect(approved.condition).toBe("awaiting_release");
+    const questionResponse = await contextPost(f, f.prefix + "/questions", { question: "Does this already merged result retain the approved scope?" });
+    expect(questionResponse.status).toBe(201); const question = await questionResponse.json();
+    const answer = await contextPost(f, f.prefix + `/questions/${question.id}/answer`, { revision: question.revision, answer: "Yes, the approved scope is unchanged." });
+    expect(answer.status).toBe(200);
+    if (state === "historical-blocked") {
+      // Restore only the old fault condition after a genuine public approval and verified Machine merge.
+      f.app.stop(); const retained = new FactoryStore(f.stateDir);
+      retained.put("human_review_approvals", { ...approved, condition: "blocked", reason: "The owner context changed; retain fresh evidence" }, f.id); retained.close();
+    }
+    f.core.git(["tag", "owned-postmerge-release", approved.merge_sha]); f.core.change({ release: "owned-postmerge-release" });
+    await f.restart();
+    const completed = await until(f.detail, d => state !== "historical-blocked" && d.human_review_approvals[0]?.condition === "blocked" || d.human_review_approvals[0]?.condition === "released" && d.runs.find((run: any) => run.id === f.core.id)?.condition === "completed", 45000);
+    expect(completed.human_review_approvals).toHaveLength(1);
+    expect(completed.human_review_approvals[0]).toMatchObject({ id: approved.id, idempotency_key: approved.idempotency_key, head: approved.head, context_revision: approved.context_revision, merge_sha: approved.merge_sha, condition: "released", release_tag: "owned-postmerge-release" });
+    expect(completed.implementation).toMatchObject({ stage: "done", outcome: "released" });
+    expect(completed.runs.find((run: any) => run.id === f.core.id).condition).toBe("completed");
+    expect(f.core.calls().filter(args => args[1]?.endsWith("/merge"))).toHaveLength(1);
+  } finally { await f.close(); }
+}, 45000);
+
 it("retains verified delivery through unavailable history and uncertain shutdown, then completes without another merge", async () => {
   for (const problem of ["history", "shutdown", "lost-shutdown"] as const) {
     let historyAvailable = true;
@@ -674,11 +781,27 @@ it("retains verified delivery through unavailable history and uncertain shutdown
       expect(pending.human_review_approvals[0].condition).toBe("merged");
       expect(pending.runs.find((r: any) => r.id === run.id).condition).not.toBe("completed");
       expect(pending.events.some((e: any) => e.kind === "delivery_completion_pending")).toBe(true);
+      expect(pending.runs.find((r: any) => r.id === run.id).delivery_completion_error).toEqual(expect.any(String));
       expect((await f.api(`${prefix}/archive`, {})).status).toBe(409);
+      if (problem === "history") {
+        const current = await f.api(`${prefix}?view=current`).then(r => r.json());
+        expect(current.runs.find((r: any) => r.id === run.id).delivery_completion_error).toBe(pending.runs.find((r: any) => r.id === run.id).delivery_completion_error);
+        const fault = pending.runs.find((r: any) => r.id === run.id).delivery_completion_error;
+        expect(current.board.delivery_completion_error).toBe(fault);
+        const overview = await f.api("").then(r => r.json());
+        expect(overview.board.find((item: any) => item.implementation_id === f.runs.get(run.id)!.implementation_id).delivery_completion_error).toBe(fault);
+        expect(overview.progress.find((item: any) => item.implementation_id === f.runs.get(run.id)!.implementation_id).error_reasons).toContain(fault);
+        const navigation = await f.api("?navigation=1").then(r => r.json());
+        expect(navigation.board.find((item: any) => item.implementation_id === f.runs.get(run.id)!.implementation_id).delivery_completion_error).toBe(fault);
+        await f.api(`/runs/${run.id}/reconcile`, {});
+        expect((await detail()).runs.find((r: any) => r.id === run.id).delivery_completion_error).toBe(pending.runs.find((r: any) => r.id === run.id).delivery_completion_error);
+      }
       const observations = f.mergeObservations.length;
       historyAvailable = true; f.unavailableRunStop(false); f.restart();
       const completed = await until(detail, d => d.runs.find((r: any) => r.id === run.id)?.condition === "completed");
       expect(completed.human_review_approvals[0].condition).toBe("merged");
+      expect(completed.runs.find((r: any) => r.id === run.id).delivery_completion_error).toBeUndefined();
+      expect((await f.api(`${prefix}?view=current`).then(r => r.json())).board.delivery_completion_error).toBeUndefined();
       expect((await f.api(`${prefix}/archive`, {})).status).toBe(200);
       expect(f.mergeEffects).toHaveLength(1);
       expect(f.mergeObservations).toHaveLength(observations);
