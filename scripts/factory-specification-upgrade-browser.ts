@@ -10,6 +10,8 @@ export async function checkHistoricalSpecificationAcceptance(browser: Browser): 
     const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
     try {
       const id = await fixture.assignment("Historical approval upgrade"); const prefix = `/implementations/${id}`;
+      const initial = await fixture.api(prefix).then(r => r.json());
+      await fixture.api(`/projects/${initial.implementation.project_id}/configure`, { checks: [["bun", "test"]], permissions: "Edit owned files" });
       const spec = await fixture.api(prefix + "/specifications", { content: "Explicitly accept this historical Specification for automatic execution." }).then(r => r.json());
       const legacy = await fixture.api(prefix + "/approvals", { kind: "specification", revision: spec.id, scope: "Historical manual Specification acceptance" }).then(r => r.json());
       assert.notEqual(legacy.automatic_execution, true);
@@ -43,7 +45,7 @@ export async function checkHistoricalSpecificationAcceptance(browser: Browser): 
       await page.goto(`${origin}/#factory/${id}`);
       await specifications.getByText("Specification accepted", { exact: true }).waitFor(); assert.equal(await accept.isDisabled(), true);
       await page.getByRole("region", { name: "Assignment execution", exact: true }).getByRole("button", { name: "Resume Assignment", exact: true }).click();
-      const started = await until(() => fixture.api(prefix).then(r => r.json()), value => value.runs.some((run: { action: string; condition: string }) => run.action === "implement-spec" && run.condition === "working"));
+      const started = await until(async () => { const value = await fixture.api(prefix).then(r => r.json()); if (value.automatic_planning[0]?.condition === "blocked") throw new Error(`Automatic planning blocked: ${JSON.stringify(value.automatic_planning)}`); return value; }, value => value.runs.some((run: { action: string; condition: string }) => run.action === "implement-spec" && run.condition === "working"));
       assert.equal(started.runs.length, 1); assert.equal(started.automatic_planning.length, 1); assert.equal(started.automatic_planning[0].id, planId);
       assert.deepEqual(started.approvals, [legacy, authority]); assert.equal(fixture.launches.length, 1);
       assert.deepEqual(errors, []); assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
