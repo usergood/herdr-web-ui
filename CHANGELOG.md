@@ -139,6 +139,8 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   ([#1237](https://github.com/devswha/herdr-web-ui/pull/1237))
 
 ### Fixed
+- Keep fresh reviews waiting while an owner reply’s delivery remains uncertain after reconnect.
+  ([#34](https://github.com/usergood/saurons-eye/pull/34) by @usergood)
 - Claude's menu follows its personal, ancestor-project, synced and enabled plugin skills,
   with origin groups, name precedence and linked-worktree fallback. Its command list follows
   Claude Code 2.1.301's recorded palette and omits screens the chat cannot represent.
