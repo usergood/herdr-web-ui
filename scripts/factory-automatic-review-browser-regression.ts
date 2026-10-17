@@ -3,6 +3,7 @@ import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
 import { capacityFixture } from "./factory-capacity-fixture.ts";
+import { published, until } from "./factory-human-review-fixture.ts";
 import type { Browser } from "playwright-core";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -93,6 +94,106 @@ export async function publicationRoutingJourney(browser: Browser, viewport: { wi
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     console.log(`PASS actual host rewrite refusal propagated safely, reload and real host reconciliation before same-authority UI publication (${viewport.width})`);
   } finally { release(); await context.close(); f.close(); machine.close(); }
+}
+
+/** A native working observation cannot confirm delivery of the owner's retained answer. */
+export async function ownerContinuationJourney(browser: Browser, viewport: { width: number; height: number }, lost: boolean) {
+  const f = await capacityFixture({ advancingHeads: true });
+  const context = await browser.newContext({ viewport, isMobile: viewport.width < 640, hasTouch: viewport.width < 640 });
+  let checkGate: ReturnType<typeof f.holdNextCheck> | undefined;
+  let sendGate: ReturnType<typeof f.holdNextSend> | undefined;
+  let restGate: ReturnType<typeof f.holdNextHead> | undefined;
+  try {
+    const { id, prefix, detail, run } = await published(f);
+    const ready = await until(detail, d => d.human_reviews?.[0]?.condition === "ready");
+    await f.api("/settings", { max_agents: 3 });
+    const oldWorkers = ready.workers.map((worker: any) => worker.id); const oldChecks = [...f.executedChecks];
+    f.runs.get(run.id)!.condition = "working";
+    const questionResponse = await f.agent(run.id, "question", { question: "Retain this accepted behavior after the owner's answer?" });
+    assert.equal(questionResponse.status, 201); const question = await questionResponse.json();
+    checkGate = f.holdNextCheck("integration"); sendGate = f.holdNextSend();
+    let checkEntered = false, sendEntered = false;
+    void checkGate.started.then(() => { checkEntered = true; }); void sendGate.started.then(() => { sendEntered = true; });
+    if (lost) f.loseNextSend();
+    const origin = () => `http://localhost:${f.app.port}`;
+    assert.equal((await context.request.post(`${origin()}/api/auth`, { data: { token: f.token } })).status(), 204);
+    let page = await context.newPage(); page.setDefaultTimeout(10000);
+    const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
+    await page.goto(`${origin()}/#factory/${id}`);
+    await page.getByRole("region", { name: "Next step", exact: true }).locator("article").getByText(question.question, { exact: true }).waitFor();
+    const answer = "Yes; freshly review the same accepted behavior";
+    await page.getByRole("textbox", { name: "Your answer", exact: true }).fill(answer);
+    const answeredResponse = page.waitForResponse(response => response.url().endsWith(`${prefix}/questions/${question.id}/answer`) && response.request().method() === "POST");
+    await page.getByRole("button", { name: "Save answer", exact: true }).click();
+    assert.equal((await answeredResponse).status(), 200);
+    await until(async () => checkEntered, entered => entered);
+    f.runs.get(run.id)!.condition = "ready";
+    assert.equal((await f.api(`/runs/${run.id}/reconcile`, {})).status, 200);
+    await until(async () => sendEntered, entered => entered);
+    assert.equal((await f.api(`/runs/${run.id}/reconcile`, {})).status, 200);
+    const sending = await detail(); const owner = sending.runs.find((entry: any) => entry.id === run.id);
+    assert.equal(owner.condition, "working"); assert.equal(owner.continuation.kind, "owner"); assert.equal(owner.continuation.condition, "sending");
+    assert.equal(f.runs.get(run.id)!.condition, "working"); assert.equal(owner.continuation.question_revision, sending.question_revision);
+    checkGate.release();
+    const pending = await until(detail, d => d.checks.at(-1)?.condition === "passed" && d.automatic_review[0]?.check_id === d.checks.at(-1)?.id && (d.automatic_review[0]?.condition === "waiting" || d.capacity_waiting.some((wait: any) => !wait.continuation) || d.workers.some((worker: any) => !oldWorkers.includes(worker.id))));
+    const pendingCapacity = await f.api("").then(response => response.json());
+    console.log(JSON.stringify({ viewport: viewport.width, lost_ack: lost, pending_owner_continuation: { run: pending.runs.find((entry: any) => entry.id === run.id), review: pending.automatic_review[0], checks: pending.checks, workers: pending.workers, capacity: pendingCapacity.capacity, prompt_count: f.prompts.length } }));
+    let observed = pending;
+    if (!lost) restGate = f.holdNextHead();
+    sendGate.release();
+    if (lost) {
+      await until(detail, d => d.runs.find((entry: any) => entry.id === run.id)?.continuation?.condition === "uncertain");
+      await page.close(); f.restart();
+      assert.equal((await f.api(`/runs/${run.id}/reconcile`, {})).status, 200);
+      observed = await until(detail, d => d.automatic_review[0]?.reason?.includes("continuation outcome is uncertain") || d.workers.some((worker: any) => !oldWorkers.includes(worker.id)));
+      const capacity = await f.api("").then(response => response.json());
+      console.log(JSON.stringify({ viewport: viewport.width, lost_owner_continuation_after_restart: { run: observed.runs.find((entry: any) => entry.id === run.id), review: observed.automatic_review[0], workers: observed.workers, capacity: capacity.capacity, prompt_count: f.prompts.length } }));
+      assert.deepEqual(observed.workers.map((worker: any) => worker.id), oldWorkers, "Uncertain owner delivery must fence fresh reviewer allocation even with two free slots");
+      const retained = observed.runs.find((entry: any) => entry.id === run.id);
+      assert.equal(retained.condition, "working"); assert.equal(retained.continuation.id, owner.continuation.id); assert.equal(retained.continuation.kind, "owner"); assert.equal(retained.continuation.condition, "uncertain");
+      assert.equal(retained.continuation.question_revision, sending.question_revision); assert.equal(retained.worktree, owner.worktree);
+      assert.deepEqual(capacity.capacity.normal, { limit: 3, used: 1 });
+      assert(capacity.capacity.contexts.some((entry: any) => entry.id === run.id && entry.uncertain));
+      assert.equal((await context.request.post(`${origin()}/api/auth`, { data: { token: f.token } })).status(), 204);
+      page = await context.newPage(); page.setDefaultTimeout(10000); page.on("pageerror", error => errors.push(error.message));
+      await page.goto(`${origin()}/#factory/${id}`);
+      const progress = page.getByRole("region", { name: "Automatic review and PR", exact: true });
+      assert.equal(observed.automatic_review[0].reason_is_error, false);
+      await progress.getByRole("status").filter({ hasText: observed.automatic_review[0].reason }).waitFor();
+      assert.equal(await progress.getByRole("alert").filter({ hasText: observed.automatic_review[0].reason }).count(), 0);
+      await page.reload(); await progress.getByRole("status").filter({ hasText: observed.automatic_review[0].reason }).waitFor();
+      assert.deepEqual(observed.review_evidence, ready.review_evidence); assert.deepEqual(observed.pull_requests, ready.pull_requests);
+    } else {
+      const resumed = await until(detail, d => d.events.some((event: any) => event.kind === "conversation_resumed" && event.data.continuation_id === owner.continuation.id));
+      const receipts = resumed.events.filter((event: any) => event.kind === "conversation_resumed" && event.data.continuation_id === owner.continuation.id);
+      assert.equal(receipts.length, 1); assert.deepEqual(receipts[0].data, { run_id: run.id, continuation_id: owner.continuation.id, revision: sending.question_revision });
+      // Preserve the pending-state oracle until its real confirmed receipt is captured.
+      assert.equal(pending.automatic_review[0].condition, "waiting"); assert.match(pending.automatic_review[0].reason, /continuation/); assert.equal(pending.automatic_review[0].reason_is_error, false);
+      const contract = await f.agent(run.id, "contract").then(response => response.json());
+      assert.equal(contract.question_revision, sending.question_revision); assert.equal((await f.agent(run.id, "consume", { revision: contract.question_revision })).status, 200);
+      f.runs.get(run.id)!.condition = "ready";
+      assert.equal((await f.api(`/runs/${run.id}/reconcile`, {})).status, 200); restGate.release();
+      for (const role of ["standards", "spec"]) {
+        const fresh = await until(detail, d => d.workers.some((worker: any) => worker.role === role && !oldWorkers.includes(worker.id) && worker.condition === "working"));
+        const worker = fresh.workers.find((entry: any) => entry.role === role && !oldWorkers.includes(entry.id) && entry.condition === "working");
+        assert.equal((await f.agent(run.id, "consume", { revision: sending.question_revision, worker_id: worker.id })).status, 200);
+        f.workers.get(worker.id)!.condition = "ready";
+      }
+      observed = await until(detail, d => d.automatic_review[0]?.condition === "published" && d.automatic_review[0]?.context_revision === sending.question_revision);
+      console.log(JSON.stringify({ viewport: viewport.width, confirmed_owner_continuation: { receipt: receipts[0].data, review: observed.automatic_review[0], workers: observed.workers, prompt_count: f.prompts.length } }));
+      await page.reload(); await page.getByRole("region", { name: "Automatic review and PR", exact: true }).getByText("PR published", { exact: true }).waitFor();
+      assert.equal(observed.human_reviews[0].snapshot_id, ready.human_reviews[0].snapshot_id);
+    }
+    assert.equal(pending.automatic_review[0].condition, "waiting"); assert.match(pending.automatic_review[0].reason, /continuation/); assert.equal(pending.automatic_review[0].reason_is_error, false);
+    assert.deepEqual(pending.workers.map((worker: any) => worker.id), oldWorkers); assert.deepEqual(pendingCapacity.capacity.normal, { limit: 3, used: 1 });
+    assert.equal(f.executedChecks.length, oldChecks.length + 1); assert.equal(observed.checks.at(-1).head, ready.pull_requests[0].head);
+    for (const report of ready.review_evidence) assert.deepEqual(observed.review_evidence.find((entry: any) => entry.id === report.id), report);
+    assert.deepEqual(observed.approvals, ready.approvals); assert.equal(observed.human_review_approvals.length, 0); assert.equal(f.mergeEffects.length, 0);
+    assert.equal(f.prompts.length, 1); assert.equal(f.prompts[0].run_id, run.id); assert(f.prompts[0].text.includes(sending.question_revision)); assert(f.prompts[0].text.includes(".saurons-eye-tracker.mjs"));
+    assert.equal(observed.questions.find((entry: any) => entry.id === question.id)?.answer, answer);
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)); assert.deepEqual(errors, []);
+    console.log(`PASS actual owner answer with ${lost ? "lost" : "confirmed"} ACK fences fresh review at capacity3, retained authority and one native prompt (${viewport.width})`);
+  } finally { restGate?.release(); checkGate?.release(); sendGate?.release(); await context.close(); f.close(); }
 }
 
 if (import.meta.main) {
@@ -186,6 +287,7 @@ try {
     } finally { await context.close(); f.close(); }
   }
   for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) await publicationRoutingJourney(browser, viewport);
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) for (const lost of [false, true]) await ownerContinuationJourney(browser, viewport, lost);
   console.log("PASS approval, exhausted native review recovery through Pause/Resume, retained findings, repair and checked PR on desktop/mobile");
 } finally { await browser.close(); }
 }
